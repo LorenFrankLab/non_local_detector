@@ -88,7 +88,8 @@ def assert_same(a, b, where="detector"):
             where,
         )
     elif isinstance(a, pd.DataFrame):
-        pd.testing.assert_frame_equal(a, b)
+        # Legacy pickles hold object column labels where pandas 3 infers str.
+        pd.testing.assert_frame_equal(a, b, check_column_type=False)
     elif isinstance(a, pd.Series):
         pd.testing.assert_series_equal(a, b)
     elif isinstance(a, dict):

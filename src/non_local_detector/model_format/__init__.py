@@ -16,6 +16,8 @@ register_type
 read_model_summary
     Read a saved model's configuration, grids and place fields without
     building it.
+convert_model
+    Rewrite a pickled model in the saved-model format.
 is_saved_model_format
     Whether a file is in the saved-model format (as opposed to a pickle).
 
@@ -29,7 +31,7 @@ MIGRATIONS : dict[int, callable]
 """
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.model_format._codec import Decoder
@@ -42,10 +44,14 @@ from non_local_detector.model_format._container import (
 )
 from non_local_detector.model_format._registry import register_type, registered_types
 
+if TYPE_CHECKING:
+    from non_local_detector.models.base import _DetectorBase
+
 __all__ = [
     "FORMAT_VERSION",
     "MIGRATIONS",
     "StoredModel",
+    "convert_model",
     "is_saved_model_format",
     "read_model_summary",
     "register_type",
@@ -164,3 +170,70 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
         )
         summary["initial_conditions"] = decoder.decode(state["initial_conditions"])
         return summary
+
+
+def _refuse_undecodable(detector: "_DetectorBase", path: str | Path) -> None:
+    """Raise if a legacy detector cannot decode, so cannot be converted."""
+    algorithms = {
+        getattr(detector, "clusterless_algorithm", None),
+        *(
+            model.get("algorithm")
+            for model in getattr(detector, "encoding_model_", {}).values()
+            if isinstance(model, dict)
+        ),
+    }
+    if "clusterless_kde_log" in algorithms:
+        msg = (
+            f"Cannot convert {path}: it uses the removed clusterless_kde_log "
+            "algorithm, so it cannot decode"
+        )
+        raise ValidationError(
+            msg,
+            hint="Keep it as a pickle to inspect it with load_model, or refit "
+            'with clusterless_algorithm="clusterless_kde" and save that.',
+        )
+    try:
+        detector._validate_time_contract()
+    except ValidationError as error:
+        msg = f"Cannot convert {path}: the model cannot decode ({error.args[0]})"
+        raise ValidationError(
+            msg,
+            hint="Keep it as a pickle to inspect it with load_model, or refit "
+            "it and save the refit model.",
+        ) from error
+
+
+def convert_model(pickle_path: str | Path, path: str | Path) -> None:
+    """Rewrite a pickled detector in the saved-model format.
+
+    Loads ``pickle_path`` as ``load_model`` loads a pickle and saves it to
+    ``path`` with ``save_model``. Only convert files you trust: loading a
+    pickle can execute arbitrary code. The fingerprints the new file uses to
+    check its rebuilt structures are computed now, from the structures the
+    pickle holds, not at the original fit.
+
+    Parameters
+    ----------
+    pickle_path : str or Path
+        A detector saved with pickle by an earlier release.
+    path : str or Path
+        Where to write the converted model, by convention with suffix
+        ``.nld``.
+
+    Raises
+    ------
+    ValidationError
+        If ``pickle_path`` is already in the saved-model format, or the
+        model cannot decode: fitted before rates were in Hz (the 0.6
+        releases and earlier) or with the removed ``clusterless_kde_log``
+        algorithm. Such files stay pickles, which ``load_model`` still
+        reads for inspection.
+    """
+    from non_local_detector.models.base import _DetectorBase
+
+    if is_saved_model_format(pickle_path):
+        msg = f"{pickle_path} is already in the saved-model format"
+        raise ValidationError(msg)
+    detector = _DetectorBase.load_model(pickle_path)
+    _refuse_undecodable(detector, pickle_path)
+    detector.save_model(path)

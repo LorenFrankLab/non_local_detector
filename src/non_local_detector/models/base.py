@@ -3202,6 +3202,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         # decoding used to record on the detector; they describe that
         # recording, not the model.
         self.__dict__.pop("_degenerate_timesteps_", None)
+        # Earlier versions cached the environment lookup on the detector;
+        # nothing reads it now.
+        self.__dict__.pop("_env_lookup_cache_", None)
         covariate_data = state.get("_discrete_transition_covariate_data_")
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
