@@ -97,6 +97,8 @@ from non_local_detector.models._checkpointed import (
     _driver_outputs,  # noqa: F401 -- importable from base
     _PosteriorOutputs,
 )
+
+# EM looks these names up in models._em: patch them there, not here.
 from non_local_detector.models._em import (
     _AUTO_DENSE_TRANSITION_BYTES,  # noqa: F401 -- importable from base
     _DENSE_EM_WORKING_ARRAYS,  # noqa: F401 -- importable from base
