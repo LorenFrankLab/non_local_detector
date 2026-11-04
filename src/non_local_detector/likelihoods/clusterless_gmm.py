@@ -30,7 +30,11 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.clusterless_spikes import (
     ElectrodeSpikes,
     add_background_only,
@@ -726,7 +730,7 @@ def fit_clusterless_gmm_encoding_model(
             f"{gmm_components_occupancy} to {effective_occupancy_components} "
             f"because only {occupancy_n_samples} effective position samples are "
             "available.",
-            UserWarning,
+            ParameterWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -793,7 +797,7 @@ def fit_clusterless_gmm_encoding_model(
                 "spikes (empty or zero total weight); it is treated as "
                 "zero-rate -- its observed decode spikes are explained by the background rate "
                 "rather than fit on the de-weighted spikes.",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             mean_rates.append(0.0)
@@ -823,7 +827,7 @@ def fit_clusterless_gmm_encoding_model(
                 f"Clusterless GMM: electrode {electrode} has {n_joint_spikes} "
                 "effective encoding spikes; reduced "
                 f"joint components {gmm_components_joint}->{n_joint_components}.",
-                UserWarning,
+                ParameterWarning,
                 stacklevel=user_stacklevel(),
             )
 

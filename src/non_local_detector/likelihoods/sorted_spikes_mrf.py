@@ -60,7 +60,12 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     SpikeTimeOrder,
@@ -979,7 +984,7 @@ def fit_sorted_spikes_mrf_encoding_model(
             f"MRF basis auto-capped at {effective_rank} of "
             f"{node_order.shape[0]} interior bins; the highest-frequency "
             f"eigenmodes are dropped. Pass an explicit `rank` to override.",
-            UserWarning,
+            ParameterWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -1025,7 +1030,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"connected components of the environment have zero encoding "
                 f"exposure; their rates are unidentified and set to the zero-exposure "
                 f"floor ({RATE_EPS_HZ:.1e} Hz).",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             # Spikes binned where there is no exposure carry no rate information and
@@ -1069,7 +1074,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"{diagnostics['n_iter']} iteration(s) (max coefficient step "
                 f"{diagnostics['max_step']:.2e}); place fields may be unreliable. "
                 f"Increase max_iter or the penalty.",
-                UserWarning,
+                NumericalWarning,
                 stacklevel=user_stacklevel(),
             )
         rate_interior = np.exp(

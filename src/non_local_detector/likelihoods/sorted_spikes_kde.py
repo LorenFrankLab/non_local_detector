@@ -65,6 +65,7 @@ from non_local_detector.encoding_time import (
     warn_if_tracking_is_sparse,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import NumericalWarning
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
@@ -480,7 +481,7 @@ def fit_sorted_spikes_kde_encoding_model(
             f"usually indicates a degenerate KDE (zero-variance or identical "
             f"spike features, or position_std=0). Inspect the encoding-spike "
             f"feature distribution.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
 

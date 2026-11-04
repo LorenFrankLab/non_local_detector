@@ -80,7 +80,7 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataQualityWarning, ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale as mark_reference_scale,
 )
@@ -489,7 +489,7 @@ def fit_clusterless_diffusion_encoding_model(
                 f"electrode {electrode} has zero total encoding weight (zero-rate): "
                 "no effective encoding spikes. It contributes no ground-process "
                 "intensity and its decode spikes are explained by the background rate.",
-                UserWarning,
+                DataQualityWarning,
                 stacklevel=user_stacklevel(),
             )
             continue

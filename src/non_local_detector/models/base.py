@@ -65,6 +65,8 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
+    CompatibilityWarning,
+    DataQualityWarning,
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
@@ -451,7 +453,7 @@ def _missing_bins(
             "their log likelihood is 0 and the posterior follows the transitions "
             "alone. Pass position covering the decode time_edges, or restrict "
             "time_edges to the tracked period.",
-            UserWarning,
+            DataQualityWarning,
             stacklevel=user_stacklevel(),
         )
     is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
@@ -624,7 +626,7 @@ def _group_weights(
             "background rate (clusterless). Check is_training, "
             "encoding_group_labels, environment_labels, NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
-            UserWarning,
+            DataQualityWarning,
             stacklevel=user_stacklevel(),
         )
     return group_weights
@@ -1780,7 +1782,7 @@ class _DetectorBase(
                     "edge_order, and edge_spacing in your Environment so "
                     "that the track topology is properly linearized. See the "
                     "Environment docstring for details.",
-                    UserWarning,
+                    DataQualityWarning,
                     stacklevel=user_stacklevel(),
                 )
 
@@ -2285,7 +2287,7 @@ class _DetectorBase(
             warnings.warn(
                 "save_log_likelihood_to_results and save_causal_posterior_to_results "
                 "are deprecated. Use return_outputs parameter instead.",
-                DeprecationWarning,
+                CompatibilityWarning,
                 stacklevel=user_stacklevel(),
             )
 

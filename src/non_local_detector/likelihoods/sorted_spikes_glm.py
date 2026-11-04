@@ -83,7 +83,7 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment, get_n_bins
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NumericalWarning, ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
@@ -1205,7 +1205,7 @@ def fit_poisson_regressions(
             f"exposure when l2_penalty is 0; least squares leaves those "
             f"combinations at their starting values. Use a positive l2_penalty "
             f"to identify them.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -1231,7 +1231,7 @@ def fit_poisson_regressions(
             f"gradient inf-norm {worst:.3e} vs tolerance "
             f"{GLM_CONVERGENCE_GRAD_TOL:.1e} (a non-finite gradient or loss means "
             f"the fit diverged). Place-field coefficients may be unreliable.",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
 

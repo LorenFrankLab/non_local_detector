@@ -39,7 +39,13 @@ from non_local_detector.discrete_state_transitions import (
     _max_transition_change,
     _transition_log_prior,
 )
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    CompatibilityWarning,
+    DataError,
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.models._checkpointed import _driver_outputs, _PosteriorOutputs
 from non_local_detector.models._input_validation import _normalize_return_outputs
 from non_local_detector.models._results import convert_results_to_xarray
@@ -273,7 +279,7 @@ def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
         f"{limit / 1e9:.1f} GB available, and may run out of memory. "
         'Pass transition_representation="auto" (or "structured") to '
         "estimate_parameters to bound EM's memory, or n_chunks > 1 for dense EM.",
-        UserWarning,
+        ParameterWarning,
         stacklevel=user_stacklevel(),
     )
 
@@ -711,7 +717,7 @@ class _EMMixin:
                 "which can make EM several times slower. The estimate is "
                 "approximate: if dense EM fits, pass "
                 'transition_representation="dense" to estimate_parameters.',
-                UserWarning,
+                ParameterWarning,
                 stacklevel=user_stacklevel(),
             )
         logger.info(
@@ -1074,7 +1080,7 @@ class _EMMixin:
             warnings.warn(
                 "save_log_likelihood_to_results is deprecated. "
                 "Use return_outputs='log_likelihood' instead.",
-                DeprecationWarning,
+                CompatibilityWarning,
                 stacklevel=user_stacklevel(),
             )
             if save_log_likelihood_to_results:
@@ -1529,7 +1535,7 @@ class _EMMixin:
                     f"A MAP M-step cannot lower it; re-fitting the encoding "
                     f"model inside EM, a covariate transition fit stopping "
                     f"early, or a numerical instability can.",
-                    UserWarning,
+                    NumericalWarning,
                     stacklevel=user_stacklevel(),
                 )
                 self.em_monotonicity_violations_.append(state.n_iter)
@@ -1614,7 +1620,7 @@ class _EMMixin:
             f"{state.objective_change / settings.n_observed_bins:.3e}, "
             f"tolerance={settings.tolerance:.3e}). Fitted parameters may be biased. "
             f"{advice}",
-            UserWarning,
+            NumericalWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -1736,7 +1742,7 @@ class _EMMixin:
                     f"output and is unusual; the returned posterior may not reflect "
                     f"the fitted parameters. converged_ is False and iteration "
                     f"{state.n_iter + 1} is recorded in em_monotonicity_violations_.",
-                    UserWarning,
+                    NumericalWarning,
                     stacklevel=user_stacklevel(),
                 )
         self.converged_ = bool(state.converged) and final_is_increasing
