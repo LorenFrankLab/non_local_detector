@@ -273,7 +273,11 @@ def test_likelihood_replaced_on_the_family_class_is_called(
         SortedSpikesDetector,
     )
 
-    detector, args = fitted_detector
+    fitted, args = fitted_detector
+    # A fresh detector: monkeypatch restores an instance attribute it replaced
+    # (here, by earlier tests on the shared fixture) by setting the original
+    # bound method on the instance, which would hide a class-level wrapper.
+    detector = type(fitted)(environments=Environment(place_bin_size=5.0)).fit(*args)
     family = (
         ClusterlessDetector
         if isinstance(detector, ClusterlessDetector)
