@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import non_local_detector.likelihoods.common as common
+import non_local_detector.likelihoods.common.reductions as reductions
 from non_local_detector.likelihoods.common import (
     SpikeSelection,
     deterministic_segment_sum,
@@ -162,7 +162,7 @@ def test_repeated_unequal_float_rows_are_bitwise_identical(reduction_path):
     selected = selection(ids, 12)
     values = jnp.asarray(values)
     reference = np.asarray(sum_spikes_into_rows(values, selected)).copy()
-    if common._reduces_sequentially(values):
+    if reductions._reduces_sequentially(values):
         # XLA:CPU scatter adds rows in input order.
         np.testing.assert_array_equal(reference, ordered_reference(values, ids, 12))
     else:
@@ -193,7 +193,7 @@ def test_row_add_adds_owned_row_sums_to_the_initial_tile(
     shifted = min(column_start % 7, 7 - 3)
     expected = initial.copy()
     expected[:, shifted : shifted + 3] += ordered_reference(values, ids, 6)
-    actual = common.deterministic_row_add(
+    actual = reductions.deterministic_row_add(
         jnp.asarray(initial),
         jnp.asarray(values),
         jnp.asarray(ids),
@@ -205,7 +205,7 @@ def test_row_add_adds_owned_row_sums_to_the_initial_tile(
     weights = jnp.arange(42, dtype=jnp.float32).reshape(6, 7)
     value_gradient, output_gradient = jax.grad(
         lambda v, o: (
-            common.deterministic_row_add(
+            reductions.deterministic_row_add(
                 o, v, jnp.asarray(ids), column_start, indices_are_sorted=is_sorted
             )
             * weights
@@ -235,7 +235,7 @@ def test_one_segment_spanning_every_row_sums_all_rows(n_values, reduction_path):
         deterministic_segment_sum(jnp.asarray(values), ids, 3, True), expected
     )
     np.testing.assert_array_equal(
-        common.deterministic_row_add(
+        reductions.deterministic_row_add(
             jnp.zeros((3, 2), jnp.float32),
             jnp.asarray(values),
             ids,
@@ -260,7 +260,7 @@ def test_segment_totals_target_each_present_segment_once(is_sorted):
     if is_sorted:
         ids = np.sort(ids)
     values = rng.integers(-5, 6, 40).astype(np.float32)
-    sums, targets = common._segment_totals(
+    sums, targets = reductions._segment_totals(
         jnp.asarray(values), jnp.asarray(ids), n_segments, is_sorted
     )
     sums, targets = np.asarray(sums), np.asarray(targets)
@@ -408,7 +408,7 @@ def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
         for path in ("sequential", "segmented_scan"):
             if path == "segmented_scan":
                 monkeypatch.setattr(
-                    common, "_reduces_sequentially", lambda values: False
+                    reductions, "_reduces_sequentially", lambda values: False
                 )
                 jax.clear_caches()
             repeats = [evaluate() for _ in range(10)]
@@ -444,7 +444,7 @@ def test_concrete_off_cpu_calls_share_bucketed_executables(reduction_path):
     for n_spikes in range(1, 65):
         ids = np.sort(rng.integers(0, 12, n_spikes))
         values = rng.normal(size=(n_spikes, 3)).astype(np.float32)
-        actual = common.deterministic_row_sum(
+        actual = reductions.deterministic_row_sum(
             jnp.asarray(values), ids, 12, indices_are_sorted=True
         )
         np.testing.assert_allclose(
@@ -463,7 +463,7 @@ def test_bucketed_row_sum_keeps_narrow_ids_valid(id_dtype, is_sorted, reduction_
     if not is_sorted:
         ids = ids[::-1].copy()
     values = np.arange(1, 8, dtype=np.float32)[:, None]
-    actual = common.deterministic_row_sum(
+    actual = reductions.deterministic_row_sum(
         jnp.asarray(values), ids, 300, indices_are_sorted=is_sorted
     )
     np.testing.assert_array_equal(actual, ordered_reference(values, ids, 300))
@@ -471,11 +471,11 @@ def test_bucketed_row_sum_keeps_narrow_ids_valid(id_dtype, is_sorted, reduction_
 
 def test_row_sum_rejects_mismatched_values_and_ids():
     with pytest.raises(ValueError, match="one row per row id"):
-        common.deterministic_row_sum(jnp.ones((5, 2)), np.zeros(4, np.int32), 3)
+        reductions.deterministic_row_sum(jnp.ones((5, 2)), np.zeros(4, np.int32), 3)
 
 
 def test_row_add_rejects_mismatched_values_and_ids(reduction_path):
     with pytest.raises(ValueError, match="one row per row id"):
-        common.deterministic_row_add(
+        reductions.deterministic_row_add(
             jnp.zeros((3, 2)), jnp.ones((5, 2)), np.zeros(4, np.int32)
         )

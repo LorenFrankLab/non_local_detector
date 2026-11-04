@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     KDEModel,
+    poisson,
 )
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import spike_counts_by_edge_comparison, tolerance
@@ -129,8 +130,8 @@ def record_rows(monkeypatch, module, name, argument=0):
 
 
 def small_count_blocks(monkeypatch, n_neurons, block_rows=64):
-    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", block_rows * n_neurons * 8)
-    assert common._count_block_rows(n_neurons) == block_rows
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", block_rows * n_neurons * 8)
+    assert poisson._count_block_rows(n_neurons) == block_rows
 
 
 def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):

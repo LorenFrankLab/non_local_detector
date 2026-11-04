@@ -576,9 +576,11 @@ def test_traced_block_kde_bounds_compiled_workspace(log_space):
     40k decoding spikes against about 700k position samples. Row blocks of
     10,000 alone left a (rows x samples) workspace of 105.7 GiB.
     """
-    from non_local_detector.likelihoods import common
+    import non_local_detector.likelihoods.common.kernel_density as kde_module
 
-    traced = common._traced_block_log_kde if log_space else common._traced_block_kde
+    traced = (
+        kde_module._traced_block_log_kde if log_space else kde_module._traced_block_kde
+    )
     compiled = (
         jax.jit(
             lambda points, samples, weights: traced(
@@ -593,7 +595,7 @@ def test_traced_block_kde_bounds_compiled_workspace(log_space):
         .compile()
     )
     workspace = compiled.memory_analysis().temp_size_in_bytes
-    assert workspace <= 4 * common._KDE_BLOCK_KERNEL_BYTES, (
+    assert workspace <= 4 * kde_module._KDE_BLOCK_KERNEL_BYTES, (
         f"{workspace / 2**30:.1f} GiB"
     )
 
@@ -601,7 +603,7 @@ def test_traced_block_kde_bounds_compiled_workspace(log_space):
 @pytest.mark.parametrize("log_space", [False, True])
 def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
     """Eager blocks shrink so one block's kernel matrix fits the byte budget."""
-    from non_local_detector.likelihoods import common
+    import non_local_detector.likelihoods.common.kernel_density as kde_module
 
     rng = np.random.default_rng(3)
     points = jnp.asarray(rng.normal(size=(300, 2)).astype(np.float32))
@@ -612,16 +614,16 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
 
     # 64 rows of the kernel's dtype: float64 under x64 (8 bytes), else float32.
     itemsize = np.dtype(jax.dtypes.canonicalize_dtype(jnp.float64)).itemsize
-    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * itemsize * 64)
+    monkeypatch.setattr(kde_module, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * itemsize * 64)
     kernel_name = "log_kde" if log_space else "kde"
-    original = getattr(common, kernel_name)
+    original = getattr(kde_module, kernel_name)
     rows = []
 
     def record(eval_points, *args):
         rows.append(eval_points.shape[0])
         return original(eval_points, *args)
 
-    monkeypatch.setattr(common, kernel_name, record)
+    monkeypatch.setattr(kde_module, kernel_name, record)
     blocked = (block_log_kde if log_space else block_kde)(
         points, samples, std, 10_000, weights
     )
@@ -640,7 +642,7 @@ def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
     operands alone assumed 4-byte elements and let the 8-byte kernel use twice
     the budget.
     """
-    from non_local_detector.likelihoods import common
+    import non_local_detector.likelihoods.common.kernel_density as kde_module
 
     with precision_mode(True):
         rng = np.random.default_rng(3)
@@ -648,9 +650,9 @@ def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
         samples = jnp.asarray(rng.normal(size=(5_000, 2)).astype(np.float32))
         std = jnp.array([0.7, 1.3], dtype=jnp.float32 if all_float32 else None)
         weights = jnp.ones(5_000, dtype=jnp.float32) if all_float32 else None
-        monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 8 * 64)
+        monkeypatch.setattr(kde_module, "_KDE_BLOCK_KERNEL_BYTES", 5_000 * 8 * 64)
         kernel_name = "log_kde" if log_space else "kde"
-        original = getattr(common, kernel_name)
+        original = getattr(kde_module, kernel_name)
         blocks = []
 
         def record(eval_points, *args):
@@ -658,7 +660,7 @@ def test_block_rows_use_the_kernel_dtype(log_space, all_float32, monkeypatch):
             blocks.append((eval_points.shape[0], result.dtype.itemsize))
             return result
 
-        monkeypatch.setattr(common, kernel_name, record)
+        monkeypatch.setattr(kde_module, kernel_name, record)
         (block_log_kde if log_space else block_kde)(
             points, samples, std, 10_000, weights
         )
@@ -713,7 +715,7 @@ def test_block_kde_runs_many_blocks_in_one_compiled_loop(log_space, monkeypatch)
     A 709k-sample occupancy KDE needs blocks of about 94 rows, so a full
     recording would otherwise dispatch thousands of small kernels per call.
     """
-    from non_local_detector.likelihoods import common
+    import non_local_detector.likelihoods.common.kernel_density as kde_module
 
     rng = np.random.default_rng(4)
     points = jnp.asarray(rng.normal(size=(1_000, 1)).astype(np.float32))
@@ -723,16 +725,16 @@ def test_block_kde_runs_many_blocks_in_one_compiled_loop(log_space, monkeypatch)
     direct = (log_kde if log_space else kde)(points, samples, std, weights)
 
     # Blocks of 32 rows: 32 blocks, beyond the unrolled limit.
-    monkeypatch.setattr(common, "_KDE_BLOCK_KERNEL_BYTES", 2_000 * 4 * 32)
+    monkeypatch.setattr(kde_module, "_KDE_BLOCK_KERNEL_BYTES", 2_000 * 4 * 32)
     kernel_name = "log_kde" if log_space else "kde"
-    original = getattr(common, kernel_name)
+    original = getattr(kde_module, kernel_name)
     calls = []
 
     def record(*args):
         calls.append(1)
         return original(*args)
 
-    monkeypatch.setattr(common, kernel_name, record)
+    monkeypatch.setattr(kde_module, kernel_name, record)
     blocked = (block_log_kde if log_space else block_kde)(
         points, samples, std, 10_000, weights
     )

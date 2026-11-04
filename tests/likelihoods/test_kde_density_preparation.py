@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import non_local_detector.likelihoods.common.kernel_density as kde_module
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     common,
@@ -12,6 +13,7 @@ from non_local_detector.likelihoods import (
     predict_clusterless_kde_log_likelihood,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.common import spike_rows
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.time_edges import _DecodeTimeGrid
 
@@ -39,8 +41,8 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
         densities.append(1)
         return original_density(*args, **kwargs)
 
-    monkeypatch.setattr(common, "get_position_at_time", interpolate)
-    monkeypatch.setattr(common, "kde_log_density", density)
+    monkeypatch.setattr(kde_module, "get_position_at_time", interpolate)
+    monkeypatch.setattr(kde_module, "kde_log_density", density)
 
     def prepare(active_order=order, start=0, stop=4):
         return common._prepare_kde_local_inputs(
@@ -64,7 +66,7 @@ def test_local_density_preparation_reuses_geometry_and_invalidates_model_leaves(
 
 
 def test_prediction_density_preparation_respects_its_byte_budget(monkeypatch):
-    monkeypatch.setattr(common, "_KDE_PREPARATION_BYTES", 64)
+    monkeypatch.setattr(spike_rows, "_KDE_PREPARATION_BYTES", 64)
     order = common._SpikeTimeOrder()
     sources = [object() for _ in range(20)]
     for source in sources:
@@ -74,7 +76,7 @@ def test_prediction_density_preparation_respects_its_byte_budget(monkeypatch):
 
 
 def test_replaced_fitted_leaves_are_included_in_the_preparation_budget(monkeypatch):
-    monkeypatch.setattr(common, "_KDE_PREPARATION_BYTES", 128)
+    monkeypatch.setattr(spike_rows, "_KDE_PREPARATION_BYTES", 128)
     model = common.KDEModel(std=1.0).fit(jnp.zeros((12, 1)))
     points = jnp.zeros((1, 1))
     order = common._SpikeTimeOrder()
@@ -148,7 +150,7 @@ def test_public_local_kde_paths_share_prediction_geometry(
         interpolations.append(1)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(common, "get_position_at_time", interpolate)
+    monkeypatch.setattr(kde_module, "get_position_at_time", interpolate)
     decode_args = [time, position, [np.empty(0)]]
     if clusterless:
         decode_args.append([np.empty((0, 1))])

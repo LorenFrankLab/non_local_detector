@@ -220,7 +220,7 @@ def test_many_neurons_preserve_singleton_and_ragged_chunk_values(backend):
 @pytest.mark.parametrize("zero_rate", [False, True])
 def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkeypatch):
     """Bounded host count blocks reproduce the single-block emission exactly."""
-    import non_local_detector.likelihoods.common as common
+    import non_local_detector.likelihoods.common.poisson as poisson
 
     rng = np.random.default_rng(7307)
     edges = np.arange(1001) * 0.002
@@ -242,7 +242,7 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
         else backend.predict_sorted_spikes_glm_log_likelihood
     )
     unblocked = function(**arguments, row_slice=rows)
-    original = common._spike_counts_matrix
+    original = poisson._spike_counts_matrix
     block_rows = []
 
     def spy(*args, **kwargs):
@@ -250,9 +250,9 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
         block_rows.append(counts.shape[0])
         return counts
 
-    monkeypatch.setattr(common, "_spike_counts_matrix", spy)
+    monkeypatch.setattr(poisson, "_spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
-    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
     blocked = function(**arguments, row_slice=rows)
     np.testing.assert_array_equal(blocked, unblocked)
     start, stop, _ = (slice(None) if rows is None else rows).indices(len(edges) - 1)
@@ -271,7 +271,7 @@ def test_irregular_grid_rows_do_not_depend_on_partition(
     block for each partition. When a block's arithmetic path followed its
     durations, that changed rows by up to 3.1e-5.
     """
-    import non_local_detector.likelihoods.common as common
+    import non_local_detector.likelihoods.common.poisson as poisson
 
     rng = np.random.default_rng(7309)
     widths = np.full(200, 0.002)
@@ -305,7 +305,7 @@ def test_irregular_grid_rows_do_not_depend_on_partition(
     full = np.asarray(function(**arguments))
     if count_blocks:
         # int64 counts: a 64-row host block budget.
-        monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 64 * n_neurons * 8)
+        monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 64 * n_neurons * 8)
     for bounds in [(0, 8, 200), (0, 70, 130, 200), (0, 3, 11, 64, 195, 199, 200)]:
         parts = [
             function(**arguments, row_slice=slice(start, stop))

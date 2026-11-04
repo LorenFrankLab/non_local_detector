@@ -1287,7 +1287,7 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
     """Non-local spike counts are built in bounded row blocks, bitwise
     identically to one block, so a full-grid request never holds the whole
     rows-by-population count matrix."""
-    import non_local_detector.likelihoods.common as common
+    import non_local_detector.likelihoods.common.poisson as poisson
     import non_local_detector.likelihoods.sorted_spikes_diffusion as diffusion
 
     predict, encoding, time, position, spike_times = three_neuron_fit
@@ -1308,7 +1308,7 @@ def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypat
 
     monkeypatch.setattr(diffusion, "_spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
-    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
     blocked = predict(time, position, spike_times, **arguments)
     np.testing.assert_array_equal(blocked, unblocked)
     start, stop, _ = (slice(None) if rows is None else rows).indices(1000)

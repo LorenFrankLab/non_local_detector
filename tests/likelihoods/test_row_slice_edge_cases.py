@@ -35,16 +35,14 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import (
-    _CLUSTERLESS_ALGORITHMS,
-    common,
-)
+from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     select_spike_rows,
     select_spikes_in_rows,
+    spike_rows,
     sum_spikes_into_rows,
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
@@ -848,14 +846,14 @@ class TestShuffledSpikeOrder:
         zero-rate electrodes pass through this check.
         """
         order_cache = _SpikeTimeOrder() if prepared else None
-        check_order = common._spikes_are_ascending
+        check_order = spike_rows._spikes_are_ascending
         order_checks = []
 
         def tracked_order_check(spikes):
             order_checks.append(id(spikes))
             return check_order(spikes)
 
-        monkeypatch.setattr(common, "_spikes_are_ascending", tracked_order_check)
+        monkeypatch.setattr(spike_rows, "_spikes_are_ascending", tracked_order_check)
         predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
         time = edge_case_data["time"]
         spike_times, features = edge_case_data["spike_cases"]["mixed"]
@@ -1375,8 +1373,8 @@ def test_sharding_error_type_is_known_on_this_jax():
     moves it the ``ImportError`` guard leaves an empty tuple and every
     explicitly-sharded gather raises instead of falling back.
     """
-    assert common._JAX_SHARDING_ERRORS
-    assert all(issubclass(t, Exception) for t in common._JAX_SHARDING_ERRORS)
+    assert spike_rows._JAX_SHARDING_ERRORS
+    assert all(issubclass(t, Exception) for t in spike_rows._JAX_SHARDING_ERRORS)
 
 
 @pytest.mark.unit
@@ -1392,7 +1390,7 @@ def test_select_spike_rows_falls_back_to_a_host_copy_on_sharding_errors(
     the sharding error type from the device-side selection.
     """
     features = jnp.arange(10, dtype=jnp.float32).reshape(5, 2)
-    error = common._JAX_SHARDING_ERRORS[0]("simulated sharding refusal")
+    error = spike_rows._JAX_SHARDING_ERRORS[0]("simulated sharding refusal")
 
     def fail_selection(*args, **kwargs):
         raise error
