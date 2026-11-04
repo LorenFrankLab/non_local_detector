@@ -358,9 +358,9 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
         recorded["probabilities"].append(np.asarray(result[1]))
         return result
 
-    def spy_refit_encoding(weights):
+    def spy_refit_encoding(weights, encoding_fit_arguments):
         recorded["weights"].append(np.asarray(weights))
-        return original_refit_encoding(weights)
+        return original_refit_encoding(weights, encoding_fit_arguments)
 
     monkeypatch.setattr(detector, "_predict", spy_predict)
     monkeypatch.setattr(detector, "_refit_encoding_model", spy_refit_encoding)
@@ -531,9 +531,9 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     weights = []
     original = detector._refit_encoding_model
 
-    def spy(local_weights):
+    def spy(local_weights, encoding_fit_arguments):
         weights.append(np.asarray(local_weights))
-        return original(local_weights)
+        return original(local_weights, encoding_fit_arguments)
 
     monkeypatch.setattr(detector, "_refit_encoding_model", spy)
     detector.estimate_parameters(

@@ -56,9 +56,9 @@ def test_encoding_update_uses_local_observation_posterior(
         posterior_rows.append(result.dataset.acausal_state_probabilities.values)
         return result
 
-    def record_encoding(weights):
+    def record_encoding(weights, encoding_fit_arguments):
         encoding_weights.append(np.array(weights))
-        return original_refit_encoding(weights)
+        return original_refit_encoding(weights, encoding_fit_arguments)
 
     monkeypatch.setattr(model, "_predict", record_prediction)
     monkeypatch.setattr(model, "_checkpointed_e_step", record_checkpointed_e_step)
@@ -100,9 +100,9 @@ def test_encoding_update_skips_models_without_local_observations(monkeypatch):
     weights = []
     original_refit_encoding = model._refit_encoding_model
 
-    def record_encoding(local_weights):
+    def record_encoding(local_weights, encoding_fit_arguments):
         weights.append(local_weights)
-        return original_refit_encoding(local_weights)
+        return original_refit_encoding(local_weights, encoding_fit_arguments)
 
     monkeypatch.setattr(model, "_refit_encoding_model", record_encoding)
     model.estimate_parameters(

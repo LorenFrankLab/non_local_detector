@@ -821,6 +821,9 @@ class _EMSettings:
     interior_continuous_transition : np.ndarray or None
         Dense EM with estimated transitions: the continuous transition over
         the interior state bins.
+    encoding_fit_arguments : dict or None
+        Keyword arguments of ``_fit_encoding_model`` that the encoding M-step
+        refits with, besides the posterior weights.
     """
 
     time_edges: np.ndarray
@@ -856,6 +859,7 @@ class _EMSettings:
     free_rows: np.ndarray | None
     interior_state_ind: np.ndarray | None
     interior_continuous_transition: np.ndarray | None
+    encoding_fit_arguments: dict[str, Any] | None
 
 
 @dataclass
@@ -4225,44 +4229,40 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                     _structured_em_options(chunk_size, result_path, replay_cache_bytes)
                 ),
             )
-            self._encoding_model_data = {
-                "position_time": position_time,
-                "position": position,
-                **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
-                "is_training": inputs.is_training,
-                "encoding_group_labels": inputs.encoding_group_labels,
-                "environment_labels": inputs.environment_labels,
-                "encoding_time_range": encoding_time_range,
-                "valid_position_intervals": valid_position_intervals,
-            }
-            try:
-                return self._run_em(
-                    time_edges=time_edges,
-                    log_likelihood_args=(
-                        position_time,
-                        position,
-                        *spike_data,
-                    ),
-                    is_missing=is_missing,
-                    estimate_initial_conditions=estimate_initial_conditions,
-                    estimate_discrete_transition=estimate_discrete_transition,
-                    estimate_encoding_model=estimate_encoding_model,
-                    max_iter=max_iter,
-                    tolerance=tolerance,
-                    cache_likelihood=cache_likelihood,
-                    store_log_likelihood=store_log_likelihood,
-                    n_chunks=n_chunks,
-                    return_outputs=return_outputs,
-                    save_log_likelihood_to_results=save_log_likelihood_to_results,
-                    min_encoding_local_mass=min_encoding_local_mass,
-                    min_encoding_local_ess=min_encoding_local_ess,
-                    chunk_size=chunk_size,
-                    result_path=result_path,
-                    replay_cache_bytes=replay_cache_bytes,
-                )
-            finally:
-                # Drop the references to the caller's arrays.
-                del self._encoding_model_data
+            return self._run_em(
+                time_edges=time_edges,
+                log_likelihood_args=(
+                    position_time,
+                    position,
+                    *spike_data,
+                ),
+                is_missing=is_missing,
+                estimate_initial_conditions=estimate_initial_conditions,
+                estimate_discrete_transition=estimate_discrete_transition,
+                estimate_encoding_model=estimate_encoding_model,
+                max_iter=max_iter,
+                tolerance=tolerance,
+                cache_likelihood=cache_likelihood,
+                store_log_likelihood=store_log_likelihood,
+                n_chunks=n_chunks,
+                return_outputs=return_outputs,
+                save_log_likelihood_to_results=save_log_likelihood_to_results,
+                min_encoding_local_mass=min_encoding_local_mass,
+                min_encoding_local_ess=min_encoding_local_ess,
+                chunk_size=chunk_size,
+                result_path=result_path,
+                replay_cache_bytes=replay_cache_bytes,
+                encoding_fit_arguments={
+                    "position_time": position_time,
+                    "position": position,
+                    **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
+                    "is_training": inputs.is_training,
+                    "encoding_group_labels": inputs.encoding_group_labels,
+                    "environment_labels": inputs.environment_labels,
+                    "encoding_time_range": encoding_time_range,
+                    "valid_position_intervals": valid_position_intervals,
+                },
+            )
 
     def _most_likely_spike_sequence(
         self,
@@ -4813,14 +4813,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             self.__dict__.update(detector_state)
             raise
 
-    def _refit_encoding_model(self, weights: np.ndarray) -> None:
+    def _refit_encoding_model(
+        self, weights: np.ndarray, encoding_fit_arguments: dict[str, Any]
+    ) -> None:
         """EM M-step: refit the encoding model with posterior ``weights``.
 
         Parameters
         ----------
         weights : np.ndarray, shape (n_time_position,)
+        encoding_fit_arguments : dict
+            The other keyword arguments of ``_fit_encoding_model``: the
+            estimation's position, spike data, training mask and labels.
         """
-        self._fit_encoding_model(**self._encoding_model_data, weights=weights)
+        self._fit_encoding_model(**encoding_fit_arguments, weights=weights)
 
     def _invalidate_stored_log_likelihood(self) -> None:
         """Drop ``log_likelihood_``, which no longer describes this model.
@@ -5010,6 +5015,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
         replay_cache_bytes: int | None = None,
+        encoding_fit_arguments: dict[str, Any] | None = None,
     ) -> xr.Dataset:
         """EM engine: estimate the parameters from a likelihood's arguments.
 
@@ -5118,6 +5124,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             and evaluate them again. Chunks beyond the budget are recomputed.
             By default None, which uses 16 GiB or half the available host
             memory (counting a container's limit), whichever is smaller.
+        encoding_fit_arguments : dict, optional
+            Keyword arguments of ``_fit_encoding_model``, except ``weights``,
+            that the encoding M-step refits with. Required with
+            ``estimate_encoding_model=True``; the detectors'
+            ``estimate_parameters`` pass their data. By default None.
 
         Returns
         -------
@@ -5159,6 +5170,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             chunk_size=chunk_size,
             result_path=result_path,
             replay_cache_bytes=replay_cache_bytes,
+            encoding_fit_arguments=encoding_fit_arguments,
         )
         self._em_reset_fitted_attributes()
         state = _EMState()
@@ -5242,6 +5254,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         chunk_size: int | None,
         result_path: str | Path | None,
         replay_cache_bytes: int | None,
+        encoding_fit_arguments: dict[str, Any] | None,
     ) -> _EMSettings:
         """Validate ``_run_em``'s arguments and resolve its options.
 
@@ -5410,6 +5423,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             free_rows=free_rows,
             interior_state_ind=interior_state_ind,
             interior_continuous_transition=interior_continuous_transition,
+            encoding_fit_arguments=encoding_fit_arguments,
         )
 
     def _em_reset_fitted_attributes(self) -> None:
@@ -5551,6 +5565,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         ]
 
         if local_state_indices:
+            # The detectors' estimate_parameters always pass their data.
+            assert settings.encoding_fit_arguments is not None
             logger.info("Estimating encoding model...")
             local_state_weights = e_step.acausal_state_probabilities[
                 :, local_state_indices
@@ -5560,7 +5576,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             # centers even when the counts match: equal lengths do not
             # mean equal coordinates. Samples outside the decoded edges
             # have no posterior and get no weight.
-            position_time = self._encoding_model_data.get("position_time")
+            position_time = settings.encoding_fit_arguments.get("position_time")
             if position_time is not None:
                 position_time = np.asarray(position_time)
                 local_state_weights = np.where(
@@ -5599,7 +5615,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 # expected complete-data log-likelihood and can break the
                 # EM monotonicity guarantee. The monotonicity-violation /
                 # final-E-step warnings now surface this when it occurs.
-                self._refit_encoding_model(local_state_weights)
+                self._refit_encoding_model(
+                    local_state_weights, settings.encoding_fit_arguments
+                )
 
                 # The encoding model changed, so the likelihood
                 # computed from the previous one is stale.
@@ -6478,7 +6496,9 @@ class ClusterlessDetector(_DetectorBase):
         # ``_resolve_clusterless_algorithm_params`` at fit time.
         self.clusterless_algorithm_params = clusterless_algorithm_params
 
-    def _refit_encoding_model(self, weights: np.ndarray) -> None:
+    def _refit_encoding_model(
+        self, weights: np.ndarray, encoding_fit_arguments: dict[str, Any]
+    ) -> None:
         """EM M-step: refit the encoding model with posterior ``weights``.
 
         Posterior weights update the encoding process, not the
@@ -6487,9 +6507,11 @@ class ClusterlessDetector(_DetectorBase):
         Parameters
         ----------
         weights : np.ndarray, shape (n_time_position,)
+        encoding_fit_arguments : dict
+            The other keyword arguments of ``_fit_encoding_model``.
         """
         self._fit_encoding_model(
-            **self._encoding_model_data, weights=weights, refit_mark_reference=False
+            **encoding_fit_arguments, weights=weights, refit_mark_reference=False
         )
 
     def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:

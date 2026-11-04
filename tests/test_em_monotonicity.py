@@ -232,7 +232,7 @@ class TestEncodingUpdateGuards:
         monkeypatch.setattr(
             detector,
             "_refit_encoding_model",
-            lambda weights: local_masses.append(float(np.sum(weights))),
+            lambda weights, _: local_masses.append(float(np.sum(weights))),
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)  # EM stops at max_iter
