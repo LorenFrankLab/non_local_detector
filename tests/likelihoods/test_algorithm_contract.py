@@ -54,6 +54,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from non_local_detector.model_format import read_model_summary
 from tests.models._helpers import ALGORITHMS, _decoder, type_violations
 
 pytestmark = pytest.mark.unit
@@ -377,6 +378,11 @@ def test_values_saved_with_their_old_types_load_unified(tmp_path, recording, alg
             assert model[name].dtype == fitted[name].dtype, name
             np.testing.assert_array_equal(model[name], fitted[name])
         np.testing.assert_array_equal(log_likelihood(loaded), expected)
+    (summary,) = read_model_summary(tmp_path / "model.nld")["encoding_models"]
+    for name in shared:
+        if name in summary:  # the summary omits large arrays
+            assert type(summary[name]) is np.ndarray, name
+            np.testing.assert_array_equal(summary[name], fitted[name])
 
 
 def test_type_check_reports_a_wrong_value():
