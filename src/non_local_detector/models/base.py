@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from numpy.typing import ArrayLike
-from patsy import DesignMatrix, build_design_matrices
+from patsy import DesignMatrix
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
@@ -65,7 +65,9 @@ from non_local_detector.core import (
 from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _check_initial_discrete_transition,
+    _check_transition_formula,
     _covariate_transition_covariance,
+    _design_on,
     _discrete_transition_from_statistics,
     _discrete_transition_statistics,
     _max_transition_change,
@@ -3209,11 +3211,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
         if covariate_data is not None and (
             self.discrete_transition_design_matrix_ is None
         ):
-            self.discrete_transition_design_matrix_ = (
-                self.discrete_transition_type.make_state_transition(
-                    covariate_data
-                ).design_matrix
-            )
+            try:
+                _check_transition_formula(self.discrete_transition_type)
+            except ValidationError as error:
+                # Rebuilding the design would evaluate the formula. The
+                # detector still loads for inspection; predict checks the
+                # formula again and refuses to decode.
+                warnings.warn(
+                    "The detector's transition formula is outside the allowed "
+                    "formula grammar, so its design matrix was not rebuilt. It "
+                    "can be inspected, but decoding with covariates is refused."
+                    f"\n{error}",
+                    UserWarning,
+                    stacklevel=user_stacklevel(),
+                )
+            else:
+                self.discrete_transition_design_matrix_ = (
+                    self.discrete_transition_type.make_state_transition(
+                        covariate_data
+                    ).design_matrix
+                )
         # Detectors fitted before transition smoothing existed: no penalty
         # strengths and no covariance, so EM and intervals see an unsmoothed
         # fit that has not estimated its uncertainty.
@@ -3485,17 +3502,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                 msg = "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
                 raise ValueError(msg)
 
-            predict_matrix = build_design_matrices(
-                [discrete_transition_design_matrix.design_info],
-                covariate_data,
-            )[0]
+            if covariate_data is None:
+                msg = (
+                    "covariate_data is required to plot covariate-dependent "
+                    "transitions, e.g. {'speed': np.linspace(0, 60, 100)}."
+                )
+                raise ValueError(msg)
+            predict_matrix = _design_on(
+                discrete_transition_design_matrix, covariate_data
+            )
 
             n_states = len(state_names)
 
             # The coefficients are set together with the design matrix.
             assert discrete_transition_coefficients is not None
 
-            for covariate in covariate_data:  # type: ignore[union-attr]
+            for covariate in covariate_data:
                 fig, axes = plt.subplots(
                     1, n_states, sharex=True, constrained_layout=True, figsize=(10, 5)
                 )
@@ -3508,7 +3530,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
                         @ discrete_transition_coefficients[:, from_state_ind]
                     )
 
-                    ax.plot(covariate_data[covariate], from_local_transition)  # type: ignore[index]  # covariate_data is required on this path
+                    ax.plot(covariate_data[covariate], from_local_transition)
                     ax.set_xlabel(covariate)
                     ax.set_ylabel("Prob.")
                     if from_state_ind == n_states - 1:
@@ -4302,6 +4324,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):  # type: ignore[misc]  # sklearn is
             if self.discrete_transition_coefficients_ is None:
                 msg = "discrete_transition_coefficients_ is None but covariate data provided"
                 raise ValueError(msg)
+            # Also refuses a detector unpickled with a refused formula, whose
+            # design matrix was not rebuilt.
+            _check_transition_formula(self.discrete_transition_type)
             predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
