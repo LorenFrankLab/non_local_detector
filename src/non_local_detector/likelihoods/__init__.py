@@ -242,6 +242,15 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
 }
 
 
+# Fit parameters a detector sets from its own ``fit`` arguments. Each fit
+# accepts them for direct calls, but a detector passes it the encoding support
+# it built from them (``_encoding_support``), which the fit uses instead, so in
+# ``*_algorithm_params`` they would be ignored.
+_DETECTOR_FIT_PARAMETERS: frozenset[str] = frozenset(
+    {"encoding_time_range", "valid_position_intervals"}
+)
+
+
 def _resolve_fit_params(
     algorithms: Mapping[str, LikelihoodAlgorithm],
     algorithm: str,
@@ -271,10 +280,11 @@ def _resolve_fit_params(
     ------
     ValidationError
         If ``algorithm`` is not registered, or a key is not a fit parameter
-        the user may set: one with a default,
-        other than ``weights`` and the private ``_``-prefixed ones. The
-        detector supplies the fit's data, environment and weights itself. A
-        fit that takes ``**kwargs`` is not checked.
+        the user may set: one with a default, other than ``weights``, the
+        encoding-support parameters (``_DETECTOR_FIT_PARAMETERS``) and the
+        private ``_``-prefixed ones. The detector supplies the fit's data,
+        environment, weights and encoding support itself. A fit that takes
+        ``**kwargs`` is not checked for other names.
     """
     if algorithm not in algorithms:
         algorithm_name = params_name.removesuffix("_params")
@@ -286,6 +296,22 @@ def _resolve_fit_params(
         )
     record = algorithms[algorithm]
     resolved = dict(record.default_params if params is None else params)
+    if misplaced := sorted(set(resolved) & _DETECTOR_FIT_PARAMETERS):
+        msg = (
+            f"{', '.join(misplaced)} in {params_name} would be ignored: the "
+            "detector builds the encoding support from its own fit arguments "
+            "and passes that to the algorithm"
+        )
+        raise ValidationError(
+            msg,
+            got=", ".join(f"{name}={resolved[name]!r}" for name in misplaced),
+            hint=f"Remove it from {params_name} and pass it to the detector "
+            "instead: "
+            + "; ".join(
+                f"detector.fit(..., {name}={resolved[name]!r})" for name in misplaced
+            )
+            + " (estimate_parameters takes it too).",
+        )
     parameters = inspect.signature(record.fit).parameters
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return resolved  # a fit taking ``**kwargs`` accepts any name
@@ -294,6 +320,7 @@ def _resolve_fit_params(
         for name, parameter in parameters.items()
         if parameter.default is not inspect.Parameter.empty
         and name != "weights"
+        and name not in _DETECTOR_FIT_PARAMETERS
         and not name.startswith("_")
     ]
     unknown = sorted(set(resolved) - set(accepted))
