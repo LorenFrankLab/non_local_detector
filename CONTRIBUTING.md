@@ -89,7 +89,7 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 
 ## Saved-model format
 
-`save_model` writes the format of `non_local_detector.model_format`, and every later release must read the files earlier ones wrote. The stored names are the format: the file names of the detector's fitted state (`_STORED` in `model_format/_detector.py`), the fields each saved class stores (`model_format/_builtins.py`) and the `nld.<ClassName>` type names.
+`save_model` writes the format of `non_local_detector.model_format`, and every later release must read the files earlier ones wrote. The stored names are the format: the file names of the detector's fitted state (`_STORED` in `model_format/_detector.py`), the fields each saved class stores (`model_format/_builtins.py`) and the fixed `nld.` type names listed there.
 
 - Renaming or removing a stored name, or changing what a stored value means, needs a `FORMAT_VERSION` bump and an entry in `MIGRATIONS` that rewrites the stored documents and arrays of the previous version.
 - Adding an optional field needs no bump if the reader supplies its default when a file lacks it (`state.get(name, default)`).

@@ -8,8 +8,9 @@ dataclass listed here still has exactly these fields.
 from collections.abc import Callable
 from typing import Any
 
-# (class, stored fields, options); fields None means "not a dataclass".
-BuiltinType = tuple[type, tuple[str, ...] | None, dict[str, Any]]
+# (stored name, class, stored fields, options); fields None means "not a
+# dataclass".
+BuiltinType = tuple[str, type, tuple[str, ...] | None, dict[str, Any]]
 
 ENVIRONMENT_FIELDS = (
     "environment_name",
@@ -118,7 +119,11 @@ def builtin_types() -> list[BuiltinType]:
         TensorSplineBasis,
         TrackGraphBasis,
     )
-    from non_local_detector.models.base import ClusterlessDetector, SortedSpikesDetector
+    from non_local_detector.models.base import (
+        ClusterlessDetector,
+        SortedSpikesDetector,
+        _DetectorBase,
+    )
     from non_local_detector.observation_models import ObservationModel
 
     gmm_init = (
@@ -145,15 +150,54 @@ def builtin_types() -> list[BuiltinType]:
         "n_iter_",
         "lower_bound_",
     )
-    detectors: list[BuiltinType] = [
-        (cls, None, {})
-        for cls in (
-            SortedSpikesDetector,
-            ClusterlessDetector,
-            *(getattr(models, name) for name in models.__all__),
-        )
+    # The stored type name of each class: part of the format, so written out
+    # rather than derived from the class name, which a rename would change.
+    names: dict[type, str] = {
+        Environment: "nld.Environment",
+        ObservationModel: "nld.ObservationModel",
+        UniformInitialConditions: "nld.UniformInitialConditions",
+        RandomWalk: "nld.RandomWalk",
+        Uniform: "nld.Uniform",
+        Identity: "nld.Identity",
+        EmpiricalMovement: "nld.EmpiricalMovement",
+        RandomWalkDirection1: "nld.RandomWalkDirection1",
+        RandomWalkDirection2: "nld.RandomWalkDirection2",
+        Discrete: "nld.Discrete",
+        DiscreteStationaryDiagonal: "nld.DiscreteStationaryDiagonal",
+        DiscreteStationaryCustom: "nld.DiscreteStationaryCustom",
+        DiscreteNonStationaryDiagonal: "nld.DiscreteNonStationaryDiagonal",
+        DiscreteNonStationaryCustom: "nld.DiscreteNonStationaryCustom",
+        KDEModel: "nld.KDEModel",
+        GaussianMixtureModel: "nld.GaussianMixtureModel",
+        MarkMixture: "nld.MarkMixture",
+        MarkReference: "nld.MarkReference",
+        TrackGraphBasis: "nld.TrackGraphBasis",
+        TensorSplineBasis: "nld.TensorSplineBasis",
+        SortedSpikesDetector: "nld.SortedSpikesDetector",
+        ClusterlessDetector: "nld.ClusterlessDetector",
+        models.NonLocalSortedSpikesDetector: "nld.NonLocalSortedSpikesDetector",
+        models.NonLocalClusterlessDetector: "nld.NonLocalClusterlessDetector",
+        models.ContFragSortedSpikesClassifier: "nld.ContFragSortedSpikesClassifier",
+        models.ContFragClusterlessClassifier: "nld.ContFragClusterlessClassifier",
+        models.NoSpikeContFragSortedSpikesClassifier: (
+            "nld.NoSpikeContFragSortedSpikesClassifier"
+        ),
+        models.NoSpikeContFragClusterlessClassifier: (
+            "nld.NoSpikeContFragClusterlessClassifier"
+        ),
+        models.MultiEnvironmentSortedSpikesClassifier: (
+            "nld.MultiEnvironmentSortedSpikesClassifier"
+        ),
+        models.MultiEnvironmentClusterlessClassifier: (
+            "nld.MultiEnvironmentClusterlessClassifier"
+        ),
+        models.SortedSpikesDecoder: "nld.SortedSpikesDecoder",
+        models.ClusterlessDecoder: "nld.ClusterlessDecoder",
+    }
+    detectors: list[tuple[type, None, dict[str, Any]]] = [
+        (cls, None, {}) for cls in names if issubclass(cls, _DetectorBase)
     ]
-    return [
+    types: list[tuple[type, tuple[str, ...] | None, dict[str, Any]]] = [
         (Environment, ENVIRONMENT_FIELDS, {}),
         (
             ObservationModel,
@@ -252,3 +296,4 @@ def builtin_types() -> list[BuiltinType]:
         ),
         *detectors,
     ]
+    return [(names[cls], cls, fields, options) for cls, fields, options in types]

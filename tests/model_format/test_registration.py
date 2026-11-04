@@ -173,7 +173,7 @@ def test_register_type_needs_functions_for_a_plain_class():
 
 @pytest.mark.parametrize(
     ("cls", "fields"),
-    [(cls, fields) for cls, fields, _ in builtin_types() if fields is not None],
+    [(cls, fields) for _, cls, fields, _ in builtin_types() if fields is not None],
     ids=lambda value: getattr(value, "__name__", ""),
 )
 def test_builtin_types_store_every_dataclass_field(cls, fields):
@@ -184,3 +184,52 @@ def test_builtin_types_store_every_dataclass_field(cls, fields):
         for field in dataclasses.fields(cls)
         if field.init or field.name.endswith("_") or field.name == "design_fingerprint"
     }
+
+
+def test_builtin_type_names_are_fixed():
+    """The stored names are the format: renaming a class must not change
+    them, and changing this list is a format change."""
+    assert {name: cls.__name__ for name, cls, _, _ in builtin_types()} == {
+        f"nld.{name}": name
+        for name in (
+            "Environment",
+            "ObservationModel",
+            "UniformInitialConditions",
+            "RandomWalk",
+            "Uniform",
+            "Identity",
+            "EmpiricalMovement",
+            "RandomWalkDirection1",
+            "RandomWalkDirection2",
+            "Discrete",
+            "DiscreteStationaryDiagonal",
+            "DiscreteStationaryCustom",
+            "DiscreteNonStationaryDiagonal",
+            "DiscreteNonStationaryCustom",
+            "KDEModel",
+            "GaussianMixtureModel",
+            "MarkMixture",
+            "MarkReference",
+            "TrackGraphBasis",
+            "TensorSplineBasis",
+            "SortedSpikesDetector",
+            "ClusterlessDetector",
+            "NonLocalSortedSpikesDetector",
+            "NonLocalClusterlessDetector",
+            "ContFragSortedSpikesClassifier",
+            "ContFragClusterlessClassifier",
+            "NoSpikeContFragSortedSpikesClassifier",
+            "NoSpikeContFragClusterlessClassifier",
+            "MultiEnvironmentSortedSpikesClassifier",
+            "MultiEnvironmentClusterlessClassifier",
+            "SortedSpikesDecoder",
+            "ClusterlessDecoder",
+        )
+    }
+
+
+def test_every_ready_made_model_is_registered():
+    from non_local_detector import models
+
+    registered = set(registered_types().values())
+    assert {getattr(models, name) for name in models.__all__} <= registered

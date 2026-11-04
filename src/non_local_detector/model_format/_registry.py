@@ -3,7 +3,7 @@
 A saved model names each object it holds by a stable type name, never by its
 module or class. Loading resolves names only through this registry, so a file
 cannot make the reader import or call anything else. The package registers its
-own types as ``nld.<ClassName>`` on first use; other packages register theirs
+own types under fixed ``nld.`` names on first use; other packages register theirs
 with :func:`register_type`.
 """
 
@@ -287,10 +287,10 @@ def _register_builtins() -> None:
     _BUILTINS_REGISTERED = True
     from non_local_detector.model_format._builtins import builtin_types
 
-    for cls, fields, options in builtin_types():
+    for name, cls, fields, options in builtin_types():
         _register(
             cls,
-            _RESERVED_PREFIX + cls.__name__,
+            name,
             to_state=options.get("to_state"),
             from_state=options.get("from_state"),
             owner=_PACKAGE,
