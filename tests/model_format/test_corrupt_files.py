@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import DataError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.model_format import _registry, register_type
 from non_local_detector.model_format._codec import Decoder
 from tests.model_format.conftest import algorithm_params
@@ -91,3 +91,41 @@ def test_a_registered_types_own_constructor_error_is_chained(sorted_recording):
     finally:
         _registry._BY_NAME.pop("testlab.Strict", None)
         _registry._BY_CLASS.pop(Strict, None)
+
+
+def _edit_state(path, edit):
+    _edit_json(path, "state.json", edit)
+
+
+@pytest.mark.parametrize(
+    ("document", "edit"),
+    [
+        (
+            "state.json",
+            lambda s: s["encoding_models"][0].pop("environment_name"),
+        ),
+        ("state.json", lambda s: s.update(encoding_models={"a": 1})),
+        ("manifest.json", lambda s: s.pop("detector_type")),
+        ("state.json", lambda s: s.update(fingerprints=5)),
+        ("state.json", lambda s: s.update(fingerprints={})),
+        ("state.json", lambda s: s["fingerprints"].pop("continuous_transitions")),
+        (
+            "state.json",
+            lambda s: s["fingerprints"].update(environments=[]),
+        ),
+    ],
+    ids=[
+        "encoding_entry_without_name",
+        "encoding_models_not_entries",
+        "manifest_without_type",
+        "fingerprints_scalar",
+        "fingerprints_empty",
+        "fingerprints_without_transitions",
+        "fingerprints_wrong_environment_count",
+    ],
+)
+def test_edited_documents_are_data_errors(saved, document, edit):
+    _edit_json(saved, document, edit)
+
+    with pytest.raises(DataError, match="corrupt or was edited"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)

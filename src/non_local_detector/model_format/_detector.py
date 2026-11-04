@@ -60,6 +60,7 @@ from non_local_detector.continuous_state_transitions import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
     DataError,
+    NonLocalDetectorError,
     NotFittedError,
     ParameterWarning,
     ValidationError,
@@ -883,7 +884,42 @@ def detector_from_stored(
     DataError
         If the file is corrupt or was edited: a configuration key the
         detector does not take, missing fitted state, or a malformed entry.
+        Built-in ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError``
+        from reading the file become this, chained to the original; package
+        errors pass through unchanged.
     """
+    manifest = stored.manifest
+    if "detector_type" not in manifest:
+        msg = "The saved model's manifest has no 'detector_type'"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    try:
+        return _build_detector(stored, trust_formulas=trust_formulas)
+    except NonLocalDetectorError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        msg = f"Cannot rebuild the saved model ({type(error).__name__}: {error})"
+        raise DataError(msg, hint=_CORRUPT_HINT) from error
+
+
+def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
+    """Raise ``DataError`` unless ``fingerprints`` has the saved structure."""
+    ok = (
+        isinstance(fingerprints, dict)
+        and isinstance(fingerprints.get("environments"), list)
+        and len(fingerprints["environments"]) == n_environments
+        and isinstance(fingerprints.get("continuous_transitions"), list)
+    )
+    if not ok:
+        msg = "The saved model's fingerprints are malformed"
+        raise DataError(
+            msg,
+            expected=f"environments (one per environment, {n_environments}) "
+            "and continuous_transitions lists",
+            hint=_CORRUPT_HINT,
+        )
+
+
+def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorBase":
     manifest = stored.manifest
     spec = spec_for_name(manifest["detector_type"], manifest.get("detector_type_owner"))
     params = Decoder(stored.read_array).decode(stored.config)
@@ -915,13 +951,9 @@ def detector_from_stored(
         msg = f"The saved model is marked fitted but its state has no {missing}"
         raise DataError(msg, hint=_CORRUPT_HINT)
     decoder = Decoder(stored.read_array)
-    try:
-        environments = tuple(
-            _environment_from_state(entry, decoder) for entry in state["environments"]
-        )
-    except (KeyError, IndexError, TypeError) as error:
-        msg = f"Cannot rebuild the saved model's environments ({type(error).__name__}: {error})"
-        raise DataError(msg, hint=_CORRUPT_HINT) from error
+    environments = tuple(
+        _environment_from_state(entry, decoder) for entry in state["environments"]
+    )
     detector.environments_ = environments
     decoder.environments = {env.environment_name: env for env in environments}
     detector.encoding_model_ = {
@@ -939,6 +971,7 @@ def detector_from_stored(
     for name, attribute in _STORED:
         if name in values:
             setattr(detector, attribute, values[name])
+    _check_fingerprints(values["fingerprints"], len(environments))
     detector._initialize_state_index()
     _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
     blocks = {
