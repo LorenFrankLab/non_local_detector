@@ -20,6 +20,7 @@ import jax
 import numpy as np
 import xarray as xr
 
+import non_local_detector  # resolves load_model's return annotation
 from non_local_detector.discrete_state_transitions import (
     _row_smoothness,
     _smoothness_matrix,
@@ -29,6 +30,7 @@ from non_local_detector.models._results import label_checkpointed_result
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 
 if TYPE_CHECKING:
+    import non_local_detector.models.base
     from non_local_detector.models.base import _DetectorBase
 
 
@@ -160,7 +162,9 @@ class _PersistenceMixin:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     @staticmethod
-    def load_model(filename: str = "model.pkl") -> "_DetectorBase":
+    def load_model(
+        filename: str = "model.pkl",
+    ) -> "non_local_detector.models.base._DetectorBase":
         """
         Load the detector from a file.
 

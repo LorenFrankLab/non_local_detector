@@ -10,25 +10,40 @@ mixin.
 """
 
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from patsy import build_design_matrices
+from patsy import DesignMatrix, build_design_matrices
 
 from non_local_detector.discrete_state_transitions import centered_softmax_forward
 
-if TYPE_CHECKING:
-    from non_local_detector.models.base import _DetectorBase
+
+class _FittedDetector(Protocol):
+    """The fitted ``_DetectorBase`` attributes the plotting methods read.
+
+    A runtime class, so ``typing.get_type_hints`` resolves the methods'
+    ``self`` annotation.
+    """
+
+    state_names: list[str]
+    n_discrete_states_: int
+    state_ind_: np.ndarray
+    bin_sizes_: np.ndarray
+    initial_conditions_: np.ndarray
+    discrete_state_transitions_: np.ndarray
+    discrete_transition_coefficients_: np.ndarray | None
+    discrete_transition_design_matrix_: DesignMatrix | None
+    continuous_state_transitions_: Any
 
 
 class _PlottingMixin:
     """Plotting methods of ``_DetectorBase``."""
 
-    def plot_discrete_state_transition(  # type: ignore[misc]
-        self: "_DetectorBase",
+    def plot_discrete_state_transition(
+        self: _FittedDetector,
         cmap: str = "Oranges",
         ax: mpl.axes.Axes | None = None,
         convert_to_seconds: bool = False,
@@ -150,8 +165,8 @@ class _PlottingMixin:
                     ax.set_title(f"From {from_state}")
                 fig.suptitle(f"Predicted transitions: {covariate}")
 
-    def plot_continuous_state_transition(  # type: ignore[misc]
-        self: "_DetectorBase", figsize_scaling: float = 1.5, vmax: float = 0.3
+    def plot_continuous_state_transition(
+        self: _FittedDetector, figsize_scaling: float = 1.5, vmax: float = 0.3
     ) -> None:
         """
         Plot heatmap of continuous state transition matrices.
@@ -219,8 +234,8 @@ class _PlottingMixin:
         fig.supylabel("From State")
         fig.supxlabel("To State")
 
-    def plot_initial_conditions(  # type: ignore[misc]
-        self: "_DetectorBase", figsize_scaling: float = 1.5, vmax: float = 0.3
+    def plot_initial_conditions(
+        self: _FittedDetector, figsize_scaling: float = 1.5, vmax: float = 0.3
     ) -> None:
         """
         Plot heatmap of initial conditions.
