@@ -15,10 +15,8 @@ transitions.
 import abc
 import copy
 import inspect
-import json
-import pickle
 import warnings
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from logging import getLogger
@@ -70,7 +68,6 @@ from non_local_detector.likelihoods import (
     ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
     _execution_settings,
-    _record_legacy_encoding_algorithm,
     _resolve_fit_params,
 )
 from non_local_detector.likelihoods.common import (
@@ -132,12 +129,18 @@ from non_local_detector.models._input_validation import (
     _validate_penalty_params,  # noqa: F401 -- importable from base
     _validate_transition_arguments,
 )
+from non_local_detector.models._persistence import (
+    _INTEGER_DTYPES_ATTR,  # noqa: F401 -- importable from base
+    _PARAMETERS_BEFORE_THEY_EXISTED,  # noqa: F401 -- importable from base
+    _ModelUnpickler,  # noqa: F401 -- importable from base
+    _PersistenceMixin,
+    _upgrade_saved_state,
+)
 from non_local_detector.models._plotting import _PlottingMixin
 from non_local_detector.models._results import (
     convert_results_to_xarray,
     convert_seq_to_df,
     has_place_bins,
-    label_checkpointed_result,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -338,46 +341,6 @@ def _custom_likelihood_callback(
 
     row_slice_aware(chunk_callback)  # marks the function in place
     return chunk_callback
-
-
-# Dataset attribute in which ``save_results`` records integer dtypes.
-_INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
-
-# Constructor parameters added in 2026-04, with the value that reproduces how
-# a detector saved before then was fitted: the fixed-count Dirichlet prior,
-# no frozen discrete-transition rows (No-Spike was re-estimated too), and the
-# single-bin Local state.
-_PARAMETERS_BEFORE_THEY_EXISTED: dict[str, object] = {
-    "discrete_transition_prior_weight": 0.0,
-    "frozen_discrete_transition_rows": None,
-    "local_position_std": None,
-}
-
-
-class _ModelUnpickler(pickle.Unpickler):
-    """Unpickle a detector, including one saved with JAX 0.4.30 or earlier.
-
-    Those JAX releases pickled each array's abstract value with a
-    ``named_shape`` entry, which later releases no longer accept, so the
-    detectors of the non_local_detector 0.6 releases that resolved to them
-    raised ``TypeError`` on load. The entry is dropped; JAX no longer has
-    named shapes.
-    """
-
-    def find_class(self, module: str, name: str) -> Any:
-        found = super().find_class(module, name)
-        if (module, name) != ("jax._src.array", "_reconstruct_array"):
-            return found
-
-        def reconstruct_array(*args: Any, **kwargs: Any) -> jax.Array:
-            # (fun, args, arr_state, aval_state) in the JAX releases so far;
-            # anything else passes through unchanged.
-            if len(args) == 4 and isinstance(args[3], dict):
-                aval_state = {k: v for k, v in args[3].items() if k != "named_shape"}
-                args = (*args[:3], aval_state)
-            return cast("jax.Array", found(*args, **kwargs))
-
-        return reconstruct_array
 
 
 def _missing_bins(
@@ -664,6 +627,7 @@ class _DetectorBase(
     _CheckpointedPredictionMixin,
     _EMMixin,
     _PlottingMixin,
+    _PersistenceMixin,
     BaseEstimator,  # type: ignore[misc]  # sklearn is untyped (BaseEstimator is Any)
     abc.ABC,
 ):
@@ -1606,61 +1570,7 @@ class _DetectorBase(
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
-        # Constructor parameters added after a detector was saved: the values
-        # under which it was fitted, so it prints and reports get_params.
-        for name, value in _PARAMETERS_BEFORE_THEY_EXISTED.items():
-            if name not in state:
-                setattr(self, name, value)
-        # Detectors saved after a prediction carry its degenerate bins, which
-        # decoding used to record on the detector; they describe that
-        # recording, not the model.
-        self.__dict__.pop("_degenerate_timesteps_", None)
-        covariate_data = state.get("_discrete_transition_covariate_data_")
-        if covariate_data is not None and (
-            self.discrete_transition_design_matrix_ is None
-        ):
-            self.discrete_transition_design_matrix_ = (
-                self.discrete_transition_type.make_state_transition(
-                    covariate_data
-                ).design_matrix
-            )
-        # Detectors fitted before transition smoothing existed: no penalty
-        # strengths and no covariance, so EM and intervals see an unsmoothed
-        # fit that has not estimated its uncertainty.
-        if "discrete_transition_coefficient_covariance_" not in state:
-            self.discrete_transition_coefficient_covariance_ = None
-        if "discrete_transition_smoothness_matrix_" not in state:
-            design = getattr(self, "discrete_transition_design_matrix_", None)
-            if design is None:
-                self.discrete_transition_smoothness_matrix_ = None
-                self.discrete_transition_smoothness_ = None
-            else:
-                penalties = _smoothness_matrix(design.design_info)
-                self.discrete_transition_smoothness_matrix_ = penalties
-                # The design matrix is only set together with the coefficients.
-                assert self.discrete_transition_coefficients_ is not None
-                self.discrete_transition_smoothness_ = _row_smoothness(
-                    0.0,
-                    None,
-                    penalties,
-                    self.discrete_transition_coefficients_.shape[1],
-                )[0]
-        # Detectors fitted before ``environments_`` existed kept the fitted
-        # environments in ``environments``. They stay there, where code that
-        # inspects old models reads them, and ``environments_`` is the same
-        # tuple; only a new fit splits configuration from fitted copies. Those
-        # releases stored a list, which the constructor (and so ``clone``)
-        # turns into a tuple.
-        if "environments_" not in state and any(
-            env._is_fitted for env in self.environments
-        ):
-            self.environments = tuple(self.environments)
-            self.environments_ = self.environments
-        # Encoding models fitted before each recorded its algorithm.
-        encoding_model = state.get("encoding_model_")
-        if isinstance(encoding_model, Mapping):
-            for entry in encoding_model.values():
-                _record_legacy_encoding_algorithm(entry)
+        _upgrade_saved_state(self, state)
 
     def _initialize_discrete_state_transition(
         self, covariate_data: pd.DataFrame | dict[str, Any] | None = None
@@ -3071,167 +2981,6 @@ class _DetectorBase(
             If ``start`` or ``stop`` is not finite, or ``stop <= start``.
         """
         return calculate_time_edges(time_range, self.sampling_frequency, trim=trim)
-
-    def save_model(self, filename: str = "model.pkl") -> None:
-        """
-        Save the detector to a pickled file.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Filename to save the model, by default "model.pkl".
-        """
-        with Path(filename).open("wb") as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    @staticmethod
-    def load_model(filename: str = "model.pkl") -> "_DetectorBase":
-        """
-        Load the detector from a file.
-
-        Detectors saved by earlier versions load for inspection, including
-        those pickled with JAX 0.4.30 or earlier. Decoding with one fitted
-        before rates were fitted in Hz (the 0.6 releases) raises
-        ``ValidationError`` asking for a refit.
-
-        .. warning::
-
-            Only load models from trusted sources. Pickle files can execute
-            arbitrary code during deserialization.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Filename to load the model from, by default "model.pkl".
-
-        Returns
-        -------
-        _DetectorBase
-            Loaded detector instance
-        """
-        with Path(filename).open("rb") as f:
-            return cast("_DetectorBase", _ModelUnpickler(f).load())
-
-    @staticmethod
-    def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
-        """
-        Save the results to a netCDF file.
-
-        ``state_bins`` is a MultiIndex, which netCDF does not support, so it
-        is converted before saving. Boolean attributes are stored as integers
-        and the internal ``_native_metadata`` attribute is dropped. The dtype
-        of each integer variable and coordinate is recorded so that
-        ``load_results`` restores it: netCDF3, written when neither netCDF4
-        nor h5netcdf is installed, stores int64 as int32.
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Decoding results.
-        filename : str, optional
-            Name to save, by default "results.nc".
-        """
-        export = (
-            results.reset_index("state_bins")
-            if "state_bins" in results.indexes
-            else results.copy(deep=False)
-        )
-        export.attrs = {
-            name: int(value) if isinstance(value, (bool, np.bool_)) else value
-            for name, value in export.attrs.items()
-            if name != "_native_metadata"
-        }
-        export.attrs[_INTEGER_DTYPES_ATTR] = json.dumps(
-            {
-                str(name): variable.dtype.name
-                for name, variable in export.variables.items()
-                if variable.dtype.kind in "iu"
-            }
-        )
-        export.to_netcdf(filename)
-
-    @staticmethod
-    def load_results(
-        filename: str | Path = "results.nc",
-        *,
-        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
-    ) -> xr.Dataset:
-        """
-        Load results saved by ``save_results`` or a checkpointed result_path.
-
-        A netCDF file is read lazily and gets its ``state_bins`` MultiIndex
-        back and its integer variables and coordinates the dtypes they were
-        saved with; closing the returned dataset closes the file. A directory
-        is opened as a checkpointed result store with lazy arrays.
-
-        Parameters
-        ----------
-        filename : str or Path, optional
-            A netCDF file or checkpointed result directory, by default
-            "results.nc".
-        max_read_bytes : int, optional
-            Maximum bytes in one explicit read of a result directory's lazy
-            arrays, by default 512 MiB. Ignored for netCDF files.
-
-        Returns
-        -------
-        xr.Dataset
-            Decoding results
-        """
-        if Path(filename).is_dir():
-            from non_local_detector.result_store import open_result_store
-
-            results = open_result_store(filename, max_read_bytes=max_read_bytes)
-            metadata = results.attrs.get("_native_metadata")
-            if metadata:
-                metadata = {**metadata, "max_read_bytes": max_read_bytes}
-                return label_checkpointed_result(results, metadata)
-            return results
-        opened = xr.open_dataset(filename)
-        results = opened
-        if _INTEGER_DTYPES_ATTR in results.attrs:
-            integer_dtypes = json.loads(results.attrs.pop(_INTEGER_DTYPES_ATTR))
-        else:
-            # Files saved before the dtypes were recorded: restore state_ind.
-            integer_dtypes = {"state_ind": np.dtype(int).name}
-        # Only a still-integer variable is restored: one edited to another
-        # dtype after saving (say, float with NaN) keeps its values.
-        restored = {
-            name: results.variables[name].astype(dtype)
-            for name, dtype in integer_dtypes.items()
-            if name in results.variables
-            and results.variables[name].dtype.kind in "iu"
-            and results.variables[name].dtype != dtype
-        }
-        results = results.assign_coords(
-            {name: value for name, value in restored.items() if name in results.coords}
-        ).assign(
-            {
-                name: value
-                for name, value in restored.items()
-                if name in results.data_vars
-            }
-        )
-        if "state_bins" in results.dims:
-            if "state_ind" in results.dims:
-                # Earlier versions saved state_ind on a dimension of its own.
-                results = results.drop_vars("state_ind").assign_coords(
-                    state_ind=("state_bins", results["state_ind"].values)
-                )
-            # Scalar state/environment coordinates are also attached to this
-            # array, but only the original one-dimensional levels form its
-            # spatial index; state_ind is a plain coordinate along it.
-            coord_names = [
-                name
-                for name, coordinate in results.coords.items()
-                if name not in {"state_bins", "state_ind"}
-                and coordinate.dims == ("state_bins",)
-            ]
-            results = results.set_index(state_bins=coord_names)
-        # The transformations above drop the file's close handle; closing the
-        # returned results (or leaving a ``with`` block) must close the file.
-        results.set_close(opened.close)
-        return results
 
     def copy(self) -> "_DetectorBase":
         """
