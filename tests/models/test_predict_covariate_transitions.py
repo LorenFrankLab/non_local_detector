@@ -179,16 +179,17 @@ def test_decoding_covariate_transitions_requires_covariates(
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_most_likely_sequence_uses_its_covariates(checkpoint_recording, family):
     """``most_likely_sequence`` evaluates the transitions on the covariates it
-    is given, at any number of decode bins."""
+    is given: the same spikes decode to other states at another speed."""
     model, _, predict = _covariate_model(checkpoint_recording, family)
     n_decode = len(predict["time_edges"]) - 1
-    sequences = [
+    still, moving = (
         model.most_likely_sequence(
             **predict, discrete_transition_covariate_data={"speed": speed}
         )
         for speed in (np.zeros(n_decode), np.full(n_decode, 3.0))
-    ]
-    assert len(sequences[0]) == n_decode
+    )
+    assert len(still) == len(moving) == n_decode
+    assert np.any(still["state"].to_numpy() != moving["state"].to_numpy())
     path = model._run_viterbi
     calls = []
 
