@@ -806,6 +806,68 @@ class TestViterbiDegenerateTimestepWarning:
         assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
 
 
+def _decode_with_log_likelihoods(path, log_likes):
+    """Run one decoding path on a two-state stationary HMM."""
+    init = np.array([0.5, 0.5])
+    trans = np.array([[0.9, 0.1], [0.1, 0.9]])
+    n_time = log_likes.shape[0]
+    if path == "filter":
+        filter(init, trans, log_likes)
+    elif path == "filter_covariate":
+        filter_covariate_dependent(
+            init,
+            np.broadcast_to(trans, (n_time, 2, 2)),
+            np.eye(2),
+            np.array([0, 1]),
+            log_likes,
+        )
+    elif path == "chunked_filter_smoother":
+        chunked_filter_smoother(
+            time=np.arange(float(n_time)),
+            state_ind=np.array([0, 1]),
+            initial_distribution=init,
+            transition_matrix=trans,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            n_chunks=2,
+            log_likelihoods=log_likes,
+        )
+    else:
+        most_likely_sequence(
+            time=np.arange(n_time),
+            initial_distribution=init,
+            transition_matrix=trans,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likes,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    [
+        "filter",
+        "filter_covariate",
+        "chunked_filter_smoother",
+        "most_likely_sequence",
+    ],
+)
+def test_positive_infinite_log_likelihood_warns(path, caplog):
+    """A +inf log likelihood is reported like a NaN one, not passed silently.
+
+    ``log_likelihood - max`` is ``inf - inf = NaN`` at that step, so the
+    posterior is NaN from there on (and the Viterbi path is undefined); the
+    step is counted with the NaN steps.
+    """
+    log_likes = np.array([[0.0, -1.0], [np.inf, 0.0], [0.0, -1.0], [0.0, -1.0]])
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        _decode_with_log_likelihoods(path, log_likes)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("1/4 time step(s) with NaN or +inf" in m for m in messages), messages
+    assert not any("all-impossible" in m for m in messages), messages
+
+
 @pytest.mark.unit
 class TestFilterMarginalUnderflowWarning:
     """A -inf marginal with no all-(-inf) step (support mismatch / underflow)

@@ -259,7 +259,8 @@ class CheckpointedResult:
         Log marginal likelihood of the whole recording.
     diagnostics : dict
         Whole-recording diagnostics, such as counts and indices of degenerate
-        and NaN rows and the number of likelihood evaluations.
+        and NaN rows (a row with a ``NaN`` or ``+inf`` log likelihood) and the
+        number of likelihood evaluations.
     result_path : Path or None
         Directory of the disk result store, or None for an in-memory result.
     first_smoothed : np.ndarray or None

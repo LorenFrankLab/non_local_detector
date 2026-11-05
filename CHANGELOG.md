@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Transition estimates and HMM inputs that gave wrong results silently
+
+- **Fixed:** a `+inf` log likelihood is reported like a NaN one. `filter`, `filter_covariate_dependent`, `chunked_filter_smoother`, its covariate-dependent variant, `most_likely_sequence`, its covariate-dependent variant and `checkpointed_forward_backward` counted only NaN and all-`-inf` time steps, so a `+inf` (which normalizing the step turns into `inf - inf = NaN`) made the marginal log likelihood and every later posterior row NaN, or the Viterbi path arbitrary, with no warning. The NaN warning now counts steps with any NaN or `+inf` state ("time step(s) with NaN or +inf log-likelihoods"), and `checkpointed_forward_backward`'s `n_nan`, `nan_indices` and `nan_row_mask_hex` diagnostics include `+inf` rows. Outputs are unchanged.
+
 ### Track graphs whose `edge_id` is not the edge's place in `graph.edges`
 
 - **Fixed (changes results):** a track graph's `edge_id` values are now treated as labels, so any unique integer per edge works. Before, the grid, the linearization of the animal's position and `get_trajectory_data` (`distance1D`) assumed `edge_id` was the edge's position in `graph.edges`, the order NetworkX lists edges (node by node, not the order they were added). Affected: graphs built by hand that number `edge_id` some other way, typically by their own edge list when an edge does not follow NetworkX's order (on a W-track with edges `[(0,1), (1,2), (2,3), (1,4), (4,5)]`, `graph.edges` lists `(1,4)` before `(2,3)`). Not affected: graphs from `track_linearization.make_track_graph`, which include every Spyglass graph, and graphs whose edge list already is in `graph.edges` order. Results for unaffected graphs are unchanged.

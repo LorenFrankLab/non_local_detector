@@ -268,9 +268,10 @@ def _degenerate_and_nan_masks(
         ``max(axis=-1) == -inf`` rather than ``~isfinite`` so NaN steps are
         excluded (NaN propagates to the max, and ``NaN == -inf`` is False).
     nan_mask : np.ndarray of bool
-        True where any state is ``NaN`` — a likelihood-computation bug, distinct
-        from impossible data. ``_condition_on`` lets the NaN reach the posterior
-        so it stays visible.
+        True where any state is ``NaN`` or ``+inf`` — a likelihood-computation
+        bug, distinct from impossible data. ``_condition_on`` lets the NaN reach
+        the posterior so it stays visible; a ``+inf`` becomes one there
+        (``inf - inf`` when the step is normalized by its maximum).
     """
     degenerate_mask, nan_mask = jax.device_get(
         _degenerate_and_nan_masks_device(jnp.asarray(log_likelihoods))
@@ -285,7 +286,7 @@ def _degenerate_and_nan_masks_device(
     """Device-side masks of ``_degenerate_and_nan_masks`` in one fused pass."""
     return (
         log_likelihoods.max(axis=-1) == -jnp.inf,
-        jnp.any(jnp.isnan(log_likelihoods), axis=-1),
+        jnp.any(jnp.isnan(log_likelihoods) | (log_likelihoods == jnp.inf), axis=-1),
     )
 
 
@@ -297,7 +298,7 @@ def _accumulate_chunk_degeneracy(
 
     Returns the *global* indices of the chunk's all-``-inf`` steps
     (``time_inds`` maps chunk positions to global time indices) and the
-    chunk's number of NaN steps.
+    chunk's number of NaN steps (any state ``NaN`` or ``+inf``).
     """
     degenerate_mask, nan_mask = _degenerate_and_nan_masks(log_likelihood_chunk)
     return np.asarray(time_inds)[degenerate_mask], int(nan_mask.sum())
@@ -340,7 +341,8 @@ def _warn_degenerate_and_nan_timesteps(
     Parameters
     ----------
     n_degenerate, n_nan, n_total : int
-        Counts of all-``-inf`` steps, NaN steps, and total steps.
+        Counts of all-``-inf`` steps, NaN steps (any state ``NaN`` or
+        ``+inf``), and total steps.
     marginal_log_likelihood : float, optional
         The marginal log-likelihood, for filtering paths only. When it is
         ``-inf`` yet no step was all-``-inf`` (``n_degenerate == 0``), a zero
@@ -365,7 +367,8 @@ def _warn_degenerate_and_nan_timesteps(
         )
     if n_nan > 0:
         logger.warning(
-            "HMM %s encountered %d/%d time step(s) with NaN log-likelihoods; %s. "
+            "HMM %s encountered %d/%d time step(s) with NaN or +inf "
+            "log-likelihoods; %s. "
             "This indicates a bug in the likelihood computation (e.g. a "
             "non-converged or degenerate encoding model), not impossible data. "
             "Check the log-likelihood inputs.",
@@ -405,7 +408,7 @@ def _warn_if_degenerate_timesteps(
     marginal_log_likelihood: ArrayLike | None = None,
     context: str = "filter",
 ) -> None:
-    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN.
+    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN or ``+inf``.
 
     Parameters
     ----------
@@ -1232,12 +1235,13 @@ def filter(
     inputs before the transformation.
 
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A ``NaN`` at a
-    timestep is left to propagate (it signals a likelihood-computation bug, not
-    impossible data): because the filter carries state forward, a single NaN
-    contaminates the posterior at that step and every step after it. A
-    host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
-    steps is emitted when any are found.
+    falls back to the predicted distribution at that step. A ``NaN`` or
+    ``+inf`` at a timestep is left to propagate as NaN (it signals a
+    likelihood-computation bug, not impossible data): because the filter
+    carries state forward, a single NaN contaminates the posterior at that step
+    and every step after it. A host-side ``logger.warning`` summarizing the
+    count of degenerate and/or NaN (or ``+inf``) steps is emitted when any are
+    found.
 
     ``_condition_on`` also falls back (and marks the step ``-inf`` in the
     marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
@@ -2867,12 +2871,13 @@ def filter_covariate_dependent(
     inputs before the transformation.
 
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A ``NaN`` at a
-    timestep is left to propagate (it signals a likelihood-computation bug, not
-    impossible data): because the filter carries state forward, a single NaN
-    contaminates the posterior at that step and every step after it. A
-    host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
-    steps is emitted when any are found.
+    falls back to the predicted distribution at that step. A ``NaN`` or
+    ``+inf`` at a timestep is left to propagate as NaN (it signals a
+    likelihood-computation bug, not impossible data): because the filter
+    carries state forward, a single NaN contaminates the posterior at that step
+    and every step after it. A host-side ``logger.warning`` summarizing the
+    count of degenerate and/or NaN (or ``+inf``) steps is emitted when any are
+    found.
 
     ``_condition_on`` also falls back (and marks the step ``-inf`` in the
     marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
