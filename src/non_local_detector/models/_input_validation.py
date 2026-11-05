@@ -1,10 +1,11 @@
 """Input validation of the detectors.
 
 The checks the detectors run on their constructor parameters and on the data
-of their public methods: the coerced encoding and decoding inputs
-(``_EncodingInputs``, ``_DecodeInputs``), the decode time grid, the
-prediction and transition options, ``return_outputs``, and the fitted
-model's time contract. ``_DetectorBase`` inherits the methods of
+of their public methods: the one input step every public method takes
+(``_InputValidationMixin._validated_inputs``, giving ``_ValidatedInputs``),
+the coerced encoding inputs (``_EncodingInputs``), the decode time grid, the
+prediction and transition options, ``return_outputs``, and the fitted model's
+time contract. ``_DetectorBase`` inherits the methods of
 ``_InputValidationMixin``.
 
 Methods that read the detector's attributes annotate ``self`` as
@@ -15,9 +16,9 @@ mixin.
 import contextlib
 import warnings
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -665,27 +666,46 @@ class _EncodingInputs:
         )
 
 
+_InputStage = Literal["decode", "likelihood"]
+
+
 @dataclass(frozen=True)
-class _DecodeInputs:
-    """Position of a public decoding method, coerced and checked once.
+class _ValidatedInputs:
+    """Data of one public call, coerced and checked once.
+
+    Built by ``_InputValidationMixin._validated_inputs``. An array the call's
+    stage does not take stays None.
 
     Attributes
     ----------
+    spike_data : tuple
+        The spike arrays named by ``_SPIKE_DATA_NAMES``.
     position_time : np.ndarray, shape (n_time_position,), or None
     position : np.ndarray, shape (n_time_position, n_position_dims), or None
+    time_edges : np.ndarray, shape (n_bins + 1,), or None
+        Validated decode bin edges.
+    time_centers : np.ndarray, shape (n_rows,), or None
+        Centers of the requested decode bins.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        The caller's mask combined with the bins without tracked position.
     """
 
-    position_time: np.ndarray | None
-    position: np.ndarray | None
+    spike_data: tuple[Any, ...]
+    position_time: np.ndarray | None = None
+    position: np.ndarray | None = None
+    time_edges: np.ndarray | None = None
+    time_centers: np.ndarray | None = None
+    is_missing: np.ndarray | None = None
 
     @classmethod
-    def from_arguments(
+    def from_decode_arguments(
         cls,
+        spike_data: tuple[Any, ...],
         position_time: ArrayLike | None,
         position: ArrayLike | None,
         *,
         example: str | None = None,
-    ) -> "_DecodeInputs":
+    ) -> "_ValidatedInputs":
         """Coerce and check the position arguments of a decoding method.
 
         Raises
@@ -705,9 +725,13 @@ class _DecodeInputs:
             )
         times = None if position_time is None else _sample_times(position_time)
         if position is None or times is None:
-            return cls(times, None)
+            return cls(spike_data, times)
         position = _sample_positions(position, len(times))
-        return cls(times, position[:, np.newaxis] if position.ndim == 1 else position)
+        return cls(
+            spike_data,
+            times,
+            position[:, np.newaxis] if position.ndim == 1 else position,
+        )
 
 
 def _require_sampling_frequency_width(
@@ -1469,6 +1493,138 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
 
 class _InputValidationMixin:
     """Validation methods of ``_DetectorBase``."""
+
+    def _validated_inputs(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        stage: _InputStage,
+        spike_data: tuple[Any, ...],
+        *,
+        position_time: ArrayLike | None = None,
+        position: ArrayLike | None = None,
+        time_edges: ArrayLike | None = None,
+        row_slice: slice | None = None,
+        is_missing: np.ndarray | None = None,
+        example: str | None = None,
+    ) -> _ValidatedInputs:
+        """Coerce and check the data of one public call.
+
+        Every public method taking data calls this once, before any work,
+        so a new check is added here and applies to each stage that takes
+        the argument. Warnings fire here and nowhere that a call can repeat
+        (chunks, EM iterations). What differs between the stages:
+
+        - ``decode`` (``predict``, ``most_likely_sequence``): position is
+          coerced first, then the fitted model, the time grid, the spikes
+          against it, the position against the model, and the missing bins.
+        - ``likelihood`` (``compute_log_likelihood``): as ``decode``, except
+          that the fitted model comes first, and ``is_missing`` has one entry
+          per requested row, so the rows it evaluates check it. ``row_slice``
+          selects the rows of ``time_centers``.
+
+        Parameters
+        ----------
+        stage : {"decode", "likelihood"}
+            The kind of public method.
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+        position_time : array_like, shape (n_time_position,), optional
+            Times of the position samples.
+        position : array_like, shape (n_time_position,) or (n_time_position, n_position_dims), optional
+            Position samples.
+        time_edges : array_like, shape (n_bins + 1,), optional
+            Decode bin edges.
+        row_slice : slice, optional
+            Rows of ``compute_log_likelihood``.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            The caller's missing bins.
+        example : str, optional
+            Example call for the error of a missing ``position_time``.
+
+        Returns
+        -------
+        inputs : _ValidatedInputs
+
+        Raises
+        ------
+        ValidationError, DataError, NotFittedError
+            From the checks of the stage.
+        """
+        if stage == "likelihood":
+            self._require_decodable()
+        inputs = _ValidatedInputs.from_decode_arguments(
+            spike_data, position_time, position, example=example
+        )
+        position_time, position = inputs.position_time, inputs.position
+        if stage == "decode":
+            self._require_decodable()
+        checked_edges, time_centers = _decode_time_edges(
+            cast("ArrayLike", time_edges),
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
+            row_slice=row_slice,
+        )
+        self._check_spike_data(
+            spike_data,
+            time_range=(float(checked_edges[0]), float(checked_edges[-1])),
+            range_name="decode time_edges",
+        )
+        self._validate_decode_position(position)
+        if stage == "decode":
+            is_missing = _missing_bins(
+                checked_edges,
+                is_missing,
+                position_time,
+                position,
+                reads_position=self._decode_reads_position(
+                    self.state_space_.observation_models
+                ),
+                warn_outside_tracking=True,
+            )
+        return replace(
+            inputs,
+            time_edges=checked_edges,
+            time_centers=time_centers,
+            is_missing=is_missing,
+        )
+
+    def _require_decodable(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+    ) -> None:
+        """Check the fitted model a decoding call reads, and warn if it changed."""
+        self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
+
+    def _check_spike_data(
+        self,
+        spike_data: tuple[Any, ...],
+        *,
+        time_range: tuple[float, float] | None = None,
+        range_name: str = "",
+        check_extent: bool = False,
+    ) -> None:
+        """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
+
+        See ``_validate_spike_data`` for what is checked.
+
+        Parameters
+        ----------
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+        time_range : tuple of float, optional
+            ``(start, stop)`` in seconds to warn against, by default None.
+        range_name : str, optional
+            What ``time_range`` is, for the warning.
+        check_extent : bool, optional
+            Also warn when almost no spike lies in ``time_range`` and they
+            reach far past it, by default False (encoding period only).
+        """
+        _validate_spike_data(
+            *spike_data,
+            clusterless=len(spike_data) > 1,
+            time_range=time_range,
+            range_name=range_name,
+            check_extent=check_extent,
+        )
 
     def _validate_position_dimensionality(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",

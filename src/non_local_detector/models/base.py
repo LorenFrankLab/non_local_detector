@@ -109,7 +109,6 @@ from non_local_detector.models._em import (
 from non_local_detector.models._input_validation import (
     _TIME_CONTRACT,
     _decode_time_edges,
-    _DecodeInputs,
     _EncodingInputs,
     _InputValidationMixin,
     _missing_bins,
@@ -125,7 +124,6 @@ from non_local_detector.models._input_validation import (
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
     _validate_prior_weight,
-    _validate_spike_data,
     _validate_spike_structure,
     _validate_transition_arguments,
     _warn_if_off_grid,
@@ -1587,38 +1585,6 @@ class _DetectorBase(
                             "and decoding, including when tracking is missing.",
                         )
 
-    def _check_spike_data(
-        self,
-        spike_data: tuple[Any, ...],
-        *,
-        time_range: tuple[float, float] | None = None,
-        range_name: str = "",
-        check_extent: bool = False,
-    ) -> None:
-        """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
-
-        See ``_validate_spike_data`` for what is checked.
-
-        Parameters
-        ----------
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-        time_range : tuple of float, optional
-            ``(start, stop)`` in seconds to warn against, by default None.
-        range_name : str, optional
-            What ``time_range`` is, for the warning.
-        check_extent : bool, optional
-            Also warn when almost no spike lies in ``time_range`` and they
-            reach far past it, by default False (encoding period only).
-        """
-        _validate_spike_data(
-            *spike_data,
-            clusterless=isinstance(self, ClusterlessDetector),
-            time_range=time_range,
-            range_name=range_name,
-            check_extent=check_extent,
-        )
-
     def _numeric_spike_data(self, spike_data: tuple[Any, ...]) -> tuple[Any, ...]:
         """Return the spike arrays with ``spike_times`` as numeric arrays.
 
@@ -1672,24 +1638,6 @@ class _DetectorBase(
             check_extent=True,
         )
         return self._numeric_spike_data(spike_data)
-
-    def _check_decode_spike_data(
-        self, time_edges: np.ndarray, spike_data: tuple[Any, ...]
-    ) -> None:
-        """Check decoding spike data; warn if all lie on one side of ``time_edges``.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
-            Validated decode edges, in seconds.
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-        """
-        self._check_spike_data(
-            spike_data,
-            time_range=(float(time_edges[0]), float(time_edges[-1])),
-            range_name="decode time_edges",
-        )
 
     _SPIKE_DATA_NAMES: tuple[str, ...] = ()
     """Names of the spike-data arrays, in the order the decode methods take them."""
@@ -1755,20 +1703,17 @@ class _DetectorBase(
         checks the model and inputs, as the public decoding methods do once
         per call, then evaluates the requested rows.
         """
-        self._validate_time_contract()
-        self._warn_if_layout_parameters_changed()
-        decode = _DecodeInputs.from_arguments(position_time, position)
-        time_edges, _ = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
+        inputs = self._validated_inputs(
+            "likelihood",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
             row_slice=row_slice,
         )
-        self._check_decode_spike_data(time_edges, spike_data)
-        self._validate_decode_position(decode.position)
         context = self._decode_context(
-            time_edges,
-            (decode.position_time, decode.position, *spike_data),
+            cast("np.ndarray", inputs.time_edges),
+            (inputs.position_time, inputs.position, *spike_data),
             # A direct call warns like the other public decode entry points.
             warn_outside_tracking=True,
             share_no_spike_bin_sizes=False,
@@ -2153,29 +2098,19 @@ class _DetectorBase(
         return_outputs: ReturnOutputs,
     ) -> xr.Dataset:
         """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
-        decode = _DecodeInputs.from_arguments(
-            position_time, position, example=self._PREDICT_EXAMPLE
+        inputs = self._validated_inputs(
+            "decode",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            example=self._PREDICT_EXAMPLE,
         )
-        position_time, position = decode.position_time, decode.position
-        self._validate_time_contract()
-        self._warn_if_layout_parameters_changed()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
-        )
-        self._check_decode_spike_data(time_edges, spike_data)
-        self._validate_decode_position(position)
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(
-                self.state_space_.observation_models
-            ),
-            warn_outside_tracking=True,
-        )
+        position_time, position = inputs.position_time, inputs.position
+        time_edges = cast("np.ndarray", inputs.time_edges)
+        time_centers = cast("np.ndarray", inputs.time_centers)
+        is_missing = inputs.is_missing
 
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
@@ -2421,27 +2356,18 @@ class _DetectorBase(
         n_chunks: int,
     ) -> pd.DataFrame:
         """Body of the detectors' ``most_likely_sequence``; see ``_compute_spike_log_likelihood``."""
-        decode = _DecodeInputs.from_arguments(position_time, position)
-        position_time, position = decode.position_time, decode.position
-        self._validate_time_contract()
-        self._warn_if_layout_parameters_changed()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
+        inputs = self._validated_inputs(
+            "decode",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            is_missing=is_missing,
         )
-        self._check_decode_spike_data(time_edges, spike_data)
-        self._validate_decode_position(position)
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(
-                self.state_space_.observation_models
-            ),
-            warn_outside_tracking=True,
-        )
+        position_time, position = inputs.position_time, inputs.position
+        time_edges = cast("np.ndarray", inputs.time_edges)
+        time_centers = cast("np.ndarray", inputs.time_centers)
+        is_missing = inputs.is_missing
         return self._run_viterbi(
             time_edges=time_edges,
             log_likelihood_args=(
