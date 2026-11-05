@@ -53,7 +53,7 @@ class StateSpace:
     ``fit`` builds it from the detector's parameters and fitted environments,
     and decoding reads it instead of the parameters, so changing them with
     ``set_params`` after a fit does not change what the fit decodes. The
-    parameters it records are those of ``layout_parameters``.
+    parameters it records are from ``recorded_layout_parameters``.
 
     Attributes
     ----------
@@ -167,10 +167,9 @@ class StateSpace:
 
 
 def layout_parameters(detector: Any) -> dict[str, Any]:
-    """Return copies of the detector parameters a ``StateSpace`` records.
+    """Return the detector's current values of the parameters a fit records.
 
-    The copies are deep, so changing a parameter's objects in place after a
-    fit leaves the recorded ones as they were.
+    The values are the detector's own objects, not copies.
 
     Parameters
     ----------
@@ -184,16 +183,33 @@ def layout_parameters(detector: Any) -> dict[str, Any]:
         ``continuous_transition_types`` (a tuple of rows) as tuples, and
         ``local_position_std``.
     """
-    return copy.deepcopy(
-        {
-            "state_names": tuple(detector.state_names),
-            "observation_models": tuple(detector.observation_models),
-            "continuous_transition_types": tuple(
-                tuple(row) for row in detector.continuous_transition_types
-            ),
-            "local_position_std": detector.local_position_std,
-        }
-    )
+    return {
+        "state_names": tuple(detector.state_names),
+        "observation_models": tuple(detector.observation_models),
+        "continuous_transition_types": tuple(
+            tuple(row) for row in detector.continuous_transition_types
+        ),
+        "local_position_std": detector.local_position_std,
+    }
+
+
+def recorded_layout_parameters(detector: Any) -> dict[str, Any]:
+    """Return deep copies of ``layout_parameters`` for a ``StateSpace`` to record.
+
+    Changing a parameter's objects in place afterwards leaves the recorded
+    ones as they were.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Detector whose current parameters to record.
+
+    Returns
+    -------
+    parameters : dict
+        Copies of ``layout_parameters(detector)``.
+    """
+    return copy.deepcopy(layout_parameters(detector))
 
 
 def fitted_states(detector: Any) -> Any:

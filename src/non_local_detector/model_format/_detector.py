@@ -73,6 +73,7 @@ from non_local_detector.model_format._codec import (
     ArrayWriter,
     Decoder,
     Encoder,
+    refuse_object_array,
 )
 from non_local_detector.model_format._container import (
     FORMAT_NAME,
@@ -96,6 +97,7 @@ from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
     layout_parameters,
+    recorded_layout_parameters,
     state_layout,
 )
 
@@ -621,18 +623,19 @@ def _fitted_attributes(
 class _DigestWriter:
     """Stands in for ``ArrayWriter``: names each array by its ``.npy`` digest."""
 
-    def put(self, array: np.ndarray, where: str) -> str:  # noqa: ARG002 -- ArrayWriter.put signature
+    def put(self, array: np.ndarray, where: str) -> str:
+        refuse_object_array(array, where)
         return array_digest(np.require(array, requirements="C"))
 
 
-def _stored_form(value: Any) -> JSON:
-    """Return ``value`` as a saved model stores it, its arrays named by content.
+def _stored_form(value: Any, name: str) -> JSON:
+    """Return parameter ``name`` as a saved model stores it, arrays named by content.
 
     Two values with the same stored form save to the same file, whatever
     their objects' ``==`` says (``Discrete`` compares by identity, and a
     dataclass holding an array cannot reduce ``==`` to one bool).
     """
-    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, "parameter")
+    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, name)
 
 
 def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
@@ -654,12 +657,14 @@ def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
     Raises
     ------
     ValidationError
-        If a parameter holds an object of a type not registered for saving.
+        If a parameter holds what a saved model cannot: an object of a type
+        not registered for saving, or an object array.
     """
     return [
         name
         for name, value in layout_parameters(detector).items()
-        if _stored_form(value) != _stored_form(getattr(detector.state_space_, name))
+        if _stored_form(value, name)
+        != _stored_form(getattr(detector.state_space_, name), name)
     ]
 
 
@@ -949,7 +954,7 @@ def _rebuild_state_space(
         max_dense_transition_bytes=max_dense_transition_bytes,
     )
     state_space = StateSpace(
-        **layout_parameters(detector),
+        **recorded_layout_parameters(detector),
         state_ind=state_ind,
         bin_sizes=bin_sizes,
         is_track_interior=is_track_interior,

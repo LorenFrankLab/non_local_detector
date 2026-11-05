@@ -98,6 +98,31 @@ def _member_name(where: str) -> str:
     return "arrays/" + "/".join(parts)
 
 
+def refuse_object_array(array: np.ndarray, where: str) -> None:
+    """Raise if a saved model cannot hold ``array``.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        The array to store.
+    where : str
+        Where it was found, for the message.
+
+    Raises
+    ------
+    ValidationError
+        If the array has an object dtype, which ``.npy`` stores only through
+        pickle.
+    """
+    if array.dtype.hasobject:
+        msg = f"Cannot save the object array at {where}"
+        raise ValidationError(
+            msg,
+            expected="a numeric, boolean or string array",
+            got=f"dtype {array.dtype}",
+        )
+
+
 class ArrayWriter:
     """Writes a saved model's ``.npy`` members and keeps their manifest index.
 
@@ -125,13 +150,7 @@ class ArrayWriter:
             If the array has an object dtype, which ``.npy`` stores only
             through pickle.
         """
-        if array.dtype.hasobject:
-            msg = f"Cannot save the object array at {where}"
-            raise ValidationError(
-                msg,
-                expected="a numeric, boolean or string array",
-                got=f"dtype {array.dtype}",
-            )
+        refuse_object_array(array, where)
         # np.require keeps a 0-d array 0-d (np.ascontiguousarray makes it 1-d).
         array = np.require(array, requirements="C")
         digest = array_digest(array)

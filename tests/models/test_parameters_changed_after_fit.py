@@ -146,6 +146,29 @@ def test_decoding_after_setting_an_equal_copy_does_not_warn(fitted, name):
     )
 
 
+class _CopyRefusingName(str):
+    """A state name that fails if it is deep-copied."""
+
+    __slots__ = ()
+
+    def __deepcopy__(self, memo):
+        msg = "the live parameters were deep-copied"
+        raise AssertionError(msg)
+
+
+def test_decoding_does_not_copy_the_parameters(fitted):
+    """The change check runs on every decode, so it reads them in place."""
+    detector, decode, expected = fitted
+    names = [_CopyRefusingName(name) for name in detector.state_names]
+    unchanged = detector.copy().set_params(state_names=names)
+
+    actual = unchanged.predict(**decode, return_outputs="all")
+
+    np.testing.assert_array_equal(
+        actual.acausal_posterior.values, expected.acausal_posterior.values
+    )
+
+
 @pytest.mark.parametrize("change", CHANGES)
 def test_saving_after_set_params_is_refused(fitted, change, tmp_path):
     detector, _, _ = fitted
@@ -169,22 +192,63 @@ def test_saving_after_setting_an_equal_copy_works(fitted, name, tmp_path):
     detector.copy().set_params(**{name: value}).save_model(tmp_path / "model.nld")
 
 
-def test_saving_after_copying_a_transition_with_an_array_field_works(
-    sorted_sim, tmp_path
-):
-    """A 2-D random walk's covariance is an array, which ``==`` cannot reduce."""
+def _open_field_decoder(sorted_sim, movement_var):
+    """A decoder fitted in 2-D, whose random walk has covariance ``movement_var``."""
     time, linear, spike_times = sorted_sim
     position = np.column_stack([linear, 14.0 + 10.0 * np.sin(time)])
     detector = SortedSpikesDecoder(
         environments=Environment(place_bin_size=4.0),
-        continuous_transition_types=[[RandomWalk(movement_var=6.0 * np.eye(2))]],
+        continuous_transition_types=[[RandomWalk(movement_var=movement_var)]],
         sampling_frequency=SORTED_SIM_RATE,
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
     )
     detector.fit(time, position, spike_times)
+    decode = {
+        "spike_times": spike_times,
+        "time_edges": time_edges_from_centers(time[:50]),
+        "position_time": time,
+        "position": position,
+    }
+    return detector, decode
+
+
+def test_saving_after_copying_a_transition_with_an_array_field_works(
+    sorted_sim, tmp_path
+):
+    """A 2-D random walk's covariance is an array, which ``==`` cannot reduce."""
+    detector, _ = _open_field_decoder(sorted_sim, 6.0 * np.eye(2))
     detector.set_params(
         continuous_transition_types=copy.deepcopy(detector.continuous_transition_types)
     ).save_model(tmp_path / "model.nld")
+
+
+def test_object_array_parameter_decodes_but_is_not_saved(sorted_sim, tmp_path):
+    """The saved format cannot hold it, so it cannot be compared with its
+    fitted value: decoding does not warn (warnings are errors here), and
+    ``save_model`` refuses it as it refuses any object array."""
+    movement_var = np.array([[6.0, 0.0], [0.0, 6.0]], dtype=object)
+    detector, decode = _open_field_decoder(sorted_sim, movement_var)
+
+    results = detector.predict(**decode)
+
+    assert np.isfinite(results.acausal_state_probabilities.values).all()
+    with pytest.raises(ValidationError, match="Cannot save the object array"):
+        detector.save_model(tmp_path / "model.nld")
+
+
+def test_refusing_an_unsaveable_recorded_value_names_its_parameter(
+    sorted_sim, tmp_path
+):
+    """The fit recorded an object array, so comparing it with the new value
+    fails: the error says which parameter holds it."""
+    movement_var = np.array([[6.0, 0.0], [0.0, 6.0]], dtype=object)
+    detector, _ = _open_field_decoder(sorted_sim, movement_var)
+    detector.set_params(
+        continuous_transition_types=[[RandomWalk(movement_var=6.0 * np.eye(2))]]
+    )
+
+    with pytest.raises(ValidationError, match="at continuous_transition_types/"):
+        detector.save_model(tmp_path / "model.nld")
 
 
 def test_saving_after_changing_a_transition_in_place_is_refused(fitted, tmp_path):

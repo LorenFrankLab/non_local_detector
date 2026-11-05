@@ -141,7 +141,7 @@ from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
     initial_conditions,
-    layout_parameters,
+    recorded_layout_parameters,
     state_layout,
 )
 from non_local_detector.observation_models import ObservationModel
@@ -1696,7 +1696,7 @@ class _DetectorBase(
             max_dense_transition_bytes=max_dense_transition_bytes,
         )
         self.state_space_ = StateSpace(
-            **layout_parameters(self),
+            **recorded_layout_parameters(self),
             state_ind=state_ind,
             bin_sizes=bin_sizes,
             is_track_interior=is_track_interior,
@@ -1933,8 +1933,8 @@ class _DetectorBase(
     def _warn_if_layout_parameters_changed(self) -> None:
         """Warn when a parameter the fit recorded was changed since.
 
-        Decoding uses the recorded values (``state_space_``). Parameters of a
-        type not registered for saving cannot be compared and do not warn.
+        Decoding uses the recorded values (``state_space_``). Parameters a
+        saved model cannot hold cannot be compared and do not warn.
         """
         from non_local_detector.model_format._detector import (
             changed_layout_parameters,
