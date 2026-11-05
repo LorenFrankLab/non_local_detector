@@ -415,7 +415,7 @@ def test_empirical_movement_leaves_out_samples_beyond_the_grid(outside):
 
 
 def _l_track_environment():
-    """L-shaped track graph with a gap bin between its two edges."""
+    """L-shaped track graph: bins 0-9 on one edge, gap bin 10, bins 11-20."""
     import networkx as nx
 
     graph = nx.Graph()
@@ -428,43 +428,76 @@ def _l_track_environment():
         track_graph=graph,
         edge_order=[(0, 1), (1, 2)],
         edge_spacing=15.0,
-    )
+    ).fit_place_grid()
 
 
-def _open_field_with_sparse_bins():
-    """2-D random walk whose rarely visited bins are left off the interior."""
-    rng = np.random.default_rng(0)
-    position = np.cumsum(rng.normal(size=(5000, 2)), axis=0)
-    env = Environment(place_bin_size=5.0, bin_count_threshold=5)
-    return env.fit_place_grid(position, infer_track_interior=True), position
+def _open_field_with_a_hole():
+    """Grid of 10-unit bins whose center bin (12) is off the interior.
+
+    The fit adds a bin beyond each end of the range, so the 0-30 range gives
+    5 x 5 bins with edges -10, 0, ..., 40 in each dimension.
+    """
+    corners = np.array([[0.0, 0.0], [30.0, 30.0]])
+    env = Environment(
+        place_bin_size=10.0, position_range=[(0.0, 30.0), (0.0, 30.0)]
+    ).fit_place_grid(corners, infer_track_interior=False)
+    is_track_interior = np.ones((5, 5), dtype=bool)
+    is_track_interior[2, 2] = False
+    return set_place_grid(env, is_track_interior=is_track_interior)
 
 
 @pytest.mark.parametrize("layout", ["track_graph", "open_field"])
 def test_empirical_movement_bins_positions_as_the_environment_does(layout):
-    """Positions are assigned to bins by ``Environment.get_bin_ind``.
+    """A position in a bin off the interior counts in the nearest interior bin.
 
-    It snaps a position that lands in a bin off the track interior, such as
-    the end of a track edge next to an ``edge_spacing`` gap, or a rarely
-    visited open-field bin, to the nearest interior bin. Binned by the raw
-    bin edges instead, those steps went to bins the decoder drops, so the
-    interior rows leaked mass.
+    That is how ``Environment.get_bin_ind`` assigns positions everywhere in
+    the package: the end of a track edge next to an ``edge_spacing`` gap, or
+    a position in an open-field hole, snaps to the nearest interior bin.
+    Binned by the raw bin edges instead, those steps went to bins the
+    decoder drops, so the interior rows leaked mass. The bins below are
+    worked out by hand.
     """
     if layout == "track_graph":
-        # Laps along the L in 2-D, through the junction node at linear 50.
-        first = np.stack([np.linspace(0.0, 50.0, 51), np.zeros(51)], axis=1)
-        second = np.stack([np.full(51, 50.0), np.linspace(0.0, 50.0, 51)], axis=1)
-        lap = np.concatenate([first, second[1:], second[::-1][1:], first[::-1][1:]])
-        position = np.concatenate([lap] * 3)
-        env = _l_track_environment().fit_place_grid(position)
+        env = _l_track_environment()
+        # Linear positions: the centers of bins 0-9, the end of the first
+        # edge (50, the gap bin's left edge; nearest interior center 47.5,
+        # bin 9), the centers of bins 11-20 and the end of the track (115,
+        # the last bin). Up and back down, twice.
+        up = np.concatenate(
+            [np.arange(2.5, 50, 5), [50.0], np.arange(67.5, 115, 5), [115.0]]
+        )
+        up_bins = np.concatenate([np.arange(10), [9], np.arange(11, 21), [20]])
+        position = np.concatenate([up, up[::-1][1:], up[1:], up[::-1][1:]])
+        bins = np.concatenate(
+            [up_bins, up_bins[::-1][1:], up_bins[1:], up_bins[::-1][1:]]
+        )
+        position = position[:, None]
     else:
-        env, position = _open_field_with_sparse_bins()
+        env = _open_field_with_a_hole()
+        # Flat bin index 5 * x_bin + y_bin, with x_bin = x // 10 + 1. (14, 18)
+        # and (16, 15) are in the hole; their nearest interior centers are
+        # (15, 25), bin 13, and (25, 15), bin 17.
+        position = np.array(
+            [
+                [5, 5],
+                [15, 5],
+                [14, 18],
+                [15, 25],
+                [25, 25],
+                [25, 15],
+                [16, 15],
+                [5, 15],
+                [5, 5],
+            ],
+            dtype=float,
+        )
+        bins = np.array([6, 11, 13, 13, 18, 17, 17, 7, 6])
     interior = env.is_track_interior_flat_
     assert not interior.all()
 
     transition = EmpiricalMovement().make_state_transition(
         (env,), TransitionContext(position=position)
     )
-    bins = env.get_bin_ind(env.decoding_position(position))
 
     n_bins = interior.size
     expected = np.zeros((n_bins, n_bins))
@@ -473,8 +506,31 @@ def test_empirical_movement_bins_positions_as_the_environment_does(layout):
     np.testing.assert_allclose(transition, expected, rtol=1e-12)
     assert not transition[~interior].any()
     assert not transition[:, ~interior].any()
-    visited = np.unique(bins[:-1])
-    np.testing.assert_allclose(transition[visited].sum(axis=1), 1.0, rtol=1e-12)
+
+
+@pytest.mark.parametrize("is_time_reversed", [False, True])
+def test_empirical_movement_time_reversal_swaps_each_step(is_time_reversed):
+    """Forward, a sweep up gives steps to the next bin; reversed, to the previous.
+
+    An excluded stretch splits the sweep in two, so the reversed steps also
+    have to be formed after leaving out the excluded samples.
+    """
+    up = np.arange(5.0, 100.0, 10.0)
+    position = np.concatenate([up, np.full(20, 50.0), up])[:, None]
+    is_training = np.ones(len(position), dtype=bool)
+    is_training[10:30] = False
+    env = Environment(
+        place_bin_size=10.0, position_range=[(0.0, 100.0)]
+    ).fit_place_grid(up[:, None], infer_track_interior=False)
+
+    transition = EmpiricalMovement(
+        is_time_reversed=is_time_reversed
+    ).make_state_transition(
+        (env,), TransitionContext(position, is_training=is_training)
+    )
+
+    expected = np.eye(10, k=-1 if is_time_reversed else 1)
+    np.testing.assert_array_equal(transition, expected)
 
 
 @pytest.mark.parametrize("encoding_group", [0, 1])
