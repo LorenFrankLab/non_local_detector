@@ -7,6 +7,7 @@ import xarray as xr
 
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.analysis.posterior import (
+    _state_probabilities,
     get_position_posterior,
     get_spatial_posterior,
     maximum_a_posteriori_estimate,
@@ -466,6 +467,38 @@ class TestMapInAnyNumberOfDimensions:
         np.testing.assert_array_equal(
             maximum_a_posteriori_estimate(posterior), [[20.0, 1.0]]
         )
+
+
+@pytest.mark.unit
+class TestStateProbabilities:
+    def test_detector_with_several_states(self):
+        results = xr.Dataset(
+            {
+                "acausal_state_probabilities": (
+                    ("time", "states"),
+                    np.array([[0.25, 0.75], [0.5, 0.5]]),
+                )
+            },
+            coords={"states": ["Local", "Non-Local"]},
+        )
+
+        probabilities = _state_probabilities(results)
+
+        assert list(probabilities) == ["Local", "Non-Local"]
+        np.testing.assert_array_equal(probabilities["Non-Local"], [0.75, 0.5])
+
+    def test_decoder_has_one_state_and_no_states_dimension(self):
+        """A one-state result holds ``states`` as a scalar, which neither
+        iterating nor ``sel`` accepts."""
+        results = xr.Dataset(
+            {"acausal_state_probabilities": ("time", np.ones(3))},
+            coords={"states": "Continuous"},
+        )
+
+        probabilities = _state_probabilities(results)
+
+        assert list(probabilities) == ["Continuous"]
+        np.testing.assert_array_equal(probabilities["Continuous"], np.ones(3))
 
 
 @pytest.mark.unit

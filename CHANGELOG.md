@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Added:** `analysis.get_position_posterior` reduces any posterior layout (a raw `acausal_posterior`, the per-state grids of `get_spatial_posterior`, or a posterior already over position) to position alone.
 - **Fixed (changes results):** `get_map_speed` given a raw `state_bins` posterior read the bins of the position-less states as place bins, so the speed could be silently wrong (0.0 instead of 571.7 cm/s on a simulated recording). It now gives the same speed as for the posterior over position. An array or a posterior already over position gives what it did.
 - **Fixed:** `maximum_a_posteriori_estimate` works in any number of position dimensions; 3-D and higher raised `IndexError`. `get_trajectory_data` accepts a raw `state_bins` posterior.
+- **Fixed:** the interactive figurls of a one-state decoder raised when listing the states.
 
 ### EM diagnostics
 

@@ -133,6 +133,29 @@ def get_position_posterior(posterior: xr.DataArray) -> xr.DataArray:
     return posterior
 
 
+def _state_probabilities(results: xr.Dataset) -> dict[str, xr.DataArray]:
+    """Acausal probability of each state, by name.
+
+    A one-state result (a decoder's) holds ``states`` as a scalar coordinate
+    and its probabilities without a ``states`` dimension, which neither
+    iterating ``states`` nor ``sel`` accepts.
+
+    Parameters
+    ----------
+    results : xr.Dataset
+        Output of a detector's ``predict``.
+
+    Returns
+    -------
+    state_probabilities : dict of str to xr.DataArray, shape (n_time,)
+    """
+    probabilities = results["acausal_state_probabilities"]
+    states = results["states"]
+    if "states" not in probabilities.dims:
+        return {str(states.item()): probabilities}
+    return {str(state): probabilities.sel(states=state) for state in states.values}
+
+
 def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
     """Find the most likely position from the posterior distribution.
 
