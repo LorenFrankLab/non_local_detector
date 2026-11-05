@@ -639,7 +639,9 @@ def _stored_form(value: Any, name: str) -> JSON:
     return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, name)
 
 
-def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
+def changed_layout_parameters(
+    detector: "_DetectorBase", *, skip_incomparable: bool = False
+) -> list[str]:
     """Return the recorded parameters that changed since the detector was fitted.
 
     A parameter changed when its saved form differs from that of the value
@@ -649,6 +651,9 @@ def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
     ----------
     detector : _DetectorBase
         Fitted detector.
+    skip_incomparable : bool, optional
+        Leave out a parameter that holds what a saved model cannot, which has
+        no saved form, instead of raising. By default False.
 
     Returns
     -------
@@ -658,15 +663,21 @@ def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
     Raises
     ------
     ValidationError
-        If a parameter holds what a saved model cannot: an object of a type
-        not registered for saving, or an object array.
+        If a parameter holds what a saved model cannot, an object of a type
+        not registered for saving or an object array, and
+        ``skip_incomparable`` is False.
     """
-    return [
-        name
-        for name, value in layout_parameters(detector).items()
-        if _stored_form(value, name)
-        != _stored_form(getattr(detector.state_space_, name), name)
-    ]
+    changed = []
+    for name, value in layout_parameters(detector).items():
+        try:
+            if _stored_form(value, name) != _stored_form(
+                getattr(detector.state_space_, name), name
+            ):
+                changed.append(name)
+        except ValidationError:
+            if not skip_incomparable:
+                raise
+    return changed
 
 
 def detector_documents(

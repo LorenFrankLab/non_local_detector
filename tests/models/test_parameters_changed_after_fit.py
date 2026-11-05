@@ -236,6 +236,38 @@ def test_object_array_parameter_decodes_but_is_not_saved(sorted_sim, tmp_path):
         detector.save_model(tmp_path / "model.nld")
 
 
+def test_a_parameter_that_cannot_be_compared_does_not_hide_a_changed_one(sorted_sim):
+    class UnregisteredWalk(RandomWalk):
+        """Not registered for saving, so its parameter cannot be compared."""
+
+    time, position, spike_times = sorted_sim
+    detector = NonLocalSortedSpikesDetector(
+        continuous_transition_types=[
+            [
+                UnregisteredWalk(**vars(transition))
+                if isinstance(transition, RandomWalk)
+                else transition
+                for transition in row
+            ]
+            for row in NonLocalSortedSpikesDetector().continuous_transition_types
+        ],
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times)
+    detector.set_params(local_position_std=2.0)
+
+    with pytest.warns(ParameterWarning) as record:
+        detector.predict(
+            spike_times=spike_times,
+            time_edges=time_edges_from_centers(time[:50]),
+            position_time=time,
+            position=position,
+        )
+
+    (warning,) = _changed_parameter_warnings(record, "local_position_std")
+    assert "continuous_transition_types" not in str(warning.message)
+
+
 def test_refusing_an_unsaveable_recorded_value_names_its_parameter(
     sorted_sim, tmp_path
 ):
