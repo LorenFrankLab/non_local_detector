@@ -1747,11 +1747,58 @@ def _operator_row_sums(
     )
 
 
+@functools.partial(jax.jit, static_argnames=("pairs",))
+def _operator_adjoint_terms(
+    operator: TransitionProducts,
+    left: jax.Array,
+    right: jax.Array,
+    weight: jax.Array | None,
+    *,
+    pairs: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array | None]:
+    """Both sides of ``left @ T @ right`` and, optionally, its state-pair terms.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator; a :class:`TransitionOperator` with ``pairs``.
+    left, right : jax.Array, shape (n_state_bins,)
+        Probe vectors.
+    weight : jax.Array, shape (n_states, n_states), or None
+        Per-row discrete weight, None for a stationary operator.
+    pairs : bool
+        Also return ``operator.pair_products(left, right, weight)``.
+
+    Returns
+    -------
+    through_backward : jax.Array, shape ()
+        ``left @ backward(right)``.
+    through_forward : jax.Array, shape ()
+        ``forward(left) @ right``.
+    pair_terms : jax.Array, shape (n_states, n_states), or None
+    """
+    precision = jax.lax.Precision.HIGHEST
+    through_backward = jnp.dot(
+        left, operator.backward(right, weight), precision=precision
+    )
+    through_forward = jnp.dot(
+        operator.forward(left, weight), right, precision=precision
+    )
+    pair_terms = (
+        cast(TransitionOperator, operator).pair_products(left, right, weight)
+        if pairs
+        else None
+    )
+    return through_backward, through_forward, pair_terms
+
+
 def _check_operator_rows(
     operator: TransitionProducts,
     n_bins: int,
     dtype: DTypeLike,
     n_states: int | None = None,
+    *,
+    pair_states: int | None = None,
 ) -> None:
     """Raise unless no row of ``operator``'s transition creates mass.
 
@@ -1767,6 +1814,14 @@ def _check_operator_rows(
     0.1 s for a 7,202-bin structured operator, against seconds for the
     checkpointed passes over 10,000 rows.
 
+    The products must also apply one transition: for one fixed pair of
+    random nonnegative vectors ``u``, ``v`` (and, with weights, one random
+    row-stochastic weight), ``u @ backward(v)`` and ``forward(u) @ v`` must
+    agree, and so must the sum of ``pair_products(u, v)`` with
+    ``pair_states``, to a relative ``PROBABILITY_SUM_TOLERANCE``. With
+    nonnegative terms there is no cancellation, so float32 rounding stays
+    far below it (about 1e-6 for 2,000 dense bins).
+
     Parameters
     ----------
     operator : TransitionProducts
@@ -1778,6 +1833,10 @@ def _check_operator_rows(
     n_states : int, optional
         Number of discrete states of the per-row weights; None for a
         stationary operator.
+    pair_states : int, optional, keyword-only
+        Number of discrete states of the transition statistics, when they
+        are requested; ``pair_products`` must then return
+        ``(pair_states, pair_states)``.
 
     Raises
     ------
@@ -1785,7 +1844,10 @@ def _check_operator_rows(
         If applying the operator to an all-ones vector raises ``TypeError``
         or ``ValueError``, or the row sums do not have one entry per state
         bin, are not finite, are negative, or exceed 1 (per target state
-        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
+        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``; or if
+        ``forward``, ``backward`` and ``pair_products`` disagree on the
+        probes, ``pair_products`` has another shape, or applying them to the
+        probes raises ``TypeError`` or ``ValueError``.
     """
     name = "transition_operator"
     weight = (
@@ -1850,6 +1912,71 @@ def _check_operator_rows(
             "detector's operator holds its continuous transitions' blocks, "
             "such as a custom transition's structured_block.",
         )
+    _check_operator_adjoint(operator, n_bins, dtype, n_states, pair_states)
+
+
+def _check_operator_adjoint(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: DTypeLike,
+    n_states: int | None,
+    pair_states: int | None,
+) -> None:
+    """Raise unless the operator's products apply one transition.
+
+    See :func:`_check_operator_rows`, which calls it after the row sums pass.
+    """
+    rng = np.random.default_rng(0)
+    left, right = rng.random((2, n_bins)).astype(dtype)
+    weight = None
+    if n_states is not None:
+        weight = rng.random((n_states, n_states)).astype(dtype)
+        weight /= weight.sum(axis=1, keepdims=True)
+    pairs = pair_states is not None
+    try:
+        through_backward, through_forward, pair_terms = jax.device_get(
+            _operator_adjoint_terms(operator, left, right, weight, pairs=pairs)
+        )
+    except (TypeError, ValueError) as error:
+        products = "forward, backward" + (" and pair_products" if pairs else "")
+        msg = "transition_operator could not be applied to probe vectors"
+        raise ValidationError(
+            msg,
+            expected=f"{products} of two ({n_bins},) vectors"
+            + ("" if weight is None else f" with a ({n_states}, {n_states}) weight"),
+            got=f"{type(error).__name__}: {error}",
+            hint="forward must act on the same state bins as backward; "
+            "transition statistics also need pair_products, with the discrete "
+            "state of each bin.",
+        ) from error
+    if pairs and np.shape(pair_terms) != (pair_states, pair_states):
+        msg = "transition_operator.pair_products has the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({pair_states}, {pair_states}), one term per "
+            "pair of discrete states",
+            got=f"shape {np.shape(pair_terms)}",
+            hint="The operator's discrete states must be those of state_ind "
+            "and discrete_transition_matrix.",
+        )
+    reference = float(through_backward)
+    sides = {"forward(u) @ v": float(through_forward)}
+    if pairs:
+        sides["pair_products(u, v).sum()"] = float(np.sum(pair_terms, dtype=np.float64))
+    for side, value in sides.items():
+        scale = max(abs(reference), abs(value))
+        if not abs(value - reference) <= PROBABILITY_SUM_TOLERANCE * scale:
+            msg = "transition_operator's products do not apply one transition"
+            raise ValidationError(
+                msg,
+                expected=f"u @ backward(v) = {side} for nonnegative u and v, "
+                f"to a relative {PROBABILITY_SUM_TOLERANCE:g}",
+                got=f"u @ backward(v) = {reference:.8g}, {side} = {value:.8g}",
+                hint="forward must be the transpose product of backward "
+                "(probabilities @ T and T @ values with the same T and "
+                "weight), and pair_products must split probabilities @ T * "
+                "values by discrete state pair.",
+            )
 
 
 def _validate_hmm_inputs(
