@@ -37,7 +37,6 @@ from numpy.typing import ArrayLike
 from patsy import DesignMatrix
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
-from non_local_detector import _validation as val
 from non_local_detector._transition_estimation import _row_smoothness
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import TransitionContext
@@ -81,7 +80,6 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
-    validate_spike_feature_population,
 )
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -109,23 +107,20 @@ from non_local_detector.models._em import (
 from non_local_detector.models._input_validation import (
     _TIME_CONTRACT,
     _decode_time_edges,
-    _EncodingInputs,
     _InputValidationMixin,
     _missing_bins,
     _missing_covariates_error,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
-    _numeric_spike_times_list,
     _require_labeled_environments,
     _require_sampling_frequency_width,
     _sample_mask,
-    _sample_times,
     _validate_covariate_time_length,
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
     _validate_prior_weight,
     _validate_spike_structure,
-    _validate_transition_arguments,
+    _ValidatedInputs,
     _warn_if_off_grid,
 )
 from non_local_detector.models._persistence import (
@@ -1376,8 +1371,8 @@ class _DetectorBase(
         """
         Fit the model to the data.
 
-        The public ``fit`` methods coerce and check the arrays first (see
-        ``_EncodingInputs``).
+        The public ``fit`` methods check the arguments first (see
+        ``_validated_inputs``).
 
         Parameters
         ----------
@@ -1410,34 +1405,7 @@ class _DetectorBase(
         _DetectorBase
             Fitted model.
         """
-        _validate_transition_arguments(
-            transition_representation, max_dense_transition_bytes
-        )
-        val.ensure_all_finite(position[~np.isnan(position)], "position")
-        if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
-            msg = "At least one finite position sample is required for fitting"
-            raise ValidationError(msg)
-
-        # Raises ValidationError if position is 1D but env has track_graph.
-        self._validate_position_dimensionality(position, context="fit")
-
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Before anything changes, so a refused fit keeps the loaded model.
-        _refuse_untrusted_transition(self.discrete_transition_type, "fit")
-        if (
-            not self.discrete_transition_type.is_stationary
-            and discrete_transition_covariate_data is None
-        ):
-            raise _missing_covariates_error(
-                reason=f"{type(self.discrete_transition_type).__name__} depends "
-                "on covariates",
-                expected="the training values of the covariates named in the "
-                "transition formula",
-                hint="Pass the covariates, or use a stationary transition such as "
-                "DiscreteStationaryDiagonal.",
-                example="    detector.fit(position_time, position, spike_times, "
-                "discrete_transition_covariate_data={'speed': speed})",
-            )
         self._invalidate_stored_log_likelihood()  # stale after a refit
         # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
@@ -1585,60 +1553,6 @@ class _DetectorBase(
                             "and decoding, including when tracking is missing.",
                         )
 
-    def _numeric_spike_data(self, spike_data: tuple[Any, ...]) -> tuple[Any, ...]:
-        """Return the spike arrays with ``spike_times`` as numeric arrays.
-
-        Fitting reads the spike times with ``np.interp``, which rejects
-        object-dtype arrays that decoding reads as float.
-
-        Parameters
-        ----------
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-
-        Returns
-        -------
-        tuple
-            ``spike_data`` with the first entry converted.
-        """
-        spike_times = _numeric_spike_times_list(
-            spike_data[0], clusterless=isinstance(self, ClusterlessDetector)
-        )
-        return (spike_times, *spike_data[1:])
-
-    def _check_encoding_spike_data(
-        self, position_time: ArrayLike, spike_data: tuple[Any, ...]
-    ) -> tuple[Any, ...]:
-        """Check encoding spike data; warn if they look like other units or another clock.
-
-        Warns if all lie far to one side of the position_time span, or if
-        under 1% lie in it and they reach over 10 spans past it (ms for s on a
-        clock starting near 0).
-
-        Parameters
-        ----------
-        position_time : array_like, shape (n_time_position,)
-            Times of the position samples, in seconds.
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-
-        Returns
-        -------
-        tuple
-            The spike arrays with ``spike_times`` as numeric arrays.
-        """
-        times = _sample_times(position_time)
-        finite = times[np.isfinite(times)]
-        self._check_spike_data(
-            spike_data,
-            time_range=(float(finite.min()), float(finite.max()))
-            if finite.size
-            else None,
-            range_name="position_time span",
-            check_extent=True,
-        )
-        return self._numeric_spike_data(spike_data)
-
     _SPIKE_DATA_NAMES: tuple[str, ...] = ()
     """Names of the spike-data arrays, in the order the decode methods take them."""
     _PREDICT_EXAMPLE: str = ""
@@ -1736,7 +1650,7 @@ class _DetectorBase(
             Edges already validated by ``_decode_time_edges``.
         log_likelihood_args : tuple
             ``(position_time, position, *spike_data)``, position coerced by
-            ``_DecodeInputs``.
+            ``_validated_inputs``.
         warn_outside_tracking : bool, optional
             Warn about decode bins outside the tracked period, by default
             False (the decoding methods warned when they marked them missing).
@@ -2257,28 +2171,20 @@ class _DetectorBase(
                 ).transition_matrix,
                 time_centers,
             )
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
+        inputs = self._validated_inputs(
+            "estimate",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            time_edges=time_edges,
+            is_missing=is_missing,
         )
-        position_time, position = inputs.position_time, inputs.position
-        # The internal fit warns if every spike lies outside the position_time span.
-        self._check_spike_data(spike_data)
-        spike_data = self._numeric_spike_data(spike_data)
-        position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Mirror predict(): bins without tracked position are missing
-        # observations in the E-step.
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(self.observation_models),
-            warn_outside_tracking=True,
-        )
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        spike_data, is_missing = inputs.spike_data, inputs.is_missing
         # Before the internal fit, so a refused estimate leaves the model as is.
         _require_observed_bins(is_missing)
         # Every run drops the stored likelihood of the previous fit. Drop it
@@ -2587,7 +2493,7 @@ class _DetectorBase(
             del self.log_likelihood_
 
     def _encoding_masks(
-        self, inputs: _EncodingInputs
+        self, inputs: _ValidatedInputs
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Training mask and labels of an encoding fit, with their defaults.
 
@@ -2600,7 +2506,7 @@ class _DetectorBase(
         encoding_group_labels : np.ndarray, shape (n_time_position,)
         environment_labels : np.ndarray, shape (n_time_position,)
         """
-        n_time = len(inputs.position_time)
+        n_time = len(cast("np.ndarray", inputs.position_time))
         return (
             np.ones((n_time,), dtype=bool)
             if inputs.is_training is None
@@ -2704,7 +2610,7 @@ class _DetectorBase(
         Parameters
         ----------
         *args
-            Positional arguments of the subclass implementation.
+            The ``_ValidatedInputs`` of the fit.
         **kwargs
             Keyword arguments of the subclass implementation.
         """
@@ -2991,7 +2897,8 @@ class ClusterlessDetector(_DetectorBase):
             The other keyword arguments of ``_fit_encoding_model``.
         """
         self._fit_encoding_model(
-            **encoding_fit_arguments, weights=weights, refit_mark_reference=False
+            self._refit_inputs(weights, encoding_fit_arguments),
+            refit_mark_reference=False,
         )
 
     def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:
@@ -3141,37 +3048,22 @@ class ClusterlessDetector(_DetectorBase):
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
-        spike_times, spike_waveform_features = self._check_encoding_spike_data(
-            position_time, (spike_times, spike_waveform_features)
-        )
-        self._fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
+        inputs = self._validated_inputs(
+            "encoding",
+            (spike_times, spike_waveform_features),
+            position_time=position_time,
+            position=position,
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             weights=weights,
             encoding_time_range=encoding_time_range,
             valid_position_intervals=valid_position_intervals,
-            refit_mark_reference=True,
         )
+        self._fit_encoding_model(inputs, refit_mark_reference=True)
 
     def _fit_encoding_model(
-        self,
-        position_time: ArrayLike,
-        position: ArrayLike,
-        spike_times: list[np.ndarray],
-        spike_waveform_features: list[np.ndarray],
-        *,
-        is_training: ArrayLike | None = None,
-        encoding_group_labels: ArrayLike | None = None,
-        environment_labels: ArrayLike | None = None,
-        weights: ArrayLike | None = None,
-        encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        refit_mark_reference: bool,
+        self, inputs: _ValidatedInputs, *, refit_mark_reference: bool
     ) -> None:
         """Body of ``fit_encoding_model``.
 
@@ -3179,33 +3071,13 @@ class ClusterlessDetector(_DetectorBase):
         as posterior-weighted encoding updates do.
         """
         logger.info("Fitting clusterless spikes...")
-        # Validate before any state changes and before the collections are
-        # paired electrode by electrode (``fit`` also checks first, before
-        # ``_fit`` rebuilds its own state).
-        validate_spike_feature_population(spike_times, spike_waveform_features)
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            weights,
-        )
-        position_time, weights = inputs.position_time, inputs.weights
-        position = (
-            inputs.position[:, np.newaxis]
-            if inputs.position.ndim == 1
-            else inputs.position
-        )
+        spike_times, spike_waveform_features = inputs.spike_data
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        support = cast("EncodingSupport", inputs.encoding_support)
+        weights = inputs.weights
         is_training, encoding_group_labels, environment_labels = self._encoding_masks(
             inputs
-        )
-
-        support = EncodingSupport(
-            position_time,
-            position,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
         )
 
         kwargs = self._resolve_clusterless_algorithm_params()
@@ -3340,18 +3212,21 @@ class ClusterlessDetector(_DetectorBase):
         self
             The fitted detector, of its own class.
         """
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
+        inputs = self._validated_inputs(
+            "fit",
+            (spike_times, spike_waveform_features),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
-        # Before ``_fit``; fit_encoding_model checks again and warns.
-        self._check_spike_data((spike_times, spike_waveform_features))
         with self._restore_state_on_error():
             self._fit(
-                inputs.position,
+                cast("np.ndarray", inputs.position),
                 inputs.is_training,
                 inputs.encoding_group_labels,
                 inputs.environment_labels,
@@ -3362,8 +3237,7 @@ class ClusterlessDetector(_DetectorBase):
             self.fit_encoding_model(
                 inputs.position_time,
                 inputs.position,
-                spike_times,
-                spike_waveform_features,
+                *inputs.spike_data,
                 is_training=inputs.is_training,
                 encoding_group_labels=inputs.encoding_group_labels,
                 environment_labels=inputs.environment_labels,
@@ -4192,56 +4066,31 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
-        (spike_times,) = self._check_encoding_spike_data(position_time, (spike_times,))
         self._fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
-            weights=weights,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
+            self._validated_inputs(
+                "encoding",
+                (spike_times,),
+                position_time=position_time,
+                position=position,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+                weights=weights,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+            )
         )
 
-    def _fit_encoding_model(
-        self,
-        position_time: ArrayLike,
-        position: ArrayLike,
-        spike_times: list[np.ndarray],
-        *,
-        is_training: ArrayLike | None = None,
-        encoding_group_labels: ArrayLike | None = None,
-        environment_labels: ArrayLike | None = None,
-        weights: ArrayLike | None = None,
-        encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-    ) -> None:
+    def _fit_encoding_model(self, inputs: _ValidatedInputs) -> None:
         """Body of ``fit_encoding_model``, which EM encoding updates call."""
         logger.info("Fitting place fields...")
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            weights,
-        )
-        position_time, weights = inputs.position_time, inputs.weights
-        position = (
-            inputs.position[:, np.newaxis]
-            if inputs.position.ndim == 1
-            else inputs.position
-        )
+        (spike_times,) = inputs.spike_data
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        support = cast("EncodingSupport", inputs.encoding_support)
+        weights = inputs.weights
         is_training, encoding_group_labels, environment_labels = self._encoding_masks(
             inputs
-        )
-        support = EncodingSupport(
-            position_time,
-            position,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
         )
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
@@ -4347,18 +4196,21 @@ class SortedSpikesDetector(_DetectorBase):
         self
             The fitted detector, of its own class.
         """
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
+        inputs = self._validated_inputs(
+            "fit",
+            (spike_times,),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
-        # Before ``_fit``; fit_encoding_model checks again and warns.
-        self._check_spike_data((spike_times,))
         with self._restore_state_on_error():
             self._fit(
-                inputs.position,
+                cast("np.ndarray", inputs.position),
                 inputs.is_training,
                 inputs.encoding_group_labels,
                 inputs.environment_labels,
@@ -4369,7 +4221,7 @@ class SortedSpikesDetector(_DetectorBase):
             self.fit_encoding_model(
                 inputs.position_time,
                 inputs.position,
-                spike_times,
+                *inputs.spike_data,
                 is_training=inputs.is_training,
                 encoding_group_labels=inputs.encoding_group_labels,
                 environment_labels=inputs.environment_labels,

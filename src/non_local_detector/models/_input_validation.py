@@ -3,9 +3,8 @@
 The checks the detectors run on their constructor parameters and on the data
 of their public methods: the one input step every public method takes
 (``_InputValidationMixin._validated_inputs``, giving ``_ValidatedInputs``),
-the coerced encoding inputs (``_EncodingInputs``), the decode time grid, the
-prediction and transition options, ``return_outputs``, and the fitted model's
-time contract. ``_DetectorBase`` inherits the methods of
+the decode time grid, the prediction and transition options,
+``return_outputs``, and the fitted model's time contract. ``_DetectorBase`` inherits the methods of
 ``_InputValidationMixin``.
 
 Methods that read the detector's attributes annotate ``self`` as
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 import numpy as np
+import pandas as pd
 from numpy.typing import ArrayLike
 
 import non_local_detector
@@ -30,6 +30,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
+from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
     DataError,
@@ -49,6 +50,7 @@ from non_local_detector.time_edges import (
     decode_bin_centers,
     uniform_time_edges,
 )
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -581,41 +583,66 @@ def _validate_spike_data(
     )
 
 
-@dataclass(frozen=True)
-class _EncodingInputs:
-    """Encoding data of a public fitting method, coerced and checked once.
+_InputStage = Literal["fit", "encoding", "refit", "decode", "likelihood", "estimate"]
 
-    Optional arrays stay None, so each fitting stage keeps its own default.
+
+@dataclass(frozen=True)
+class _ValidatedInputs:
+    """Data of one public call, coerced and checked once.
+
+    Built by ``_InputValidationMixin._validated_inputs``. An array the call's
+    stage does not take stays None.
 
     Attributes
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
-    position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
-        As the caller gave it, so errors report the caller's shape.
+    spike_data : tuple
+        The spike arrays named by ``_SPIKE_DATA_NAMES``.
+        ``spike_times`` are numeric arrays except when decoding, whose
+        binning reads them as they are.
+    position_time : np.ndarray, shape (n_time_position,), or None
+    position : np.ndarray, shape (n_time_position, n_position_dims), or None
     is_training : np.ndarray of bool, shape (n_time_position,), or None
     encoding_group_labels : np.ndarray of int or str, shape (n_time_position,), or None
     environment_labels : np.ndarray of str, shape (n_time_position,), or None
     weights : np.ndarray of float, shape (n_time_position,), or None
+    encoding_support : EncodingSupport or None
+        Support of an encoding fit.
+    time_edges : np.ndarray, shape (n_bins + 1,), or None
+        Validated decode bin edges.
+    time_centers : np.ndarray, shape (n_rows,), or None
+        Centers of the requested decode bins.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        The caller's mask combined with the bins without tracked position.
     """
 
-    position_time: np.ndarray
-    position: np.ndarray
-    is_training: np.ndarray | None
-    encoding_group_labels: np.ndarray | None
-    environment_labels: np.ndarray | None
+    spike_data: tuple[Any, ...]
+    position_time: np.ndarray | None = None
+    position: np.ndarray | None = None
+    is_training: np.ndarray | None = None
+    encoding_group_labels: np.ndarray | None = None
+    environment_labels: np.ndarray | None = None
     weights: np.ndarray | None = None
+    encoding_support: EncodingSupport | None = None
+    time_edges: np.ndarray | None = None
+    time_centers: np.ndarray | None = None
+    is_missing: np.ndarray | None = None
 
     @classmethod
-    def from_arguments(
+    def from_encoding_arguments(
         cls,
+        spike_data: tuple[Any, ...],
         position_time: ArrayLike,
         position: ArrayLike | None,
         is_training: ArrayLike | None = None,
         encoding_group_labels: ArrayLike | None = None,
         environment_labels: ArrayLike | None = None,
         weights: ArrayLike | None = None,
-    ) -> "_EncodingInputs":
+    ) -> "_ValidatedInputs":
         """Coerce and check the arguments of ``fit``-like methods.
+
+        Optional arrays stay None, so each fitting stage keeps its own
+        default. ``position`` stays as the caller gave it, so errors report
+        the caller's shape.
 
         Raises
         ------
@@ -637,6 +664,7 @@ class _EncodingInputs:
         times = _sample_times(position_time)
         n_time = len(times)
         return cls(
+            spike_data,
             position_time=times,
             position=_sample_positions(position, n_time),
             is_training=None
@@ -664,38 +692,6 @@ class _EncodingInputs:
             ),
             weights=None if weights is None else val.validate_weights(weights, n_time),
         )
-
-
-_InputStage = Literal["decode", "likelihood"]
-
-
-@dataclass(frozen=True)
-class _ValidatedInputs:
-    """Data of one public call, coerced and checked once.
-
-    Built by ``_InputValidationMixin._validated_inputs``. An array the call's
-    stage does not take stays None.
-
-    Attributes
-    ----------
-    spike_data : tuple
-        The spike arrays named by ``_SPIKE_DATA_NAMES``.
-    position_time : np.ndarray, shape (n_time_position,), or None
-    position : np.ndarray, shape (n_time_position, n_position_dims), or None
-    time_edges : np.ndarray, shape (n_bins + 1,), or None
-        Validated decode bin edges.
-    time_centers : np.ndarray, shape (n_rows,), or None
-        Centers of the requested decode bins.
-    is_missing : np.ndarray of bool, shape (n_bins,), or None
-        The caller's mask combined with the bins without tracked position.
-    """
-
-    spike_data: tuple[Any, ...]
-    position_time: np.ndarray | None = None
-    position: np.ndarray | None = None
-    time_edges: np.ndarray | None = None
-    time_centers: np.ndarray | None = None
-    is_missing: np.ndarray | None = None
 
     @classmethod
     def from_decode_arguments(
@@ -1501,10 +1497,19 @@ class _InputValidationMixin:
         *,
         position_time: ArrayLike | None = None,
         position: ArrayLike | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
+        encoding_time_range: ArrayLike | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         time_edges: ArrayLike | None = None,
         row_slice: slice | None = None,
         is_missing: np.ndarray | None = None,
         example: str | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
+        transition_representation: TransitionRepresentation = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> _ValidatedInputs:
         """Coerce and check the data of one public call.
 
@@ -1513,6 +1518,15 @@ class _InputValidationMixin:
         the argument. Warnings fire here and nowhere that a call can repeat
         (chunks, EM iterations). What differs between the stages:
 
+        - ``fit``: the training arrays, the spikes, then what ``_fit`` needs
+          before anything changes. Spikes are not compared with a time range
+          here: ``fit`` goes on to ``fit_encoding_model``, whose stage warns.
+        - ``encoding`` (``fit_encoding_model``): the spikes against the
+          position span come first, then the training arrays and the encoding
+          support.
+        - ``refit`` (EM's encoding refits, through ``_fit_encoding_model``):
+          the arrays are the ones the public call checked, so this reads the
+          iteration's ``weights`` and warns of nothing.
         - ``decode`` (``predict``, ``most_likely_sequence``): position is
           coerced first, then the fitted model, the time grid, the spikes
           against it, the position against the model, and the missing bins.
@@ -1520,10 +1534,14 @@ class _InputValidationMixin:
           that the fitted model comes first, and ``is_missing`` has one entry
           per requested row, so the rows it evaluates check it. ``row_slice``
           selects the rows of ``time_centers``.
+        - ``estimate`` (``estimate_parameters``): ``time_edges`` come checked
+          with EM's options, and the model is not fitted yet, so the training
+          arrays and spikes are read as in ``fit`` and the missing bins as in
+          ``decode``. The internal ``fit`` then warns about the position span.
 
         Parameters
         ----------
-        stage : {"decode", "likelihood"}
+        stage : {"fit", "encoding", "refit", "decode", "likelihood", "estimate"}
             The kind of public method.
         spike_data : tuple
             The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
@@ -1531,6 +1549,18 @@ class _InputValidationMixin:
             Times of the position samples.
         position : array_like, shape (n_time_position,) or (n_time_position, n_position_dims), optional
             Position samples.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            Samples to train the encoding model on.
+        encoding_group_labels : array_like, shape (n_time_position,), optional
+            Encoding group of each sample.
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment of each sample.
+        weights : array_like, shape (n_time_position,), optional
+            Training weights.
+        encoding_time_range : array_like, shape (2,), optional
+            See ``fit``.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            See ``fit``.
         time_edges : array_like, shape (n_bins + 1,), optional
             Decode bin edges.
         row_slice : slice, optional
@@ -1539,6 +1569,12 @@ class _InputValidationMixin:
             The caller's missing bins.
         example : str, optional
             Example call for the error of a missing ``position_time``.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            The covariates ``fit`` was given.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            See ``fit``.
+        max_dense_transition_bytes : int, optional
+            See ``fit``.
 
         Returns
         -------
@@ -1549,43 +1585,152 @@ class _InputValidationMixin:
         ValidationError, DataError, NotFittedError
             From the checks of the stage.
         """
+        decoding = stage in ("decode", "likelihood")
         if stage == "likelihood":
             self._require_decodable()
-        inputs = _ValidatedInputs.from_decode_arguments(
-            spike_data, position_time, position, example=example
-        )
+        if stage == "encoding":
+            times = _sample_times(cast("ArrayLike", position_time))
+            finite = times[np.isfinite(times)]
+            self._check_spike_data(
+                spike_data,
+                time_range=(float(finite.min()), float(finite.max()))
+                if finite.size
+                else None,
+                range_name="position_time span",
+                check_extent=True,
+            )
+            spike_data = self._numeric_spike_data(spike_data)
+        if decoding:
+            inputs = _ValidatedInputs.from_decode_arguments(
+                spike_data, position_time, position, example=example
+            )
+        else:
+            inputs = _ValidatedInputs.from_encoding_arguments(
+                spike_data,
+                cast("ArrayLike", position_time),
+                position,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+                weights,
+            )
         position_time, position = inputs.position_time, inputs.position
         if stage == "decode":
             self._require_decodable()
-        checked_edges, time_centers = _decode_time_edges(
-            cast("ArrayLike", time_edges),
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
-            row_slice=row_slice,
-        )
-        self._check_spike_data(
-            spike_data,
-            time_range=(float(checked_edges[0]), float(checked_edges[-1])),
-            range_name="decode time_edges",
-        )
-        self._validate_decode_position(position)
-        if stage == "decode":
+        checked_edges = cast("np.ndarray | None", time_edges)
+        time_centers = None
+        if decoding:
+            checked_edges, time_centers = _decode_time_edges(
+                cast("ArrayLike", time_edges),
+                *self._learned_transition_time_bin_width(),
+                sampling_frequency=self.sampling_frequency,
+                row_slice=row_slice,
+            )
+            self._check_spike_data(
+                spike_data,
+                time_range=(float(checked_edges[0]), float(checked_edges[-1])),
+                range_name="decode time_edges",
+            )
+            self._validate_decode_position(position)
+        if stage in ("fit", "estimate"):
+            self._check_spike_data(spike_data)
+            spike_data = self._numeric_spike_data(spike_data)
+        if stage == "fit":
+            self._validate_fit_arguments(
+                cast("np.ndarray", position),
+                discrete_transition_covariate_data,
+                transition_representation,
+                max_dense_transition_bytes,
+            )
+        if position is not None and position.ndim == 1:
+            position = position[:, np.newaxis]
+        encoding_support = None
+        if stage in ("encoding", "refit"):
+            encoding_support = EncodingSupport(
+                cast("ArrayLike", position_time),
+                cast("ArrayLike", position),
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+            )
+        if stage in ("decode", "estimate"):
             is_missing = _missing_bins(
-                checked_edges,
+                cast("np.ndarray", checked_edges),
                 is_missing,
                 position_time,
                 position,
                 reads_position=self._decode_reads_position(
                     self.state_space_.observation_models
+                    if stage == "decode"
+                    else self.observation_models
                 ),
                 warn_outside_tracking=True,
             )
         return replace(
             inputs,
+            spike_data=spike_data,
+            position=position,
+            encoding_support=encoding_support,
             time_edges=checked_edges,
             time_centers=time_centers,
             is_missing=is_missing,
         )
+
+    def _validate_fit_arguments(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        position: np.ndarray,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
+        transition_representation: TransitionRepresentation,
+        max_dense_transition_bytes: int,
+    ) -> None:
+        """Refuse a fit that cannot run, before anything changes.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
+            As the caller gave it, so errors report the caller's shape.
+        discrete_transition_covariate_data : dict or pd.DataFrame or None
+            The fit's covariates.
+        transition_representation : {"dense", "structured", "auto"}
+            See ``fit``.
+        max_dense_transition_bytes : int
+            See ``fit``.
+
+        Raises
+        ------
+        ValidationError
+            If a transition setting is unsupported, no position sample is
+            finite, position is 1-D on a track graph, the transition formula
+            is untrusted, or covariate transitions have no covariates.
+        DataError
+            If position holds an infinite value.
+        """
+        _validate_transition_arguments(
+            transition_representation, max_dense_transition_bytes
+        )
+        val.ensure_all_finite(position[~np.isnan(position)], "position")
+        if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
+            msg = "At least one finite position sample is required for fitting"
+            raise ValidationError(msg)
+
+        # Raises ValidationError if position is 1D but env has track_graph.
+        self._validate_position_dimensionality(position, context="fit")
+
+        # Before anything changes, so a refused fit keeps the loaded model.
+        _refuse_untrusted_transition(self.discrete_transition_type, "fit")
+        if (
+            not self.discrete_transition_type.is_stationary
+            and discrete_transition_covariate_data is None
+        ):
+            raise _missing_covariates_error(
+                reason=f"{type(self.discrete_transition_type).__name__} depends "
+                "on covariates",
+                expected="the training values of the covariates named in the "
+                "transition formula",
+                hint="Pass the covariates, or use a stationary transition such as "
+                "DiscreteStationaryDiagonal.",
+                example="    detector.fit(position_time, position, spike_times, "
+                "discrete_transition_covariate_data={'speed': speed})",
+            )
 
     def _require_decodable(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
@@ -1593,6 +1738,28 @@ class _InputValidationMixin:
         """Check the fitted model a decoding call reads, and warn if it changed."""
         self._validate_time_contract()
         self._warn_if_layout_parameters_changed()
+
+    @staticmethod
+    def _numeric_spike_data(spike_data: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Return the spike arrays with ``spike_times`` as numeric arrays.
+
+        Fitting reads the spike times with ``np.interp``, which rejects
+        object-dtype arrays that decoding reads as float.
+
+        Parameters
+        ----------
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+
+        Returns
+        -------
+        tuple
+            ``spike_data`` with the first entry converted.
+        """
+        spike_times = _numeric_spike_times_list(
+            spike_data[0], clusterless=len(spike_data) > 1
+        )
+        return (spike_times, *spike_data[1:])
 
     def _check_spike_data(
         self,

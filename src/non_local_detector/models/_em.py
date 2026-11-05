@@ -49,7 +49,10 @@ from non_local_detector.exceptions import (
     ValidationError,
 )
 from non_local_detector.models._checkpointed import _driver_outputs, _PosteriorOutputs
-from non_local_detector.models._input_validation import _normalize_return_outputs
+from non_local_detector.models._input_validation import (
+    _normalize_return_outputs,
+    _ValidatedInputs,
+)
 from non_local_detector.models._results import convert_results_to_xarray
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.time_edges import (
@@ -446,7 +449,7 @@ class _EMSettings:
         Dense EM with estimated stationary transitions: the continuous
         transition over the interior state bins.
     encoding_fit_arguments : dict or None
-        Keyword arguments of ``_fit_encoding_model`` that the encoding M-step
+        Arguments of ``_refit_inputs`` that the encoding M-step
         refits with, besides the posterior weights.
     """
 
@@ -639,10 +642,33 @@ class _EMMixin:
         weights : np.ndarray, shape (n_time_position,)
             Posterior weight of each time sample in the refit.
         encoding_fit_arguments : dict
-            The other keyword arguments of ``_fit_encoding_model``: the
-            estimation's position, spike data, training mask and labels.
+            The estimation's position, spike data, training mask and labels
+            (see ``_refit_inputs``).
         """
-        self._fit_encoding_model(**encoding_fit_arguments, weights=weights)
+        self._fit_encoding_model(self._refit_inputs(weights, encoding_fit_arguments))
+
+    def _refit_inputs(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        weights: np.ndarray,
+        encoding_fit_arguments: dict[str, Any],
+    ) -> _ValidatedInputs:
+        """Build the inputs of one encoding refit, without the public call's warnings.
+
+        Parameters
+        ----------
+        weights : np.ndarray, shape (n_time_position,)
+            Posterior weight of each time sample in the refit.
+        encoding_fit_arguments : dict
+            Keyword arguments of ``_validated_inputs``, with the spike arrays
+            under their ``_SPIKE_DATA_NAMES``.
+
+        Returns
+        -------
+        inputs : _ValidatedInputs
+        """
+        arguments = dict(encoding_fit_arguments)
+        spike_data = tuple(arguments.pop(name) for name in self._SPIKE_DATA_NAMES)
+        return self._validated_inputs("refit", spike_data, **arguments, weights=weights)
 
     def _fit_em_model(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
@@ -869,7 +895,7 @@ class _EMMixin:
             By default None, which uses 16 GiB or half the available host
             memory (counting a container's limit), whichever is smaller.
         encoding_fit_arguments : dict, optional
-            Keyword arguments of ``_fit_encoding_model``, except ``weights``,
+            Arguments of ``_refit_inputs``, except ``weights``,
             that the encoding M-step refits with. Required with
             ``estimate_encoding_model=True`` when a state is local (raises
             ``ValidationError`` before any attribute is set otherwise); the
@@ -1024,7 +1050,7 @@ class _EMMixin:
             msg = "estimate_encoding_model=True needs encoding_fit_arguments"
             raise ValidationError(
                 msg,
-                expected="the _fit_encoding_model arguments the encoding M-step refits with",
+                expected="the _refit_inputs arguments the encoding M-step refits with",
                 got="encoding_fit_arguments=None",
                 hint="Call estimate_parameters, which passes its data, or pass "
                 "estimate_encoding_model=False.",
