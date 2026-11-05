@@ -153,8 +153,9 @@ def test_load_model_refuses_a_pickle_that_is_not_a_detector(tmp_path):
     path = tmp_path / "model.pkl"
     path.write_bytes(pickle.dumps({"not": "a detector"}))
 
-    with pytest.raises(ValidationError, match="holds a dict"):
+    with pytest.raises(ValidationError, match="holds a dict") as error:
         _DetectorBase.load_model(path)
+    assert "dict.load_model" not in str(error.value)
 
 
 def test_a_newer_format_version_asks_for_an_upgrade(saved):

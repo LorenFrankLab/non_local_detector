@@ -8,7 +8,7 @@ used in Hidden Markov Model-based neural decoding.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import Literal
 
 import numpy as np
@@ -62,10 +62,10 @@ Can be a single ObservationModel, list of models for different conditions,
 or None when observation models are not explicitly specified.
 """
 
-ContinuousInitialConditions = list[ContinuousInitialCondition]
+ContinuousInitialConditions = Sequence[ContinuousInitialCondition]
 """Type alias for continuous initial condition specifications.
 
-List of initial condition models, one for each discrete state in the HMM.
+Sequence of initial condition models, one for each discrete state in the HMM.
 Each entry is any object satisfying the ``ContinuousInitialCondition``
 protocol (e.g., UniformInitialConditions or a user-defined class).
 """

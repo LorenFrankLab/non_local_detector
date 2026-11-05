@@ -469,7 +469,9 @@ class _PersistenceMixin:
             raise ValidationError(
                 msg,
                 hint=f"Load it with {type(loaded).__qualname__}.load_model, or "
-                "the load_model of a class it derives from.",
+                "the load_model of a class it derives from."
+                if hasattr(loaded, "load_model")
+                else "It is not a saved detector.",
             )
         return loaded
 

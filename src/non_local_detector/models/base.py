@@ -153,7 +153,10 @@ from non_local_detector.time_edges import (
     calculate_time_edges,
     requires_time_edges,
 )
-from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
+from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
+    LazyDenseTransition,
+)
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -1397,7 +1400,7 @@ class _DetectorBase(
         ).is_track_interior
 
     @property
-    def continuous_state_transitions_(self) -> Any:
+    def continuous_state_transitions_(self) -> np.ndarray | LazyDenseTransition:
         """Continuous transition between state bins, shape (n_state_bins, n_state_bins).
 
         The fit's ``state_space_.continuous_transitions``: a dense matrix, or

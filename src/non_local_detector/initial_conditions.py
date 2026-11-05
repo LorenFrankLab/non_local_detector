@@ -4,6 +4,7 @@ This module provides the classes that set up initial state distributions in
 HMM-based neural decoders, and the check the detectors apply to them.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -37,7 +38,7 @@ class ContinuousInitialCondition(Protocol):
     def make_initial_conditions(
         self,
         observation_model: ObservationModel,
-        environments: tuple[Environment, ...],
+        environments: Sequence[Environment],
     ) -> np.ndarray:
         """Return the initial probability of each bin of the state.
 
@@ -45,7 +46,7 @@ class ContinuousInitialCondition(Protocol):
         ----------
         observation_model : ObservationModel
             The state's observation model.
-        environments : tuple of Environment
+        environments : sequence of Environment
             The model's fitted environments.
 
         Returns
@@ -79,7 +80,7 @@ class UniformInitialConditions:
     def make_initial_conditions(
         self,
         observation_model: ObservationModel,
-        environments: tuple[Environment, ...],
+        environments: Sequence[Environment],
     ) -> np.ndarray:
         """Create the initial conditions array for the specified observation model.
 
@@ -90,8 +91,8 @@ class UniformInitialConditions:
         ----------
         observation_model : ObservationModel
             The observation model specifying environment and decoding type.
-        environments : tuple[Environment, ...]
-            Tuple of available environments to match against the observation model.
+        environments : sequence of Environment
+            The available environments to match against the observation model.
 
         Returns
         -------

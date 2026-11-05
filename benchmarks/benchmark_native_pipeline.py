@@ -306,7 +306,7 @@ def main():
                     for name, variable in result.data_vars.items()
                 }
                 checkpoint_bytes = result.attrs.get("checkpoint_bytes", 0)
-                log_evidence = float(result.attrs["marginal_log_likelihoods"])
+                log_evidence = float(result.attrs["marginal_log_likelihoods"][-1])
                 evidence_precision = {
                     name: result.attrs.get(name, "legacy")
                     for name in ["evidence_dtype", "evidence_accumulation"]
