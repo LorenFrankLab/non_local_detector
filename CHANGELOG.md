@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Extension checks
 
 - **Fixed:** a likelihood algorithm whose `predict` returns the wrong shape raises `ValidationError` naming the algorithm and the state. Before, a shape that broadcast to the state's block, such as one column for every bin, spread that value over the bins silently.
+- **Fixed:** the matrix a custom discrete transition's `make_state_transition` returns is checked at fit, at every time step of a covariate-dependent one: a NaN or infinite value raises `DataError`, and a negative value or a row that does not sum to 1 (within the shared tolerance of 1e-4) raises `ValidationError`. Before, those decoded without an error, and the posterior was not a probability.
 
 ### Transition estimates and HMM inputs that gave wrong results silently
 

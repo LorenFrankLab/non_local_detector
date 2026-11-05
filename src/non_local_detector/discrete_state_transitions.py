@@ -975,9 +975,12 @@ def _check_initial_discrete_transition(
     Raises
     ------
     ValidationError
-        If the result's shape does not match ``n_states``, or its
-        coefficients, design matrix or number of dimensions do not match
-        ``is_stationary``.
+        If the result's shape does not match ``n_states``, its coefficients,
+        design matrix or number of dimensions do not match ``is_stationary``,
+        or the matrix has a negative value or a row that does not sum to 1
+        (within ``PROBABILITY_SUM_TOLERANCE``).
+    DataError
+        If the matrix has NaN or infinite values.
     """
     name = type(transition).__name__
     n_states = transition.n_states
@@ -1023,6 +1026,10 @@ def _check_initial_discrete_transition(
             expected=f"{n_states} x {n_states} transition matrices",
             got=f"transition_matrix with shape {matrix.shape}",
         )
+    label = f"{name}.make_state_transition(...).transition_matrix"
+    val.ensure_all_finite(matrix, label)
+    val.ensure_all_non_negative(matrix, label)
+    val.ensure_stochastic_matrix(matrix.reshape(-1, n_states), label)
 
 
 def _validate_diagonal_values(diagonal_values: npt.ArrayLike, name: str) -> None:

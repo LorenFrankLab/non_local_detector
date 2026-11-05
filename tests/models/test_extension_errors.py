@@ -11,11 +11,16 @@ import numpy as np
 import pytest
 
 from non_local_detector import (
+    ContFragSortedSpikesClassifier,
     Environment,
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.discrete_state_transitions import (
+    InitialDiscreteTransition,
+    _check_initial_discrete_transition,
+)
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from tests.models._helpers import SORTED_SIM_RATE
 
@@ -102,3 +107,66 @@ def test_builtin_blocks_pass_the_shape_check(sorted_sim, local_position_std, n_c
     )
     results = detector.predict(**_decode_kwargs(sorted_sim), n_chunks=n_chunks)
     assert np.all(np.isfinite(results.acausal_state_probabilities.values))
+
+
+class _ToyDiscreteTransition:
+    """A custom two-state discrete transition returning the given matrix."""
+
+    n_states = 2
+    smoothness = 0.0
+
+    def __init__(self, matrix, *, is_stationary=True):
+        self.matrix = np.asarray(matrix, dtype=float)
+        self.is_stationary = is_stationary
+
+    def make_state_transition(self, covariate_data=None):
+        return InitialDiscreteTransition(self.matrix, None, None)
+
+
+def _fit_classifier(sorted_sim, discrete_transition_type):
+    time, position, spike_times = sorted_sim
+    return ContFragSortedSpikesClassifier(
+        sorted_spikes_algorithm=_ALGORITHM,
+        sorted_spikes_algorithm_params=_FIT_PARAMS,
+        environments=Environment(place_bin_size=10.0),
+        sampling_frequency=SORTED_SIM_RATE,
+        discrete_transition_type=discrete_transition_type,
+    ).fit(time, position, spike_times)
+
+
+@pytest.mark.parametrize(
+    "matrix",
+    [
+        pytest.param([[1.4, 0.1], [0.1, 1.4]], id="rows above 1"),
+        pytest.param([[0.4, 0.1], [0.1, 0.4]], id="rows below 1"),
+        pytest.param([[1.2, -0.2], [0.1, 0.9]], id="negative"),
+    ],
+)
+def test_discrete_transition_values_are_checked_at_fit(sorted_sim, matrix):
+    """A custom class's matrix is a probability one, as the built-ins' are."""
+    with pytest.raises(ValidationError, match="_ToyDiscreteTransition"):
+        _fit_classifier(sorted_sim, _ToyDiscreteTransition(matrix))
+
+
+def test_discrete_transition_nan_is_checked_at_fit(sorted_sim):
+    matrix = [[np.nan, 0.1], [0.1, 0.9]]
+    with pytest.raises(DataError, match="_ToyDiscreteTransition"):
+        _fit_classifier(sorted_sim, _ToyDiscreteTransition(matrix))
+
+
+def test_row_sum_tolerance_is_the_shared_one(sorted_sim):
+    """A matrix within ``PROBABILITY_SUM_TOLERANCE`` of stochastic fits."""
+    matrix = [[0.97995, 0.02], [0.02, 0.98]]
+    detector = _fit_classifier(sorted_sim, _ToyDiscreteTransition(matrix))
+    np.testing.assert_array_equal(detector.discrete_state_transitions_, matrix)
+
+
+def test_covariate_transition_rows_are_each_checked():
+    """Every time step's rows are checked, not only the first."""
+    matrix = np.tile(np.eye(2), (3, 1, 1))
+    matrix[2, 1, 1] = 0.5
+    initial = InitialDiscreteTransition(matrix, np.zeros((1, 2, 1)), object())
+    with pytest.raises(ValidationError, match="row-stochastic"):
+        _check_initial_discrete_transition(
+            initial, _ToyDiscreteTransition(matrix, is_stationary=False)
+        )
