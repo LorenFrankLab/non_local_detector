@@ -237,10 +237,12 @@ def _summed_rate(data, name):
     return rate
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["sorted_spikes_kde", "sorted_spikes_glm", "clusterless_kde", "clusterless_gmm"],
-)
+def _has_independent_rate(name):
+    """Whether ``_summed_rate`` can rebuild this backend's rate from its fit."""
+    return name.startswith("sorted") or name in ("clusterless_kde", "clusterless_gmm")
+
+
+@pytest.mark.parametrize("name", [n for n in ALGORITHMS if _has_independent_rate(n)])
 @pytest.mark.parametrize("bin_width", [0.02, 0.1])
 def test_no_spike_likelihood_matches_expected_counts(cross_model_data, name, bin_width):
     """No-spike log likelihood is minus the summed Hz rate times bin duration.
@@ -258,6 +260,30 @@ def test_no_spike_likelihood_matches_expected_counts(cross_model_data, name, bin
     assert likelihood.shape == expected.shape
     assert np.all(np.isfinite(likelihood)), "No-spike likelihood must be finite"
     np.testing.assert_allclose(likelihood, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("name", ALGORITHMS)
+def test_spike_free_row_is_a_rate_times_its_duration(cross_model_data, name):
+    """Without spikes ``sum n log(rate dt) - rate dt`` is ``-rate dt``: never
+    positive, and proportional to the bin's duration, so No-Spike, which
+    subtracts a duration-scaled rate, compares with it on the same reference.
+
+    Tolerance: float32 rates scaled by two durations, as above.
+    """
+    durations = (0.02, 0.1)
+    scaled = []
+    for duration in durations:
+        edges = np.linspace(0.0, 1.0, round(1.0 / duration) + 1)
+        likelihood = _predict(cross_model_data, name, time_edges=edges, empty=True)
+        assert np.all(np.isfinite(likelihood))
+        assert np.all(likelihood <= 0.0)
+        scaled.append(likelihood[0] / duration)
+    assert np.any(scaled[0] < 0.0), "A zero row would pass trivially"
+    np.testing.assert_allclose(scaled[0], scaled[1], rtol=1e-5, atol=1e-6)
+
+    local = _predict(cross_model_data, name, empty=True, is_local=True)
+    assert np.all(np.isfinite(local))
+    assert np.all(local <= 0.0)
 
 
 @pytest.mark.parametrize("name", ALGORITHMS)
