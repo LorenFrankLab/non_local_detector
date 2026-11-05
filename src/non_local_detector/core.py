@@ -2504,10 +2504,12 @@ def _chunked_filter_smoother(
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
 
     # Create aggregation matrix for marginalizing state bins -> discrete states
-    # This is reused across all chunks
+    # This is reused across all chunks. In the working dtype, so the state
+    # probabilities have the posteriors' dtype: one_hot's default follows
+    # JAX's 64-bit mode instead.
     n_discrete_states = int(jnp.max(state_ind_jax)) + 1
     state_aggregation_matrix = jax.nn.one_hot(
-        state_ind_jax, n_discrete_states
+        state_ind_jax, n_discrete_states, dtype=dtype
     )  # (n_state_bins, n_states)
 
     # Initialize variables that may be referenced in loop conditionals

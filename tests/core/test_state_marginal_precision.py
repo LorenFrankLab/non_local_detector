@@ -13,6 +13,7 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
     row_slice_aware,
 )
+from tests.conftest import precision_mode
 from tests.likelihoods._sorted_spikes_helpers import dot_general_precisions
 
 pytestmark = pytest.mark.unit
@@ -183,3 +184,46 @@ def test_checkpointed_products_request_highest_precision(covariate, monkeypatch)
     assert precisions
     highest = (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)
     assert all(precision == highest for precision in precisions), precisions
+
+
+@pytest.mark.parametrize("covariate", [False, True])
+@pytest.mark.parametrize(
+    ("x64", "dtype"),
+    [(False, np.float32), (True, np.float32), (True, np.float64)],
+)
+def test_state_probabilities_have_the_posterior_dtype(covariate, x64, dtype):
+    """JAX's 64-bit mode alone does not change the state probabilities' dtype.
+
+    The state probabilities are sums of the posterior rows, so they are in the
+    working dtype; checkpointed inference returns them in it too.
+    """
+    n_rows, n_bins = 6, 3
+    labels = np.array([0, 1, 1])
+    likelihood = np.zeros((n_rows, n_bins))
+    arguments = {
+        "time_edges": np.arange(n_rows + 1),
+        "state_ind": labels,
+        "initial_distribution": np.full(n_bins, 1 / n_bins),
+        "log_likelihood_func": None,
+        "log_likelihood_args": (),
+        "log_likelihoods": likelihood,
+        "dtype": dtype,
+    }
+    with precision_mode(x64):
+        if covariate:
+            result = chunked_filter_smoother_covariate_dependent(
+                **arguments,
+                continuous_transition_matrix=np.eye(n_bins),
+                discrete_transition_matrix=np.broadcast_to(np.eye(2), (n_rows, 2, 2)),
+            )
+        else:
+            result = chunked_filter_smoother(
+                **arguments, transition_matrix=np.eye(n_bins)
+            )
+    for posterior, state_probabilities in [
+        (result.acausal_posterior, result.acausal_state_probabilities),
+        (result.causal_posterior, result.causal_state_probabilities),
+        (result.predictive_posterior, result.predictive_state_probabilities),
+    ]:
+        assert posterior.dtype == dtype
+        assert state_probabilities.dtype == dtype
