@@ -24,6 +24,7 @@ from typing import (
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from jax.typing import DTypeLike
 
 from non_local_detector._jax_typing import finfo
@@ -2325,7 +2326,7 @@ def _store_chunk_rows(
 
 def _call_log_likelihood_chunk(
     log_likelihood_func: Callable[..., ArrayLike],
-    time_edges: Any,
+    time_edges: npt.ArrayLike,
     log_likelihood_args: tuple[Any, ...],
     rows: slice,
     is_missing_chunk: np.ndarray | None,

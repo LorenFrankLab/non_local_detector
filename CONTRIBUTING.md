@@ -68,7 +68,7 @@ or individually: `uv run ruff check src/`, `uv run ruff format src/`, `uv run my
 
 ## Dtypes
 
-- HMM inference (filter, smoother, Viterbi and checkpointed inference) runs in float32. The drivers cast their inputs to their `dtype`, float32 by default, so float64 inputs are rounded. A driver given `dtype=np.float64` runs in float64, and raises `ValidationError` when JAX's 64-bit mode is off instead of silently computing in float32.
+- The HMM drivers (`chunked_filter_smoother`, `most_likely_sequence`, their covariate-dependent variants and `checkpointed_forward_backward`), which the detectors use, run inference in float32. They cast their inputs to their `dtype`, float32 by default, so float64 inputs are rounded. The jit-composable passes (`filter`, `smoother`, `viterbi` and their covariate-dependent variants) compute in the dtype of their inputs. A driver given `dtype=np.float64` runs in float64, and raises `ValidationError` when JAX's 64-bit mode is off instead of silently computing in float32.
 - Products with a transition or state-aggregation matrix pass `precision=jax.lax.Precision.HIGHEST`. The default CUDA precision (TF32) rounds float32 matmuls to about 1e-3 relative, so CPU and GPU results would disagree.
 - Host-side estimation that needs float64, such as the discrete-transition M-step, runs inside `discrete_state_transitions._float64_jax()`, a scoped float64 context, so it does not depend on the global 64-bit mode. Its results are cast to the working dtype when they enter inference.
 - Results keep the working dtype whatever the global 64-bit mode. Give constants an explicit dtype: `jax.nn.one_hot`, `jnp.zeros` and `jnp.asarray` of Python or NumPy float64 values default to float64 under 64-bit mode and would promote float32 inputs.
