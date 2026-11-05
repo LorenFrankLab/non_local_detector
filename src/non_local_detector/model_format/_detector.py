@@ -779,13 +779,15 @@ def _rebuild_discrete(
     )
 
     covariate_data = detector._discrete_transition_covariate_data_
+    # Marked whatever the file stores beside it: a formula the file stores
+    # without covariates is evaluated by the next fit.
+    if not trust_formulas:
+        _mark_file_formula(detector, covariate_data)
     if covariate_data is None:
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         detector.discrete_state_transitions_ = stored["discrete_state_transitions"]
         return
-    if not trust_formulas:
-        _mark_file_formula(detector, covariate_data)
     if isinstance(
         getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
     ):
