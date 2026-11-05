@@ -91,6 +91,18 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 - List each new class that its encoding model holds (a fitted density model, a basis) in `model_format/_builtins.py` with its fields, or `save_model` refuses the fitted detector (see "Saved-model format").
 - Add the algorithm to the user-facing lists, the likelihood models in `README.md` ("Architecture") and the likelihood table in `docs/getting-started/core-concepts.md`; the contract tests check that both name every registered algorithm.
 
+## Adding a transition
+
+A continuous transition, a discrete transition or an initial-condition class is any class with the methods of its protocol: `ContinuousTransition` (`non_local_detector.continuous_state_transitions`), `DiscreteTransition` (`non_local_detector.discrete_state_transitions`) or `ContinuousInitialCondition` (`non_local_detector.initial_conditions`). The detectors also rely on these rules, which the protocols cannot express:
+
+- `make_state_transition(environments, context=None)` returns the block between two spatial states (or two one-bin states) over every place bin, interior or not: shape `(n_source_bins, n_destination_bins)`, finite, nonnegative, each row summing to at most 1 (0 for a bin nothing can leave). The detectors set a block between a one-bin state (No-Spike, or Local without `local_position_std`) and a spatial state without calling it, from the declared destination environment (`environment2_name` when the class has it, else `environment_name`).
+- A continuous transition gets a structured operator (`transition_representation="structured"` or `"auto"`) only if its class body defines `structured_block`, `dense_block_shape` and `graph_distance_environment` (`transition_operators.SupportsStructuredBlock`; `_EnvironmentBlock` gives the last two for a transition within one environment). `structured_block` returns a block equal to `make_state_transition`'s, or raises `UnsupportedTransitionError` for a configuration that has none. An inherited `structured_block`, or a `make_state_transition` assigned on an instance, is ignored and the transition is planned densely, since the subclass may change the block.
+- An instance holds only its configuration: every attribute is an `__init__` argument, so `type(obj)(**vars(obj))` rebuilds it (Spyglass stores parameters this way), and a fit adds no attributes, such as the environment it was built on.
+- A discrete transition's `make_state_transition(covariate_data)` returns an `InitialDiscreteTransition` whose shape and coefficients match `is_stationary` and `n_states`; an initial-condition class returns one value per place bin of the state's environment (shape `(1,)` for a state without place bins), nonnegative and summing to 1 over the interior bins.
+- List each new class in `model_format/_builtins.py` with its fields, or `save_model` refuses a detector that holds it (see "Saved-model format").
+
+`tests/transitions/test_transition_contract.py` finds every class in those three modules and checks it against these rules on a 1-D grid, a 2-D grid with holes and a track graph. Add configurations of a new class to its `CONTINUOUS_CONFIGURATIONS`, `DISCRETE_CONFIGURATIONS` or `INITIAL_CONDITION_CONFIGURATIONS` (the test raises `KeyError` without them).
+
 ## Saved-model format
 
 `save_model` writes the format of `non_local_detector.model_format`, and every later release must read the files earlier ones wrote. The stored names are the format: the file names of the detector's fitted state (`_STORED` in `model_format/_detector.py`), the fields each saved class stores (`model_format/_builtins.py`) and the fixed `nld.` type names listed there.

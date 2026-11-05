@@ -16,7 +16,7 @@ import numpy as np
 from non_local_detector.continuous_state_transitions import ContinuousTransition
 from non_local_detector.discrete_state_transitions import DiscreteTransition
 from non_local_detector.environment import Environment
-from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.initial_conditions import ContinuousInitialCondition
 from non_local_detector.observation_models import ObservationModel
 
 __all__ = [
@@ -60,11 +60,12 @@ Can be a single ObservationModel, list of models for different conditions,
 or None when observation models are not explicitly specified.
 """
 
-ContinuousInitialConditions = list[UniformInitialConditions]
+ContinuousInitialConditions = list[ContinuousInitialCondition]
 """Type alias for continuous initial condition specifications.
 
-List of initial condition models, typically UniformInitialConditions,
-one for each discrete state in the HMM.
+List of initial condition models, one for each discrete state in the HMM.
+Each entry is any object satisfying the ``ContinuousInitialCondition``
+protocol (e.g., UniformInitialConditions or a user-defined class).
 """
 
 Stickiness = float | np.ndarray

@@ -6,7 +6,7 @@ from posterior distributions.
 """
 
 from dataclasses import dataclass
-from typing import cast
+from typing import Protocol, cast, runtime_checkable
 
 import numpy as np
 
@@ -16,8 +16,46 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
 
 __all__ = [
+    "ContinuousInitialCondition",
     "UniformInitialConditions",
 ]
+
+
+@runtime_checkable
+class ContinuousInitialCondition(Protocol):
+    """A model of the initial distribution over one discrete state's bins.
+
+    The detectors call ``make_initial_conditions`` once per state at fit and
+    check its result (``_check_state_initial_conditions``): one value per
+    place bin of the state's environment, or shape (1,) for a state without
+    place bins (Local, No-Spike), nonnegative and summing to 1 over the
+    interior bins. A user-defined class with this method can be used in place
+    of the package's ``UniformInitialConditions``. Spyglass stores it as
+    ``vars(obj)`` and rebuilds it with ``type(obj)(**vars(obj))``, so every
+    instance attribute should be an ``__init__`` argument.
+    """
+
+    def make_initial_conditions(
+        self,
+        observation_model: ObservationModel,
+        environments: tuple[Environment, ...],
+    ) -> np.ndarray:
+        """Return the initial probability of each bin of the state.
+
+        Parameters
+        ----------
+        observation_model : ObservationModel
+            The state's observation model.
+        environments : tuple of Environment
+            The model's fitted environments.
+
+        Returns
+        -------
+        initial_conditions : np.ndarray, shape (n_state_bins,)
+            One value per place bin of the state's environment, or shape (1,)
+            for a state without place bins.
+        """
+        ...
 
 
 @dataclass
