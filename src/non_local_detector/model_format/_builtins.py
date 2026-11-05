@@ -69,7 +69,11 @@ def _restored(
 
 
 def _stateless(cls: type) -> dict[str, Callable[..., Any]]:
-    return {"to_state": lambda obj: {}, "from_state": lambda state: cls()}  # noqa: ARG005 -- stateless
+    def from_state(state: dict[str, Any]) -> Any:
+        read_fields(state, (), {}, cls)  # refuses any field
+        return cls()
+
+    return {"to_state": lambda obj: {}, "from_state": from_state}  # noqa: ARG005 -- stateless
 
 
 def builtin_types() -> list[BuiltinType]:

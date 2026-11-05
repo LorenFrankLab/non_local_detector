@@ -66,15 +66,27 @@ def read_fields(
     """Return the ``names`` fields of a stored state, defaulting optional ones.
 
     A field added to a type after files were written is absent from those
-    files; ``defaults`` gives its value then (a copy).
+    files; ``defaults`` gives its value then (a copy). A field the type does
+    not store is refused: a newer or different version of the type wrote
+    it, and reading on without it could build a different object.
 
     Raises
     ------
     DataError
-        If a field without a default is missing.
+        If a field without a default is missing, or the state holds a field
+        not in ``names``.
     """
     from non_local_detector.exceptions import DataError
 
+    unread = sorted(set(state) - set(names))
+    if unread:
+        package = cls.__module__.split(".")[0]
+        msg = f"The saved {cls.__qualname__} has fields {unread} that this version does not read"
+        raise DataError(
+            msg,
+            hint=f"The file was written by a newer or different version of "
+            f"{package}, or was edited. Read it with the version that wrote it.",
+        )
     values = {}
     for name in names:
         if name in state:
@@ -184,7 +196,8 @@ def register_type(
         For a dataclass registered without ``to_state``/``from_state``: the
         value of each optional field when a stored state lacks it, so a
         field added later reads files written before it. Other fields
-        missing from a state raise ``DataError``.
+        missing from a state raise ``DataError``, as does a field the
+        dataclass does not store (written by a newer version of it).
 
     Raises
     ------

@@ -224,8 +224,15 @@ the details.
 
 ## Versions
 
-`format_version` (currently 1) changes when stored names or meanings change.
-A newer release reads every older version through migrations of the stored
-data, run before anything is built. A file written in a newer format version
-than the installed release reads is refused, naming the version to upgrade
-to.
+`format_version` (currently 1) changes when stored names or meanings change,
+including when a name or field is added. A newer release reads every older
+version through migrations of the stored data, run before anything is built.
+A file written in a newer format version than the installed release reads is
+refused, naming the version to upgrade to.
+
+Reading is strict. A file holding a name the installed release does not
+read (an entry of `manifest.json` or `state.json`, a field of an entry, or a
+field of a stored object) raises `DataError` naming it and the package
+versions: a newer or different version wrote it, and reading on without it
+could build a different model. A fitted file missing a name its kind of
+model always has raises `DataError` as well.
