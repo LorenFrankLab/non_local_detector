@@ -4,6 +4,8 @@ Missing state, unknown configuration keys, dangling references and malformed
 nodes are caught at the load boundary and chained to the original error.
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -84,7 +86,7 @@ def test_a_registered_types_own_constructor_error_is_chained(sorted_recording):
     )
     try:
         node = {"$type": "testlab.Strict", "state": {"weight": 1, "extra": 2}}
-        with pytest.raises(DataError, match="testlab.Strict") as info:
+        with pytest.raises(DataError, match=re.escape("testlab.Strict")) as info:
             Decoder(lambda member: np.zeros(1)).decode(node)
         assert isinstance(info.value.__cause__, TypeError)
         assert "extra" in str(info.value)

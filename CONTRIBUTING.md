@@ -64,7 +64,7 @@ Run all of the checks, the same ones CI runs, with:
 uv run pre-commit run --all-files
 ```
 
-or individually: `uv run ruff check src/`, `uv run ruff format src/`, `uv run mypy`.
+or individually: `uv run ruff check src/ tests/`, `uv run ruff format src/ tests/`, `uv run mypy`.
 
 ## Numerical changes
 

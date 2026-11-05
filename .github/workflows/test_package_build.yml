@@ -57,9 +57,9 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked
       - name: Run ruff linting
-        run: uv run --no-sync ruff check src/ --output-format=github
+        run: uv run --no-sync ruff check src/ tests/ --output-format=github
       - name: Run ruff formatting check
-        run: uv run --no-sync ruff format --check src/
+        run: uv run --no-sync ruff format --check src/ tests/
       # Strict, over the package without its tests ([tool.mypy] in pyproject).
       - name: Run mypy
         run: uv run --no-sync mypy
