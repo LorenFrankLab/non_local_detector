@@ -77,11 +77,12 @@ Only what cannot be rebuilt is stored. Loading rebuilds:
 A transition block built from the fit data, such as `EmpiricalMovement`, is
 stored instead, since the training positions are not.
 
-Since the state bins are rebuilt from `config.json`, `save_model` refuses a
-detector whose `state_names`, `observation_models`,
-`continuous_transition_types` or `local_position_std` were changed with
-`set_params` after it was fitted: set them back, or refit. Such a detector
-still decodes with the values it was fitted with.
+Since the state bins and the transitions are rebuilt from `config.json`,
+`save_model` refuses a detector whose `state_names`, `observation_models`,
+`continuous_transition_types`, `local_position_std`,
+`discrete_transition_type`, `discrete_initial_conditions` or `environments`
+were changed with `set_params` after it was fitted: set them back, or refit.
+Such a detector still decodes with the values it was fitted with.
 
 A covariate transition's covariates are stored only as numeric or string
 arrays (a categorical as its codes and categories).

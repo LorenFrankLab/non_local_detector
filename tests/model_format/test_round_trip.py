@@ -8,10 +8,14 @@ must equal the original's exactly: on one machine the rebuild repeats the
 fit's arithmetic.
 """
 
+import copy
+import pickle
+
 import numpy as np
 import pytest
 
 from non_local_detector.model_format import is_saved_model_format
+from non_local_detector.model_format._detector import changed_layout_parameters
 from tests.model_format._compare import assert_same_fitted_state
 from tests.model_format.conftest import (
     CLUSTERLESS_ALGORITHMS,
@@ -58,6 +62,44 @@ def test_reloaded_detector_has_the_same_state_and_posterior(
     loaded_posterior, loaded_states = decode(loaded, time, position, spikes)
     np.testing.assert_array_equal(loaded_posterior, posterior)
     np.testing.assert_array_equal(loaded_states, states)
+
+
+FAMILIES = [(cls, "sorted_spikes_kde") for cls in SORTED_CLASSES] + [
+    (cls, "clusterless_kde") for cls in CLUSTERLESS_CLASSES
+]
+
+
+@pytest.mark.parametrize(
+    ("cls", "algorithm"), FAMILIES, ids=[cls.__name__ for cls, _ in FAMILIES]
+)
+def test_fitting_and_loading_change_no_recorded_parameter(
+    cls, algorithm, sorted_recording, clusterless_recording, tmp_path
+):
+    """A fit records its parameters as they save, whatever it fills in or
+    normalizes: nothing warns (warnings are errors here) or is refused."""
+    detector = make_detector(cls, algorithm)
+    time, position, spikes, fit_kwargs = recording_args(
+        detector, sorted_recording, clusterless_recording
+    )
+    detector.fit(time, position, **spikes, **fit_kwargs)
+    path = tmp_path / "model.nld"
+
+    detector.set_params(no_spike_rate=2e-10)
+    decode(detector, time, position, spikes)
+    detector.save_model(path)
+
+    for restored in (cls.load_model(path), pickle.loads(pickle.dumps(detector))):
+        assert changed_layout_parameters(restored) == []
+        decode(restored, time, position, spikes)
+    for name in (
+        "discrete_transition_type",
+        "discrete_initial_conditions",
+        "environments",
+    ):
+        copied = detector.copy().set_params(
+            **{name: copy.deepcopy(getattr(detector, name))}
+        )
+        assert changed_layout_parameters(copied) == []
 
 
 def test_unfitted_detector_round_trips_its_configuration(tmp_path):

@@ -593,7 +593,9 @@ class _DetectorBase(
         The fit's state bins and continuous transition, with the
         ``state_names``, ``observation_models``,
         ``continuous_transition_types`` and ``local_position_std`` they were
-        built from. Set by ``fit``; decoding reads it rather than the current
+        built from, and the ``discrete_transition_type``,
+        ``discrete_initial_conditions`` and ``environments`` configuration
+        the fit used. Set by ``fit``; decoding reads it rather than the current
         parameters, so ``set_params`` takes effect at the next fit.
         ``state_ind_``, ``n_state_bins_``, ``n_discrete_states_``,
         ``bin_sizes_``, ``is_track_interior_state_bins_`` and
@@ -835,9 +837,10 @@ class _DetectorBase(
         ``observation_models``, ``continuous_transition_types``,
         ``local_position_std`` or any other parameter a fit depends on takes
         effect at the next fit. Decoding a detector whose ``state_names``,
-        ``observation_models``, ``continuous_transition_types`` or
-        ``local_position_std`` changed after fitting warns
-        (``ParameterWarning``), and ``save_model`` refuses it.
+        ``observation_models``, ``continuous_transition_types``,
+        ``local_position_std``, ``discrete_transition_type``,
+        ``discrete_initial_conditions`` or ``environments`` changed after
+        fitting warns (``ParameterWarning``), and ``save_model`` refuses it.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -1933,8 +1936,9 @@ class _DetectorBase(
     def _warn_if_layout_parameters_changed(self) -> None:
         """Warn when a parameter the fit recorded was changed since.
 
-        Decoding uses the recorded values (``state_space_``). A parameter a
-        saved model cannot hold cannot be compared and does not warn.
+        Decoding uses the recorded values and what the fit built from them
+        (``state_space_``). A parameter a saved model cannot hold cannot be
+        compared and does not warn.
         """
         from non_local_detector.model_format._detector import (
             changed_layout_parameters,

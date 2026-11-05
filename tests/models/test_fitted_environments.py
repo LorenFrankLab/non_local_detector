@@ -15,6 +15,7 @@ from non_local_detector import (
     Environment,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.exceptions import ParameterWarning
 
 pytestmark = pytest.mark.integration
 
@@ -103,10 +104,11 @@ def test_predict_checks_position_against_the_fitted_environments(recording):
     )
     time_edges = detector.calculate_time_edges([time[0], time[-1]], trim=True)
 
-    results = detector.predict(
-        spike_times=spike_times,
-        time_edges=time_edges,
-        position_time=time,
-        position=position,
-    )
+    with pytest.warns(ParameterWarning, match="environments"):
+        results = detector.predict(
+            spike_times=spike_times,
+            time_edges=time_edges,
+            position_time=time,
+            position=position,
+        )
     assert np.isfinite(results.acausal_state_probabilities).all()

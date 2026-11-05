@@ -355,8 +355,9 @@ class _PersistenceMixin:
             saving (see ``non_local_detector.model_format.register_type``),
             it is a loaded detector whose rebuilt structures no longer match
             the saved ones, or its ``state_names``, ``observation_models``,
-            ``continuous_transition_types`` or ``local_position_std`` changed
-            after it was fitted (``set_params``).
+            ``continuous_transition_types``, ``local_position_std``,
+            ``discrete_transition_type``, ``discrete_initial_conditions`` or
+            ``environments`` changed after it was fitted (``set_params``).
         NotFittedError
             If the detector is only partly fitted, or lacks what ``load_model``
             requires of a fitted file, as one pickled by an earlier release

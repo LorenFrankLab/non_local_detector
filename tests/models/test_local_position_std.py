@@ -23,6 +23,7 @@ from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
     initial_conditions,
+    recorded_layout_parameters,
     state_layout,
 )
 from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
@@ -60,10 +61,7 @@ def _fit_state_space(detector, position):
         context=TransitionContext(position),
     )
     detector.state_space_ = StateSpace(
-        state_names=detector.state_names,
-        observation_models=detector.observation_models,
-        continuous_transition_types=detector.continuous_transition_types,
-        local_position_std=detector.local_position_std,
+        **recorded_layout_parameters(detector),
         state_ind=state_ind,
         bin_sizes=bin_sizes,
         is_track_interior=is_track_interior,

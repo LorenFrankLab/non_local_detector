@@ -35,7 +35,7 @@ from non_local_detector.transition_operators import (
     DEFAULT_MAX_DENSE_BYTES,
     _one_bin_block,
 )
-from non_local_detector.types import TransitionRepresentation
+from non_local_detector.types import DiscreteTransitions, TransitionRepresentation
 
 if TYPE_CHECKING:
     from non_local_detector.transition_operators import (
@@ -66,6 +66,14 @@ class StateSpace:
     local_position_std : float or None
         Width of the Local states' position kernel; None for single-bin Local
         states.
+    discrete_transition_type : DiscreteTransitions
+        The discrete transition, as configured.
+    discrete_initial_conditions : np.ndarray, shape (n_states,)
+        Initial probability of each discrete state, as configured.
+    environments : tuple of dict, length n_environments
+        Each environment's configuration (``Environment.get_params``), which
+        holds no fitted grid; the fitted environments are the detector's
+        ``environments_``.
     state_ind : np.ndarray of int, shape (n_state_bins,)
         Discrete state of each state bin.
     bin_sizes : np.ndarray of int, shape (n_states,)
@@ -87,6 +95,9 @@ class StateSpace:
     observation_models: tuple[ObservationModel, ...]
     continuous_transition_types: tuple[tuple[Any, ...], ...]
     local_position_std: float | None
+    discrete_transition_type: DiscreteTransitions
+    discrete_initial_conditions: np.ndarray
+    environments: tuple[dict[str, Any], ...]
     state_ind: np.ndarray
     bin_sizes: np.ndarray
     is_track_interior: np.ndarray
@@ -180,8 +191,10 @@ def layout_parameters(detector: Any) -> dict[str, Any]:
     -------
     parameters : dict
         ``state_names``, ``observation_models`` and
-        ``continuous_transition_types`` (a tuple of rows) as tuples, and
-        ``local_position_std``.
+        ``continuous_transition_types`` (a tuple of rows) as tuples,
+        ``local_position_std``, ``discrete_transition_type``,
+        ``discrete_initial_conditions``, and ``environments`` as a tuple of
+        ``Environment.get_params`` dicts, never the fitted grids.
     """
     return {
         "state_names": tuple(detector.state_names),
@@ -190,6 +203,9 @@ def layout_parameters(detector: Any) -> dict[str, Any]:
             tuple(row) for row in detector.continuous_transition_types
         ),
         "local_position_std": detector.local_position_std,
+        "discrete_transition_type": detector.discrete_transition_type,
+        "discrete_initial_conditions": detector.discrete_initial_conditions,
+        "environments": tuple(env.get_params() for env in detector.environments),
     }
 
 

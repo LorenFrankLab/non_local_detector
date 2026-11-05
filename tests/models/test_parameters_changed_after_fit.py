@@ -7,13 +7,17 @@ saved.
 """
 
 import copy
+import pickle
 
 import matplotlib as mpl
+import networkx as nx
 import numpy as np
 import pytest
 import xarray as xr
 
 from non_local_detector import (
+    DiscreteNonStationaryDiagonal,
+    DiscreteStationaryDiagonal,
     Environment,
     NonLocalSortedSpikesDetector,
     RandomWalk,
@@ -35,6 +39,9 @@ RECORDED = (
     "observation_models",
     "continuous_transition_types",
     "local_position_std",
+    "discrete_transition_type",
+    "discrete_initial_conditions",
+    "environments",
 )
 
 
@@ -74,6 +81,22 @@ CHANGES = {
     },
     "observation_models": lambda detector: {
         "observation_models": _renamed_observation_models(detector)
+    },
+    "discrete_transition_type": lambda detector: {
+        "discrete_transition_type": DiscreteStationaryDiagonal(
+            diagonal_values=np.full(len(detector.state_names), 0.9)
+        )
+    },
+    "discrete_initial_conditions": lambda detector: {
+        "discrete_initial_conditions": np.roll(detector.discrete_initial_conditions, 1)
+    },
+    "environments": lambda detector: {
+        "environments": tuple(
+            Environment(
+                **{**env.get_params(), "place_bin_size": 2 * env.place_bin_size}
+            )
+            for env in detector.environments
+        )
     },
 }
 
@@ -212,6 +235,110 @@ def _open_field_decoder(sorted_sim, movement_var):
     return detector, decode
 
 
+def test_saving_after_changing_an_environment_in_place_is_refused(fitted, tmp_path):
+    detector, _, _ = fitted
+    changed = detector.copy()
+    changed.environments[0].place_bin_size *= 2
+
+    with pytest.raises(ValidationError, match="environments"):
+        changed.save_model(tmp_path / "model.nld")
+
+
+def test_saving_a_covariate_fit_given_a_stationary_transition_is_refused(
+    sorted_sim, tmp_path
+):
+    """The file could not be read back: its covariates need a design."""
+    time, position, spike_times = sorted_sim
+    n_states = len(NonLocalSortedSpikesDetector().state_names)
+    detector = NonLocalSortedSpikesDetector(
+        discrete_transition_type=DiscreteNonStationaryDiagonal(
+            diagonal_values=np.full(n_states, 0.98), formula="1 + speed"
+        ),
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(
+        time,
+        position,
+        spike_times,
+        discrete_transition_covariate_data={"speed": np.linspace(0.0, 5.0, len(time))},
+    )
+    detector.set_params(
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            diagonal_values=np.full(n_states, 0.98)
+        )
+    )
+
+    with pytest.raises(ValidationError, match="discrete_transition_type"):
+        detector.save_model(tmp_path / "model.nld")
+
+
+def _track_graph_environment(position):
+    length = position.max() - position.min()
+    graph = nx.Graph()
+    graph.add_node(0, pos=(position.min(), 0.0))
+    graph.add_node(1, pos=(position.max(), 0.0))
+    graph.add_edge(0, 1, distance=length, edge_id=0)
+    environment = Environment(
+        track_graph=graph,
+        edge_order=[(0, 1)],
+        edge_spacing=0.0,
+        place_bin_size=4.0,
+    )
+    return environment, np.column_stack([position, np.zeros_like(position)])
+
+
+def _environment_with_interior(position):
+    is_interior = np.ones(50, dtype=bool)
+    is_interior[20:25] = False
+    environment = Environment(
+        place_bin_size=(position.max() - position.min()) / 50,
+        position_range=[(position.min(), position.max())],
+        is_track_interior=is_interior,
+    )
+    return environment, position
+
+
+@pytest.mark.parametrize(
+    "make_environment", [_track_graph_environment, _environment_with_interior]
+)
+def test_a_configured_environment_is_unchanged_after_fitting(
+    sorted_sim, make_environment, tmp_path
+):
+    time, position, spike_times = sorted_sim
+    environment, position = make_environment(position)
+    detector = NonLocalSortedSpikesDetector(
+        environments=environment,
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times)
+
+    # The suite turns warnings into errors.
+    detector.predict(
+        spike_times=spike_times,
+        time_edges=time_edges_from_centers(time[:50]),
+        position_time=time,
+        position=position,
+    )
+    detector.save_model(tmp_path / "model.nld")
+    copied = copy.deepcopy(detector.environments)
+    detector.copy().set_params(environments=copied).save_model(tmp_path / "copy.nld")
+
+
+def test_the_fit_records_no_fitted_grid_of_a_fitted_environment(sorted_sim):
+    time, position, spike_times = sorted_sim
+    environment = Environment(place_bin_size=1.0)
+    environment.fit_place_grid(position[:, np.newaxis])
+    detector = NonLocalSortedSpikesDetector(
+        environments=environment,
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times)
+
+    recorded = len(pickle.dumps(detector.state_space_.environments))
+
+    assert recorded < len(pickle.dumps(detector.environments_)) / 10
+
+
 def test_saving_after_copying_a_transition_with_an_array_field_works(
     sorted_sim, tmp_path
 ):
@@ -271,15 +398,15 @@ def test_a_parameter_that_cannot_be_compared_does_not_hide_a_changed_one(sorted_
 def test_refusing_an_unsaveable_recorded_value_names_its_parameter(
     sorted_sim, tmp_path
 ):
-    """The fit recorded an object array, so comparing it with the new value
-    fails: the error says which parameter holds it."""
+    """The fit recorded an object array, which has no saved form, so the new
+    value cannot equal it: the error names the parameter."""
     movement_var = np.array([[6.0, 0.0], [0.0, 6.0]], dtype=object)
     detector, _ = _open_field_decoder(sorted_sim, movement_var)
     detector.set_params(
         continuous_transition_types=[[RandomWalk(movement_var=6.0 * np.eye(2))]]
     )
 
-    with pytest.raises(ValidationError, match="at continuous_transition_types/"):
+    with pytest.raises(ValidationError, match="continuous_transition_types"):
         detector.save_model(tmp_path / "model.nld")
 
 

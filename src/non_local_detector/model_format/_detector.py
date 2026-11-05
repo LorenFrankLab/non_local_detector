@@ -645,7 +645,8 @@ def changed_layout_parameters(
     """Return the recorded parameters that changed since the detector was fitted.
 
     A parameter changed when its saved form differs from that of the value
-    its fit recorded in ``state_space_`` (see ``layout_parameters``).
+    its fit recorded in ``state_space_`` (see ``layout_parameters``), or the
+    recorded value has none, as a file's unevaluated formula does.
 
     Parameters
     ----------
@@ -670,13 +671,16 @@ def changed_layout_parameters(
     changed = []
     for name, value in layout_parameters(detector).items():
         try:
-            if _stored_form(value, name) != _stored_form(
-                getattr(detector.state_space_, name), name
-            ):
+            form = _stored_form(value, name)
+        except ValidationError:
+            if skip_incomparable:
+                continue
+            raise
+        try:
+            if form != _stored_form(getattr(detector.state_space_, name), name):
                 changed.append(name)
         except ValidationError:
-            if not skip_incomparable:
-                raise
+            changed.append(name)
     return changed
 
 

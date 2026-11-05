@@ -295,6 +295,19 @@ def _refit(detector, sorted_recording):
     )
 
 
+def test_a_formula_given_to_a_fitted_model_needs_a_refit_to_save(
+    fitted_outside_grammar, tmp_path
+):
+    path = tmp_path / "model.nld"
+    fitted_outside_grammar.save_model(path)
+    with pytest.warns(ParameterWarning, match="trust_formulas=True"):
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+    loaded.discrete_transition_type.formula = "1 + speed"
+
+    with pytest.raises(ValidationError, match="changed after it was fitted"):
+        loaded.save_model(tmp_path / "again.nld")
+
+
 @pytest.mark.parametrize("formula", ATTACKS)
 @pytest.mark.parametrize("fit_before_saving", [True, False], ids=["fitted", "unfitted"])
 def test_a_model_loaded_for_inspection_refuses_to_fit(
