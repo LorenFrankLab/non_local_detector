@@ -27,7 +27,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import jax
 import jax.numpy as jnp
@@ -181,6 +181,10 @@ __all__ = [
 ]
 
 logger = getLogger(__name__)
+
+# The detector type of a method that returns ``self`` (``typing.Self`` needs
+# Python 3.11).
+_Detector = TypeVar("_Detector", bound="_DetectorBase")
 
 # Removed clusterless algorithms that stored parameter sets may still name.
 _REMOVED_CLUSTERLESS_ALGORITHMS = frozenset({"clusterless_kde_log"})
@@ -902,7 +906,7 @@ class _DetectorBase(
                 )
         self.local_position_std = local_position_std
 
-    def set_params(self, **params: Any) -> "_DetectorBase":
+    def set_params(self: _Detector, **params: Any) -> _Detector:
         """Set constructor parameters, applying the constructor's rules.
 
         The merged parameters (current values updated with ``params``) are
@@ -930,8 +934,8 @@ class _DetectorBase(
 
         Returns
         -------
-        self : _DetectorBase
-            The detector with the updated parameters.
+        self
+            The detector with the updated parameters, of its own class.
 
         Raises
         ------
@@ -3125,14 +3129,14 @@ class _DetectorBase(
         """
         return calculate_time_edges(time_range, self.sampling_frequency, trim=trim)
 
-    def copy(self) -> "_DetectorBase":
+    def copy(self: _Detector) -> _Detector:
         """
         Make a copy of the detector.
 
         Returns
         -------
-        _DetectorBase
-            Deep copy of the detector instance.
+        detector
+            Deep copy of the detector, of its own class.
         """
         return copy.deepcopy(self)
 
@@ -3566,7 +3570,7 @@ class ClusterlessDetector(_DetectorBase):
         self.time_contract_ = dict(_TIME_CONTRACT)
 
     def fit(
-        self,
+        self: _Detector,
         position_time: ArrayLike,
         position: ArrayLike,
         spike_times: list[np.ndarray],
@@ -3580,7 +3584,7 @@ class ClusterlessDetector(_DetectorBase):
         valid_position_intervals: np.ndarray | None = None,
         transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> "ClusterlessDetector":
+    ) -> _Detector:
         """
         Fit the detector to the data.
 
@@ -3629,8 +3633,8 @@ class ClusterlessDetector(_DetectorBase):
 
         Returns
         -------
-        ClusterlessDetector
-            Fitted detector instance.
+        self
+            The fitted detector, of its own class.
         """
         inputs = _EncodingInputs.from_arguments(
             position_time,
@@ -4539,7 +4543,7 @@ class SortedSpikesDetector(_DetectorBase):
         self.time_contract_ = dict(_TIME_CONTRACT)
 
     def fit(
-        self,
+        self: _Detector,
         position_time: ArrayLike,
         position: ArrayLike,
         spike_times: list[np.ndarray],
@@ -4552,7 +4556,7 @@ class SortedSpikesDetector(_DetectorBase):
         valid_position_intervals: np.ndarray | None = None,
         transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> "SortedSpikesDetector":
+    ) -> _Detector:
         """
         Fit the detector to the data.
 
@@ -4599,8 +4603,8 @@ class SortedSpikesDetector(_DetectorBase):
 
         Returns
         -------
-        SortedSpikesDetector
-            Fitted detector instance.
+        self
+            The fitted detector, of its own class.
         """
         inputs = _EncodingInputs.from_arguments(
             position_time,

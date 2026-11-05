@@ -1,6 +1,7 @@
 """Public method signatures of the sorted-spikes and clusterless detectors."""
 
 import inspect
+import typing
 
 import numpy as np
 import pytest
@@ -46,3 +47,12 @@ def test_positional_training_mask_raises_type_error():
     detector = NonLocalSortedSpikesDetector()
     with pytest.raises(TypeError, match="positional"):
         detector.fit(time, time, [time], np.ones(time.size, dtype=bool))
+
+
+@pytest.mark.parametrize("cls", list(_DATA_ARGUMENTS), ids=lambda cls: cls.__name__)
+@pytest.mark.parametrize("method", ["fit", "set_params", "copy"])
+def test_methods_returning_self_keep_the_callers_type(cls, method):
+    """``NonLocalSortedSpikesDetector().fit(...)`` is typed as that class,
+    not as the family base class."""
+    hints = typing.get_type_hints(getattr(cls, method))
+    assert hints["return"] is hints["self"]
