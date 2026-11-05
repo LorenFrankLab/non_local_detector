@@ -414,6 +414,26 @@ def _warn_if_spikes_reach_far_past(
     )
 
 
+def _numeric_spike_times_list(
+    spike_times: Sequence[Any], *, clusterless: bool
+) -> list[np.ndarray]:
+    """Every unit's spike times as a numeric array, shape (n_spikes,).
+
+    ``_validate_spike_data`` checks these arrays, and fitting reads them, so
+    object-dtype spike times are float in both, as in decoding.
+
+    Raises
+    ------
+    ValidationError
+        If any unit's times are not numbers.
+    """
+    unit = "electrode" if clusterless else "neuron"
+    return [
+        _numeric_spike_times(times, unit, index)
+        for index, times in enumerate(spike_times)
+    ]
+
+
 def _validate_spike_data(
     spike_times: Sequence[Any],
     spike_waveform_features: Sequence[Any] | None = None,
@@ -471,10 +491,7 @@ def _validate_spike_data(
         spike_times, spike_waveform_features, clusterless=clusterless
     )
     unit = "electrode" if clusterless else "neuron"
-    arrays = [
-        _numeric_spike_times(times, unit, index)
-        for index, times in enumerate(spike_times)
-    ]
+    arrays = _numeric_spike_times_list(spike_times, clusterless=clusterless)
     n_non_finite = [int(np.count_nonzero(~np.isfinite(times))) for times in arrays]
     if any(n_non_finite):
         bad = [

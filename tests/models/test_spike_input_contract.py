@@ -335,7 +335,7 @@ EQUAL_LENGTH_SPIKES = [
 def test_object_dtype_spike_times_match_float_arrays(fitted, container, method):
     """Object arrays of numbers decode as their float arrays, as before the
     spike checks: a 2-D object array of equal-length units, and object-dtype
-    arrays per unit. (Fitting on them fails in np.interp, as it did before.)"""
+    arrays per unit."""
     detector = fitted["sorted"]
     expected = _call(detector, method, (EQUAL_LENGTH_SPIKES,))
     result = _call(detector, method, (container(EQUAL_LENGTH_SPIKES),))
@@ -362,3 +362,82 @@ def test_non_numeric_object_spike_times_raise(fitted):
         fitted["sorted"].predict(
             [np.array(["a", "b"], dtype=object), SPIKE_TIMES[1]], time_edges=EDGES
         )
+
+
+ENCODING_ARRAYS = (
+    "occupancy",
+    "mean_rates",
+    "place_fields",
+    "summed_ground_process_intensity",
+)
+ENCODING_ARRAY_LISTS = ("encoding_positions", "encoding_spike_waveform_features")
+
+
+def _assert_same_encoding_model(actual, expected):
+    """Exact equality of the fitted arrays (place fields, rates, marks)."""
+    assert actual.keys() == expected.keys()
+    for key, model in expected.items():
+        compared = 0
+        for name in ENCODING_ARRAYS:
+            if name in model:
+                np.testing.assert_array_equal(
+                    np.asarray(actual[key][name]), np.asarray(model[name])
+                )
+                compared += 1
+        for name in ENCODING_ARRAY_LISTS:
+            if name in model:
+                assert len(actual[key][name]) == len(model[name])
+                for got, want in zip(actual[key][name], model[name], strict=True):
+                    np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
+                compared += 1
+        assert compared >= 3
+
+
+OBJECT_FORMS = {
+    "object_unit_arrays": lambda times: [unit.astype(object) for unit in times],
+    "2d_object_array": lambda times: np.array(times, dtype=object),
+    "single_object_unit": lambda times: [times[0].astype(object)],
+}
+
+
+@pytest.mark.unit
+@pytest.mark.filterwarnings("ignore:EM did not converge")
+@pytest.mark.parametrize("form", list(OBJECT_FORMS))
+@pytest.mark.parametrize("method", FIT_METHODS)
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_object_dtype_spike_times_fit_like_float_arrays(method, family, form):
+    """Fitting on object-dtype spike times failed in ``np.interp`` ("Cannot
+    cast array data from dtype('O') to dtype('float64')") while predict read
+    the same arrays as float."""
+    factory, _ = _family(family)
+    times = EQUAL_LENGTH_SPIKES
+    n_units = 1 if form == "single_object_unit" else 2
+    features = [np.arange(len(unit))[:, None] * 0.1 for unit in times][:n_units]
+    float_times = times[:n_units]
+
+    def spike_data(spike_times):
+        return (spike_times,) if family == "sorted" else (spike_times, features)
+
+    def fresh():
+        detector = factory()
+        if method != "fit":  # these refit an already fitted detector
+            detector.fit(TIME, POSITION, *spike_data(float_times))
+        return detector
+
+    expected = fresh()
+    _call(expected, method, spike_data(float_times))
+    actual = fresh()
+    _call(actual, method, spike_data(OBJECT_FORMS[form](times)[:n_units]))
+    _assert_same_encoding_model(actual.encoding_model_, expected.encoding_model_)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", FIT_METHODS)
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_non_numeric_object_spike_times_raise_at_fit(method, family):
+    factory, _ = _family(family)
+    spike_times = [np.array(["a", "b"], dtype=object), SPIKE_TIMES[1]]
+    features = [FEATURES[1], FEATURES[1]]
+    spike_data = (spike_times,) if family == "sorted" else (spike_times, features)
+    with pytest.raises(ValidationError, match="must be numeric"):
+        _call(factory(), method, spike_data)
