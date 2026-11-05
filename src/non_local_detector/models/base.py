@@ -133,6 +133,7 @@ from non_local_detector.models._input_validation import (
     _validate_spike_data,
     _validate_spike_structure,
     _validate_transition_arguments,
+    _warn_if_off_grid,
 )
 from non_local_detector.models._persistence import (
     _ModelUnpickler,  # noqa: F401 -- stored-artifact compatibility tests import it from base
@@ -1866,6 +1867,14 @@ class _DetectorBase(
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
+        # Each grid is fitted on its environment's samples.
+        for environment in self.environments_:
+            _warn_if_off_grid(
+                position
+                if environment_labels is None
+                else position[environment_labels == environment.environment_name],
+                [environment],
+            )
         self._initialize_state_index()
         self._initialize_initial_conditions()
         self._initialize_discrete_state_transition(
