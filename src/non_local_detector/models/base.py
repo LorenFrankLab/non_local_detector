@@ -4005,7 +4005,7 @@ class ClusterlessDetector(_DetectorBase):
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
-        max_iter: int = 20,
+        max_iter: int = 100,
         tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
@@ -4069,7 +4069,7 @@ class ClusterlessDetector(_DetectorBase):
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
         max_iter : int, optional
-            Maximum number of EM iterations, by default 20.
+            Maximum number of EM iterations, by default 100. EM stops earlier once it converges.
         tolerance : float, optional
             Convergence tolerance for the EM algorithm, in nats per time
             bin, by default 1e-5. EM stops when the penalized log-likelihood
@@ -4881,7 +4881,7 @@ class SortedSpikesDetector(_DetectorBase):
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
-        max_iter: int = 20,
+        max_iter: int = 100,
         tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
@@ -4943,7 +4943,7 @@ class SortedSpikesDetector(_DetectorBase):
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
         max_iter : int, optional
-            Maximum number of EM iterations, by default 20.
+            Maximum number of EM iterations, by default 100. EM stops earlier once it converges.
         tolerance : float, optional
             Convergence tolerance for EM, in nats per time bin, by default
             1e-5. EM stops when the penalized log-likelihood (marginal
