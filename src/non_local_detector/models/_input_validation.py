@@ -17,7 +17,7 @@ import warnings
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -868,6 +868,202 @@ def _decode_time_edges(
         )
     start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     return time_edges, decode_bin_centers(time_edges, start, stop)
+
+
+def _missing_bins(
+    time_edges: np.ndarray,
+    is_missing: np.ndarray | None,
+    position_time: np.ndarray | None,
+    position: np.ndarray | None,
+    *,
+    reads_position: bool = True,
+    warn_outside_tracking: bool = False,
+) -> np.ndarray | None:
+    """Combine the caller's missing mask with bins that lack tracked position.
+
+    Missing tracking is a break in support. Likelihoods read the position by
+    linear interpolation (extrapolating from the end intervals) at the bin
+    centers and, for local clusterless models, at every decoding spike time.
+    A read is non-finite exactly when its time lies in ``[t[k - 1], t[k + 1])``
+    for a non-finite sample ``k``: at ``t[k - 1]`` the sample still enters
+    with weight zero (``0 * nan``), while at ``t[k + 1]`` it no longer does.
+    The span extends to infinity for a sample in an end interval. A read more
+    than half a sample before ``t[0]`` or after ``t[-1]`` is an extrapolation,
+    not tracking, so it is missing too; the half sample keeps bins centered on
+    the tracking samples, whose outer edges lie half a sample beyond them. The
+    half sample is half the median sampling interval, plus the timestamp
+    uniformity tolerance. A bin is decoded as missing when any time it owns
+    (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
+    in such a span, so the center and every spike of a non-missing bin have
+    tracked, finite positions. Both rules apply only when the decode
+    likelihood reads position (``reads_position``); a model without Local
+    states or a non-local position penalty decodes every bin. This concerns
+    decoding only: encoding fits use position for their support.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    is_missing : np.ndarray, shape (n_bins,), optional
+        Caller's boolean mask of missing bins.
+    position_time : np.ndarray, shape (n_time_position,), optional
+        Times of the position samples.
+    position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        Position samples; non-finite rows mark untracked times.
+    reads_position : bool, optional
+        Whether the decode likelihood reads position, by default True. When
+        False, position marks no bin missing; only ``is_missing`` does.
+    warn_outside_tracking : bool, optional
+        Warn when bins are missing because they extend outside the tracked
+        period, by default False. Public decode entry points set it, so one
+        call warns once however many chunks or EM iterations it runs.
+
+    Returns
+    -------
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        None when nothing is missing and no mask was given.
+
+    Warns
+    -----
+    DataQualityWarning
+        If ``warn_outside_tracking`` and some bins extend outside the tracked
+        period.
+
+    Raises
+    ------
+    ValidationError
+        If ``is_missing`` does not have one entry per bin, or ``position`` does
+        not have one row per ``position_time`` sample.
+    DataError
+        If ``position_time`` is not finite and increasing, strictly when
+        ``reads_position``.
+    """
+    n_bins = len(time_edges) - 1
+    if is_missing is not None:
+        is_missing = _sample_mask(
+            is_missing, n_bins, "is_missing", entry="decode bin", example=None
+        )
+    if position is None or position_time is None:
+        return is_missing
+    position = np.asarray(position)
+    position_time = np.asarray(position_time)
+    if position.shape[0] != position_time.shape[0]:
+        msg = "position must have one row per position_time sample"
+        raise ValidationError(
+            msg,
+            expected=f"{position_time.shape[0]} rows",
+            got=f"{position.shape[0]} rows",
+        )
+    val.ensure_all_finite(position_time, "position_time")
+    # Strictly when the likelihood interpolates position in time, as fitting
+    # requires.
+    val.ensure_monotonic_increasing(
+        position_time, "position_time", strict=reads_position
+    )
+    if not reads_position:
+        return is_missing
+    affected = _bins_outside_tracking(time_edges, position_time)
+    if warn_outside_tracking and np.any(affected):
+        warnings.warn(
+            f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
+            "a position sample outside the tracked period "
+            f"[{position_time[0]:.6g}, {position_time[-1]:.6g}] s. Position there "
+            "could only be extrapolated from the first or last tracking interval, "
+            "so these bins are decoded as missing, like bins with NaN position: "
+            "their log likelihood is 0 and the posterior follows the transitions "
+            "alone. Pass position covering the decode time_edges, or restrict "
+            "time_edges to the tracked period.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+    is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
+    if np.any(is_nan):
+        affected |= _bins_reading_nan_position(time_edges, position_time, is_nan)
+    if not np.any(affected):
+        return is_missing
+    return affected if is_missing is None else is_missing | affected
+
+
+def _bins_outside_tracking(
+    time_edges: np.ndarray, position_time: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time more than half a sample outside the tracking.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing.
+
+    Returns
+    -------
+    is_outside : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
+    if position_time.size < 2:
+        return np.zeros(n_bins, dtype=bool)
+    sample_interval = float(np.median(np.diff(position_time)))
+    half_sample = sample_interval / 2 + _uniformity_tolerance(
+        position_time, sample_interval
+    )
+    # Bin i owns [edges[i], edges[i + 1]) (the final bin also edges[-1]), so it
+    # reaches before ``start`` iff edges[i] < start and after ``stop`` iff
+    # edges[i + 1] > stop.
+    start = position_time[0] - half_sample
+    stop = position_time[-1] + half_sample
+    return cast("np.ndarray", (time_edges[:-1] < start) | (time_edges[1:] > stop))
+
+
+def _bins_reading_nan_position(
+    time_edges: np.ndarray, position_time: np.ndarray, is_nan: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time whose interpolated position is non-finite.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Times of the position samples.
+    is_nan : np.ndarray of bool, shape (n_time_position,)
+        Samples with a non-finite position; at least one is True.
+
+    Returns
+    -------
+    affected : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
+    nan_index = np.flatnonzero(is_nan)
+    # Spans of consecutive NaN samples, widened to the neighbouring samples.
+    # Positions before the first sample (after the last) are extrapolated from
+    # the first (last) interval, so a NaN in an end interval reaches every bin
+    # beyond that end.
+    n_samples = position_time.size
+    run_starts = nan_index[np.r_[True, np.diff(nan_index) > 1]]
+    run_ends = nan_index[np.r_[np.diff(nan_index) > 1, True]]
+    lower = np.where(
+        run_starts > 1, position_time[np.maximum(run_starts - 1, 0)], -np.inf
+    )
+    upper = np.where(
+        run_ends < n_samples - 2,
+        position_time[np.minimum(run_ends + 1, n_samples - 1)],
+        np.inf,
+    )
+    # Bin i owns [edges[i], edges[i + 1]) and meets [lower, upper) iff
+    # edges[i + 1] > lower and edges[i] < upper; the final bin also owns
+    # edges[-1], so a read exactly there (lower == edges[-1]) marks it.
+    first = np.searchsorted(time_edges[1:], lower, side="right")
+    first = np.where(lower == time_edges[-1], n_bins - 1, first)
+    stop = np.maximum(np.searchsorted(time_edges[:-1], upper, side="left"), first)
+    change = np.zeros(n_bins + 1, dtype=int)
+    np.add.at(change, first, 1)
+    np.add.at(change, stop, -1)
+    return np.cumsum(change[:-1]) > 0
 
 
 def _validate_penalty_params(
