@@ -10,6 +10,7 @@ from non_local_detector.continuous_state_transitions import (
     TransitionContext,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import get_position_at_time
 
 pytestmark = pytest.mark.unit
@@ -105,22 +106,17 @@ def test_empirical_movement_prelinearized_matches_raw_track_position(
     np.testing.assert_array_equal(prelinearized, raw)
 
 
-def test_empirical_movement_without_samples_matches_open_field(
+def test_empirical_movement_without_samples_is_refused_as_on_an_open_field(
     track_environment, points
 ):
-    """No samples in the selection leaves every row empty, as on an open field."""
+    """No samples in the selection reach the check, whatever the grid."""
     open_field = Environment(place_bin_size=2.0).fit_place_grid(points)
     context = TransitionContext(
         position=points, encoding_group_labels=np.zeros(len(points))
     )
 
-    track = EmpiricalMovement(encoding_group=1).make_state_transition(
-        (track_environment,), context
-    )
-    grid = EmpiricalMovement(encoding_group=1).make_state_transition(
-        (open_field,), context
-    )
-
-    n_track_bins = len(track_environment.place_bin_centers_)
-    np.testing.assert_array_equal(track, np.zeros((n_track_bins, n_track_bins)))
-    np.testing.assert_array_equal(grid, np.zeros_like(grid))
+    for environment in (track_environment, open_field):
+        with pytest.raises(ValidationError, match="no two consecutive"):
+            EmpiricalMovement(encoding_group=1).make_state_transition(
+                (environment,), context
+            )

@@ -533,16 +533,13 @@ def test_empirical_movement_time_reversal_swaps_each_step(is_time_reversed):
     np.testing.assert_array_equal(transition, expected)
 
 
-@pytest.mark.parametrize("encoding_group", [0, 1])
-def test_context_construction_routes_give_identical_empirical_movement(
-    encoding_group,
-):
+def test_context_construction_routes_give_identical_empirical_movement():
     """Unset labels mean the same as explicit all-training, group-0 labels."""
     env = Environment(place_bin_size=1.0).fit_place_grid(
         np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False
     )
     position = np.linspace(0.0, 10.0, 51)[:, None]
-    transition = EmpiricalMovement(encoding_group=encoding_group)
+    transition = EmpiricalMovement()
     implicit = transition.make_state_transition(
         (env,), TransitionContext(position=position)
     )
@@ -555,7 +552,7 @@ def test_context_construction_routes_give_identical_empirical_movement(
         ),
     )
     np.testing.assert_array_equal(implicit, explicit)
-    np.testing.assert_array_equal(implicit.sum(axis=1) > 0, encoding_group == 0)
+    assert implicit.sum() > 0
 
 
 def test_discrete_transition_is_ones():
@@ -689,3 +686,18 @@ def test_invalid_speedup_raises_at_construction(speedup):
 @pytest.mark.parametrize("speedup", [1, 3, np.int64(2)], ids=["one", "three", "int64"])
 def test_valid_speedup_constructs(speedup):
     assert EmpiricalMovement(speedup=speedup).speedup == speedup
+
+
+def test_empirical_movement_without_a_step_is_refused():
+    """Steps need two consecutive used samples: an all-zero block would give
+    all-zero posteriors and a -inf marginal likelihood."""
+    environment = Environment(place_bin_size=1.0).fit_place_grid(
+        np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False
+    )
+    position = np.linspace(0.0, 10.0, 21)[:, np.newaxis]
+    context = TransitionContext(
+        position=position, is_training=np.arange(len(position)) % 2 == 0
+    )
+
+    with pytest.raises(ValidationError, match="no two consecutive"):
+        EmpiricalMovement().make_state_transition((environment,), context)

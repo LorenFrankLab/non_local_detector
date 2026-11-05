@@ -937,6 +937,8 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
         ------
         ValueError
             If ``context`` or its ``position`` is None.
+        ValidationError
+            If no step is left: no two consecutive samples are used.
         """
         if context is None or context.position is None:
             msg = (
@@ -985,6 +987,20 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
         bin_ind = np.zeros(n_time, dtype=np.intp)
         bin_ind[in_step] = environment.get_bin_ind(position[in_step])
         source, destination = bin_ind[:-1][is_step], bin_ind[1:][is_step]
+        if source.size == 0:
+            msg = (
+                "EmpiricalMovement has no steps to count: no two consecutive "
+                "samples remain"
+            )
+            raise ValidationError(
+                msg,
+                expected="two consecutive finite samples on the grid in is_training, "
+                f"encoding group {self.encoding_group!r} and environment "
+                f"{self.environment_name!r}",
+                got=f"{int(np.sum(is_used))} of {n_time} samples used",
+                hint="Use a contiguous is_training (a step is only counted between "
+                "consecutive samples), or another continuous transition.",
+            )
         if self.is_time_reversed:
             source, destination = destination, source
         n_bins = environment.place_bin_centers_.shape[0]

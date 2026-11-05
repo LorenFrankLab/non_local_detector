@@ -786,17 +786,18 @@ def test_fallback_receives_original_empirical_context_and_defaults():
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
     # The context defaults absent labels to group zero, as the detector fit
-    # always has.
+    # always has, so group 1 has no steps.
     transitions = [[EmpiricalMovement(encoding_group=1)]]
-    dense, _ = dense_reference(transitions, [env], (5,), position=position)
-    operator = build_transition_operator(
-        transitions,
-        [env],
-        (5,),
-        allow_dense_fallback=True,
-        context=TransitionContext(position),
-    )
-    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
+    with pytest.raises(ValidationError, match="no two consecutive"):
+        dense_reference(transitions, [env], (5,), position=position)
+    with pytest.raises(ValidationError, match="no two consecutive"):
+        build_transition_operator(
+            transitions,
+            [env],
+            (5,),
+            allow_dense_fallback=True,
+            context=TransitionContext(position),
+        )
 
 
 @pytest.mark.unit
