@@ -16,7 +16,7 @@ import copy
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from logging import getLogger
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -36,6 +36,12 @@ from non_local_detector.transition_operators import (
     _one_bin_block,
 )
 from non_local_detector.types import TransitionRepresentation
+
+if TYPE_CHECKING:
+    from non_local_detector.transition_operators import (
+        BlockTransitionOperator,
+        LazyDenseTransition,
+    )
 
 logger = getLogger(__name__)
 
@@ -84,8 +90,8 @@ class StateSpace:
     state_ind: np.ndarray
     bin_sizes: np.ndarray
     is_track_interior: np.ndarray
-    continuous_transitions: Any
-    transition_operator: Any
+    continuous_transitions: "np.ndarray | LazyDenseTransition"
+    transition_operator: "BlockTransitionOperator | None"
     transition_representation: TransitionRepresentation
     max_dense_transition_bytes: int
 
@@ -370,7 +376,7 @@ def continuous_state_transitions(
     context: TransitionContext,
     transition_representation: TransitionRepresentation = "dense",
     max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-) -> tuple[Any, Any]:
+) -> "tuple[np.ndarray | LazyDenseTransition, BlockTransitionOperator | None]":
     """Construct the transition between the state bins of the continuous states.
 
     Parameters
