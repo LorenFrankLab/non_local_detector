@@ -28,8 +28,8 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
+from non_local_detector._transition_estimation import _transition_log_prior
 from non_local_detector.core import EM_MONOTONICITY_SLACK, check_converged
-from non_local_detector.discrete_state_transitions import _transition_log_prior
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE

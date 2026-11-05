@@ -79,6 +79,7 @@ Run numerical validation (use `numerical-validation` skill) when modifying:
 - `src/non_local_detector/likelihoods/` (any likelihood model)
 - `src/non_local_detector/continuous_state_transitions.py`
 - `src/non_local_detector/discrete_state_transitions.py`
+- `src/non_local_detector/_transition_estimation.py`
 - `src/non_local_detector/initial_conditions.py`
 - Any code with JAX transformations or numerical computations
 

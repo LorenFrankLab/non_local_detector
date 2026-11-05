@@ -23,6 +23,7 @@ Verify that changes to mathematical/algorithmic code maintain numerical accuracy
 - `src/non_local_detector/likelihoods/` (likelihood models)
 - `src/non_local_detector/continuous_state_transitions.py`
 - `src/non_local_detector/discrete_state_transitions.py`
+- `src/non_local_detector/_transition_estimation.py`
 - `src/non_local_detector/initial_conditions.py`
 - Any code involving JAX transformations or numerical computations
 

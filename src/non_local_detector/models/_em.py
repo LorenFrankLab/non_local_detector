@@ -26,6 +26,12 @@ import xarray as xr
 from numpy.typing import ArrayLike
 
 import non_local_detector
+from non_local_detector._transition_estimation import (
+    _covariate_transition_covariance,
+    _discrete_transition_from_statistics,
+    _max_transition_change,
+    _transition_log_prior,
+)
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.checkpointed_inference import (
     _available_host_bytes,
@@ -34,10 +40,6 @@ from non_local_detector.checkpointed_inference import (
 )
 from non_local_detector.core import check_converged
 from non_local_detector.discrete_state_transitions import (
-    _covariate_transition_covariance,
-    _discrete_transition_from_statistics,
-    _max_transition_change,
-    _transition_log_prior,
     estimate_discrete_transition_counts_from_factorized_posteriors,
 )
 from non_local_detector.exceptions import (

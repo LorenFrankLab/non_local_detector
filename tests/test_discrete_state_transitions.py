@@ -10,6 +10,7 @@ import pytest
 from patsy import PatsyError, build_design_matrices
 from scipy.special import softmax
 
+from non_local_detector._transition_estimation import dirichlet_neg_log_likelihood
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
@@ -19,7 +20,6 @@ from non_local_detector.discrete_state_transitions import (
     InitialDiscreteTransition,
     centered_softmax_forward,
     centered_softmax_inverse,
-    dirichlet_neg_log_likelihood,
     get_transition_prior,
     jax_centered_log_softmax_forward,
     make_transition_from_diag,

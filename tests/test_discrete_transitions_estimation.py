@@ -19,17 +19,19 @@ import pytest
 from scipy.optimize import minimize
 from scipy.special import logsumexp, softmax, xlogy
 
+from non_local_detector._transition_estimation import (
+    _discrete_transition_from_statistics,
+    _transition_log_prior,
+    dirichlet_neg_log_likelihood,
+    estimate_non_stationary_state_transition_from_responses,
+    estimate_stationary_state_transition_from_counts,
+)
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
-    _discrete_transition_from_statistics,
     _stationary_counts_block,
-    _transition_log_prior,
-    dirichlet_neg_log_likelihood,
     estimate_discrete_transition_counts_from_factorized_posteriors,
-    estimate_non_stationary_state_transition_from_responses,
-    estimate_stationary_state_transition_from_counts,
     get_transition_prior,
     jax_centered_log_softmax_forward,
 )
@@ -630,7 +632,7 @@ class TestExpandedDiscreteTransitionCounts:
     @pytest.mark.parametrize("bad", [np.nan, np.inf])
     def test_non_finite_statistics_are_rejected(self, bad):
         """A NaN or infinite count would silently give NaN transitions."""
-        from non_local_detector.discrete_state_transitions import (
+        from non_local_detector._transition_estimation import (
             _discrete_transition_from_statistics,
         )
 
@@ -1702,7 +1704,7 @@ class TestEstimateNonStationaryStateTransition:
             x = np.full(n_coeffs * (n_states - 1), 999.0)
 
         with patch(
-            "non_local_detector.discrete_state_transitions.minimize",
+            "non_local_detector._transition_estimation.minimize",
             return_value=FakeResult(),
         ):
             coeffs, trans_matrix = (
@@ -1842,7 +1844,7 @@ class TestEstimateNonStationaryStateTransition:
             fun = -1.0
 
         with patch(
-            "non_local_detector.discrete_state_transitions.minimize",
+            "non_local_detector._transition_estimation.minimize",
             return_value=FakeResult(),
         ):
             coefficients, transition_matrix = (

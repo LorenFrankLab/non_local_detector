@@ -38,6 +38,7 @@ from patsy import DesignMatrix
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
+from non_local_detector._transition_estimation import _row_smoothness
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import TransitionContext
 from non_local_detector.core import (
@@ -50,7 +51,6 @@ from non_local_detector.core import (
 from non_local_detector.discrete_state_transitions import (
     _check_initial_discrete_transition,
     _refuse_untrusted_transition,
-    _row_smoothness,
     _smoothness_matrix,
     _transition_intervals,
     predict_discrete_state_transitions,

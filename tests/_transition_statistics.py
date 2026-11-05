@@ -13,13 +13,15 @@ compare them with finite differences or ``expanded_responses``.
 
 import numpy as np
 
-from non_local_detector.discrete_state_transitions import (
+from non_local_detector._transition_estimation import (
     _blocked_hessian,
     _blocked_loss_and_gradient,
-    _float64_jax,
     _penalty_matrix,
     _row_problem,
     _transition_blocks,
+)
+from non_local_detector.discrete_state_transitions import (
+    _float64_jax,
     estimate_discrete_transition_counts_from_factorized_posteriors,
 )
 

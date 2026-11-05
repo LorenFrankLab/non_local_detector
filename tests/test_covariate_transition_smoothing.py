@@ -13,16 +13,18 @@ import pytest
 from patsy import PatsyError, dmatrix
 from scipy.special import softmax
 
-from non_local_detector.discrete_state_transitions import (
-    DiscreteNonStationaryCustom,
+from non_local_detector._transition_estimation import (
     _fit_covariate_transition,
     _max_transition_change,
     _precision_log_pdet,
-    _smoothness_matrix,
     _transition_log_prior,
-    cyclic_bs,  # noqa: F401  (used inside patsy formulas)
     dirichlet_neg_log_likelihood,
     estimate_non_stationary_state_transition_from_responses,
+)
+from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryCustom,
+    _smoothness_matrix,
+    cyclic_bs,  # noqa: F401  (used inside patsy formulas)
     predict_discrete_state_transition_intervals,
     predict_discrete_state_transitions,
     quantile_bs,  # noqa: F401  (used inside patsy formulas)
@@ -419,11 +421,8 @@ def test_block_hessian_matches_automatic_differentiation(n_states):
     import jax
     import jax.numpy as jnp
 
-    from non_local_detector.discrete_state_transitions import (
-        _block_hessian,
-        _block_loss,
-        _float64_jax,
-    )
+    from non_local_detector._transition_estimation import _block_hessian, _block_loss
+    from non_local_detector.discrete_state_transitions import _float64_jax
 
     rng = np.random.default_rng(3)
     n_time, n_coefficients = 500, 7
@@ -1019,7 +1018,7 @@ def test_a_worse_reml_fit_keeps_the_previous_coefficients_and_warns(
 ):
     """If the REML search's fit has a higher loss than the row's start, the
     M-step keeps the start and says so, as the fixed-strength path does."""
-    from non_local_detector import discrete_state_transitions as module
+    from non_local_detector import _transition_estimation as module
 
     def worse_reml_row(coefficients, *args):
         return coefficients + 5.0, np.ones(1)
@@ -1065,7 +1064,7 @@ def _transitions_on_design(design_matrix, coefficients):
 def test_a_failing_newton_optimizer_falls_back_to_gradient_steps(monkeypatch):
     """If trust-exact raises (as scipy 1.12's can on a badly conditioned
     Hessian), the row is refit with L-BFGS-B instead of failing the M-step."""
-    from non_local_detector import discrete_state_transitions as module
+    from non_local_detector import _transition_estimation as module
 
     real_minimize = module.minimize
     methods = []

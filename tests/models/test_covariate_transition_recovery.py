@@ -25,8 +25,8 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
+from non_local_detector._transition_estimation import _fit_covariate_transition
 from non_local_detector.discrete_state_transitions import (
-    _fit_covariate_transition,
     _smoothness_matrix,
     predict_discrete_state_transitions,
 )

@@ -22,10 +22,8 @@ import xarray as xr
 
 import non_local_detector  # resolves load_model's TypeVar bound
 from non_local_detector._formula_grammar import UntrustedFormula
-from non_local_detector.discrete_state_transitions import (
-    _row_smoothness,
-    _smoothness_matrix,
-)
+from non_local_detector._transition_estimation import _row_smoothness
+from non_local_detector.discrete_state_transitions import _smoothness_matrix
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _record_legacy_encoding_algorithm,
