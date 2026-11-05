@@ -627,14 +627,14 @@ class _DigestWriter:
         return array_digest(np.require(array, requirements="C"))
 
 
-def _stored_form(value: Any) -> JSON:
-    """Return ``value`` as a saved model stores it, its arrays named by content.
+def _stored_form(value: Any, name: str) -> JSON:
+    """Return parameter ``name`` as a saved model stores it, arrays named by content.
 
     Two values with the same stored form save to the same file, whatever
     their objects' ``==`` says (``Discrete`` compares by identity, and a
     dataclass holding an array cannot reduce ``==`` to one bool).
     """
-    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, "parameter")
+    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, name)
 
 
 def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
@@ -662,7 +662,8 @@ def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
     return [
         name
         for name, value in layout_parameters(detector).items()
-        if _stored_form(value) != _stored_form(getattr(detector.state_space_, name))
+        if _stored_form(value, name)
+        != _stored_form(getattr(detector.state_space_, name), name)
     ]
 
 

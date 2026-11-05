@@ -213,6 +213,21 @@ def test_object_array_parameter_decodes_but_is_not_saved(sorted_sim, tmp_path):
         detector.save_model(tmp_path / "model.nld")
 
 
+def test_refusing_an_unsaveable_recorded_value_names_its_parameter(
+    sorted_sim, tmp_path
+):
+    """The fit recorded an object array, so comparing it with the new value
+    fails: the error says which parameter holds it."""
+    movement_var = np.array([[6.0, 0.0], [0.0, 6.0]], dtype=object)
+    detector, _ = _open_field_decoder(sorted_sim, movement_var)
+    detector.set_params(
+        continuous_transition_types=[[RandomWalk(movement_var=6.0 * np.eye(2))]]
+    )
+
+    with pytest.raises(ValidationError, match="at continuous_transition_types/"):
+        detector.save_model(tmp_path / "model.nld")
+
+
 def test_saving_after_changing_a_transition_in_place_is_refused(fitted, tmp_path):
     """The fit records copies, so an in-place change is a change too."""
     detector, _, _ = fitted
