@@ -17,12 +17,14 @@ from non_local_detector.models.base import (
     SortedSpikesDetector,
 )
 from non_local_detector.types import (
+    ClusterlessAlgorithm,
     ContinuousInitialConditions,
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
     FrozenTransitionRows,
     Observations,
+    SortedSpikesAlgorithm,
     StateNames,
     Stickiness,
 )
@@ -74,7 +76,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         The two spatial environments, by default
         ``Environment(environment_name="env1")`` and
         ``Environment(environment_name="env2")``.
-    sorted_spikes_algorithm : str, optional
+    sorted_spikes_algorithm : {"sorted_spikes_kde", "sorted_spikes_glm", "sorted_spikes_mrf", "sorted_spikes_diffusion"}, optional
         Sorted-spikes likelihood algorithm, a key of
         ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
     sorted_spikes_algorithm_params : dict or None, optional
@@ -147,7 +149,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
-        sorted_spikes_algorithm: str = "sorted_spikes_kde",
+        sorted_spikes_algorithm: SortedSpikesAlgorithm = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
@@ -232,7 +234,7 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         The two spatial environments, by default
         ``Environment(environment_name="env1")`` and
         ``Environment(environment_name="env2")``.
-    clusterless_algorithm : str, optional
+    clusterless_algorithm : {"clusterless_kde", "clusterless_gmm", "clusterless_mark_glm", "clusterless_diffusion"}, optional
         Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
         by default "clusterless_kde".
     clusterless_algorithm_params : dict or None, optional
@@ -306,7 +308,7 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
-        clusterless_algorithm: str = "clusterless_kde",
+        clusterless_algorithm: ClusterlessAlgorithm = "clusterless_kde",
         clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,

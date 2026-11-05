@@ -98,7 +98,7 @@ MODEL_PAIRS = list(zip(MODEL_CLASSES[::2], MODEL_CLASSES[1::2], strict=True))
 # order.
 _CLUSTERLESS_TO_SORTED = [
     (
-        """clusterless_algorithm : str, optional
+        """clusterless_algorithm : {"clusterless_kde", "clusterless_gmm", "clusterless_mark_glm", "clusterless_diffusion"}, optional
     Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
     by default "clusterless_kde".
 clusterless_algorithm_params : dict or None, optional
@@ -108,7 +108,7 @@ clusterless_algorithm_params : dict or None, optional
     defaults. A key the fit does not accept raises ``ValidationError``.
     User-supplied dicts are stored as-is for sklearn ``clone()``
     compatibility and copied on use.""",
-        """sorted_spikes_algorithm : str, optional
+        """sorted_spikes_algorithm : {"sorted_spikes_kde", "sorted_spikes_glm", "sorted_spikes_mrf", "sorted_spikes_diffusion"}, optional
     Sorted-spikes likelihood algorithm, a key of
     ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
 sorted_spikes_algorithm_params : dict or None, optional

@@ -20,6 +20,7 @@ from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
 
 __all__ = [
+    "ClusterlessAlgorithm",
     "ContinuousInitialConditions",
     "ContinuousTransitions",
     "DiscreteTransitions",
@@ -30,6 +31,7 @@ __all__ = [
     "OutputMode",
     "OutputName",
     "ReturnOutputs",
+    "SortedSpikesAlgorithm",
     "StateNames",
     "Stickiness",
     "TransitionRepresentation",
@@ -133,3 +135,21 @@ ReturnOutputs = OutputName | Collection[OutputName] | None
 """A ``return_outputs`` value: one output name, any non-string collection of
 them (list, tuple, set, frozenset), or None for the smoother only. A name
 means the same alone or in a collection."""
+
+SortedSpikesAlgorithm = Literal[
+    "sorted_spikes_diffusion",
+    "sorted_spikes_glm",
+    "sorted_spikes_kde",
+    "sorted_spikes_mrf",
+]
+"""Registered likelihood algorithm of a sorted-spikes detector
+(``sorted_spikes_algorithm``)."""
+
+ClusterlessAlgorithm = Literal[
+    "clusterless_diffusion",
+    "clusterless_gmm",
+    "clusterless_kde",
+    "clusterless_mark_glm",
+]
+"""Registered likelihood algorithm of a clusterless detector
+(``clusterless_algorithm``)."""

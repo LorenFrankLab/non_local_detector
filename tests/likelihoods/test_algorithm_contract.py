@@ -714,6 +714,20 @@ def test_user_docs_list_every_algorithm(document):
     assert [name for name in ALGORITHMS if f"`{name}`" not in text] == []
 
 
+@pytest.mark.parametrize(
+    ("literal", "registry"),
+    [
+        ("SortedSpikesAlgorithm", _SORTED_SPIKES_ALGORITHMS),
+        ("ClusterlessAlgorithm", _CLUSTERLESS_ALGORITHMS),
+    ],
+)
+def test_algorithm_name_type_lists_every_algorithm(literal, registry):
+    """The constructors' algorithm-name annotation names the registered algorithms."""
+    from non_local_detector import types
+
+    assert set(typing.get_args(getattr(types, literal))) == set(registry)
+
+
 def test_likelihoods_do_not_import_model_checking():
     """Model checking imports the registry; the registry must not import it."""
     code = (

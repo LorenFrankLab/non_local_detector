@@ -4,7 +4,6 @@ Tests the new string-based interface for controlling which outputs are returned
 from predict() methods, as well as backward compatibility with the old boolean flags.
 """
 
-
 import numpy as np
 import pytest
 
