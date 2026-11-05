@@ -1359,7 +1359,36 @@ class _DetectorBase(
         max_dense_distance_bytes : int, optional
             Byte limit for dense reads of the deferred distance view, by
             default 256 MiB. Used only when compute_all_pairs_distances=False.
+
+        Raises
+        ------
+        ValidationError
+            If ``environment_labels`` label no sample with an environment's
+            ``environment_name``.
         """
+        if environment_labels is not None:
+            names = [env.environment_name for env in self.environments]
+            missing = [name for name in names if not np.any(environment_labels == name)]
+            if missing:
+                labels = [str(label) for label in np.unique(environment_labels)]
+                unmatched = [label for label in labels if label not in names]
+                msg = (
+                    f"No position sample is labeled with environment(s) {missing} "
+                    "in environment_labels, so their place grids cannot be fitted"
+                )
+                raise ValidationError(
+                    msg,
+                    expected=f"labels naming the environments {names}",
+                    got=f"labels {labels[:10]}"
+                    + (f" (of {len(labels)})" if len(labels) > 10 else ""),
+                    hint=(
+                        f"The labels {unmatched[:10]} match no environment_name. "
+                        if unmatched
+                        else ""
+                    )
+                    + "Label each position sample with the environment_name of "
+                    "the environment it was recorded in.",
+                )
         fitted_environments = []
         for given_environment in self.environments:
             environment = type(given_environment)(

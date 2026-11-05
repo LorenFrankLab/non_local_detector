@@ -1,4 +1,4 @@
-"""Decoding checks the position it is given against the fitted detector."""
+"""Fitting and decoding check their position inputs against the detector."""
 
 import numpy as np
 import pytest
@@ -80,3 +80,17 @@ def test_position_columns_must_match_the_fitted_environment(fitted, method, n_co
     with pytest.raises(ValidationError, match=f"{n_columns} column") as info:
         _decode(detector, method, arguments | {"position": position})
     assert "2 columns" in str(info.value)
+
+
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_environment_labels_matching_no_environment_are_named(family):
+    """Labels naming no configured environment raise an error naming the
+    labels and the environment left without samples."""
+    detector = DETECTORS[family](
+        environments=Environment(environment_name="track", place_bin_size=2)
+    )
+    labels = np.array(["trak"] * TIME.size)
+    with pytest.raises(ValidationError, match="environment_labels") as info:
+        detector.fit(TIME, POSITION, **SPIKE_DATA[family], environment_labels=labels)
+    assert "'trak'" in str(info.value)
+    assert "'track'" in str(info.value)
