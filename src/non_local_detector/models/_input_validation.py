@@ -1441,6 +1441,41 @@ def _warn_if_off_grid(
     )
 
 
+def _require_position_columns(
+    position: np.ndarray, environments: Sequence[Environment]
+) -> None:
+    """Require the number of position columns the fitted environments read.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
+        Positions.
+    environments : sequence of Environment
+        Fitted environments.
+
+    Raises
+    ------
+    ValidationError
+        If an environment was fitted on another number of columns.
+    """
+    n_columns = 1 if position.ndim == 1 else position.shape[1]
+    for environment in environments:
+        expected = _position_columns(environment)
+        if n_columns != expected:
+            msg = (
+                f"position has {n_columns} column(s), but environment "
+                f"{environment.environment_name!r} was fitted on "
+                f"positions with {expected} columns"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"position of shape (n_time_position, {expected})",
+                got=f"shape {position.shape}",
+                hint="Use the same position columns, in the same "
+                "order and units, as the detector was fitted with.",
+            )
+
+
 def _missing_covariates_error(
     *, reason: str, expected: str, hint: str, example: str
 ) -> ValidationError:
@@ -1591,8 +1626,8 @@ class _InputValidationMixin:
           before anything changes. Spikes are not compared with a time range
           here: ``fit`` goes on to ``fit_encoding_model``, whose stage warns.
         - ``encoding`` (``fit_encoding_model``): the spikes against the
-          position span come first, then the training arrays and the encoding
-          support.
+          position span come first, then the training arrays, position against
+          the grids, and the encoding support.
         - ``refit`` (EM's encoding refits, through ``_fit_encoding_model``):
           the arrays are the ones the public call checked, so this reads the
           iteration's ``weights`` and warns of nothing.
@@ -1715,6 +1750,10 @@ class _InputValidationMixin:
             )
         if position is not None and position.ndim == 1:
             position = position[:, np.newaxis]
+        if stage == "encoding":
+            self._validate_encoding_position(
+                cast("np.ndarray", position), inputs.environment_labels
+            )
         encoding_support = None
         if stage in ("encoding", "refit"):
             encoding_support = EncodingSupport(
@@ -1892,16 +1931,16 @@ class _InputValidationMixin:
         position : np.ndarray
             Position array to validate.
         context : str, optional
-            Name of the calling context (``"fit"`` or ``"predict"``)
-            for error messages. ``fit`` checks the configured
-            ``environments``, which it is about to fit; ``predict`` checks
-            the fitted ``environments_``, which it decodes on.
+            Name of the calling method (``"fit"``, ``"fit_encoding_model"`` or
+            ``"predict"``) for error messages. Fitting checks the configured
+            ``environments``; ``predict`` checks the fitted ``environments_``,
+            which it decodes on.
         """
         is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
         if not is_1d:
             return
 
-        environments = self.environments if context == "fit" else self.environments_
+        environments = self.environments_ if context == "predict" else self.environments
         has_track_graph = any(env.track_graph is not None for env in environments)
         if has_track_graph:
             msg = (
@@ -1925,6 +1964,49 @@ class _InputValidationMixin:
                     "    # Raw 2D position, not pre-linearized\n"
                     f"    detector.{context}(..., position=position_2d)"
                 ),
+            )
+
+    def _validate_encoding_position(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        position: np.ndarray,
+        environment_labels: np.ndarray | None,
+    ) -> None:
+        """Check position against the grids an encoding model is fit on.
+
+        A grid is warned about here rather than where it is fit, so ``fit``
+        warns once, after its fit succeeded (an EM fit that falls back to
+        dense warns once), and ``fit_encoding_model`` warns like ``fit``.
+        Without fitted environments there is nothing to compare with.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time_position, n_position_dims)
+            Positions, with NaN rows for untracked samples.
+        environment_labels : np.ndarray, shape (n_time_position,), or None
+            Environment of each sample.
+
+        Raises
+        ------
+        ValidationError
+            If position is 1-D while an environment has a track graph, or has
+            another number of columns than a fitted environment's positions.
+
+        Warns
+        -----
+        DataQualityWarning
+            If many positions lie far outside a fitted grid (see
+            ``_warn_if_off_grid``).
+        """
+        self._validate_position_dimensionality(position, context="fit_encoding_model")
+        environments = getattr(self, "environments_", ())
+        _require_position_columns(position, environments)
+        # Each grid is fitted on its environment's samples.
+        for environment in environments:
+            _warn_if_off_grid(
+                position
+                if environment_labels is None
+                else position[environment_labels == environment.environment_name],
+                [environment],
             )
 
     def _validate_decode_position(  # type: ignore[misc]
@@ -1958,22 +2040,7 @@ class _InputValidationMixin:
             self._validate_position_dimensionality(position, context="predict")
             if not self._decode_reads_position(observation_models):
                 return
-            n_columns = 1 if position.ndim == 1 else position.shape[1]
-            for environment in self.environments_:
-                expected = _position_columns(environment)
-                if n_columns != expected:
-                    msg = (
-                        f"position has {n_columns} column(s), but environment "
-                        f"{environment.environment_name!r} was fitted on "
-                        f"positions with {expected} columns"
-                    )
-                    raise ValidationError(
-                        msg,
-                        expected=f"position of shape (n_time_position, {expected})",
-                        got=f"shape {position.shape}",
-                        hint="Decode with the same position columns, in the same "
-                        "order and units, as the detector was fitted with.",
-                    )
+            _require_position_columns(position, self.environments_)
             _warn_if_off_grid(
                 position[:, np.newaxis] if position.ndim == 1 else position,
                 self.environments_,

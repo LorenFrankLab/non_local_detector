@@ -20,6 +20,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
     time_edges_from_centers,
 )
+from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -255,3 +256,55 @@ class TestPositionTimeInOtherUnits:
     def test_a_single_spike_has_no_span_to_compare(self, recording):
         time, position, _, _ = recording
         _no_quality_warnings(lambda: _sorted().fit(time, position, [np.array([10.0])]))
+
+
+class TestFitEncodingModelChecksPosition:
+    """fit_encoding_model reads position the way fit does."""
+
+    def test_one_dimensional_position_on_a_track_graph_raises(self, recording):
+        time, position, spikes, _ = recording
+        on_track = np.column_stack((position[:, 0], np.zeros(len(time))))
+        detector = _sorted(SortedSpikesDecoder, environments=_track_environment()).fit(
+            time, on_track, spikes
+        )
+
+        with pytest.raises(ValidationError, match="track_graph"):
+            detector.fit_encoding_model(time, position, spikes)
+
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_positions_off_the_grid_warn_once(self, family, recording, fitted):
+        time, position, spikes, marks = recording
+        detector = fitted[family].copy()
+
+        _, messages = _quality_warnings(
+            lambda: detector.fit_encoding_model(
+                time, position * 10, *_spike_data(family, spikes, marks)
+            ),
+            "outside the fitted grid",
+        )
+
+        assert len(messages) == 1
+
+    def test_fit_warns_about_the_grid_once(self, recording):
+        time, position, spikes, _ = recording
+        grid = Environment(place_bin_size=5.0, position_range=[(0.0, 50.0)])
+
+        _, messages = _quality_warnings(
+            lambda: _sorted(environments=grid).fit(time, position, spikes),
+            "outside the fitted grid",
+        )
+
+        assert len(messages) == 1
+
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_position_with_other_columns_than_the_grid_raises(
+        self, family, recording, fitted
+    ):
+        time, position, spikes, marks = recording
+
+        with pytest.raises(ValidationError, match="column"):
+            fitted[family].copy().fit_encoding_model(
+                time,
+                np.column_stack((position, position)),
+                *_spike_data(family, spikes, marks),
+            )

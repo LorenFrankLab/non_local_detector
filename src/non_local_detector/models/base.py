@@ -121,7 +121,6 @@ from non_local_detector.models._input_validation import (
     _validate_prior_weight,
     _validate_spike_structure,
     _ValidatedInputs,
-    _warn_if_off_grid,
 )
 from non_local_detector.models._persistence import (
     _ModelUnpickler,  # noqa: F401 -- stored-artifact compatibility tests import it from base
@@ -1459,16 +1458,6 @@ class _DetectorBase(
             transition_representation=transition_representation,
             max_dense_transition_bytes=int(max_dense_transition_bytes),
         )
-        # Each grid is fitted on its environment's samples. Warned once the
-        # fit succeeds, so an EM fit that falls back to dense warns once.
-        for environment in self.environments_:
-            _warn_if_off_grid(
-                position
-                if environment_labels is None
-                else position[environment_labels == environment.environment_name],
-                [environment],
-            )
-
         return self
 
     @abc.abstractmethod
