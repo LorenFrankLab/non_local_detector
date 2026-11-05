@@ -2918,6 +2918,11 @@ def viterbi(
     ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
+
+    As :func:`filter` does, a host-side ``logger.warning`` counts the time
+    steps whose log-likelihoods are all ``-inf`` (where the path's state is
+    arbitrary) and those with a NaN or ``+inf`` (where it is undefined),
+    unless the inputs are traced. The path is unchanged.
     """
     if not _is_traced(initial_distribution, transition_matrix, log_likelihoods):
         _check_hmm_arrays(
@@ -2927,6 +2932,9 @@ def viterbi(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    # As the filters do: argmax over an all-(-inf) step returns state 0
+    # silently, and a NaN or +inf step leaves the path undefined.
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
         _viterbi_jit(initial_distribution, transition_matrix, log_likelihoods),
@@ -3608,6 +3616,9 @@ def viterbi_covariate_dependent(
     ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
+
+    Degenerate and NaN or ``+inf`` time steps are reported as by
+    :func:`viterbi`.
     """
     if not _is_traced(
         initial_distribution,
@@ -3625,6 +3636,7 @@ def viterbi_covariate_dependent(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
         _viterbi_covariate_dependent_jit(

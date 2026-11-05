@@ -29,6 +29,7 @@ from non_local_detector.core import (
     row_slice_aware,
     smoother,
     viterbi,
+    viterbi_covariate_dependent,
 )
 from tests.conftest import precision_mode
 
@@ -832,6 +833,16 @@ def _decode_with_log_likelihoods(path, log_likes):
             n_chunks=2,
             log_likelihoods=log_likes,
         )
+    elif path == "viterbi":
+        viterbi(init, trans, log_likes)
+    elif path == "viterbi_covariate":
+        viterbi_covariate_dependent(
+            init,
+            np.broadcast_to(trans, (n_time, 2, 2)),
+            np.eye(2),
+            np.array([0, 1]),
+            log_likes,
+        )
     else:
         most_likely_sequence(
             time_edges=np.arange(n_time + 1),
@@ -851,6 +862,8 @@ def _decode_with_log_likelihoods(path, log_likes):
         "filter_covariate",
         "chunked_filter_smoother",
         "most_likely_sequence",
+        "viterbi",
+        "viterbi_covariate",
     ],
 )
 def test_positive_infinite_log_likelihood_warns(path, caplog):
@@ -866,6 +879,33 @@ def test_positive_infinite_log_likelihood_warns(path, caplog):
     messages = [r.getMessage() for r in caplog.records]
     assert any("1/4 time step(s) with NaN or +inf" in m for m in messages), messages
     assert not any("all-impossible" in m for m in messages), messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", ["viterbi", "viterbi_covariate"])
+def test_public_viterbi_warns_on_impossible_steps(path, caplog):
+    """The jit-composable Viterbi passes warn about all-(-inf) steps, as the
+    filters do, with the Viterbi wording; the path itself is unchanged."""
+    log_likes = np.array([[0.0, -1.0], [-np.inf, -np.inf], [0.0, -1.0]])
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        _decode_with_log_likelihoods(path, log_likes)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "1/3 time step(s)" in m and "all-impossible" in m and "Viterbi decoding" in m
+        for m in messages
+    ), messages
+
+
+@pytest.mark.unit
+def test_public_viterbi_stays_jit_composable(caplog):
+    """Under ``jit`` the inputs are tracers, so no diagnostics run or warn."""
+    init = jnp.array([0.5, 0.5])
+    trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+    log_likes = jnp.array([[0.0, -1.0], [-jnp.inf, -jnp.inf], [0.0, -1.0]])
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        jitted = jax.jit(viterbi)(init, trans, log_likes)
+    assert not caplog.records
+    np.testing.assert_array_equal(jitted, viterbi(init, trans, log_likes))
 
 
 @pytest.mark.unit
