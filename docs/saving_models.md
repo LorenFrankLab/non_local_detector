@@ -39,7 +39,10 @@ print(summary["detector_type"], place_fields.shape)
 
 `.nld` is the conventional suffix. `load_model` recognizes the format from
 the file's first bytes, not its name, and still reads the pickles that
-earlier releases wrote (below).
+earlier releases wrote (below). It returns an instance of the class it is
+called on, or of a subclass: `SortedSpikesDetector.load_model` (from
+`non_local_detector.models.base`) loads any sorted-spikes detector, and a
+file holding another class raises `ValidationError`.
 
 ## What a file holds
 

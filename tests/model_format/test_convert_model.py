@@ -14,12 +14,12 @@ import pytest
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.model_format import convert_model, is_saved_model_format
 from non_local_detector.models import SortedSpikesDecoder
-from non_local_detector.models.base import SortedSpikesDetector
 from tests.model_format._compare import assert_same_fitted_state
 from tests.models.test_stored_artifact_compatibility import (
     COMPAT_DATA,
     LEGACY_VERSIONS,
     MODELS,
+    _family,
     _recording,
     _spikes_in,
 )
@@ -58,11 +58,11 @@ def _posterior(model, inputs, artifact):
 
 @pytest.mark.parametrize(("version", "artifact"), DECODABLE)
 def test_converted_model_decodes_as_the_pickle(version, artifact, inputs, tmp_path):
-    pickled = SortedSpikesDetector.load_model(_pickle_path(version, artifact))
+    pickled = _family(artifact).load_model(_pickle_path(version, artifact))
     path = tmp_path / f"{artifact}.nld"
 
     convert_model(_pickle_path(version, artifact), path)
-    converted = SortedSpikesDetector.load_model(path)
+    converted = _family(artifact).load_model(path)
 
     assert is_saved_model_format(path)
     np.testing.assert_array_equal(
@@ -87,7 +87,8 @@ def test_model_that_cannot_decode_is_not_converted(version, artifact, tmp_path):
 
 def test_a_saved_model_is_not_converted_again(tmp_path):
     path = tmp_path / "model.nld"
-    SortedSpikesDetector.load_model(_pickle_path(*DECODABLE[0])).save_model(path)
+    version, artifact = DECODABLE[0]
+    _family(artifact).load_model(_pickle_path(version, artifact)).save_model(path)
 
     with pytest.raises(ValidationError, match="already"):
         convert_model(path, tmp_path / "again.nld")

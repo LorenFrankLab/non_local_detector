@@ -88,9 +88,12 @@ def inputs():
 
 
 def _load_model(version, artifact):
-    return SortedSpikesDetector.load_model(
-        COMPAT_DATA / version / f"{artifact}_model.pkl"
-    )
+    """Load a stored model as Spyglass does, with its family's detector class."""
+    return _family(artifact).load_model(COMPAT_DATA / version / f"{artifact}_model.pkl")
+
+
+def _family(artifact):
+    return ClusterlessDetector if "clusterless" in artifact else SortedSpikesDetector
 
 
 def _load_results(version, artifact):

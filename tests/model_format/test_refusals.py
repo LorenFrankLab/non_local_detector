@@ -7,6 +7,7 @@ only decoding: the model still loads and its summary still reads.
 """
 
 import json
+import pickle
 import warnings
 import zipfile
 from dataclasses import dataclass
@@ -21,6 +22,11 @@ from non_local_detector.model_format import (
     FORMAT_VERSION,
     _container,
     read_model_summary,
+)
+from non_local_detector.models.base import (
+    ClusterlessDetector,
+    SortedSpikesDetector,
+    _DetectorBase,
 )
 from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
@@ -124,6 +130,31 @@ def test_a_tampered_array_fails_its_checksum(saved):
         nld.NonLocalSortedSpikesDetector.load_model(saved)
     with pytest.raises(DataError, match="checksum"):
         read_model_summary(saved)
+
+
+@pytest.mark.parametrize("file_format", ["nld", "pickle"])
+def test_load_model_returns_only_its_own_class(fitted, saved, tmp_path, file_format):
+    """A class's load_model loads an instance of it or of a subclass."""
+    path = saved
+    if file_format == "pickle":
+        path = tmp_path / "model.pkl"
+        path.write_bytes(pickle.dumps(fitted))
+
+    with pytest.raises(ValidationError, match="not a SortedSpikesDecoder") as error:
+        nld.SortedSpikesDecoder.load_model(path)
+    assert "NonLocalSortedSpikesDetector.load_model" in str(error.value)
+    with pytest.raises(ValidationError, match="not a ClusterlessDetector"):
+        ClusterlessDetector.load_model(path)
+    for cls in (nld.NonLocalSortedSpikesDetector, SortedSpikesDetector, _DetectorBase):
+        assert type(cls.load_model(path)) is nld.NonLocalSortedSpikesDetector
+
+
+def test_load_model_refuses_a_pickle_that_is_not_a_detector(tmp_path):
+    path = tmp_path / "model.pkl"
+    path.write_bytes(pickle.dumps({"not": "a detector"}))
+
+    with pytest.raises(ValidationError, match="holds a dict"):
+        _DetectorBase.load_model(path)
 
 
 def test_a_newer_format_version_asks_for_an_upgrade(saved):

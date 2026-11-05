@@ -14,18 +14,19 @@ import json
 import pickle
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import jax
 import numpy as np
 import xarray as xr
 
-import non_local_detector  # resolves load_model's return annotation
+import non_local_detector  # resolves load_model's TypeVar bound
 from non_local_detector._formula_grammar import UntrustedFormula
 from non_local_detector.discrete_state_transitions import (
     _row_smoothness,
     _smoothness_matrix,
 )
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _record_legacy_encoding_algorithm,
     _unify_stored_encoding_values,
@@ -37,6 +38,9 @@ if TYPE_CHECKING:
     import non_local_detector.models.base
     from non_local_detector.models.base import _DetectorBase
 
+
+# The detector class ``load_model`` is called on, and returns an instance of.
+_Detector = TypeVar("_Detector", bound="non_local_detector.models.base._DetectorBase")
 
 # Dataset attribute in which ``save_results`` records integer dtypes.
 _INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
@@ -199,14 +203,20 @@ class _PersistenceMixin:
 
         save_detector(cast("_DetectorBase", self), filename)
 
-    @staticmethod
-    def load_model(
+    @classmethod
+    def load_model(  # type: ignore[misc]
+        cls: "type[_Detector]",
         filename: str | Path = "model.nld",
         *,
         trust_formulas: bool = False,
-    ) -> "non_local_detector.models.base._DetectorBase":
+    ) -> "_Detector":
         """
         Load a detector saved with ``save_model``, or pickled by earlier releases.
+
+        The file must hold an instance of the class this is called on or of a
+        subclass: ``SortedSpikesDetector.load_model`` loads any sorted-spikes
+        detector, ``NonLocalSortedSpikesDetector.load_model`` only that
+        detector or a subclass of it.
 
         The format is detected from the file's first bytes, not its suffix.
         A file in the saved-model format is read without running code from
@@ -260,27 +270,39 @@ class _PersistenceMixin:
 
         Returns
         -------
-        _DetectorBase
-            Loaded detector instance
+        detector
+            The loaded detector, an instance of the class this is called on.
 
         Raises
         ------
         ValidationError
             If the file names a type not registered in this session (import
-            the package that registers it first), or was written in a newer
-            format version.
+            the package that registers it first), was written in a newer
+            format version, or holds an object that is not an instance of the
+            class this is called on.
         DataError
-            If an array of the file does not match its checksum (a corrupt or
-            edited file).
+            If the file is corrupt or was edited (an array that does not
+            match its checksum, a malformed or missing entry), or holds a
+            name this version does not read.
         """
         from non_local_detector.model_format._container import is_saved_model_format
 
+        loaded: object
         if is_saved_model_format(filename):
             from non_local_detector.model_format._detector import load_detector
 
-            return load_detector(filename, trust_formulas=trust_formulas)
-        with Path(filename).open("rb") as f:
-            return cast("_DetectorBase", _ModelUnpickler(f).load())
+            loaded = load_detector(filename, trust_formulas=trust_formulas)
+        else:
+            with Path(filename).open("rb") as f:
+                loaded = _ModelUnpickler(f).load()
+        if not isinstance(loaded, cls):
+            msg = f"{filename} holds a {type(loaded).__qualname__}, not a {cls.__qualname__}"
+            raise ValidationError(
+                msg,
+                hint=f"Load it with {type(loaded).__qualname__}.load_model, or "
+                "the load_model of a class it derives from.",
+            )
+        return loaded
 
     @staticmethod
     def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
