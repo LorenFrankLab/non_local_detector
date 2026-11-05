@@ -310,6 +310,30 @@ def test_unpickled_detector_holds_its_fitted_state_space(version, artifact):
         np.testing.assert_array_equal(rebuilt, kept)
 
 
+@pytest.mark.parametrize("parameter", ["state_names", "observation_models"])
+def test_unpickling_a_layout_that_disagrees_with_the_states_asks_for_a_refit(
+    parameter,
+):
+    """A state saved before ``state_space_`` whose bins are counted for
+    another number of states than it names is refused, not decoded."""
+    model = _load_model("main-d5f85823", "nonlocal_sorted_1d")
+    state = dict(vars(model))
+    state_space = state.pop("state_space_")
+    state.update(
+        state_ind_=state_space.state_ind,
+        bin_sizes_=state_space.bin_sizes,
+        is_track_interior_state_bins_=state_space.is_track_interior,
+        continuous_state_transitions_=state_space.continuous_transitions,
+        n_state_bins_=state_space.n_state_bins,
+        n_discrete_states_=state_space.n_states,
+    )
+    state[parameter] = list(state[parameter])[:-1]
+    restored = type(model).__new__(type(model))
+
+    with pytest.raises(ValidationError, match="Refit the detector"):
+        restored.__setstate__(state)
+
+
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
 def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     version, artifact, tmp_path

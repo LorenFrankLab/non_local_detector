@@ -233,7 +233,9 @@ def _upgrade_state_space(detector: "_DetectorBase", state: dict[str, Any]) -> No
     Raises
     ------
     ValidationError
-        If the stored bin counts disagree with the stored state of each bin.
+        If the stored bin counts disagree with the stored state of each bin,
+        or are counted for another number of states than the detector's
+        ``state_names`` and ``observation_models`` name.
     """
     if "state_ind_" not in state:
         return  # unfitted, or saved with its state_space_
@@ -249,6 +251,19 @@ def _upgrade_state_space(detector: "_DetectorBase", state: dict[str, Any]) -> No
         raise ValidationError(
             msg,
             expected=f"bin_sizes_ {bin_sizes} counting the states in state_ind_",
+            hint="Refit the detector with the version that saved it, or with this one.",
+        )
+    n_states = {
+        "bin_sizes_": len(bin_sizes),
+        "state_names": len(detector.state_names),
+        "observation_models": len(detector.observation_models),
+    }
+    if len(set(n_states.values())) > 1:
+        msg = "The saved detector's states disagree with its state bins"
+        raise ValidationError(
+            msg,
+            expected="one bin count, state name and observation model per state",
+            got=", ".join(f"{n} {name}" for name, n in n_states.items()),
             hint="Refit the detector with the version that saved it, or with this one.",
         )
     representation = stored["_transition_representation_"]
