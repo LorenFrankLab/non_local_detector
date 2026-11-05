@@ -171,7 +171,8 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dim)
-        Position of the animal.
+        Position of the animal. Steps into or out of a NaN sample are left
+        out; no step is taken across a stretch of NaN samples.
 
     Returns
     -------
@@ -179,9 +180,8 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
         Variance of the movement per time bin.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
-    is_nan = np.any(np.isnan(position), axis=1)
-    position = position[~is_nan]
-    return np.cov(np.diff(position, axis=0), rowvar=False)
+    steps = np.diff(position, axis=0)
+    return np.cov(steps[~np.any(np.isnan(steps), axis=1)], rowvar=False)
 
 
 # Entries of a random-walk transition evaluated per block of rows by
@@ -919,9 +919,11 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
             Required; its ``position`` is binned. On a track graph,
             multi-dimensional position is linearized and one-column position
             is taken as linear (see ``Environment.decoding_position``). Only
-            time points that are training points, in ``encoding_group`` and
-            in this environment (all if ``environment_labels`` is None) are
-            used; see ``TransitionContext`` for the defaults.
+            steps between consecutive time points that are both training
+            points, in ``encoding_group``, in this environment (all if
+            ``environment_labels`` is None) and finite are counted, so no
+            step is taken across an excluded stretch; see
+            ``TransitionContext`` for the defaults.
 
         Returns
         -------
@@ -955,14 +957,19 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
             is_environment = context.environment_labels == self.environment_name
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
-        position = environment.decoding_position(
-            position[is_training & is_encoding & is_environment]
+        is_used = is_training & is_encoding & is_environment
+        used_position = environment.decoding_position(position[is_used])
+        # Steps are formed on the whole series: pairing the used samples after
+        # dropping the others would take a step across each excluded stretch.
+        position = np.full((n_time, used_position.shape[1]), np.nan)
+        position[is_used] = used_position
+        is_step = np.all(np.isfinite(position[:-1]), axis=1) & np.all(
+            np.isfinite(position[1:]), axis=1
         )
-
+        source, destination = position[:-1][is_step], position[1:][is_step]
         if self.is_time_reversed:
-            samples = np.concatenate((position[1:], position[:-1]), axis=1)
-        else:
-            samples = np.concatenate((position[:-1], position[1:]), axis=1)
+            source, destination = destination, source
+        samples = np.concatenate((source, destination), axis=1)
         # Fitted edges define the source and destination ranges, including
         # environments whose ranges were inferred from their position data.
         state_transition, _ = np.histogramdd(

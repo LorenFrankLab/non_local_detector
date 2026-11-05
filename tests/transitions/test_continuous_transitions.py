@@ -349,6 +349,45 @@ def test_context_defaults_select_all_samples_of_group_zero():
     assert TransitionContext().encoding_group_labels is None
 
 
+@pytest.mark.parametrize("excluded_by", ["training", "encoding_group", "environment"])
+@pytest.mark.parametrize("is_time_reversed", [False, True])
+def test_empirical_movement_does_not_pair_samples_across_excluded_samples(
+    excluded_by, is_time_reversed
+):
+    """Samples on either side of an excluded stretch are not one step apart.
+
+    The animal sits in the first bin, runs to the last one (excluded), and
+    sits there. The included samples never move, so no one-step transition
+    leaves either bin; pairing them after dropping the run gave a jump from
+    the first bin to the last.
+    """
+    position = np.concatenate(
+        [np.full(50, 5.0), np.linspace(5.0, 95.0, 50), np.full(50, 95.0)]
+    )[:, None]
+    env = Environment(
+        place_bin_size=10.0, position_range=[(0.0, 100.0)]
+    ).fit_place_grid(position, infer_track_interior=False)
+    is_run = np.zeros(150, dtype=bool)
+    is_run[50:100] = True
+    context = {
+        "training": TransitionContext(position, is_training=~is_run),
+        "encoding_group": TransitionContext(
+            position, encoding_group_labels=is_run.astype(int)
+        ),
+        "environment": TransitionContext(
+            position, environment_labels=np.where(is_run, "other", "")
+        ),
+    }[excluded_by]
+
+    transition = EmpiricalMovement(
+        is_time_reversed=is_time_reversed
+    ).make_state_transition((env,), context)
+
+    expected = np.zeros((10, 10))
+    expected[0, 0] = expected[-1, -1] = 1.0
+    np.testing.assert_array_equal(transition, expected)
+
+
 @pytest.mark.parametrize("encoding_group", [0, 1])
 def test_context_construction_routes_give_identical_empirical_movement(
     encoding_group,
