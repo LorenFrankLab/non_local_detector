@@ -29,12 +29,14 @@ from numpy.typing import ArrayLike, DTypeLike, NDArray
 from non_local_detector.core import (
     TransitionOperator,
     TransitionProducts,
+    _call_log_likelihood_chunk,
     _check_operator_rows,
     _check_shape,
     _CovariateTransition,
     _degenerate_and_nan_masks_device,
     _filter_scan,
     _float64_evidence,
+    _require_row_slice_aware,
     _smoother_scan,
     _StationaryTransition,
     _validate_hmm_inputs,
@@ -48,6 +50,11 @@ from non_local_detector.result_store import (
     open_result_store,
 )
 from non_local_detector.time_edges import decode_bin_centers, uniform_time_edges
+from non_local_detector.types import (
+    EvidenceAccumulation,
+    OutputMode,
+    TransitionStatistics,
+)
 
 _SPATIAL = {
     "causal_posterior",
@@ -259,7 +266,8 @@ class CheckpointedResult:
         Log marginal likelihood of the whole recording.
     diagnostics : dict
         Whole-recording diagnostics, such as counts and indices of degenerate
-        and NaN rows and the number of likelihood evaluations.
+        and NaN rows (a row with a ``NaN`` or ``+inf`` log likelihood) and the
+        number of likelihood evaluations.
     result_path : Path or None
         Directory of the disk result store, or None for an in-memory result.
     first_smoothed : np.ndarray or None
@@ -394,6 +402,7 @@ def checkpointed_forward_backward(
     initial_distribution: ArrayLike,
     log_likelihood_func: Callable[..., Any],
     *,
+    log_likelihood_args: tuple[Any, ...] = (),
     transition_matrix: ArrayLike | None = None,
     transition_operator: TransitionProducts | None = None,
     discrete_transition_matrix: ArrayLike | None = None,
@@ -402,7 +411,7 @@ def checkpointed_forward_backward(
     n_states: int | None = None,
     is_missing: ArrayLike | None = None,
     chunk_size: int = 2000,
-    output_mode: str = "compact",
+    output_mode: OutputMode = "compact",
     result_path: str | Path | None = None,
     checkpoint_dir: str | Path | None = None,
     return_outputs: str | Iterable[str] | None = None,
@@ -410,14 +419,18 @@ def checkpointed_forward_backward(
     dtype: DTypeLike = np.float32,
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
     result_attrs: dict[str, Any] | Callable[[float], dict[str, Any]] | None = None,
-    evidence_accumulation: str = "stable",
-    transition_statistics: str | None = None,
+    evidence_accumulation: EvidenceAccumulation = "stable",
+    transition_statistics: TransitionStatistics | None = None,
     replay_cache_bytes: int = 0,
 ) -> CheckpointedResult:
     """Filter once, replay each chunk in reverse, and emit exact requested rows.
 
-    The likelihood callback receives ``(full_edges, row_slice=global_slice,
-    is_missing=chunk_mask)``. Counts must retain global edge/final-edge ownership.
+    The likelihood callback is called as ``log_likelihood_func(
+    *log_likelihood_args, time_edges=time_edges, is_missing=chunk_mask,
+    row_slice=global_slice)``, as core's drivers call it; with more than one
+    chunk it must be marked :func:`~non_local_detector.core.row_slice_aware`,
+    and an unmarked callback is called without ``row_slice`` for the single
+    chunk. Counts must retain global edge/final-edge ownership.
     Every request spans ``min(chunk_size, n_time)`` rows: a short last chunk is
     requested over the final ``chunk_size`` rows and its earlier rows are
     discarded, so compiled likelihood kernels see one row count.
@@ -476,9 +489,14 @@ def checkpointed_forward_backward(
         Initial probability of each hidden state bin: nonnegative, summing
         to 1.
     log_likelihood_func : callable
-        Callback ``log_likelihood_func(time_edges, row_slice=..., is_missing=...)``
-        returning the log likelihood of the requested global rows,
-        shape (n_rows, n_bins).
+        Callback ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=..., row_slice=...)`` returning the
+        log likelihood of the requested global rows, shape (n_rows, n_bins).
+        Marked by :func:`~non_local_detector.core.row_slice_aware` unless
+        ``chunk_size`` covers every row.
+    log_likelihood_args : tuple, optional
+        Positional arguments passed to ``log_likelihood_func``; by default
+        none.
     transition_matrix : array_like, shape (n_bins, n_bins), optional
         Dense stationary transition matrix, nonnegative with each row summing
         to at most 1. Used when neither ``transition_operator`` nor
@@ -565,7 +583,8 @@ def checkpointed_forward_backward(
         probability contract of the dense drivers (float64 requires JAX's
         64-bit mode), a ``transition_operator`` whose row sums break it or
         that cannot be applied to ``n_bins`` state bins, or a likelihood
-        callback that returns the wrong shape or changes between passes.
+        callback that returns the wrong shape, changes between passes, or is
+        not ``row_slice_aware`` although ``chunk_size`` splits the rows.
     TypeError
         If ``transition_operator`` is not a registered JAX pytree implementing
         :class:`~non_local_detector.core.TransitionProducts`, or, with
@@ -777,7 +796,11 @@ def checkpointed_forward_backward(
         # convert host leaves again.
         transition_operator = jax.device_put(transition_operator)
         _check_operator_rows(
-            transition_operator, n_bins, dtype, n_states if covariate else None
+            transition_operator,
+            n_bins,
+            dtype,
+            n_states if covariate else None,
+            pair_states=None if transition_statistics is None else n_states,
         )
     dims = {
         name: ("time", "state_bins" if name in _SPATIAL else "states")
@@ -822,6 +845,12 @@ def checkpointed_forward_backward(
         )
     )
     boundaries = range(0, n_time, int(chunk_size))
+    _require_row_slice_aware(
+        log_likelihood_func,
+        len(boundaries),
+        chunking=f"chunk_size={chunk_size} for {n_time} rows",
+        hint="Mark the callback, or pass a chunk_size of at least the number of rows.",
+    )
     diagnostics: dict[str, Any] = {
         "n_degenerate": 0,
         "n_nan": 0,
@@ -852,8 +881,12 @@ def checkpointed_forward_backward(
         # trimmed, so every callback has one shape and reuses compiled kernels.
         first = max(min(start, n_time - int(chunk_size)), 0)
         values = jnp.asarray(
-            log_likelihood_func(
-                time_edges, row_slice=slice(first, stop), is_missing=missing[first:stop]
+            _call_log_likelihood_chunk(
+                log_likelihood_func,
+                time_edges,
+                log_likelihood_args,
+                slice(first, stop),
+                missing[first:stop],
             ),
             dtype=dtype,
         )

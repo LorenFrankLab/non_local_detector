@@ -19,6 +19,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from tqdm.autonotebook import tqdm
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector.encoding_time import (
     EncodingSupport,
     prepare_encoding_support,
@@ -215,7 +216,7 @@ def _scaled_gemm_shift(n_rows: int, dtype: Any) -> float:
     The cap keeps both the sum and its reciprocal, the derivative of its
     logarithm, normal numbers.
     """
-    dtype_info = jnp.finfo(dtype)  # type: ignore[no-untyped-call]  # untyped in JAX
+    dtype_info = finfo(dtype)
     return -0.5 * float(np.log(2.0 * n_rows * dtype_info.tiny))
 
 
@@ -229,7 +230,7 @@ def _scaled_gemm_window(n_rows: int, dtype: Any) -> float:
     four dtype epsilons of any value at or above the floor: about 104.7 nats
     for 2048 float32 rows.
     """
-    dtype_info = jnp.finfo(dtype)  # type: ignore[no-untyped-call]  # untyped in JAX
+    dtype_info = finfo(dtype)
     return float(
         np.log(4 * dtype_info.eps)
         - np.log(n_rows * dtype_info.tiny)
@@ -664,9 +665,7 @@ def _estimate_with_enc_chunking(
     )
     # A weakly typed weight would turn strong inside the loop bodies.
     log_w = jnp.asarray(log_w, dtype)
-    query_floor = jnp.asarray(log_background, dtype) + np.log(
-        jnp.finfo(dtype).eps  # type: ignore[no-untyped-call]  # untyped in JAX
-    )
+    query_floor = jnp.asarray(log_background, dtype) + np.log(finfo(dtype).eps)
     position_floor = _log_marginal_floor(mean_rate, occupancy)
 
     # Every log kernel is at most its peak: the Gaussian normalizer for marks

@@ -10,6 +10,8 @@ JSON object:
     that were different objects share the member but not the object.
 ``{"$fill": value, "dtype": str, "shape": [...], "ref": n, "jax": bool}``
     A floating array whose every element is 1 (sample weights, by default).
+    No member holds it, so the archive's member-size checks do not bound
+    its size.
 ``{"$ragged": {"data": node, "offsets": node}, "ref": n, "jax": bool}``
     A list of arrays with one dtype and trailing shape (one per neuron or
     electrode), concatenated along the first axis; item ``i`` is
@@ -96,6 +98,31 @@ def _member_name(where: str) -> str:
     return "arrays/" + "/".join(parts)
 
 
+def refuse_object_array(array: np.ndarray, where: str) -> None:
+    """Raise if a saved model cannot hold ``array``.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        The array to store.
+    where : str
+        Where it was found, for the message.
+
+    Raises
+    ------
+    ValidationError
+        If the array has an object dtype, which ``.npy`` stores only through
+        pickle.
+    """
+    if array.dtype.hasobject:
+        msg = f"Cannot save the object array at {where}"
+        raise ValidationError(
+            msg,
+            expected="a numeric, boolean or string array",
+            got=f"dtype {array.dtype}",
+        )
+
+
 class ArrayWriter:
     """Writes a saved model's ``.npy`` members and keeps their manifest index.
 
@@ -123,13 +150,7 @@ class ArrayWriter:
             If the array has an object dtype, which ``.npy`` stores only
             through pickle.
         """
-        if array.dtype.hasobject:
-            msg = f"Cannot save the object array at {where}"
-            raise ValidationError(
-                msg,
-                expected="a numeric, boolean or string array",
-                got=f"dtype {array.dtype}",
-            )
+        refuse_object_array(array, where)
         # np.require keeps a 0-d array 0-d (np.ascontiguousarray makes it 1-d).
         array = np.require(array, requirements="C")
         digest = array_digest(array)
@@ -494,7 +515,16 @@ class Decoder:
             raise DataError(msg, hint=hint) from error
 
     def _as(self, array: np.ndarray, *, is_jax: bool) -> Any:
-        return jnp.asarray(array) if is_jax else array
+        """``array`` as the JAX array it was saved as, or as is.
+
+        A 64-bit array saved from JAX with ``JAX_ENABLE_X64`` stays a NumPy
+        array when x64 is off: JAX would narrow it to 32 bits, losing
+        precision (and wrapping large integers), while NumPy keeps the
+        stored values, which JAX code accepts as input.
+        """
+        if not is_jax or jax.dtypes.canonicalize_dtype(array.dtype) != array.dtype:
+            return array
+        return jnp.asarray(array)
 
     def _array(self, node: JSON) -> Any:
         ref = node["ref"]
@@ -542,14 +572,13 @@ class Decoder:
         return np.dtype(node["dtype"]).type(value)
 
     def _type(self, node: JSON) -> Any:
-        state = self.decode(node["state"])
         if self.plain:
-            return {"type": node["$type"], **state}
+            return {"type": node["$type"], **self.decode(node["state"])}
         spec = spec_for_name(node["$type"], node.get("owner"))
         if spec.from_state is None:
             msg = f"The saved model holds a detector ({spec.name!r}) inside its state"
             raise ValidationError(msg, hint="The file is corrupt or was edited.")
-        return spec.from_state(state)
+        return spec.from_state(self.decode(spec.readable_fields(node["state"])))
 
     def _environment(self, node: JSON) -> Any:
         name = node["$environment"]

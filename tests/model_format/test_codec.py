@@ -4,6 +4,7 @@ import contextlib
 import io
 import zipfile
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.model_format._codec import ArrayWriter, Decoder, Encoder
 from non_local_detector.model_format._container import StoredModel
+from tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
 
@@ -72,3 +74,31 @@ def test_an_array_unlike_its_manifest_entry_is_refused():
 
         with pytest.raises(DataError, match="manifest"):
             Decoder(stored.read_array).decode(node)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.array([1 + 2**-40, 1.0, 1.0]),
+        np.array([2**40, 1, 1], dtype=np.int64),
+        np.ones(70),  # stored as a $fill node
+    ],
+    ids=["float64", "int64", "float64-fill"],
+)
+def test_a_64_bit_jax_array_loads_exactly_without_x64(values):
+    """Saved under JAX_ENABLE_X64, a 64-bit JAX array would lose precision
+    (or wrap, for integers) as a 32-bit JAX array; without x64 it loads as
+    the NumPy array it stores."""
+    with precision_mode(True):
+        saved = jnp.asarray(values)
+    with _stored({"value": saved}) as (stored, node):
+        with precision_mode(False):
+            decoded = Decoder(stored.read_array).decode(node)["value"]
+        with precision_mode(True):
+            decoded_x64 = Decoder(stored.read_array).decode(node)["value"]
+
+    assert type(decoded) is np.ndarray
+    assert decoded.dtype == values.dtype
+    np.testing.assert_array_equal(decoded, values)
+    assert isinstance(decoded_x64, jax.Array)
+    assert decoded_x64.dtype == values.dtype

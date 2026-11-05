@@ -68,21 +68,6 @@ def test_em_not_converged_warning(recording):
     assert _sources("EM did not converge", call) == {__file__}
 
 
-def test_deprecated_output_flag_warning(recording):
-    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE).fit(
-        **recording
-    )
-    edges = time_edges_from_centers(recording["position_time"])
-    call = lambda: detector.predict(  # noqa: E731
-        spike_times=recording["spike_times"],
-        time_edges=edges,
-        position=recording["position"],
-        position_time=recording["position_time"],
-        save_log_likelihood_to_results=True,
-    )
-    assert _sources("deprecated", call) == {__file__}
-
-
 @pytest.mark.parametrize(
     "entry", ["predict", "compute_log_likelihood", "most_likely_sequence"]
 )

@@ -37,13 +37,14 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.models._state_space import state_layout
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
     _ModelUnpickler,
 )
 from non_local_detector.observation_models import ObservationModel
-from tests.models._helpers import type_violations
+from tests.models._helpers import SORTED_SIM_RATE, type_violations
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
 # Fitted before rates were recorded in Hz: refused at decode.
@@ -88,9 +89,12 @@ def inputs():
 
 
 def _load_model(version, artifact):
-    return SortedSpikesDetector.load_model(
-        COMPAT_DATA / version / f"{artifact}_model.pkl"
-    )
+    """Load a stored model as Spyglass does, with its family's detector class."""
+    return _family(artifact).load_model(COMPAT_DATA / version / f"{artifact}_model.pkl")
+
+
+def _family(artifact):
+    return ClusterlessDetector if "clusterless" in artifact else SortedSpikesDetector
 
 
 def _load_results(version, artifact):
@@ -267,6 +271,108 @@ def _stored_environment_states(version, artifact):
 
 
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_unpickled_detector_holds_its_fitted_state_space(version, artifact):
+    """A detector pickled before ``state_space_`` existed holds its stored
+    state bins and continuous transition there, exactly as stored, and they
+    describe the layout of its parameters and environments."""
+    model = _load_model(version, artifact)
+    path = COMPAT_DATA / version / f"{artifact}_model.pkl"
+    with path.open("rb") as file:
+        stored = _StoredStateUnpickler(file).load().state
+
+    state_space = model.state_space_
+    np.testing.assert_array_equal(state_space.state_ind, stored["state_ind_"])
+    np.testing.assert_array_equal(state_space.bin_sizes, stored["bin_sizes_"])
+    np.testing.assert_array_equal(
+        state_space.is_track_interior, stored["is_track_interior_state_bins_"]
+    )
+    np.testing.assert_array_equal(
+        state_space.continuous_transitions, stored["continuous_state_transitions_"]
+    )
+    assert state_space.transition_representation == stored.get(
+        "_transition_representation_", "dense"
+    )
+    for name, stored_name in (
+        ("state_ind_", "state_ind_"),
+        ("n_state_bins_", "n_state_bins_"),
+        ("n_discrete_states_", "n_discrete_states_"),
+    ):
+        np.testing.assert_array_equal(getattr(model, name), stored[stored_name])
+        assert stored_name not in vars(model)
+    layout = state_layout(
+        model.observation_models, model.environments_, model.local_position_std
+    )
+    for rebuilt, kept in zip(
+        layout,
+        (state_space.state_ind, state_space.bin_sizes, state_space.is_track_interior),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(rebuilt, kept)
+
+
+@pytest.mark.parametrize("parameter", ["state_names", "observation_models"])
+def test_unpickling_a_layout_that_disagrees_with_the_states_asks_for_a_refit(
+    parameter,
+):
+    """A state saved before ``state_space_`` whose bins are counted for
+    another number of states than it names is refused, not decoded."""
+    model = _load_model("main-d5f85823", "nonlocal_sorted_1d")
+    state = dict(vars(model))
+    state_space = state.pop("state_space_")
+    state.update(
+        state_ind_=state_space.state_ind,
+        bin_sizes_=state_space.bin_sizes,
+        is_track_interior_state_bins_=state_space.is_track_interior,
+        continuous_state_transitions_=state_space.continuous_transitions,
+        n_state_bins_=state_space.n_state_bins,
+        n_discrete_states_=state_space.n_states,
+    )
+    state[parameter] = list(state[parameter])[:-1]
+    restored = type(model).__new__(type(model))
+
+    with pytest.raises(ValidationError, match="Refit the detector"):
+        restored.__setstate__(state)
+
+
+def test_unpickling_a_structured_layout_keeps_its_operator_and_limit(sorted_sim):
+    """A structured detector saved before ``state_space_`` kept its operator,
+    representation and byte limit in attributes of its own."""
+    time, position, spike_times = sorted_sim
+    model = nld.NonLocalSortedSpikesDetector(
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(
+        time,
+        position,
+        spike_times,
+        transition_representation="structured",
+        max_dense_transition_bytes=2**24,
+    )
+    state = dict(vars(model))
+    state_space = state.pop("state_space_")
+    state.update(
+        state_ind_=state_space.state_ind,
+        bin_sizes_=state_space.bin_sizes,
+        is_track_interior_state_bins_=state_space.is_track_interior,
+        continuous_state_transitions_=state_space.continuous_transitions,
+        n_state_bins_=state_space.n_state_bins,
+        n_discrete_states_=state_space.n_states,
+        _continuous_transition_operator_=state_space.transition_operator,
+        _transition_representation_=state_space.transition_representation,
+        _max_dense_transition_bytes_=state_space.max_dense_transition_bytes,
+    )
+    restored = type(model).__new__(type(model))
+
+    restored.__setstate__(state)
+
+    upgraded = restored.state_space_
+    assert upgraded.transition_operator is state_space.transition_operator
+    assert upgraded.continuous_transitions is state_space.continuous_transitions
+    assert upgraded.transition_representation == "structured"
+    assert upgraded.max_dense_transition_bytes == 2**24
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
 def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     version, artifact, tmp_path
 ):
@@ -277,7 +383,7 @@ def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     path = tmp_path / "environment.pkl"
     path.write_bytes(pickle.dumps(_LegacyEnvironmentPickle(state)))
 
-    environment = Environment.load_environment(str(path))
+    environment = Environment.load_environment(str(path), allow_pickle=True)
 
     assert environment._is_fitted
     assert "place_bin_centers_" not in vars(environment)

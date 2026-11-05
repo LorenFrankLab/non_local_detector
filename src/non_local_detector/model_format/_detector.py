@@ -36,9 +36,10 @@ checked again whenever a design is built from it, or an inert
 every copy of it are for inspection only.
 """
 
+import contextlib
 import inspect
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -54,6 +55,7 @@ from non_local_detector._formula_grammar import (
 )
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
+    TransitionContext,
     _declared_destination,
     _no_structured_block,
 )
@@ -71,21 +73,34 @@ from non_local_detector.model_format._codec import (
     ArrayWriter,
     Decoder,
     Encoder,
+    refuse_object_array,
 )
 from non_local_detector.model_format._container import (
     FORMAT_NAME,
     FORMAT_VERSION,
     StoredModel,
+    array_digest,
     new_model_file,
     open_model,
     write_document,
 )
 from non_local_detector.model_format._registry import (
     TypeSpec,
+    ignore_unread_names,
+    ignoring_unread_names,
+    readable_names,
+    registered_types,
     spec_for_class,
     spec_for_name,
     spec_for_object,
     unregistered_type_error,
+)
+from non_local_detector.models._state_space import (
+    StateSpace,
+    continuous_state_transitions,
+    layout_parameters,
+    recorded_layout_parameters,
+    state_layout,
 )
 
 if TYPE_CHECKING:
@@ -95,7 +110,11 @@ if TYPE_CHECKING:
     from non_local_detector.types import TransitionRepresentation
 
 # (file name, detector attribute) of the fitted state stored as is. An
-# attribute the detector does not have is left out of the file.
+# attribute the detector does not have is left out of the file, and a file
+# without a name leaves its attribute unset (a new name is optional, so older
+# files still load) unless ``_REQUIRED_STATE`` lists it. The names in
+# ``_STATE_SPACE_STORED`` are fields of the detector's ``state_space_``
+# instead, which is rebuilt from them on load.
 _STORED = (
     ("initial_conditions", "initial_conditions_"),
     ("continuous_initial_conditions", "continuous_initial_conditions_"),
@@ -113,8 +132,8 @@ _STORED = (
     ),
     ("transition_time_bin_width", "transition_time_bin_width_"),
     ("transition_time_bin_width_tolerance", "_transition_time_bin_width_tolerance"),
-    ("transition_representation", "_transition_representation_"),
-    ("max_dense_transition_bytes", "_max_dense_transition_bytes_"),
+    ("transition_representation", "transition_representation"),
+    ("max_dense_transition_bytes", "max_dense_transition_bytes"),
     ("time_contract", "time_contract_"),
     ("mark_reference", "mark_reference_"),
     ("converged", "converged_"),
@@ -123,19 +142,16 @@ _STORED = (
     ("degenerate_timesteps", "degenerate_timesteps_"),
     ("log_likelihood", "log_likelihood_"),
 )
+_STATE_SPACE_STORED = frozenset(
+    {"transition_representation", "max_dense_transition_bytes"}
+)
 # Fitted attributes rebuilt on load (or written separately, as
 # ``environments_`` and ``encoding_model_``).
 _REBUILT = frozenset(
     {
         "environments_",
         "encoding_model_",
-        "n_discrete_states_",
-        "state_ind_",
-        "n_state_bins_",
-        "bin_sizes_",
-        "is_track_interior_state_bins_",
-        "continuous_state_transitions_",
-        "_continuous_transition_operator_",
+        "state_space_",
         "discrete_state_transitions_",
         "discrete_transition_design_matrix_",
         "discrete_transition_smoothness_matrix_",
@@ -143,8 +159,19 @@ _REBUILT = frozenset(
 )
 # Not part of a model: the pending rebuild check of a loaded detector.
 _NOT_SAVED = frozenset({"_rebuild_check_"})
-# Every fitted detector has these.
-_REQUIRED = ("environments_", "encoding_model_", "continuous_state_transitions_")
+# What reading a fitted model dereferences: (file name, the detector attribute
+# it is written from). ``_required_state`` adds what its kind of model needs.
+_REQUIRED_STATE = (
+    ("environments", "environments_"),
+    ("encoding_models", "encoding_model_"),
+    ("initial_conditions", "initial_conditions_"),
+    ("discrete_transition_coefficients", "discrete_transition_coefficients_"),
+    ("discrete_transition_covariate_data", "_discrete_transition_covariate_data_"),
+    ("transition_representation", "state_space_"),
+    ("max_dense_transition_bytes", "state_space_"),
+    ("stored_transition_blocks", "state_space_"),
+    ("fingerprints", "state_space_"),
+)
 
 # A rebuilt structure (continuous transition blocks, environment grids and
 # their graph distances, a covariate design) matches its fingerprint to this
@@ -262,10 +289,11 @@ def _transition_fingerprints(
     a change to any entry shows. It reads the dense matrix's block, or the
     structured operator's block through its products.
     """
-    transitions = detector.continuous_state_transitions_
+    state_space = detector.state_space_
+    transitions = state_space.continuous_transitions
     operator = getattr(transitions, "operator", None)
-    state_ind = np.asarray(detector.state_ind_)
-    n_states = int(detector.n_discrete_states_)
+    state_ind = np.asarray(state_space.state_ind)
+    n_states = state_space.n_states
     fingerprints = []
     for source in range(n_states):
         rows = np.flatnonzero(state_ind == source)
@@ -349,7 +377,9 @@ class _RebuildCheck:
             rebuilt["continuous_transitions"],
             strict=True,
         ):
-            why = _mismatch(before, after, max(detector.bin_sizes_[[source, target]]))
+            why = _mismatch(
+                before, after, max(detector.state_space_.bin_sizes[[source, target]])
+            )
             if why is not None:
                 problems.append(
                     f"continuous transition from state {source} to {target} ({why})"
@@ -430,9 +460,10 @@ class _FittedBlock:
 
 def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]:
     """Return the continuous blocks built from fit data, by (from_state, to_state)."""
-    state_ind = np.asarray(detector.state_ind_)
+    state_space = detector.state_space_
+    state_ind = np.asarray(state_space.state_ind)
     blocks = {}
-    for source, row in enumerate(detector.continuous_transition_types):
+    for source, row in enumerate(state_space.continuous_transition_types):
         for target, transition in enumerate(row):
             spec = spec_for_object(transition)
             if spec is None or not spec.block_needs_fit_data:
@@ -442,7 +473,7 @@ def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]
             if len(rows) == 1 or len(columns) == 1:
                 continue  # built from the one-bin rule, not the transition
             blocks[(source, target)] = np.array(
-                detector.continuous_state_transitions_[np.ix_(rows, columns)]
+                state_space.continuous_transitions[np.ix_(rows, columns)]
             )
     return blocks
 
@@ -604,6 +635,62 @@ def _fitted_attributes(
     return set(vars(detector)) - set(constructed) - _NOT_SAVED
 
 
+class _DigestWriter:
+    """Stands in for ``ArrayWriter``: names each array by its ``.npy`` digest."""
+
+    def put(self, array: np.ndarray, where: str) -> str:
+        refuse_object_array(array, where)
+        return array_digest(np.require(array, requirements="C"))
+
+
+def _stored_form(value: Any, name: str) -> JSON:
+    """Return parameter ``name`` as a saved model stores it, arrays named by content.
+
+    Two values with the same stored form save to the same file, whatever
+    their objects' ``==`` says (``Discrete`` compares by identity, and a
+    dataclass holding an array cannot reduce ``==`` to one bool).
+
+    Returns
+    -------
+    form : dict or None
+        ``{name: node}``, so a value stored as null still has a form; None if
+        it holds what a saved model cannot, an object of a type not registered
+        for saving or an object array.
+    """
+    try:
+        return {name: Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, name)}
+    except ValidationError:
+        return None
+
+
+def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
+    """Return the recorded parameters that changed since the detector was fitted.
+
+    A parameter changed when its saved form differs from that of the value
+    its fit recorded in ``state_space_`` (see ``layout_parameters``), or the
+    recorded value has none, as a file's unevaluated formula does. A parameter
+    that has no saved form cannot be compared and is left out; ``save_model``
+    refuses it when encoding the parameters.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Fitted detector.
+
+    Returns
+    -------
+    changed : list of str
+        Names of the changed parameters, in ``layout_parameters`` order.
+    """
+    changed = []
+    for name, value in layout_parameters(detector).items():
+        form = _stored_form(value, name)
+        recorded = getattr(detector.state_space_, name)
+        if form is not None and form != _stored_form(recorded, name):
+            changed.append(name)
+    return changed
+
+
 def detector_documents(
     detector: "_DetectorBase", writer: ArrayWriter
 ) -> tuple[dict[str, Any], JSON, dict[str, Any]]:
@@ -613,8 +700,9 @@ def detector_documents(
     ------
     ValidationError
         If the detector or an object it holds is of an unregistered type, it
-        holds an attribute the format does not know, or it is a loaded
-        detector whose rebuilt structures no longer match.
+        holds an attribute the format does not know, it is a loaded
+        detector whose rebuilt structures no longer match, or a parameter its
+        ``state_space_`` records changed after it was fitted.
     NotFittedError
         If it is partly fitted.
     """
@@ -622,7 +710,9 @@ def detector_documents(
     params = detector.get_params(deep=False)
     config = Encoder(writer).encode(params, "config")
     fitted = _fitted_attributes(detector, params)
-    stored_names = {attribute for _, attribute in _STORED}
+    stored_names = {
+        attribute for name, attribute in _STORED if name not in _STATE_SPACE_STORED
+    }
     unknown = sorted(fitted - stored_names - _REBUILT)
     if unknown:
         msg = f"Cannot save the detector's attributes {unknown}, which the saved format does not hold"
@@ -633,10 +723,29 @@ def detector_documents(
     state: dict[str, Any] = {"fitted": bool(fitted)}
     if not fitted:
         return _manifest(spec, writer), config, state
-    missing = [name for name in _REQUIRED if name not in fitted]
+    required = _required_state(
+        config, getattr(detector, "_discrete_transition_covariate_data_", None)
+    )
+    missing = sorted(set(required.values()) - fitted)
     if missing:
         msg = f"Cannot save a partly fitted detector (it has no {missing})"
-        raise NotFittedError(msg, hint="Call fit(...) before save_model.")
+        raise NotFittedError(
+            msg,
+            hint="Call fit(...) before save_model. Refit a detector pickled by "
+            "an earlier release, which can lack what the format stores.",
+        )
+    # The file holds the current parameters, and loading rebuilds the state
+    # space from them.
+    changed = changed_layout_parameters(detector)
+    if changed:
+        msg = (
+            f"Cannot save the detector: its {changed} changed after it was "
+            "fitted, so they no longer describe the fit"
+        )
+        raise ValidationError(
+            msg,
+            hint="Set them back with set_params, or refit before save_model.",
+        )
     check = vars(detector).get("_rebuild_check_")
     if check is not None:
         check.verify(detector)
@@ -657,7 +766,11 @@ def detector_documents(
         for i, (key, model) in enumerate(detector.encoding_model_.items())
     ]
     for name, attribute in _STORED:
-        if attribute in fitted:
+        if name in _STATE_SPACE_STORED:
+            state[name] = encoder.encode(
+                getattr(detector.state_space_, attribute), name
+            )
+        elif attribute in fitted:
             state[name] = encoder.encode(getattr(detector, attribute), name)
     if getattr(detector, "_discrete_transition_covariate_data_", None) is None:
         state["discrete_state_transitions"] = encoder.encode(
@@ -779,13 +892,15 @@ def _rebuild_discrete(
     )
 
     covariate_data = detector._discrete_transition_covariate_data_
+    # Marked whatever the file stores beside it: a formula the file stores
+    # without covariates is evaluated by the next fit.
+    if not trust_formulas:
+        _mark_file_formula(detector, covariate_data)
     if covariate_data is None:
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         detector.discrete_state_transitions_ = stored["discrete_state_transitions"]
         return
-    if not trust_formulas:
-        _mark_file_formula(detector, covariate_data)
     if isinstance(
         getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
     ):
@@ -796,10 +911,13 @@ def _rebuild_discrete(
     initial = detector.discrete_transition_type.make_state_transition(covariate_data)
     design = initial.design_matrix
     coefficients = detector.discrete_transition_coefficients_
-    # A covariate-dependent transition has a design and coefficients.
-    assert design is not None
-    assert coefficients is not None
-    assert initial.coefficients is not None
+    if design is None or coefficients is None or initial.coefficients is None:
+        msg = (
+            "The saved model stores transition covariates, but its "
+            "discrete_transition_type builds no design from them or it stores "
+            "no coefficients"
+        )
+        raise DataError(msg, hint=_CORRUPT_HINT)
     detector.discrete_transition_design_matrix_ = design
     detector.discrete_transition_smoothness_matrix_ = _smoothness_matrix(
         design.design_info
@@ -813,10 +931,25 @@ def _rebuild_discrete(
     )
 
 
-def _rebuild_continuous(
-    detector: "_DetectorBase", blocks: Mapping[tuple[int, int], np.ndarray]
+def _rebuild_state_space(
+    detector: "_DetectorBase",
+    blocks: Mapping[tuple[int, int], np.ndarray],
+    layout: tuple[np.ndarray, np.ndarray, np.ndarray],
+    stored: Mapping[str, Any],
 ) -> None:
-    configured = detector.continuous_transition_types
+    """Rebuild the detector's ``state_space_`` from its stored inputs.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        The detector being loaded, with its environments set.
+    blocks : mapping
+        The stored continuous transition blocks, by (from_state, to_state).
+    layout : tuple of np.ndarray
+        ``state_layout`` of the detector's parameters and environments.
+    stored : mapping
+        The decoded stored state, holding the ``_STATE_SPACE_STORED`` names.
+    """
     building = [
         [
             _FittedBlock(
@@ -828,40 +961,262 @@ def _rebuild_continuous(
             else transition
             for target, transition in enumerate(row)
         ]
-        for source, row in enumerate(configured)
+        for source, row in enumerate(detector.continuous_transition_types)
     ]
-    representation = detector._transition_representation_
+    representation = stored["transition_representation"]
+    max_dense_transition_bytes = stored["max_dense_transition_bytes"]
     # Dense EM after an "auto" fit converts the fitted operator (whose
     # environments keep deferred distances) to a dense matrix: rebuild that.
     from_operator = representation == "dense" and any(
         isinstance(env.distance_between_nodes_, LazyGraphDistances)
         for env in detector.environments_
     )
-    detector._initialize_continuous_state_transition(
-        cast(Any, building),
-        transition_representation=cast(
-            "TransitionRepresentation",
-            "auto" if from_operator else representation,
-        ),
-        max_dense_transition_bytes=detector._max_dense_transition_bytes_,
+    built_as = cast(
+        "TransitionRepresentation", "auto" if from_operator else representation
     )
-    detector.continuous_transition_types = configured
-    if from_operator:
-        detector.continuous_state_transitions_ = np.asarray(
-            detector.continuous_state_transitions_
-        )
-        detector.__dict__.pop("_continuous_transition_operator_", None)
-        detector._transition_representation_ = "dense"
+    state_ind, bin_sizes, is_track_interior = layout
+    transitions, operator = continuous_state_transitions(
+        cast(Any, building),
+        detector.environments_,
+        detector.observation_models,
+        detector.local_position_std,
+        state_ind,
+        bin_sizes,
+        context=TransitionContext(),
+        transition_representation=built_as,
+        max_dense_transition_bytes=max_dense_transition_bytes,
+    )
+    state_space = StateSpace(
+        **recorded_layout_parameters(detector),
+        state_ind=state_ind,
+        bin_sizes=bin_sizes,
+        is_track_interior=is_track_interior,
+        continuous_transitions=transitions,
+        transition_operator=operator,
+        transition_representation=built_as,
+        max_dense_transition_bytes=int(max_dense_transition_bytes),
+    )
+    detector.state_space_ = state_space.densified() if from_operator else state_space
 
 
-# The fitted state every saved fitted detector holds (see ``detector_documents``).
-_REQUIRED_STATE = (
-    "environments",
-    "encoding_models",
-    "stored_transition_blocks",
-    "fingerprints",
+# The schema of the documents ``detector_documents`` writes. A reader ignores,
+# with a warning, a name it does not know, which a newer version wrote.
+_MANIFEST_NAMES = frozenset(
+    {
+        "format",
+        "format_version",
+        "package_version",
+        "detector_type",
+        "detector_type_owner",
+        "arrays",
+    }
+)
+# The fields of each entry of these lists of state.json; an environment holds
+# "place_bin_edges" with a track graph and the distance options without.
+_ENTRY_FIELDS = {
+    "environments": frozenset(
+        {
+            "config",
+            "place_bin_centers",
+            "is_track_interior",
+            "edges",
+            "place_bin_edges",
+            "infer_track_interior",
+            "all_pairs_distances",
+            "max_dense_distance_bytes",
+        }
+    ),
+    "encoding_models": frozenset({"environment_name", "encoding_group", "model"}),
+    "stored_transition_blocks": frozenset({"from_state", "to_state", "block"}),
+}
+_FINGERPRINT_FIELDS = frozenset(
+    {"environments", "continuous_transitions", "discrete_transition_design"}
 )
 _CORRUPT_HINT = "The file is corrupt or was edited."
+
+
+def _required_state(config: Any, covariate_data: Any) -> dict[str, str]:
+    """Return the names state.json of a fitted model must hold.
+
+    Parameters
+    ----------
+    config : dict
+        The config document.
+    covariate_data : Any
+        The model's stored transition covariates, or None for none.
+
+    Returns
+    -------
+    names : dict of str to str
+        ``_REQUIRED_STATE``, as each file name and the attribute it is written
+        from, with "discrete_state_transitions" if the model stores no
+        covariates (then the transitions are stored, not rebuilt) and
+        "mark_reference" if it is clusterless.
+    """
+    required = dict(_REQUIRED_STATE)
+    if covariate_data is None:
+        required["discrete_state_transitions"] = "discrete_state_transitions_"
+    if isinstance(config, dict) and "clusterless_algorithm" in config:
+        required["mark_reference"] = "mark_reference_"
+    return required
+
+
+def _readable_encoding_model(entry: Any) -> dict[str, Any]:
+    """Return a stored ``encoding_models`` entry with only the model's type's keys."""
+    model = entry["model"]
+    keys = encoding_model_keys(model)
+    return {
+        **entry,
+        "model": readable_names(f"{model['algorithm']} encoding model", model, keys),
+    }
+
+
+def check_documents(stored: StoredModel) -> tuple[Any, dict[str, Any]]:
+    """Check a saved model's documents and return what this version reads of them.
+
+    state.json must hold what reading a model of its kind dereferences
+    (``_required_state``), and each encoding model every key of its
+    algorithm's type. A name this version does not read (outside
+    ``_MANIFEST_NAMES``, ``_required_state``, ``_STORED``, ``_ENTRY_FIELDS``,
+    ``_FINGERPRINT_FIELDS``, the encoding model's type or the detector's
+    constructor), which a newer version wrote, is ignored with a warning
+    (``ignore_unread_names``) and left out of what is returned, so a reader
+    never decodes it. The values are checked as they are decoded.
+
+    Parameters
+    ----------
+    stored : StoredModel
+        The open saved model, migrated to ``FORMAT_VERSION``.
+
+    Returns
+    -------
+    config : dict
+        The config document. It keeps every name if the detector's type is
+        not registered, which ``read_model_summary`` allows: no constructor
+        says which names it reads.
+    state : dict
+        The state document.
+
+    Raises
+    ------
+    DataError
+        If a document lacks a name it needs.
+    """
+    manifest, config = stored.manifest, stored.config
+    state: Any = stored.state  # parsed JSON: a file may hold any value
+    ignore_unread_names("manifest.json", set(manifest) - _MANIFEST_NAMES)
+    if "detector_type" not in manifest:
+        msg = "The saved model's manifest has no 'detector_type'"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    if not isinstance(state, dict) or "fitted" not in state:
+        msg = "The saved model's state has no 'fitted' entry"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    required = allowed = {"fitted"}
+    if state["fitted"]:
+        covariate_data = state.get("discrete_transition_covariate_data")
+        required = {"fitted", *_required_state(config, covariate_data)}
+        allowed = {
+            *required,
+            *(name for name, _ in _STORED),
+            "discrete_state_transitions",
+        }
+    state = readable_names("state.json", state, allowed)
+    missing = sorted(required - set(state))
+    if missing:
+        msg = f"The saved model is marked fitted but its state has no {missing}"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    for name, fields in _ENTRY_FIELDS.items():
+        entries = [entry for entry in state.get(name, []) if isinstance(entry, dict)]
+        ignore_unread_names(
+            f"state.json {name} entries", set().union(*entries) - fields
+        )
+    if state["fitted"]:
+        if isinstance(state["fingerprints"], dict):
+            state["fingerprints"] = readable_names(
+                "state.json fingerprints", state["fingerprints"], _FINGERPRINT_FIELDS
+            )
+        state["encoding_models"] = [
+            _readable_encoding_model(entry) for entry in state["encoding_models"]
+        ]
+    detector_class = registered_types().get(manifest["detector_type"])
+    if detector_class is not None:
+        accepted = inspect.signature(detector_class).parameters
+        if not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
+            config = readable_names(
+                f"config.json ({detector_class.__name__} parameters)", config, accepted
+            )
+    return config, state
+
+
+def encoding_model_keys(model: Any) -> frozenset[str]:
+    """Return the keys of a stored encoding model's type.
+
+    Those of the ``encoding_model_type`` of the registered algorithm the
+    model names; a reader ignores any other key.
+
+    Parameters
+    ----------
+    model : dict
+        The stored encoding model (its JSON node, or decoded).
+
+    Returns
+    -------
+    keys : frozenset of str
+
+    Raises
+    ------
+    DataError
+        If the model names no registered algorithm, or lacks a required key.
+    """
+    from non_local_detector.likelihoods import (
+        _CLUSTERLESS_ALGORITHMS,
+        _SORTED_SPIKES_ALGORITHMS,
+        LikelihoodAlgorithm,
+    )
+
+    registry: dict[str, LikelihoodAlgorithm[Any, Any]] = {
+        **_SORTED_SPIKES_ALGORITHMS,
+        **_CLUSTERLESS_ALGORITHMS,
+    }
+    algorithm = model.get("algorithm") if isinstance(model, dict) else None
+    if algorithm not in registry:
+        msg = f"The saved model has an encoding model of algorithm {algorithm!r}, which is not registered"
+        raise DataError(
+            msg,
+            expected=f"one of {sorted(registry)}",
+            hint="The file was written by a newer or different version of "
+            "non_local_detector, or was edited.",
+        )
+    # A TypedDict, which mypy types as a plain type.
+    model_type: Any = registry[algorithm].encoding_model_type
+    missing = sorted(model_type.__required_keys__ - set(model))
+    if missing:
+        msg = f"The saved {algorithm} encoding model has no {missing}"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    return frozenset(model_type.__required_keys__ | model_type.__optional_keys__)
+
+
+@contextlib.contextmanager
+def data_errors(action: str) -> Iterator[None]:
+    """Raise the built-in errors of reading a saved model as ``DataError``.
+
+    ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError`` from a
+    missing or malformed entry, and ``RecursionError`` from one nested too
+    deeply to decode, become ``DataError``, chained to the original; package
+    errors pass through unchanged.
+
+    Parameters
+    ----------
+    action : str
+        What failed, for the message: "rebuild" or "read".
+    """
+    try:
+        yield
+    except NonLocalDetectorError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, RecursionError) as error:
+        msg = f"Cannot {action} the saved model ({type(error).__name__}: {error})"
+        raise DataError(msg, hint=_CORRUPT_HINT) from error
 
 
 def detector_from_stored(
@@ -882,23 +1237,17 @@ def detector_from_stored(
     ValidationError
         If the file names a type that is not registered.
     DataError
-        If the file is corrupt or was edited: a configuration key the
-        detector does not take, missing fitted state, or a malformed entry.
-        Built-in ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError``
-        from reading the file become this, chained to the original; package
-        errors pass through unchanged.
+        If the file is corrupt or was edited: missing fitted state
+        (``check_documents``) or a malformed entry.
+        Built-in errors from reading the file become this (``data_errors``),
+        chained to the original; package errors pass through unchanged.
     """
-    manifest = stored.manifest
-    if "detector_type" not in manifest:
-        msg = "The saved model's manifest has no 'detector_type'"
-        raise DataError(msg, hint=_CORRUPT_HINT)
-    try:
-        return _build_detector(stored, trust_formulas=trust_formulas)
-    except NonLocalDetectorError:
-        raise
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        msg = f"Cannot rebuild the saved model ({type(error).__name__}: {error})"
-        raise DataError(msg, hint=_CORRUPT_HINT) from error
+    with (
+        ignoring_unread_names(stored.manifest.get("package_version")),
+        data_errors("rebuild"),
+    ):
+        config, state = check_documents(stored)
+        return _build_detector(stored, config, state, trust_formulas=trust_formulas)
 
 
 def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
@@ -919,73 +1268,62 @@ def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
         )
 
 
-def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorBase":
+def _build_detector(
+    stored: StoredModel,
+    config: Any,
+    state: dict[str, Any],
+    *,
+    trust_formulas: bool,
+) -> "_DetectorBase":
+    """Build the detector of ``check_documents``' ``config`` and ``state``."""
     manifest = stored.manifest
     spec = spec_for_name(manifest["detector_type"], manifest.get("detector_type_owner"))
-    params = Decoder(stored.read_array).decode(stored.config)
-    accepted = inspect.signature(spec.cls).parameters
-    unknown = sorted(set(params) - set(accepted))
-    if unknown and not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
-        msg = f"The saved model's configuration has keys {unknown} that {spec.cls.__name__} does not take"
-        raise DataError(
-            msg,
-            hint=(
-                "The file may have been written by a different version of "
-                f"non_local_detector (this is {_package_version()}, the file's is "
-                f"{manifest.get('package_version', 'unknown')}) and need a migration, "
-                "or was edited."
-            ),
-        )
+    params = Decoder(stored.read_array).decode(config)
     detector = cast("_DetectorBase", spec.cls(**params))
-    state = stored.state
-    if "fitted" not in state:
-        msg = "The saved model's state has no 'fitted' entry"
-        raise DataError(msg, hint=_CORRUPT_HINT)
     if not state["fitted"]:
         if not trust_formulas:
             _mark_file_formula(detector, None)
         return detector
 
-    missing = [name for name in _REQUIRED_STATE if name not in state]
-    if missing:
-        msg = f"The saved model is marked fitted but its state has no {missing}"
-        raise DataError(msg, hint=_CORRUPT_HINT)
     decoder = Decoder(stored.read_array)
     environments = tuple(
         _environment_from_state(entry, decoder) for entry in state["environments"]
     )
     detector.environments_ = environments
     decoder.environments = {env.environment_name: env for env in environments}
-    detector.encoding_model_ = {
-        (
-            entry["environment_name"],
-            decoder.decode(entry["encoding_group"]),
-        ): decoder.decode(entry["model"])
-        for entry in state["encoding_models"]
-    }
+    detector.encoding_model_ = {}
+    for entry in state["encoding_models"]:
+        detector.encoding_model_[
+            (entry["environment_name"], decoder.decode(entry["encoding_group"]))
+        ] = {key: decoder.decode(node) for key, node in entry["model"].items()}
     # Files saved before the shared keys' values were NumPy arrays.
     from non_local_detector.likelihoods import _unify_stored_encoding_values
 
     for model in detector.encoding_model_.values():
         _unify_stored_encoding_values(model)
     values = {
-        name: decoder.decode(node)
-        for name, node in state.items()
-        if name not in {"fitted", "environments", "encoding_models"}
+        name: decoder.decode(state[name])
+        for name in (*(name for name, _ in _STORED), "discrete_state_transitions")
+        if name in state
     }
-    for name, attribute in _STORED:
-        if name in values:
-            setattr(detector, attribute, values[name])
-    _check_fingerprints(values["fingerprints"], len(environments))
-    detector._initialize_state_index()
-    _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
     blocks = {
-        (entry["from_state"], entry["to_state"]): np.asarray(entry["block"])
-        for entry in values["stored_transition_blocks"]
+        (entry["from_state"], entry["to_state"]): np.asarray(
+            decoder.decode(entry["block"])
+        )
+        for entry in state["stored_transition_blocks"]
     }
-    _rebuild_continuous(detector, blocks)
+    fingerprints = decoder.decode(state["fingerprints"])
+    for name, attribute in _STORED:
+        if name in values and name not in _STATE_SPACE_STORED:
+            setattr(detector, attribute, values[name])
+    _check_fingerprints(fingerprints, len(environments))
+    layout = state_layout(
+        detector.observation_models, environments, detector.local_position_std
+    )
+    _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
+    _rebuild_state_space(detector, blocks, layout, values)
     detector._rebuild_check_ = _RebuildCheck(
-        values["fingerprints"],
+        fingerprints,
         list(blocks),
         manifest.get("package_version", "unknown"),
     )

@@ -11,7 +11,7 @@ import inspect
 import operator
 from collections.abc import Sequence
 from dataclasses import InitVar, dataclass
-from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
 import networkx as nx
 import numpy as np
@@ -171,7 +171,8 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dim)
-        Position of the animal.
+        Position of the animal. Steps into or out of a NaN sample are left
+        out; no step is taken across a stretch of NaN samples.
 
     Returns
     -------
@@ -179,9 +180,8 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
         Variance of the movement per time bin.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
-    is_nan = np.any(np.isnan(position), axis=1)
-    position = position[~is_nan]
-    return np.cov(np.diff(position, axis=0), rowvar=False)
+    steps = np.diff(position, axis=0)
+    return np.cov(steps[~np.any(np.isnan(steps), axis=1)], rowvar=False)
 
 
 # Entries of a random-walk transition evaluated per block of rows by
@@ -510,7 +510,7 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     movement_var: float = 6.0
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
-    direction: str | None = None
+    direction: Literal["inward", "outward"] | None = None
     use_diffusion: InitVar[bool] = False
 
     def __post_init__(self, use_diffusion: bool) -> None:
@@ -919,9 +919,14 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
             Required; its ``position`` is binned. On a track graph,
             multi-dimensional position is linearized and one-column position
             is taken as linear (see ``Environment.decoding_position``). Only
-            time points that are training points, in ``encoding_group`` and
-            in this environment (all if ``environment_labels`` is None) are
-            used; see ``TransitionContext`` for the defaults.
+            steps between consecutive time points that are both training
+            points, in ``encoding_group``, in this environment (all if
+            ``environment_labels`` is None) and finite are counted, so no
+            step is taken across an excluded stretch; see
+            ``TransitionContext`` for the defaults. A sample beyond the
+            grid's outer edges is left out like a non-finite one. Positions
+            are binned by ``Environment.get_bin_ind``, so a position in a bin
+            off the track interior counts in the nearest interior bin.
 
         Returns
         -------
@@ -932,6 +937,8 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
         ------
         ValueError
             If ``context`` or its ``position`` is None.
+        ValidationError
+            If no step is left: no two consecutive samples are used.
         """
         if context is None or context.position is None:
             msg = (
@@ -955,25 +962,51 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
             is_environment = context.environment_labels == self.environment_name
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
-        position = environment.decoding_position(
-            position[is_training & is_encoding & is_environment]
+        is_used = is_training & is_encoding & is_environment
+        used_position = environment.decoding_position(position[is_used])
+        # Steps are formed on the whole series: pairing the used samples after
+        # dropping the others would take a step across each excluded stretch.
+        position = np.full((n_time, used_position.shape[1]), np.nan)
+        position[is_used] = used_position
+        # A sample beyond the grid's outer edges is left out like a
+        # non-finite one: get_bin_ind would pin it to the edge bin.
+        is_in_grid = np.all(
+            [
+                (position[:, dim] >= edges[0]) & (position[:, dim] <= edges[-1])
+                for dim, edges in enumerate(environment.edges_)
+            ],
+            axis=0,
         )
-
+        is_step = is_in_grid[:-1] & is_in_grid[1:]
+        in_step = np.zeros(n_time, dtype=bool)
+        in_step[:-1] |= is_step
+        in_step[1:] |= is_step
+        # Bins as everywhere else in the package: a position in a bin off the
+        # track interior (an edge_spacing gap, a rarely visited bin) snaps to
+        # the nearest interior bin, which the decoder keeps.
+        bin_ind = np.zeros(n_time, dtype=np.intp)
+        bin_ind[in_step] = environment.get_bin_ind(position[in_step])
+        source, destination = bin_ind[:-1][is_step], bin_ind[1:][is_step]
+        if source.size == 0:
+            msg = (
+                "EmpiricalMovement has no steps to count: no two consecutive "
+                "samples remain"
+            )
+            raise ValidationError(
+                msg,
+                expected="two consecutive finite samples on the grid in is_training, "
+                f"encoding group {self.encoding_group!r} and environment "
+                f"{self.environment_name!r}",
+                got=f"{int(np.sum(is_used))} of {n_time} samples used",
+                hint="Use a contiguous is_training (a step is only counted between "
+                "consecutive samples), or another continuous transition.",
+            )
         if self.is_time_reversed:
-            samples = np.concatenate((position[1:], position[:-1]), axis=1)
-        else:
-            samples = np.concatenate((position[:-1], position[1:]), axis=1)
-        # Fitted edges define the source and destination ranges, including
-        # environments whose ranges were inferred from their position data.
-        state_transition, _ = np.histogramdd(
-            samples,
-            bins=environment.edges_ * 2,
-        )
-        original_shape = state_transition.shape
-        n_position_dims = position.shape[1]
-        shape_2d = np.prod(original_shape[:n_position_dims])
+            source, destination = destination, source
+        n_bins = environment.place_bin_centers_.shape[0]
+        counts = np.bincount(source * n_bins + destination, minlength=n_bins**2)
         state_transition = _normalize_row_probability(
-            state_transition.reshape((shape_2d, shape_2d))
+            counts.reshape((n_bins, n_bins)).astype(float)
         )
 
         return np.linalg.matrix_power(state_transition, self.speedup)

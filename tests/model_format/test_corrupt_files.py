@@ -4,15 +4,22 @@ Missing state, unknown configuration keys, dangling references and malformed
 nodes are caught at the load boundary and chained to the original error.
 """
 
+import json
+import re
+
 import numpy as np
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    DataQualityWarning,
+    ValidationError,
+)
 from non_local_detector.model_format import _registry, register_type
 from non_local_detector.model_format._codec import Decoder
 from tests.model_format.conftest import algorithm_params
-from tests.model_format.test_refusals import _edit_json
+from tests.model_format.test_refusals import _edit_json, _rewrite
 
 pytestmark = pytest.mark.integration
 
@@ -47,12 +54,13 @@ def test_missing_fitted_flag_is_a_data_error(saved):
         nld.NonLocalSortedSpikesDetector.load_model(saved)
 
 
-def test_unknown_config_key_points_to_a_different_package_version(saved):
+def test_unknown_config_key_is_ignored_naming_a_newer_version(saved):
     _edit_json(saved, "config.json", lambda config: config.update(not_a_param=1))
 
-    with pytest.raises(DataError, match="not_a_param") as info:
-        nld.NonLocalSortedSpikesDetector.load_model(saved)
-    assert "version" in str(info.value)
+    with pytest.warns(DataQualityWarning, match="not_a_param") as info:
+        detector = nld.NonLocalSortedSpikesDetector.load_model(saved)
+    assert "newer version" in str(info[0].message)
+    assert "not_a_param" not in detector.get_params()
 
 
 @pytest.mark.parametrize(
@@ -71,6 +79,16 @@ def test_malformed_nodes_are_data_errors(node):
     assert isinstance(info.value.__cause__, (KeyError, TypeError))
 
 
+def test_a_stored_state_that_is_not_a_dict_is_a_data_error(saved):
+    def edit(config):
+        config["environments"]["$tuple"][0]["state"] = ["a"]
+
+    _edit_json(saved, "config.json", edit)
+
+    with pytest.raises(DataError, match="Environment"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+
 def test_a_registered_types_own_constructor_error_is_chained(sorted_recording):
     class Strict:
         def __init__(self, weight):
@@ -84,7 +102,7 @@ def test_a_registered_types_own_constructor_error_is_chained(sorted_recording):
     )
     try:
         node = {"$type": "testlab.Strict", "state": {"weight": 1, "extra": 2}}
-        with pytest.raises(DataError, match="testlab.Strict") as info:
+        with pytest.raises(DataError, match=re.escape("testlab.Strict")) as info:
             Decoder(lambda member: np.zeros(1)).decode(node)
         assert isinstance(info.value.__cause__, TypeError)
         assert "extra" in str(info.value)
@@ -167,3 +185,31 @@ def test_a_user_from_state_reading_a_missing_key_names_the_type():
     finally:
         _registry._BY_NAME.pop("testlab.Keyed", None)
         _registry._BY_CLASS.pop(Keyed, None)
+
+
+def _with_nested_tuples(data, depth):
+    """Set ``state_names`` to tuples nested ``depth`` deep, as text.
+
+    Built as text because how deep ``json`` can go before a RecursionError
+    depends on the Python version, so the file may fail to parse or to decode.
+    """
+    config = json.dumps({**json.loads(data), "state_names": "NESTED"})
+    nested = '{"$tuple": [' * depth + "]}" * depth
+    return config.replace('"NESTED"', nested).encode()
+
+
+@pytest.mark.parametrize(
+    ("document", "transform"),
+    [
+        ("state.json", lambda data: b"[" * 100_000 + b"]" * 100_000),
+        ("config.json", lambda data: _with_nested_tuples(data, 900)),
+    ],
+    ids=["arrays", "tuples"],
+)
+def test_deeply_nested_documents_are_data_errors(saved, document, transform):
+    _rewrite(saved, document, transform)
+
+    # Where it fails (parsing, checking or decoding) depends on the Python
+    # version; any of them must be a DataError, not a RecursionError.
+    with pytest.raises(DataError):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)

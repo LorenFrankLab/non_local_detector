@@ -64,7 +64,15 @@ Run all of the checks, the same ones CI runs, with:
 uv run pre-commit run --all-files
 ```
 
-or individually: `uv run ruff check src/`, `uv run ruff format src/`, `uv run mypy`.
+or individually: `uv run ruff check src/ tests/`, `uv run ruff format src/ tests/`, `uv run mypy`.
+
+## Dtypes
+
+- The HMM drivers (`chunked_filter_smoother`, `most_likely_sequence`, their covariate-dependent variants and `checkpointed_forward_backward`), which the detectors use, run inference in float32. They cast their inputs to their `dtype`, float32 by default, so float64 inputs are rounded. The jit-composable passes (`filter`, `smoother`, `viterbi` and their covariate-dependent variants) compute in the dtype of their inputs. A driver given `dtype=np.float64` runs in float64, and raises `ValidationError` when JAX's 64-bit mode is off instead of silently computing in float32.
+- Products with a transition or state-aggregation matrix pass `precision=jax.lax.Precision.HIGHEST`. The default CUDA precision (TF32) rounds float32 matmuls to about 1e-3 relative, so CPU and GPU results would disagree.
+- Host-side estimation that needs float64, such as the discrete-transition M-step, runs inside `discrete_state_transitions._float64_jax()`, a scoped float64 context, so it does not depend on the global 64-bit mode. Its results are cast to the working dtype when they enter inference.
+- Results keep the working dtype whatever the global 64-bit mode. Give constants an explicit dtype: `jax.nn.one_hot`, `jnp.zeros` and `jnp.asarray` of Python or NumPy float64 values default to float64 under 64-bit mode and would promote float32 inputs.
+- Long sums whose accuracy matters, the marginal log likelihood and the checkpointed transition counts, are accumulated in float64 on the host.
 
 ## Numerical changes
 
@@ -91,15 +99,27 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 - List each new class that its encoding model holds (a fitted density model, a basis) in `model_format/_builtins.py` with its fields, or `save_model` refuses the fitted detector (see "Saved-model format").
 - Add the algorithm to the user-facing lists, the likelihood models in `README.md` ("Architecture") and the likelihood table in `docs/getting-started/core-concepts.md`; the contract tests check that both name every registered algorithm.
 
+## Adding a transition
+
+A continuous transition, a discrete transition or an initial-condition class is any class with the methods of its protocol: `ContinuousTransition` (`non_local_detector.continuous_state_transitions`), `DiscreteTransition` (`non_local_detector.discrete_state_transitions`) or `ContinuousInitialCondition` (`non_local_detector.initial_conditions`). The detectors also rely on these rules, which the protocols cannot express:
+
+- `make_state_transition(environments, context=None)` returns the block between two spatial states (or two one-bin states) over every place bin, interior or not: shape `(n_source_bins, n_destination_bins)`, finite, nonnegative, each row summing to at most 1 (0 for a bin nothing can leave). The detectors set a block between a one-bin state (No-Spike, or Local without `local_position_std`) and a spatial state without calling it, from the declared destination environment (`environment2_name` when the class has it, else `environment_name`).
+- A continuous transition gets a structured operator (`transition_representation="structured"` or `"auto"`) only if its class body defines `structured_block`, `dense_block_shape` and `graph_distance_environment` (`transition_operators.SupportsStructuredBlock`; `_EnvironmentBlock` gives the last two for a transition within one environment). `structured_block` returns a block equal to `make_state_transition`'s, or raises `UnsupportedTransitionError` for a configuration that has none. An inherited `structured_block`, or a `make_state_transition` assigned on an instance, is ignored and the transition is planned densely, since the subclass may change the block.
+- An instance holds only its configuration: every attribute is an `__init__` argument, so `type(obj)(**vars(obj))` rebuilds it (Spyglass stores parameters this way), and a fit adds no attributes, such as the environment it was built on.
+- A discrete transition's `make_state_transition(covariate_data)` returns an `InitialDiscreteTransition` whose shape and coefficients match `is_stationary` and `n_states`; an initial-condition class returns one value per place bin of the state's environment (shape `(1,)` for a state without place bins), nonnegative and summing to 1 over the interior bins.
+- List each new class in `model_format/_builtins.py` with its fields, or `save_model` refuses a detector that holds it (see "Saved-model format").
+
+`tests/transitions/test_transition_contract.py` finds every class in those three modules and checks it against these rules on a 1-D grid, a 2-D grid with holes and a track graph, so adding a class needs no test edit: the test checks the instance its default constructor builds. A class whose constructor needs arguments is skipped until it has an entry in the test's `CONTINUOUS_CONFIGURATIONS`, `DISCRETE_CONFIGURATIONS` or `INITIAL_CONDITION_CONFIGURATIONS`, which can also add settings worth checking beyond the defaults.
+
 ## Saved-model format
 
 `save_model` writes the format of `non_local_detector.model_format`, and every later release must read the files earlier ones wrote. The stored names are the format: the file names of the detector's fitted state (`_STORED` in `model_format/_detector.py`), the fields each saved class stores (`model_format/_builtins.py`) and the fixed `nld.` type names listed there.
 
 - Renaming or removing a stored name, or changing what a stored value means, needs a `FORMAT_VERSION` bump and an entry in `MIGRATIONS` that rewrites the stored documents and arrays of the previous version.
-- Adding an optional field needs no bump if the reader supplies its default when a file lacks it: give it in the type's `"defaults"` option in `model_format/_builtins.py` (or `state.get(name, default)` in a detector-state reader). A field missing without a default raises `DataError`.
+- A new stored field needs a default so that files written before it load: give it in the type's `"defaults"` option in `model_format/_builtins.py`. A field missing without a default raises `DataError`. A new `_STORED` name needs no default: a file without it loads with the attribute unset, so code reading the attribute allows for that. `_REQUIRED_STATE` lists only what rebuilding a model dereferences; adding a name there needs a migration, because older files lack it. An older release ignores the names it does not read, with a `DataQualityWarning`.
 - Loading rebuilds environment grids, continuous transitions and covariate designs and requires them to match the saved fingerprints to a relative 1e-6. A change to that rebuilding code larger than 1e-6 relative locks out every saved model: it needs a format migration, or a changelog note that such models must be refit.
 - A new class that a detector's parameters or fitted state can hold must be listed in `model_format/_builtins.py` with its fields, or `save_model` refuses it. `tests/model_format` checks the listed fields against each dataclass.
-- Version 1 freezes at the first release that ships the format. Until then its schema may change without a migration. When it freezes, add one small golden file per detector family and format version to `tests/compat_data/`, with a test that loads and decodes each, as for the legacy pickles there.
+- Every format version has one small file per detector family in `tests/compat_data/format_v<N>/` (written by `tests/compat_data/generate_saved_model_files.py`), which `tests/model_format/test_frozen_files.py` loads and decodes against the decode saved with it. Never regenerate them; a new format version adds its own directory and test cases.
 
 ## Changelog
 

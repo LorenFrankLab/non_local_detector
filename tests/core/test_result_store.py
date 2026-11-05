@@ -153,6 +153,33 @@ def test_loader_rejects_corrupt_chunk_manifest_before_returning(tmp_path, corrup
         open_result_store(path)
 
 
+@pytest.mark.parametrize("member", ["chunk", "coordinate"])
+@pytest.mark.parametrize("name", ["../outside.npy", "/tmp/outside.npy", "sub/x.npy"])
+def test_loader_refuses_member_files_outside_the_store(tmp_path, member, name):
+    """A manifest names files inside its directory only."""
+    import json
+
+    path = tmp_path / "result"
+    with IncrementalResultWriter(
+        path,
+        {"posterior": (("time",), (2,), np.float32)},
+        {"time": (("time",), np.arange(2.0))},
+    ) as writer:
+        writer.write("posterior", 0, np.ones(2, np.float32))
+        writer.complete()
+    np.save(tmp_path / "outside.npy", np.ones(2, np.float32))
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if member == "chunk":
+        manifest["variables"]["posterior"]["chunks"][0]["file"] = name
+    else:
+        manifest["coordinates"]["time"]["file"] = name
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="file name"):
+        open_result_store(path)
+
+
 def test_loader_validates_headers_with_closed_mmaps_and_keeps_data_lazy(
     tmp_path, monkeypatch
 ):

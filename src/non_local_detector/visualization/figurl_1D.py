@@ -16,6 +16,7 @@ if sortingview_available():
     import sortingview.views.franklab as vvf
     import xarray as xr
 
+    from non_local_detector.models._state_space import fitted_states
     from non_local_detector.models.base import _DetectorBase
     from non_local_detector.models.non_local_model import (
         _get_conditional_non_local_posterior,
@@ -184,7 +185,7 @@ if sortingview_available():
         # Decode the states that are neither Local nor No-Spike, found from
         # the detector's observation models rather than the state names.
         posterior = _get_conditional_non_local_posterior(
-            results, detector.state_names, detector.observation_models
+            results, *fitted_states(detector)
         )
         decode_view = create_1D_decode_view(
             posterior=posterior,

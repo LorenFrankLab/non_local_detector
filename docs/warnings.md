@@ -7,10 +7,10 @@ package's warnings without matching message text. Warnings from other libraries
 
 | Category | Meaning | Examples |
 | --- | --- | --- |
-| `DataQualityWarning` | The data are sparse, missing or off the track. | Zero training exposure, an electrode with no encoding spikes, position that moves farther between samples than `position_std`, positions snapped to the nearest bin, decode bins outside the tracked period, spike times far outside the fit or decode time range (ms instead of s, or another clock), or at fit almost none inside the position span with spikes reaching far past it (ms instead of s on a clock starting near 0). |
+| `DataQualityWarning` | The data are sparse, missing or off the track. | Zero training exposure, an electrode with no encoding spikes, position that moves farther between samples than `position_std`, positions snapped to the nearest bin, more than 1% of positions over a bin outside the fitted grid (larger units than the grid, a `position_range` that does not match the data, or decoding where the fitting positions never went), decode bins outside the tracked period, spike times far outside the fit or decode time range (ms instead of s, or another clock), or at fit almost none inside the position span with spikes reaching far past it (ms instead of s on a clock starting near 0); a saved model holding names a newer version wrote, which loading ignores. |
 | `NumericalWarning` | A fit did not converge or hit a degenerate case. | EM not converged or its objective decreasing, a singular Poisson regression, discarded Gaussian mixture restarts, a NaN kernel density. |
-| `ParameterWarning` | A setting was adjusted or is likely to give a poor or costly fit. | `position_std` below the bin spacing, a basis rank or mixture size reduced to fit the data, dense EM that may not fit in memory. |
-| `CompatibilityWarning` | A deprecated argument or legacy saved form was used. Also a `DeprecationWarning`. | `save_log_likelihood_to_results`, unset fitted attributes passed to `Environment()`. |
+| `ParameterWarning` | A setting was adjusted or is likely to give a poor or costly fit. | `position_std` below the bin spacing, a basis rank or mixture size reduced to fit the data, dense EM that may not fit in memory, decoding a detector whose state-defining parameters changed after fitting, a saved model's transition formula outside the formula grammar, which loading leaves unevaluated. |
+| `CompatibilityWarning` | A deprecated argument or legacy saved form was used. Also a `DeprecationWarning`. | Unset fitted attributes passed to `Environment()`. |
 
 All of them are importable from `non_local_detector` and
 `non_local_detector.exceptions`.

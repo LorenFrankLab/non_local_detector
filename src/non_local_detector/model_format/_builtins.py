@@ -10,10 +10,10 @@ from typing import Any
 
 from non_local_detector.model_format._registry import read_fields
 
-# (stored name, class, stored fields, options); fields None means "not a
-# dataclass". Options may give "defaults" for optional fields (see
-# ``register_type``); a field added to one of these classes needs one, so
-# files written before it still load.
+# (stored name, class, stored fields, options); fields None means a detector,
+# whose state the package writes. Options may give "defaults" for optional
+# fields (see ``register_type``); a field added to one of these classes needs
+# one, so files written before it still load.
 BuiltinType = tuple[str, type, tuple[str, ...] | None, dict[str, Any]]
 
 ENVIRONMENT_FIELDS = (
@@ -206,7 +206,7 @@ def builtin_types() -> list[BuiltinType]:
         ),
         (RandomWalkDirection1, ("environment_name", "movement_var"), {}),
         (RandomWalkDirection2, ("environment_name", "movement_var"), {}),
-        (Discrete, None, _stateless(Discrete)),
+        (Discrete, (), _stateless(Discrete)),
         (DiscreteStationaryDiagonal, ("diagonal_values",), {}),
         (DiscreteStationaryCustom, ("values",), {}),
         (

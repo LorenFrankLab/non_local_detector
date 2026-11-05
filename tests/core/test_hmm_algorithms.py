@@ -29,6 +29,7 @@ from non_local_detector.core import (
     row_slice_aware,
     smoother,
     viterbi,
+    viterbi_covariate_dependent,
 )
 from tests.conftest import precision_mode
 
@@ -590,7 +591,7 @@ class TestChunkedFilterDegenerateWarning:
         """Degenerate steps in different chunks are summed into one warning."""
         # Arrange: 4 timesteps, 2 chunks -> [0, 1] and [2, 3]. Put one
         # all-impossible step in each chunk (index 1 and index 2).
-        time = np.arange(4.0)
+        time_edges = np.arange(5.0)
         state_ind = np.array([0, 1])
         initial_distribution = np.array([0.5, 0.5])
         transition_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -607,7 +608,7 @@ class TestChunkedFilterDegenerateWarning:
         # Act
         with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
             chunked_filter_smoother(
-                time=time,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=initial_distribution,
                 transition_matrix=transition_matrix,
@@ -631,7 +632,7 @@ class TestChunkedFilterDegenerateWarning:
         steps, even when likelihoods are uncached (so they cannot be recovered
         from the returned ``log_likelihoods``, which is then ``None``)."""
         # Arrange: degenerate steps at global indices 1 and 2, across 2 chunks.
-        time = np.arange(4.0)
+        time_edges = np.arange(5.0)
         state_ind = np.array([0, 1])
         initial_distribution = np.array([0.5, 0.5])
         transition_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -648,12 +649,12 @@ class TestChunkedFilterDegenerateWarning:
         # Compute likelihoods per chunk (uncached) so the driver returns None
         # for log_likelihoods -- the indices then survive only via the collector.
         @row_slice_aware
-        def ll_func(time, *args, is_missing=None, row_slice=None):
-            return all_ll[np.asarray(time).astype(int)][row_slice]
+        def ll_func(*args, time_edges, is_missing=None, row_slice=None):
+            return all_ll[row_slice]
 
         # Act
         result = chunked_filter_smoother(
-            time=time,
+            time_edges=time_edges,
             state_ind=state_ind,
             initial_distribution=initial_distribution,
             transition_matrix=transition_matrix,
@@ -761,7 +762,7 @@ class TestViterbiDegenerateTimestepWarning:
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
         with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
             states, _ = most_likely_sequence(
-                time=np.arange(log_likes.shape[0]),
+                time_edges=np.arange(log_likes.shape[0] + 1),
                 initial_distribution=init,
                 transition_matrix=trans,
                 log_likelihood_func=None,
@@ -804,6 +805,107 @@ class TestViterbiDegenerateTimestepWarning:
         log_likes = jnp.array(rng.standard_normal((10, 2)))
         self._run(log_likes, caplog)
         assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
+
+
+def _decode_with_log_likelihoods(path, log_likes):
+    """Run one decoding path on a two-state stationary HMM."""
+    init = np.array([0.5, 0.5])
+    trans = np.array([[0.9, 0.1], [0.1, 0.9]])
+    n_time = log_likes.shape[0]
+    if path == "filter":
+        filter(init, trans, log_likes)
+    elif path == "filter_covariate":
+        filter_covariate_dependent(
+            init,
+            np.broadcast_to(trans, (n_time, 2, 2)),
+            np.eye(2),
+            np.array([0, 1]),
+            log_likes,
+        )
+    elif path == "chunked_filter_smoother":
+        chunked_filter_smoother(
+            time_edges=np.arange(float(n_time) + 1),
+            state_ind=np.array([0, 1]),
+            initial_distribution=init,
+            transition_matrix=trans,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            n_chunks=2,
+            log_likelihoods=log_likes,
+        )
+    elif path == "viterbi":
+        viterbi(init, trans, log_likes)
+    elif path == "viterbi_covariate":
+        viterbi_covariate_dependent(
+            init,
+            np.broadcast_to(trans, (n_time, 2, 2)),
+            np.eye(2),
+            np.array([0, 1]),
+            log_likes,
+        )
+    else:
+        most_likely_sequence(
+            time_edges=np.arange(n_time + 1),
+            initial_distribution=init,
+            transition_matrix=trans,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likes,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    [
+        "filter",
+        "filter_covariate",
+        "chunked_filter_smoother",
+        "most_likely_sequence",
+        "viterbi",
+        "viterbi_covariate",
+    ],
+)
+def test_positive_infinite_log_likelihood_warns(path, caplog):
+    """A +inf log likelihood is reported like a NaN one, not passed silently.
+
+    ``log_likelihood - max`` is ``inf - inf = NaN`` at that step, so the
+    posterior is NaN from there on (and the Viterbi path is undefined); the
+    step is counted with the NaN steps.
+    """
+    log_likes = np.array([[0.0, -1.0], [np.inf, 0.0], [0.0, -1.0], [0.0, -1.0]])
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        _decode_with_log_likelihoods(path, log_likes)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("1/4 time step(s) with NaN or +inf" in m for m in messages), messages
+    assert not any("all-impossible" in m for m in messages), messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", ["viterbi", "viterbi_covariate"])
+def test_public_viterbi_warns_on_impossible_steps(path, caplog):
+    """The jit-composable Viterbi passes warn about all-(-inf) steps, as the
+    filters do, with the Viterbi wording; the path itself is unchanged."""
+    log_likes = np.array([[0.0, -1.0], [-np.inf, -np.inf], [0.0, -1.0]])
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        _decode_with_log_likelihoods(path, log_likes)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "1/3 time step(s)" in m and "all-impossible" in m and "Viterbi decoding" in m
+        for m in messages
+    ), messages
+
+
+@pytest.mark.unit
+def test_public_viterbi_stays_jit_composable(caplog):
+    """Under ``jit`` the inputs are tracers, so no diagnostics run or warn."""
+    init = jnp.array([0.5, 0.5])
+    trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+    log_likes = jnp.array([[0.0, -1.0], [-jnp.inf, -jnp.inf], [0.0, -1.0]])
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        jitted = jax.jit(viterbi)(init, trans, log_likes)
+    assert not caplog.records
+    np.testing.assert_array_equal(jitted, viterbi(init, trans, log_likes))
 
 
 @pytest.mark.unit

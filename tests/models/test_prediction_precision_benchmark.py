@@ -65,7 +65,7 @@ def test_float64_reference_matches_dense_and_reports_actual_precision(
         interior = model.is_track_interior_state_bins_
         initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
         transition = (
-            model._continuous_transition_operator_.restricted(interior)
+            model.state_space_.transition_operator.restricted(interior)
             .bind_discrete(model.discrete_state_transitions_)
             .to_dense(dtype=np.float64)
         )

@@ -7,6 +7,7 @@ from non_local_detector import (
     DiscreteNonStationaryDiagonal,
     RandomWalk,
 )
+from non_local_detector.core import row_slice_aware
 from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.integration
@@ -372,7 +373,7 @@ def test_fit_rejects_invalid_transition_arguments_before_refit(
 def test_fit_accepts_numpy_integer_transition_budget(checkpoint_recording):
     model, fit, _ = checkpoint_recording("sorted")
     model.fit(**fit, max_dense_transition_bytes=np.int64(2**20))
-    assert model._max_dense_transition_bytes_ == 2**20
+    assert model.state_space_.max_dense_transition_bytes == 2**20
 
 
 @pytest.mark.parametrize("chunk_size", [None, 13])
@@ -422,6 +423,7 @@ def test_checkpointed_prediction_replay_cache(
         calls = []
 
         def counting_driver(time_edges, initial, likelihood, **driver_kwargs):
+            @row_slice_aware
             def counted(*args, **kw):
                 calls.append(kw["row_slice"].start)
                 return likelihood(*args, **kw)

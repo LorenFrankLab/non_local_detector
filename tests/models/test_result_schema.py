@@ -22,7 +22,8 @@ from non_local_detector import (
     SortedSpikesDecoder,
 )
 from non_local_detector.analysis import get_spatial_posterior
-from non_local_detector.models._results import has_place_bins, state_bin_positions
+from non_local_detector.exceptions import ValidationError
+from non_local_detector.models._results import state_bin_positions
 
 pytestmark = pytest.mark.integration
 
@@ -118,8 +119,10 @@ def test_state_bin_positions_follow_the_state_index(fitted, result):
     """One block per state, NaN for states without place bins, as in results."""
     positions = state_bin_positions(fitted)
     np.testing.assert_array_equal([len(p) for p in positions], fitted.bin_sizes_)
-    for observation, block in zip(fitted.observation_models, positions, strict=True):
-        assert bool(np.isnan(block).all()) is not has_place_bins(fitted, observation)
+    for state, block in enumerate(positions):
+        assert bool(np.isnan(block).all()) is not fitted.state_space_.has_place_bins(
+            state
+        )
     position_names = result.indexes["state_bins"].names[1:]
     np.testing.assert_array_equal(
         np.concatenate(positions),
@@ -214,6 +217,113 @@ def test_netcdf_round_trip_keeps_every_dtype(
     }
 
 
+# String and bytes array attributes a user adds to dense results; netCDF4
+# reads both back as lists of str, and netCDF3 cannot store them.
+_USER_ARRAY_ATTRS = {
+    "str_arr": np.array(["a", "bc"]),
+    "bytes_arr": np.array([b"a", b"bc"]),
+}
+
+
+@pytest.mark.parametrize("file_format", ["netCDF4", "netCDF3"])
+@pytest.mark.parametrize("kind", ["dense", "checkpointed", "em", *_USER_ARRAY_ATTRS])
+def test_netcdf_round_trip_restores_attribute_types_and_levels(
+    fitted, kind, file_format, request, tmp_path, monkeypatch
+):
+    """Attributes come back with their types (netCDF reads booleans back as
+    integers and one-element arrays as scalars), and the MultiIndex's
+    ``state`` level with its dtype; in netCDF4 the result is identical.
+    String and bytes arrays come back as netCDF reads them."""
+    if file_format == "netCDF4":
+        pytest.importorskip("netCDF4")
+    user_attr = _USER_ARRAY_ATTRS.get(kind)
+    if user_attr is not None:
+        if file_format == "netCDF3":
+            pytest.skip("netCDF3 cannot store string array attributes")
+        result = request.getfixturevalue("dense").copy()
+        result.attrs["user_array"] = user_attr
+    else:
+        result = request.getfixturevalue(kind)
+    filename = tmp_path / "results.nc"
+    with monkeypatch.context() as patch:
+        if file_format == "netCDF3":
+            for writer in ("netCDF4", "h5netcdf"):
+                patch.setitem(sys.modules, writer, None)
+        fitted.save_results(result, filename)
+    with fitted.load_results(filename) as restored:
+        restored = restored.load()
+    expected = result.copy().load()
+    expected.attrs.pop("_native_metadata", None)
+    if user_attr is not None:
+        assert restored.attrs.pop("user_array") == ["a", "bc"]
+        del expected.attrs["user_array"]
+
+    assert restored.attrs.keys() == expected.attrs.keys()
+    for name, value in expected.attrs.items():
+        assert type(restored.attrs[name]) is type(value), name
+        np.testing.assert_array_equal(restored.attrs[name], value)
+    assert _attr_type_mismatches(restored.attrs) == {}
+    assert restored["state"].dtype == result["state"].dtype
+    assert restored.indexes["state_bins"].equals(expected.indexes["state_bins"])
+    if file_format == "netCDF4":
+        # Compared as levels: the MultiIndex's tuples hold NaN positions,
+        # which tuple equality does not match.
+        xr.testing.assert_identical(
+            restored.reset_index("state_bins"), expected.reset_index("state_bins")
+        )
+
+
+def test_saving_results_larger_than_the_read_budget_is_refused(
+    fitted, checkpointed, tmp_path
+):
+    """A checkpointed result reads its arrays lazily, at most max_read_bytes
+    at a time; one too large to save is refused before anything is written,
+    and an existing file is kept."""
+    store = tmp_path / "store"
+    fitted.predict(**_PREDICT, result_path=store, inference_mode="checkpointed")
+    budget = checkpointed.acausal_posterior.nbytes // 2
+    lazy = fitted.load_results(store, max_read_bytes=budget)
+    filename = tmp_path / "results.nc"
+    filename.write_bytes(b"previous results")
+
+    with pytest.raises(ValidationError, match="max_read_bytes") as error:
+        fitted.save_results(lazy, filename)
+
+    assert "acausal_posterior" in str(error.value)
+    assert filename.read_bytes() == b"previous results"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["results.nc", "store"]
+
+
+def test_xarray_reports_which_store_variables_are_read_lazily(checkpointed):
+    """save_results tells a lazily read store variable from one in memory by
+    xarray's private ``Variable._in_memory`` (no public API says so without
+    reading it), which has done so since before the xarray floor
+    (2024.11). This fails if an xarray release changes it, before
+    save_results stops refusing a result it cannot write."""
+    lazy = checkpointed.acausal_posterior.variable
+
+    assert lazy._in_memory is False
+    assert lazy.copy(deep=False).load()._in_memory is True
+    assert checkpointed.time.variable._in_memory is True
+
+
+def test_a_failed_save_keeps_the_previous_file(fitted, dense, tmp_path, monkeypatch):
+    filename = tmp_path / "results.nc"
+    filename.write_bytes(b"previous results")
+
+    def fail_midway(self, path, *args, **kwargs):
+        Path(path).write_bytes(b"truncated")
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr(xr.Dataset, "to_netcdf", fail_midway)
+    with pytest.raises(OSError, match="disk full"):
+        fitted.save_results(dense, filename)
+
+    assert filename.read_bytes() == b"previous results"
+    assert [path.name for path in tmp_path.iterdir()] == ["results.nc"]
+
+
 def test_a_recorded_dtype_is_not_forced_on_a_non_integer_variable(
     fitted, dense, tmp_path
 ):
@@ -298,6 +408,28 @@ def test_files_with_a_state_ind_dimension_load_with_the_current_layout(
     assert "state_ind" not in restored.dims
     assert restored.state_ind.dtype == dense.state_ind.dtype
     xr.testing.assert_equal(restored, dense)
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_files_with_a_scalar_marginal_log_likelihood_load_one_dimensional(
+    fitted, dense, tmp_path, checkpointed
+):
+    """Earlier versions saved a decode's marginal log likelihood as a scalar,
+    and checkpointed results also under the singular name."""
+    marginal = float(dense.attrs["marginal_log_likelihoods"][0])
+    legacy = dense.reset_index("state_bins")
+    legacy.attrs["marginal_log_likelihoods"] = np.float64(marginal)
+    if checkpointed:
+        legacy.attrs["marginal_log_likelihood"] = marginal
+    filename = tmp_path / "legacy.nc"
+    legacy.to_netcdf(filename)
+
+    with fitted.load_results(filename) as restored:
+        attrs = restored.attrs
+
+    assert "marginal_log_likelihood" not in attrs
+    assert _is_float64_array(attrs["marginal_log_likelihoods"])
+    np.testing.assert_array_equal(attrs["marginal_log_likelihoods"], [marginal])
 
 
 def test_time_bin_width_is_each_bins_duration(result):
@@ -385,6 +517,36 @@ def _documented_attrs(*present_in):
     }
 
 
+def _is_float64_array(value):
+    return (
+        isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype == np.float64
+    )
+
+
+# Each documented attribute type, as a check of a value.
+_ATTR_TYPES = {
+    "float64 array": _is_float64_array,
+    "str": lambda value: type(value) is str,
+    "int": lambda value: type(value) is int,
+    "bool": lambda value: type(value) is bool,
+    "dict": lambda value: type(value) is dict,
+}
+
+
+def _attr_type_mismatches(attrs):
+    """The attributes whose value is not of their documented type."""
+    types = {
+        name: row["Type"]
+        for row in _doc_table("Attributes")
+        for name in _names(row["Attribute"])
+    }
+    return {
+        name: (types[name], type(value).__name__, np.shape(value))
+        for name, value in attrs.items()
+        if not _ATTR_TYPES[types[name]](value)
+    }
+
+
 def _actual(result):
     return (
         {name: c.dims for name, c in result.coords.items()},
@@ -404,6 +566,7 @@ def test_docs_tables_match_dense_results(fitted, option):
         _documented_variables(option, False, single_state),
     )
     assert set(result.attrs) == _documented_attrs("All")
+    assert _attr_type_mismatches(result.attrs) == {}
 
 
 @pytest.mark.parametrize("option", [None, "filter", "predictive"])
@@ -421,6 +584,7 @@ def test_docs_tables_match_compact_results(fitted, option):
         _documented_variables(option, True, single_state),
     )
     assert set(result.attrs) == _documented_attrs("All", "Checkpointed")
+    assert _attr_type_mismatches(result.attrs) == {}
 
 
 def test_docs_tables_match_checkpointed_spatial_results(fitted, checkpointed):
@@ -430,6 +594,7 @@ def test_docs_tables_match_checkpointed_spatial_results(fitted, checkpointed):
         _documented_variables("all", False, single_state),
     )
     assert set(checkpointed.attrs) == _documented_attrs("All", "Checkpointed")
+    assert _attr_type_mismatches(checkpointed.attrs) == {}
 
 
 @pytest.mark.filterwarnings("ignore:EM did not converge")
@@ -460,3 +625,6 @@ def test_docs_tables_match_em_results(
     assert set(result.attrs) == _documented_attrs(
         "All", "`estimate_parameters`", *present_in
     )
+    assert _attr_type_mismatches(result.attrs) == {}
+    # One per E-step: the iteration and the final decode.
+    assert result.attrs["marginal_log_likelihoods"].shape == (2,)

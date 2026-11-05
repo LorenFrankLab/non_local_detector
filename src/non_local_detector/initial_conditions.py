@@ -1,12 +1,12 @@
 """Initial conditions for Hidden Markov Models in non-local neural decoding.
 
-This module provides classes and functions for setting up initial state distributions
-in HMM-based neural decoders, including uniform distributions and EM-based estimation
-from posterior distributions.
+This module provides the classes that set up initial state distributions in
+HMM-based neural decoders, and the check the detectors apply to them.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
@@ -16,8 +16,46 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
 
 __all__ = [
+    "ContinuousInitialCondition",
     "UniformInitialConditions",
 ]
+
+
+@runtime_checkable
+class ContinuousInitialCondition(Protocol):
+    """A model of the initial distribution over one discrete state's bins.
+
+    The detectors call ``make_initial_conditions`` once per state at fit and
+    check its result (``_check_state_initial_conditions``): one value per
+    place bin of the state's environment, or shape (1,) for a state without
+    place bins (Local, No-Spike), nonnegative and summing to 1 over the
+    interior bins. A user-defined class with this method can be used in place
+    of the package's ``UniformInitialConditions``. Spyglass stores it as
+    ``vars(obj)`` and rebuilds it with ``type(obj)(**vars(obj))``, so every
+    instance attribute should be an ``__init__`` argument.
+    """
+
+    def make_initial_conditions(
+        self,
+        observation_model: ObservationModel,
+        environments: Sequence[Environment],
+    ) -> np.ndarray:
+        """Return the initial probability of each bin of the state.
+
+        Parameters
+        ----------
+        observation_model : ObservationModel
+            The state's observation model.
+        environments : sequence of Environment
+            The model's fitted environments.
+
+        Returns
+        -------
+        initial_conditions : np.ndarray, shape (n_state_bins,)
+            One value per place bin of the state's environment, or shape (1,)
+            for a state without place bins.
+        """
+        ...
 
 
 @dataclass
@@ -42,7 +80,7 @@ class UniformInitialConditions:
     def make_initial_conditions(
         self,
         observation_model: ObservationModel,
-        environments: tuple[Environment, ...],
+        environments: Sequence[Environment],
     ) -> np.ndarray:
         """Create the initial conditions array for the specified observation model.
 
@@ -53,8 +91,8 @@ class UniformInitialConditions:
         ----------
         observation_model : ObservationModel
             The observation model specifying environment and decoding type.
-        environments : tuple[Environment, ...]
-            Tuple of available environments to match against the observation model.
+        environments : sequence of Environment
+            The available environments to match against the observation model.
 
         Returns
         -------
@@ -176,38 +214,3 @@ def _check_state_initial_conditions(
             "UniformInitialConditions does; discrete_initial_conditions "
             "weights the states.",
         )
-
-
-def estimate_initial_conditions(acausal_posterior: np.ndarray) -> np.ndarray:
-    """Estimate initial conditions from acausal posterior distribution via EM algorithm.
-
-    Extracts the initial state distribution by taking the first time point
-    from the smoothed (acausal) posterior distribution. This is used in
-    Expectation-Maximization parameter estimation for HMMs.
-
-    Parameters
-    ----------
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Acausal (smoothed) posterior distribution over states and time,
-        typically obtained from forward-backward algorithm.
-
-    Returns
-    -------
-    initial_conditions : np.ndarray, shape (n_state_bins,)
-        Estimated initial state distribution at t=0.
-
-    Notes
-    -----
-    This function implements the M-step update for initial conditions
-    in the EM algorithm for HMM parameter estimation, as described
-    in standard HMM literature (e.g., Rabiner, 1989).
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> posterior = np.random.default_rng(0).random((100, 50))  # 100 time points, 50 position bins
-    >>> initial_conds = estimate_initial_conditions(posterior)
-    >>> initial_conds.shape
-    (50,)
-    """
-    return cast(np.ndarray, acausal_posterior[0])

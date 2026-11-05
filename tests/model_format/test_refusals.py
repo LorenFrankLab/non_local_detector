@@ -7,6 +7,7 @@ only decoding: the model still loads and its summary still reads.
 """
 
 import json
+import pickle
 import warnings
 import zipfile
 from dataclasses import dataclass
@@ -21,6 +22,11 @@ from non_local_detector.model_format import (
     FORMAT_VERSION,
     _container,
     read_model_summary,
+)
+from non_local_detector.models.base import (
+    ClusterlessDetector,
+    SortedSpikesDetector,
+    _DetectorBase,
 )
 from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
@@ -126,6 +132,32 @@ def test_a_tampered_array_fails_its_checksum(saved):
         read_model_summary(saved)
 
 
+@pytest.mark.parametrize("file_format", ["nld", "pickle"])
+def test_load_model_returns_only_its_own_class(fitted, saved, tmp_path, file_format):
+    """A class's load_model loads an instance of it or of a subclass."""
+    path = saved
+    if file_format == "pickle":
+        path = tmp_path / "model.pkl"
+        path.write_bytes(pickle.dumps(fitted))
+
+    with pytest.raises(ValidationError, match="not a SortedSpikesDecoder") as error:
+        nld.SortedSpikesDecoder.load_model(path)
+    assert "NonLocalSortedSpikesDetector.load_model" in str(error.value)
+    with pytest.raises(ValidationError, match="not a ClusterlessDetector"):
+        ClusterlessDetector.load_model(path)
+    for cls in (nld.NonLocalSortedSpikesDetector, SortedSpikesDetector, _DetectorBase):
+        assert type(cls.load_model(path)) is nld.NonLocalSortedSpikesDetector
+
+
+def test_load_model_refuses_a_pickle_that_is_not_a_detector(tmp_path):
+    path = tmp_path / "model.pkl"
+    path.write_bytes(pickle.dumps({"not": "a detector"}))
+
+    with pytest.raises(ValidationError, match="holds a dict") as error:
+        _DetectorBase.load_model(path)
+    assert "dict.load_model" not in str(error.value)
+
+
 def test_a_newer_format_version_asks_for_an_upgrade(saved):
     def newer(manifest):
         manifest["format_version"] = FORMAT_VERSION + 1
@@ -164,6 +196,16 @@ def test_a_partly_fitted_detector_is_not_saved(fitted, tmp_path):
 
     with pytest.raises(NotFittedError, match="partly fitted"):
         fitted.save_model(tmp_path / "model.nld")
+
+
+def test_a_detector_without_a_stored_name_is_not_saved(fitted, tmp_path):
+    """Every name ``load_model`` requires is required at save."""
+    path = tmp_path / "model.nld"
+    del fitted.initial_conditions_
+
+    with pytest.raises(NotFittedError, match="initial_conditions_"):
+        fitted.save_model(path)
+    assert not path.exists()
 
 
 def test_an_attribute_the_format_does_not_hold_is_refused(fitted, tmp_path):
@@ -352,3 +394,34 @@ def test_an_all_zero_rebuilt_block_is_refused(saved, sorted_recording, monkeypat
         ValidationError, match="continuous transition from state 2 to 2"
     ):
         decode(loaded, time, position, {"spike_times": spike_times})
+
+
+def test_stored_covariates_without_a_covariate_transition_are_refused(
+    sorted_recording, tmp_path
+):
+    """Covariates need a transition that builds a design from them."""
+    time, position, spike_times = sorted_recording
+    detector = nld.NonLocalSortedSpikesDetector(
+        discrete_transition_type=nld.DiscreteNonStationaryDiagonal(
+            diagonal_values=np.full(4, 0.98), formula="1 + speed"
+        ),
+        sampling_frequency=SORTED_RATE,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+    ).fit(
+        time,
+        position,
+        spike_times,
+        discrete_transition_covariate_data={"speed": np.linspace(0.0, 5.0, len(time))},
+    )
+    path = tmp_path / "model.nld"
+    detector.save_model(path)
+
+    def make_stationary(config):
+        node = config["discrete_transition_type"]
+        node["$type"] = "nld.DiscreteStationaryDiagonal"
+        del node["state"]["formula"], node["state"]["smoothness"]
+
+    _edit_json(path, "config.json", make_stationary)
+
+    with pytest.raises(DataError, match="discrete_transition_type"):
+        nld.NonLocalSortedSpikesDetector.load_model(path)

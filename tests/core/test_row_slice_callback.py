@@ -1,11 +1,12 @@
 """The chunked drivers' likelihood-callback contract.
 
-A callback marked with ``row_slice_aware`` receives the FULL ``time`` plus the
-chunk's global row range and therefore owns every spike exactly once. An
-unmarked callable cannot be evaluated chunk by chunk (a ``time[chunk]`` call
-would drop the spikes between chunks), so the drivers reject it there. Both
-are covered here, together with the row accumulation that makes an explicitly
-requested log likelihood available when caching is off.
+Every driver calls a callback as ``f(*log_likelihood_args,
+time_edges=time_edges, is_missing=...)``. One marked with ``row_slice_aware``
+receives the FULL ``time_edges`` plus the chunk's global row range and
+therefore owns every spike exactly once. An unmarked callable cannot be asked
+for a chunk's rows, so the drivers reject it there. Both are covered here,
+together with the row accumulation that makes an explicitly requested log
+likelihood available when caching is off.
 """
 
 import functools
@@ -33,51 +34,50 @@ RATES = np.array([0.5, 4.0, 20.0])
 PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
 
 
-def count_spikes(spike_times, time, row_slice=None):
-    """Toy callback binning against the row timestamps it is handed.
+def count_spikes(spike_times, time_edges, row_slice=None):
+    """Toy binning against the full ``time_edges``, returning the requested rows.
 
-    Row ``i`` owns ``[time[i], time[i + 1])``, so the last row of whatever
-    timeline the callback receives owns nothing. Core passes row coordinates;
-    a callback like this one that bins against them is exactly the kind a
-    chunk-local call breaks.
+    Row ``i`` owns ``[time_edges[i], time_edges[i + 1])``; the last row also
+    owns the final edge.
     """
-    in_range = (spike_times >= time[0]) & (spike_times <= time[-1])
-    rows = np.digitize(spike_times[in_range], time[1:-1])
-    counts = np.bincount(rows, minlength=len(time))
-    start, stop = (
-        (0, len(time)) if row_slice is None else (row_slice.start, row_slice.stop)
-    )
-    return counts[start:stop]
+    counts, _ = np.histogram(spike_times, bins=time_edges)
+    return counts[row_slice or slice(None)]
 
 
-def poisson_log_likelihood(time, spike_times, row_slice=None):
-    """Tiny Poisson backend over ``N_STATES`` bins, binned on the given ``time``."""
-    counts = count_spikes(spike_times, time, row_slice=row_slice)
+def poisson_log_likelihood(spike_times, row_slice=None, *, time_edges):
+    """Tiny Poisson backend over ``N_STATES`` bins, binned on ``time_edges``."""
+    counts = count_spikes(spike_times, time_edges, row_slice=row_slice)
     rates = jnp.asarray(RATES)[None, :]
     return jax.scipy.special.xlogy(jnp.asarray(counts)[:, None], rates) - rates
 
 
 @row_slice_aware
-def row_aware_callback(time, spike_times, calls, is_missing=None, row_slice=None):
-    """Row-aware callback: bins against the full ``time``, returns the rows asked for."""
-    calls.append((len(time), row_slice))
-    return poisson_log_likelihood(time, spike_times, row_slice=row_slice)
+def row_aware_callback(
+    spike_times, calls, *, time_edges, is_missing=None, row_slice=None
+):
+    """Row-aware callback: bins against the full edges, returns the rows asked for."""
+    calls.append((len(time_edges), row_slice))
+    return poisson_log_likelihood(
+        spike_times, row_slice=row_slice, time_edges=time_edges
+    )
 
 
-def unmarked_callback(time, spike_times, calls, is_missing=None):
+def unmarked_callback(spike_times, calls, *, time_edges, is_missing=None):
     """Unmarked callback: takes no ``row_slice``, so it can only see a whole timeline."""
-    calls.append(np.asarray(time))
-    return poisson_log_likelihood(time, spike_times)
+    calls.append(np.asarray(time_edges))
+    return poisson_log_likelihood(spike_times, time_edges=time_edges)
 
 
 @pytest.fixture
 def problem():
-    """A decoding timeline whose every bin gap holds a spike."""
-    time = np.arange(N_TIME, dtype=float)
+    """A decoding timeline with a spike on every interior edge and bin center."""
+    time_edges = np.arange(N_TIME + 1, dtype=float)
     return {
-        "time": time,
-        # A spike in every gap, so every chunk boundary has one to lose.
-        "spike_times": 0.5 * (time[:-1] + time[1:]),
+        "time_edges": time_edges,
+        # A spike on every chunk boundary, owned by the row that starts there.
+        "spike_times": np.sort(
+            np.concatenate([time_edges[1:-1], time_edges[:-1] + 0.5])
+        ),
         "state_ind": np.arange(N_STATES),
         "initial_distribution": np.full((N_STATES,), 1.0 / N_STATES),
         "transition_matrix": np.full((N_STATES, N_STATES), 1.0 / N_STATES),
@@ -87,7 +87,7 @@ def problem():
 def run_driver(driver, problem, log_likelihood_func, calls, n_chunks, **kwargs):
     """Run either chunked driver with the same small problem."""
     common = {
-        "time": problem["time"],
+        "time_edges": problem["time_edges"],
         "state_ind": problem["state_ind"],
         "initial_distribution": problem["initial_distribution"],
         "log_likelihood_func": log_likelihood_func,
@@ -122,10 +122,12 @@ def test_marker_is_visible_through_the_bound_method():
 
     class Detector:
         @row_slice_aware
-        def compute_log_likelihood(self, time, is_missing=None, row_slice=None):
+        def compute_log_likelihood(
+            self, *, time_edges, is_missing=None, row_slice=None
+        ):
             return None
 
-        def unmarked(self, time, is_missing=None):
+        def unmarked(self, *, time_edges, is_missing=None):
             return None
 
     detector = Detector()
@@ -158,7 +160,7 @@ def test_row_aware_callback_gets_full_time_and_tiling_rows(driver, problem):
     run_driver(driver, problem, row_aware_callback, calls, N_CHUNKS)
 
     assert len(calls) == N_CHUNKS
-    assert [n_time for n_time, _ in calls] == [N_TIME] * N_CHUNKS
+    assert [n_edges for n_edges, _ in calls] == [N_TIME + 1] * N_CHUNKS
     rows = np.concatenate(
         [np.arange(row_slice.start, row_slice.stop) for _, row_slice in calls]
     )
@@ -170,9 +172,8 @@ def test_row_aware_callback_gets_full_time_and_tiling_rows(driver, problem):
 def test_unmarked_callback_is_rejected_when_evaluated_per_chunk(driver, problem):
     """Chunk-by-chunk evaluation of an unmarked callback raises before any call.
 
-    A ``time[chunk]`` call would clip a callback that bins against its
-    timeline and drop the boundary spikes while returning plausible numbers,
-    so there is no chunk-local fallback.
+    An unmarked callback cannot be asked for one chunk's rows, so there is no
+    chunk-local fallback.
     """
     calls: list = []
     with pytest.raises(ValueError, match="row_slice_aware"):
@@ -185,7 +186,7 @@ def test_unmarked_callback_is_rejected_when_evaluated_per_chunk(driver, problem)
 def test_unmarked_callback_is_called_once_on_the_full_time(driver, problem):
     """One chunk, or cached likelihoods, call an unmarked callback once.
 
-    It receives the whole ``time`` and no ``row_slice``, so it bins every
+    It receives the whole ``time_edges`` and no ``row_slice``, so it bins every
     spike, and the chunked-cached result equals the single-chunk one.
     """
     single_calls: list = []
@@ -203,7 +204,7 @@ def test_unmarked_callback_is_called_once_on_the_full_time(driver, problem):
 
     for calls in (single_calls, cached_calls):
         assert len(calls) == 1
-        np.testing.assert_array_equal(calls[0], problem["time"])
+        np.testing.assert_array_equal(calls[0], problem["time_edges"])
     np.testing.assert_allclose(cached[2], single[2], **PARITY_KWARGS)
     np.testing.assert_allclose(reference[2], single[2], **PARITY_KWARGS)
 
@@ -236,7 +237,7 @@ def test_accumulated_log_likelihoods_cover_every_row(driver, problem):
         accumulate_log_likelihoods=True,
     )
     expected = np.asarray(
-        poisson_log_likelihood(problem["time"], problem["spike_times"])
+        poisson_log_likelihood(problem["spike_times"], time_edges=problem["time_edges"])
     )
 
     assert accumulated[5].shape == expected.shape
@@ -260,7 +261,7 @@ def test_requested_likelihood_retains_one_host_array(driver, monkeypatch):
     measuring = False
 
     @row_slice_aware
-    def callback(time, is_missing=None, row_slice=None):
+    def callback(*, time_edges, is_missing=None, row_slice=None):
         if measuring and not tracemalloc.is_tracing():
             tracemalloc.start()
         return device_values[row_slice]
@@ -283,7 +284,7 @@ def test_requested_likelihood_retains_one_host_array(driver, monkeypatch):
     monkeypatch.setattr(core, "_smoother_internal", smoother_stub)
     monkeypatch.setattr(core, "_smoother_covariate_dependent_internal", smoother_stub)
     kwargs = {
-        "time": np.arange(n_time, dtype=float),
+        "time_edges": np.arange(n_time + 1, dtype=float),
         "state_ind": np.zeros(n_bins, dtype=int),
         "initial_distribution": np.full(n_bins, 1 / n_bins),
         "log_likelihood_func": callback,
@@ -323,7 +324,7 @@ def test_positional_dtype_still_selects_the_dtype(driver, problem, dtype):
     dtype was honoured.
     """
     args = [
-        problem["time"],
+        problem["time_edges"],
         problem["state_ind"],
         problem["initial_distribution"],
     ]
@@ -351,3 +352,48 @@ def test_positional_dtype_still_selects_the_dtype(driver, problem, dtype):
     assert result[5] is None  # log_likelihoods: accumulation stayed off
     assert result[0].dtype == dtype  # acausal_posterior
     assert result[6].dtype == dtype  # causal_posterior
+
+
+@pytest.mark.unit
+def test_checkpointed_driver_calls_callbacks_as_the_dense_drivers_do(problem):
+    """``checkpointed_forward_backward`` follows the same callback contract.
+
+    An unmarked callback is rejected before any call when ``chunk_size``
+    splits the rows and is called on the full ``time_edges`` without
+    ``row_slice`` when one chunk covers them; a marked one receives the full
+    edges per chunk. All three decode like the dense driver.
+    """
+    from non_local_detector.checkpointed_inference import (
+        checkpointed_forward_backward,
+    )
+
+    def run(callback, calls, chunk_size):
+        return checkpointed_forward_backward(
+            problem["time_edges"],
+            problem["initial_distribution"],
+            callback,
+            log_likelihood_args=(problem["spike_times"], calls),
+            transition_matrix=problem["transition_matrix"],
+            state_ind=problem["state_ind"],
+            chunk_size=chunk_size,
+        )
+
+    rejected_calls: list = []
+    with pytest.raises(ValueError, match="row_slice_aware"):
+        run(unmarked_callback, rejected_calls, N_TIME // N_CHUNKS)
+    assert rejected_calls == []
+
+    single_calls: list = []
+    single = run(unmarked_callback, single_calls, N_TIME)
+    assert single_calls
+    for edges in single_calls:
+        np.testing.assert_array_equal(edges, problem["time_edges"])
+
+    chunked_calls: list = []
+    chunked = run(row_aware_callback, chunked_calls, N_TIME // N_CHUNKS)
+    assert {n_edges for n_edges, _ in chunked_calls} == {N_TIME + 1}
+    dense = run_driver(chunked_filter_smoother, problem, row_aware_callback, [], 1)
+    for result in (single, chunked):
+        np.testing.assert_allclose(
+            result.marginal_log_likelihood, dense[2], **PARITY_KWARGS
+        )

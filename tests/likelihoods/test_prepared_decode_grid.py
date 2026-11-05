@@ -103,10 +103,15 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
         assert not full_scans, "Every requested chunk scanned the full recording grid"
         return result
 
-    def request_chunks(*, time, log_likelihood_func, log_likelihood_args, **kwargs):
+    def request_chunks(
+        *, time_edges, log_likelihood_func, log_likelihood_args, **kwargs
+    ):
         for rows in [slice(100, 120), slice(200, 220), slice(300, 320)]:
             result = log_likelihood_func(
-                time[rows], *log_likelihood_args, row_slice=rows, is_missing=None
+                *log_likelihood_args,
+                time_edges=time_edges,
+                row_slice=rows,
+                is_missing=None,
             )
             assert result.shape[0] == 20
         return FilterSmootherResult(

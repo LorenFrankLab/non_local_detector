@@ -11,13 +11,23 @@ Adapted from dynamax (https://github.com/probml/dynamax) with modifications.
 import functools
 import logging
 from collections.abc import Callable
-from typing import Any, NamedTuple, Protocol, TypeAlias, cast, runtime_checkable
+from typing import (
+    Any,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeAlias,
+    cast,
+    runtime_checkable,
+)
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from jax.typing import DTypeLike
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.exceptions import ValidationError
 
@@ -103,7 +113,7 @@ def _condition_on_primal(
     # matters on backends that preserve them.)
     joint_shift = jnp.maximum(
         joint_shift,
-        jnp.log(jnp.finfo(probs.dtype).tiny),  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+        jnp.log(finfo(probs.dtype).tiny),
     )
 
     # The first shift excludes unreachable maxima; the second rescales tiny
@@ -230,8 +240,8 @@ def _condition_on_jvp(
     # is never repaired here. A strict ``where`` rather than ``jnp.minimum``:
     # at an exact tie ``minimum`` splits its derivative between operands and
     # would halve second derivatives of a derivative that sits on the bound.
-    finfo = jnp.finfo(probs.dtype)  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
-    max_exponent = jnp.nextafter(jnp.log(finfo.max), jnp.asarray(0.0, probs.dtype))
+    limits = finfo(probs.dtype)
+    max_exponent = jnp.nextafter(jnp.log(limits.max), jnp.asarray(0.0, probs.dtype))
     exponent = jnp.where(exponent > max_exponent, max_exponent, exponent)
     weight_dot = jnp.exp(exponent) * probs_dot + posterior * ll_dot
     log_norm_dot = weight_dot.sum()
@@ -268,9 +278,10 @@ def _degenerate_and_nan_masks(
         ``max(axis=-1) == -inf`` rather than ``~isfinite`` so NaN steps are
         excluded (NaN propagates to the max, and ``NaN == -inf`` is False).
     nan_mask : np.ndarray of bool
-        True where any state is ``NaN`` — a likelihood-computation bug, distinct
-        from impossible data. ``_condition_on`` lets the NaN reach the posterior
-        so it stays visible.
+        True where any state is ``NaN`` or ``+inf`` — a likelihood-computation
+        bug, distinct from impossible data. ``_condition_on`` lets the NaN reach
+        the posterior so it stays visible; a ``+inf`` becomes one there
+        (``inf - inf`` when the step is normalized by its maximum).
     """
     degenerate_mask, nan_mask = jax.device_get(
         _degenerate_and_nan_masks_device(jnp.asarray(log_likelihoods))
@@ -285,7 +296,7 @@ def _degenerate_and_nan_masks_device(
     """Device-side masks of ``_degenerate_and_nan_masks`` in one fused pass."""
     return (
         log_likelihoods.max(axis=-1) == -jnp.inf,
-        jnp.any(jnp.isnan(log_likelihoods), axis=-1),
+        jnp.any(jnp.isnan(log_likelihoods) | (log_likelihoods == jnp.inf), axis=-1),
     )
 
 
@@ -297,7 +308,7 @@ def _accumulate_chunk_degeneracy(
 
     Returns the *global* indices of the chunk's all-``-inf`` steps
     (``time_inds`` maps chunk positions to global time indices) and the
-    chunk's number of NaN steps.
+    chunk's number of NaN steps (any state ``NaN`` or ``+inf``).
     """
     degenerate_mask, nan_mask = _degenerate_and_nan_masks(log_likelihood_chunk)
     return np.asarray(time_inds)[degenerate_mask], int(nan_mask.sum())
@@ -327,7 +338,7 @@ def _warn_degenerate_and_nan_timesteps(
     n_total: int,
     *,
     marginal_log_likelihood: float | None = None,
-    context: str = "filter",
+    context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
     """Emit host-side warnings summarizing degenerate and NaN time steps.
 
@@ -340,7 +351,8 @@ def _warn_degenerate_and_nan_timesteps(
     Parameters
     ----------
     n_degenerate, n_nan, n_total : int
-        Counts of all-``-inf`` steps, NaN steps, and total steps.
+        Counts of all-``-inf`` steps, NaN steps (any state ``NaN`` or
+        ``+inf``), and total steps.
     marginal_log_likelihood : float, optional
         The marginal log-likelihood, for filtering paths only. When it is
         ``-inf`` yet no step was all-``-inf`` (``n_degenerate == 0``), a zero
@@ -365,7 +377,8 @@ def _warn_degenerate_and_nan_timesteps(
         )
     if n_nan > 0:
         logger.warning(
-            "HMM %s encountered %d/%d time step(s) with NaN log-likelihoods; %s. "
+            "HMM %s encountered %d/%d time step(s) with NaN or +inf "
+            "log-likelihoods; %s. "
             "This indicates a bug in the likelihood computation (e.g. a "
             "non-converged or degenerate encoding model), not impossible data. "
             "Check the log-likelihood inputs.",
@@ -403,9 +416,9 @@ def _warn_if_degenerate_timesteps(
     log_likelihoods: ArrayLike,
     *,
     marginal_log_likelihood: ArrayLike | None = None,
-    context: str = "filter",
+    context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
-    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN.
+    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN or ``+inf``.
 
     Parameters
     ----------
@@ -1232,12 +1245,13 @@ def filter(
     inputs before the transformation.
 
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A ``NaN`` at a
-    timestep is left to propagate (it signals a likelihood-computation bug, not
-    impossible data): because the filter carries state forward, a single NaN
-    contaminates the posterior at that step and every step after it. A
-    host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
-    steps is emitted when any are found.
+    falls back to the predicted distribution at that step. A ``NaN`` or
+    ``+inf`` at a timestep is left to propagate as NaN (it signals a
+    likelihood-computation bug, not impossible data): because the filter
+    carries state forward, a single NaN contaminates the posterior at that step
+    and every step after it. A host-side ``logger.warning`` summarizing the
+    count of degenerate and/or NaN (or ``+inf``) steps is emitted when any are
+    found.
 
     ``_condition_on`` also falls back (and marks the step ``-inf`` in the
     marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
@@ -1282,9 +1296,10 @@ def _smoother_impl(
     initial : jax.Array, optional
         Initial state distribution, by default None
     ind : jax.Array, optional
-        Time indices, by default None
+        Row indices of the recording; by default ``arange(n_rows)``.
     n_time : int, optional
-        Number of time points, by default None
+        Rows in the whole recording; by default the length of
+        ``filtered_probs``.
 
     Returns
     -------
@@ -1294,7 +1309,8 @@ def _smoother_impl(
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
-        ind = jnp.arange(n_time)
+        # From the static shape: ``n_time`` is traced under jit.
+        ind = jnp.arange(filtered_probs.shape[0])
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
@@ -1331,9 +1347,13 @@ def smoother(
     filtered_probs : jax.Array, shape (n_time, n_states)
         Filtered state probabilities.
     initial : jax.Array, shape (n_states,), optional
-        Smoothed row after the last row; by default the last filtered row.
-    ind : jax.Array, shape (n_time,), optional
-        Row indices of the recording; by default ``arange(n_time)``.
+        Smoothed row after the last row, up to scale (the smoothed rows are
+        normalized): nonnegative, finite, with a positive sum. By default
+        the last filtered row. Unused when the last row is the recording's
+        last (``ind[-1] == n_time - 1``).
+    ind : jax.Array of int, shape (n_time,), optional
+        Row indices of the recording, in ``[0, n_time)``; by default
+        ``arange(n_time)``, the recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -1346,9 +1366,10 @@ def smoother(
     Raises
     ------
     ValidationError
-        If ``transition_matrix`` and ``filtered_probs`` are concrete and the
-        matrix does not have shape (n_states, n_states) or breaks the
-        probability contract above.
+        If the inputs are concrete and ``filtered_probs`` is not
+        (n_time, n_states), ``initial`` or ``ind`` does not match it or
+        breaks its contract above, or the matrix does not have shape
+        (n_states, n_states) or breaks the probability contract above.
 
     Notes
     -----
@@ -1357,11 +1378,10 @@ def smoother(
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
     """
-    if not _is_traced(transition_matrix, filtered_probs):
+    if not _is_traced(transition_matrix, filtered_probs, initial, ind):
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind, n_time)
         _check_hmm_arrays(
-            n_time=np.shape(filtered_probs)[0],
-            n_bins=np.shape(filtered_probs)[-1],
-            transition_matrix=transition_matrix,
+            n_time=n_rows, n_bins=n_bins, transition_matrix=transition_matrix
         )
     return cast(
         jax.Array,
@@ -1386,20 +1406,24 @@ def row_slice_aware(
 ) -> Callable[..., ArrayLike]:
     """Mark a likelihood callback as accepting the ``row_slice`` keyword.
 
-    A marked callback bins the spikes against the FULL decoding ``time`` it is
-    handed and returns only the rows named by ``row_slice``, so chunked
-    prediction owns every spike exactly once. The chunked drivers require the
-    mark whenever they evaluate the likelihood chunk by chunk; an unmarked
-    callback is only ever called once, with the full ``time`` and no
-    ``row_slice``.
+    Every driver calls a likelihood callback as
+    ``log_likelihood_func(*log_likelihood_args, time_edges=time_edges,
+    is_missing=...)``, the signature of the detectors'
+    ``compute_log_likelihood``. A marked callback bins the spikes against the
+    FULL ``time_edges`` it is handed and returns only the rows named by
+    ``row_slice``, so chunked prediction owns every spike exactly once. The
+    drivers require the mark whenever they evaluate the likelihood chunk by
+    chunk; an unmarked callback is only ever called once, with the full
+    ``time_edges`` and no ``row_slice``.
 
     Parameters
     ----------
     log_likelihood_func : callable
-        Function (or unbound method) accepting ``is_missing=None`` and
-        ``row_slice=None``. When a row range is requested, ``time`` has shape
-        ``(n_time,)`` but ``is_missing`` is already sliced to ``(n_rows,)``;
-        the callback must not slice the missing-data mask again. It returns
+        Function (or unbound method) accepting the keywords ``time_edges``,
+        ``is_missing=None`` and ``row_slice=None``. When a row range is
+        requested, ``time_edges`` has shape ``(n_time + 1,)`` but
+        ``is_missing`` is already sliced to ``(n_rows,)``; the callback must
+        not slice the missing-data mask again. It returns
         ``(n_rows, n_state_bins)``. With ``row_slice=None``, both inputs and
         the result cover the full timeline.
 
@@ -1431,7 +1455,7 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
     accepts_row_slice : bool
         True if the callback (or anything it wraps) was marked by
         :func:`row_slice_aware`, in which case it is called with the full
-        ``time`` and a ``row_slice``.
+        ``time_edges`` and a ``row_slice``.
     """
     func: object = log_likelihood_func
     seen: set[int] = set()
@@ -1449,14 +1473,28 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
 
 
 def _require_row_slice_aware(
-    log_likelihood_func: Callable[..., ArrayLike], n_chunks: int
+    log_likelihood_func: Callable[..., ArrayLike],
+    n_chunks: int,
+    *,
+    chunking: str,
+    hint: str,
 ) -> None:
     """Reject chunk-by-chunk evaluation of an unmarked likelihood callback.
 
-    Handing a chunk only ``time[chunk]`` clips a callback that bins spikes
-    against the timeline it is given to that chunk, dropping every spike
-    between two chunks while still returning plausible numbers. Only a
+    An unmarked callback cannot be told which rows a chunk needs: it always
+    returns every row of the ``time_edges`` it is given. Only a
     ``row_slice_aware`` callback can be evaluated per chunk.
+
+    Parameters
+    ----------
+    log_likelihood_func : callable
+        The driver's likelihood callback.
+    n_chunks : int
+        Number of chunks the driver evaluates the likelihood in.
+    chunking : str
+        The driver setting that splits the rows, for the error message.
+    hint : str
+        How to avoid the chunks with that driver, for the error message.
 
     Raises
     ------
@@ -1465,25 +1503,25 @@ def _require_row_slice_aware(
     """
     if n_chunks > 1 and not accepts_row_slice(log_likelihood_func):
         msg = (
-            f"n_chunks={n_chunks} without cached log likelihoods evaluates the "
-            "likelihood callback chunk by chunk, which needs a callback marked "
-            "with non_local_detector.core.row_slice_aware"
+            f"{chunking} evaluates the likelihood callback in {n_chunks} "
+            "chunks, which needs a callback marked with "
+            "non_local_detector.core.row_slice_aware"
         )
         raise ValidationError(
             msg,
             expected="a row_slice_aware callback that bins against the full "
-            "time and returns the rows of row_slice",
+            "time_edges and returns the rows of row_slice",
             got=f"unmarked {type(log_likelihood_func).__name__}",
-            hint="Mark the callback, pass log_likelihoods or "
-            "cache_log_likelihoods=True, or use n_chunks=1.",
+            hint=hint,
         )
 
 
 _SUPPORTED_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 
 _CALLBACK_SHAPE_HINT = (
-    "log_likelihood_func must return one row per requested time bin and one "
-    "column per state bin (len(initial_distribution))."
+    "log_likelihood_func must return one row per requested time bin (not one "
+    "per edge: time_edges has n_time + 1 entries) and one column per state "
+    "bin (len(initial_distribution))."
 )
 
 
@@ -1526,17 +1564,18 @@ def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
     return dtype
 
 
-def _validate_time(time: Any) -> int:
-    """Return the number of time bins of a dense driver's nonempty ``time`` vector."""
-    if np.ndim(time) != 1 or np.shape(time)[0] == 0:
-        msg = "time must be a nonempty vector"
+def _validate_time_edges(time_edges: Any) -> int:
+    """Return the number of time bins of a dense driver's ``time_edges`` vector."""
+    if np.ndim(time_edges) != 1 or np.shape(time_edges)[0] < 2:
+        msg = "time_edges must be a vector of at least two bin edges"
         raise ValidationError(
             msg,
-            expected="shape (n_time,) with n_time >= 1",
-            got=f"shape {np.shape(time)}",
-            hint="Pass the decoding time bin centers as a 1-D array.",
+            expected="shape (n_time + 1,) with n_time >= 1",
+            got=f"shape {np.shape(time_edges)}",
+            hint="Pass the decoding bin boundaries as a 1-D array, one more "
+            "than the number of time bins.",
         )
-    return int(np.shape(time)[0])
+    return int(np.shape(time_edges)[0]) - 1
 
 
 def _bad_entries(
@@ -1739,11 +1778,58 @@ def _operator_row_sums(
     )
 
 
+@functools.partial(jax.jit, static_argnames=("pairs",))
+def _operator_adjoint_terms(
+    operator: TransitionProducts,
+    left: jax.Array,
+    right: jax.Array,
+    weight: jax.Array | None,
+    *,
+    pairs: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array | None]:
+    """Both sides of ``left @ T @ right`` and, optionally, its state-pair terms.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator; a :class:`TransitionOperator` with ``pairs``.
+    left, right : jax.Array, shape (n_state_bins,)
+        Probe vectors.
+    weight : jax.Array, shape (n_states, n_states), or None
+        Per-row discrete weight, None for a stationary operator.
+    pairs : bool
+        Also return ``operator.pair_products(left, right, weight)``.
+
+    Returns
+    -------
+    through_backward : jax.Array, shape ()
+        ``left @ backward(right)``.
+    through_forward : jax.Array, shape ()
+        ``forward(left) @ right``.
+    pair_terms : jax.Array, shape (n_states, n_states), or None
+    """
+    precision = jax.lax.Precision.HIGHEST
+    through_backward = jnp.dot(
+        left, operator.backward(right, weight), precision=precision
+    )
+    through_forward = jnp.dot(
+        operator.forward(left, weight), right, precision=precision
+    )
+    pair_terms = (
+        cast(TransitionOperator, operator).pair_products(left, right, weight)
+        if pairs
+        else None
+    )
+    return through_backward, through_forward, pair_terms
+
+
 def _check_operator_rows(
     operator: TransitionProducts,
     n_bins: int,
     dtype: DTypeLike,
     n_states: int | None = None,
+    *,
+    pair_states: int | None = None,
 ) -> None:
     """Raise unless no row of ``operator``'s transition creates mass.
 
@@ -1759,6 +1845,14 @@ def _check_operator_rows(
     0.1 s for a 7,202-bin structured operator, against seconds for the
     checkpointed passes over 10,000 rows.
 
+    The products must also apply one transition: for one fixed pair of
+    random nonnegative vectors ``u``, ``v`` (and, with weights, one random
+    row-stochastic weight), ``u @ backward(v)`` and ``forward(u) @ v`` must
+    agree, and so must the sum of ``pair_products(u, v)`` with
+    ``pair_states``, to a relative ``PROBABILITY_SUM_TOLERANCE``. With
+    nonnegative terms there is no cancellation, so float32 rounding stays
+    far below it (about 1e-6 for 2,000 dense bins).
+
     Parameters
     ----------
     operator : TransitionProducts
@@ -1770,6 +1864,10 @@ def _check_operator_rows(
     n_states : int, optional
         Number of discrete states of the per-row weights; None for a
         stationary operator.
+    pair_states : int, optional, keyword-only
+        Number of discrete states of the transition statistics, when they
+        are requested; ``pair_products`` must then return
+        ``(pair_states, pair_states)``.
 
     Raises
     ------
@@ -1777,7 +1875,10 @@ def _check_operator_rows(
         If applying the operator to an all-ones vector raises ``TypeError``
         or ``ValueError``, or the row sums do not have one entry per state
         bin, are not finite, are negative, or exceed 1 (per target state
-        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
+        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``; or if
+        ``forward``, ``backward`` and ``pair_products`` disagree on the
+        probes, ``pair_products`` has another shape, or applying them to the
+        probes raises ``TypeError`` or ``ValueError``.
     """
     name = "transition_operator"
     weight = (
@@ -1842,6 +1943,71 @@ def _check_operator_rows(
             "detector's operator holds its continuous transitions' blocks, "
             "such as a custom transition's structured_block.",
         )
+    _check_operator_adjoint(operator, n_bins, dtype, n_states, pair_states)
+
+
+def _check_operator_adjoint(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: DTypeLike,
+    n_states: int | None,
+    pair_states: int | None,
+) -> None:
+    """Raise unless the operator's products apply one transition.
+
+    See :func:`_check_operator_rows`, which calls it after the row sums pass.
+    """
+    rng = np.random.default_rng(0)
+    left, right = rng.random((2, n_bins)).astype(dtype)
+    weight = None
+    if n_states is not None:
+        weight = rng.random((n_states, n_states)).astype(dtype)
+        weight /= weight.sum(axis=1, keepdims=True)
+    pairs = pair_states is not None
+    try:
+        through_backward, through_forward, pair_terms = jax.device_get(
+            _operator_adjoint_terms(operator, left, right, weight, pairs=pairs)
+        )
+    except (TypeError, ValueError) as error:
+        products = "forward, backward" + (" and pair_products" if pairs else "")
+        msg = "transition_operator could not be applied to probe vectors"
+        raise ValidationError(
+            msg,
+            expected=f"{products} of two ({n_bins},) vectors"
+            + ("" if weight is None else f" with a ({n_states}, {n_states}) weight"),
+            got=f"{type(error).__name__}: {error}",
+            hint="forward must act on the same state bins as backward; "
+            "transition statistics also need pair_products, with the discrete "
+            "state of each bin.",
+        ) from error
+    if pairs and np.shape(pair_terms) != (pair_states, pair_states):
+        msg = "transition_operator.pair_products has the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({pair_states}, {pair_states}), one term per "
+            "pair of discrete states",
+            got=f"shape {np.shape(pair_terms)}",
+            hint="The operator's discrete states must be those of state_ind "
+            "and discrete_transition_matrix.",
+        )
+    reference = float(through_backward)
+    sides = {"forward(u) @ v": float(through_forward)}
+    if pairs:
+        sides["pair_products(u, v).sum()"] = float(np.sum(pair_terms, dtype=np.float64))
+    for side, value in sides.items():
+        scale = max(abs(reference), abs(value))
+        if not abs(value - reference) <= PROBABILITY_SUM_TOLERANCE * scale:
+            msg = "transition_operator's products do not apply one transition"
+            raise ValidationError(
+                msg,
+                expected=f"u @ backward(v) = {side} for nonnegative u and v, "
+                f"to a relative {PROBABILITY_SUM_TOLERANCE:g}",
+                got=f"u @ backward(v) = {reference:.8g}, {side} = {value:.8g}",
+                hint="forward must be the transpose product of backward "
+                "(probabilities @ T and T @ values with the same T and "
+                "weight), and pair_products must split probabilities @ T * "
+                "values by discrete state pair.",
+            )
 
 
 def _validate_hmm_inputs(
@@ -2057,6 +2223,89 @@ def _check_hmm_arrays(
     return cast(int, n_states)
 
 
+def _check_smoother_rows(
+    filtered_probs: Any, initial: Any, ind: Any, n_time: Any
+) -> tuple[int, int]:
+    """Check the rows a public smoother pass is given and return their shape.
+
+    Parameters
+    ----------
+    filtered_probs : array_like, shape (n_rows, n_state_bins)
+        Filtered distribution of each row.
+    initial : array_like, shape (n_state_bins,), or None
+        Smoothed row after the last row, up to scale: nonnegative and finite
+        with a positive sum (the smoothed rows are normalized).
+    ind : array_like of int, shape (n_rows,), or None
+        Recording row index of each row, in ``[0, n_time)``.
+    n_time : int or None
+        Rows in the whole recording; None for ``n_rows``. A traced value is
+        not checked against ``ind``.
+
+    Returns
+    -------
+    n_rows, n_state_bins : int
+
+    Raises
+    ------
+    ValidationError
+        If ``filtered_probs`` is not a nonempty 2-D array, or ``initial`` or
+        ``ind`` breaks the contract above.
+    """
+    shape = np.shape(filtered_probs)
+    if len(shape) != 2 or 0 in shape:
+        msg = "filtered_probs must have one row of state bins per time bin"
+        raise ValidationError(
+            msg,
+            expected="shape (n_time, n_state_bins) with both at least 1",
+            got=f"shape {shape}",
+            hint="Pass the filtered rows a filter pass returns, such as "
+            "filter(...)[1][0].",
+        )
+    n_rows, n_bins = shape
+    shape_hint = (
+        f"filtered_probs sets n_time = {n_rows} rows and n_state_bins = {n_bins}."
+    )
+    if initial is not None:
+        _check_shape("initial", initial, (n_bins,), shape_hint)
+        values = np.asarray(initial)
+        total = values.sum(dtype=np.float64)
+        got = _bad_entries(values, total, lambda where: f"state bin {where[0]}")
+        if got is None and not total > 0:
+            got = f"sums to {total:.6g}"
+        if got is not None:
+            msg = "initial must be nonnegative weights over state bins"
+            raise ValidationError(
+                msg,
+                expected="nonnegative, finite entries with a positive sum (the "
+                "smoothed rows are normalized, so the scale does not matter)",
+                got=got,
+                hint="Pass the smoothed row after the last row, such as the "
+                "first row of the next chunk's smoother output.",
+            )
+    if ind is not None:
+        _check_shape("ind", ind, (n_rows,), shape_hint)
+        rows = np.asarray(ind)
+        n_recording = n_rows if n_time is None else n_time
+        got = None
+        if rows.dtype.kind not in "iu":
+            got = f"dtype {rows.dtype}"
+        elif rows.min() < 0:
+            got = f"minimum {rows.min()}"
+        elif not _is_traced(n_recording) and rows.max() >= n_recording:
+            got = f"maximum {rows.max()} with n_time = {n_recording}"
+        if got is not None:
+            msg = "ind must hold recording row indices"
+            raise ValidationError(
+                msg,
+                expected=f"integers in [0, n_time), n_time = {n_recording}",
+                got=got,
+                hint="Pass the integer row of the whole recording for each "
+                "row of filtered_probs, e.g. np.arange(start, stop), and the "
+                "recording's length as n_time.",
+            )
+    return n_rows, n_bins
+
+
 def _store_chunk_rows(
     buffer: np.ndarray | None,
     chunk: jax.Array,
@@ -2077,27 +2326,29 @@ def _store_chunk_rows(
 
 def _call_log_likelihood_chunk(
     log_likelihood_func: Callable[..., ArrayLike],
-    time: np.ndarray,
+    time_edges: npt.ArrayLike,
     log_likelihood_args: tuple[Any, ...],
-    time_inds: np.ndarray,
+    rows: slice,
     is_missing_chunk: np.ndarray | None,
 ) -> ArrayLike:
     """Evaluate one chunk's log likelihood with global spike binning.
 
-    A ``row_slice_aware`` callback receives the FULL ``time`` plus the chunk's
-    global row range, so a spike lands in the row that owns it on the full
-    timeline. An unmarked callback reaches here only as the single chunk (see
-    :func:`_require_row_slice_aware`) and is called on the full timeline.
+    A ``row_slice_aware`` callback receives the FULL ``time_edges`` plus the
+    chunk's global row range ``rows``, so a spike lands in the row that owns it
+    on the full timeline. An unmarked callback reaches here only as the single
+    chunk (see :func:`_require_row_slice_aware`) and is called on the full
+    timeline. ``time_edges`` is passed through unchanged, as the driver's
+    caller gave it.
     """
     if not accepts_row_slice(log_likelihood_func):
         return log_likelihood_func(
-            time, *log_likelihood_args, is_missing=is_missing_chunk
+            *log_likelihood_args, time_edges=time_edges, is_missing=is_missing_chunk
         )
     return log_likelihood_func(
-        time,
         *log_likelihood_args,
+        time_edges=time_edges,
         is_missing=is_missing_chunk,
-        row_slice=slice(int(time_inds[0]), int(time_inds[-1]) + 1),
+        row_slice=rows,
     )
 
 
@@ -2123,8 +2374,9 @@ class FilterSmootherResult(NamedTuple):
     """Outputs of the chunked forward-backward drivers.
 
     Returned by :func:`chunked_filter_smoother` and
-    :func:`chunked_filter_smoother_covariate_dependent`. Its first eight
-    fields unpack like the positional tuple those drivers returned before.
+    :func:`chunked_filter_smoother_covariate_dependent`. It unpacks by
+    position: the eight fields through ``predictive_posterior`` keep the order
+    of the tuple those drivers returned before, and later fields follow them.
 
     Attributes
     ----------
@@ -2143,13 +2395,19 @@ class FilterSmootherResult(NamedTuple):
         were neither given, cached nor accumulated.
     causal_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
         Filtered state probabilities. A JAX array with ``host_outputs=False``.
-    predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
+    predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins), or None
         One-step-ahead predicted state probabilities over state bins. A JAX
-        array with ``host_outputs=False``.
+        array with ``host_outputs=False``; None when
+        :func:`chunked_filter_smoother_covariate_dependent` was asked for
+        ``transition_responses``, which do not read it.
     degenerate_indices : np.ndarray of int, shape (n_degenerate,)
         Increasing time indices whose log likelihoods are ``-inf`` in every
         state bin. Found during the forward pass, so they are available even
         when the log likelihoods are not cached (``log_likelihoods`` is None).
+    transition_responses : np.ndarray, shape (n_time - 1, n_states, n_states), or None
+        Expected discrete transitions from each row to the next, when
+        :func:`chunked_filter_smoother_covariate_dependent` was asked for them
+        (``transition_responses=True``); otherwise None.
     """
 
     acausal_posterior: np.ndarray | jax.Array
@@ -2159,15 +2417,16 @@ class FilterSmootherResult(NamedTuple):
     predictive_state_probabilities: np.ndarray
     log_likelihoods: np.ndarray | None
     causal_posterior: np.ndarray | jax.Array
-    predictive_posterior: np.ndarray | jax.Array
+    predictive_posterior: np.ndarray | jax.Array | None
     degenerate_indices: np.ndarray
+    transition_responses: np.ndarray | None = None
 
 
 def _chunked_filter_smoother(
     filter_chunk: Callable[..., tuple[Any, ...]],
-    smoother_chunk: Callable[..., jax.Array],
+    smoother_chunk: Callable[..., tuple[jax.Array, jax.Array | None]],
     *,
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
@@ -2179,6 +2438,7 @@ def _chunked_filter_smoother(
     dtype: DTypeLike,
     accumulate_log_likelihoods: bool,
     host_outputs: bool,
+    keep_predictive_posterior: bool = True,
 ) -> FilterSmootherResult:
     """Chunked forward-backward shared by the stationary and covariate drivers.
 
@@ -2198,18 +2458,22 @@ def _chunked_filter_smoother(
         ``smoother_chunk(filtered_probs, initial, time_inds, n_time)`` smooths
         one chunk backward from ``initial``, the smoothed row after the chunk
         (the last filtered row for the final chunk), as :func:`_smoother_impl`
-        does.
+        does, and returns ``(smoothed, pairs)``. ``pairs`` is None, or each
+        row's expected discrete transitions to the next row, shape
+        (n_rows, n_states, n_states), which the driver returns as
+        ``transition_responses``.
 
-    time : np.ndarray, shape (n_time,)
-        Time of each decoding bin; its length sets the number of time bins.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
         Initial probability of each state bin.
     log_likelihood_func : callable
-        Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)``; a callable marked by :func:`row_slice_aware` also
-        receives ``row_slice=slice(start, stop)`` per chunk.
+        Called as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)``; a callable marked by
+        :func:`row_slice_aware` also receives ``row_slice=slice(start, stop)``
+        per chunk.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), or None
@@ -2229,6 +2493,10 @@ def _chunked_filter_smoother(
     host_outputs : bool
         If True, return the posteriors as NumPy arrays; otherwise keep them on
         the device as JAX arrays.
+    keep_predictive_posterior : bool, optional
+        If False, drop each chunk's predictive posterior after its state
+        probabilities and return ``predictive_posterior`` None, so it is not
+        held through the backward pass. By default True.
 
     The returns are those of :func:`chunked_filter_smoother`.
     """
@@ -2238,13 +2506,14 @@ def _chunked_filter_smoother(
     causal_state_probabilities = []
     acausal_posterior = []
     acausal_state_probabilities = []
+    transition_pairs = []
     # Device increments, summed in float64 after the loop so the host does not
     # wait for each chunk's filter.
     chunk_increments = []
     degenerate_indices = []
     n_nan_total = 0
 
-    n_time = len(time)
+    n_time = len(time_edges) - 1
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
     if n_chunks > n_time:
         msg = f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time})"
@@ -2262,10 +2531,12 @@ def _chunked_filter_smoother(
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
 
     # Create aggregation matrix for marginalizing state bins -> discrete states
-    # This is reused across all chunks
+    # This is reused across all chunks. In the working dtype, so the state
+    # probabilities have the posteriors' dtype: one_hot's default follows
+    # JAX's 64-bit mode instead.
     n_discrete_states = int(jnp.max(state_ind_jax)) + 1
     state_aggregation_matrix = jax.nn.one_hot(
-        state_ind_jax, n_discrete_states
+        state_ind_jax, n_discrete_states, dtype=dtype
     )  # (n_state_bins, n_states)
 
     # Initialize variables that may be referenced in loop conditionals
@@ -2276,7 +2547,9 @@ def _chunked_filter_smoother(
     if cache_log_likelihoods and log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
-            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+            log_likelihood_func(
+                *log_likelihood_args, time_edges=time_edges, is_missing=is_missing
+            ),
         )
         _check_shape(
             "log_likelihood_func output",
@@ -2291,7 +2564,13 @@ def _chunked_filter_smoother(
     )
     accumulated_log_likelihoods: np.ndarray | None = None
     if log_likelihoods_jax is None:
-        _require_row_slice_aware(log_likelihood_func, n_chunks)
+        _require_row_slice_aware(
+            log_likelihood_func,
+            n_chunks,
+            chunking=f"n_chunks={n_chunks} without cached log likelihoods",
+            hint="Mark the callback, pass log_likelihoods or "
+            "cache_log_likelihoods=True, or use n_chunks=1.",
+        )
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -2306,9 +2585,9 @@ def _chunked_filter_smoother(
             )
             log_likelihood_chunk = _call_log_likelihood_chunk(
                 log_likelihood_func,
-                time,
+                time_edges,
                 log_likelihood_args,
-                time_inds_np,
+                slice(int(time_inds_np[0]), int(time_inds_np[-1]) + 1),
                 is_missing_chunk,
             )
             _check_shape(
@@ -2358,10 +2637,12 @@ def _chunked_filter_smoother(
         causal_state_probabilities.append(
             _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
         )
-        predictive_posterior.append(predicted_probs_chunk)
+        if keep_predictive_posterior:
+            predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
             _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
+        del predicted_probs_chunk
 
         chunk_increments.append(increments)
 
@@ -2383,7 +2664,9 @@ def _chunked_filter_smoother(
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
-    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
+    predictive_posterior_jax = (
+        jnp.concatenate(predictive_posterior) if keep_predictive_posterior else None
+    )
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
     # Release the per-chunk copies so they don't coexist with the concatenations
     del causal_posterior, predictive_posterior
@@ -2395,7 +2678,7 @@ def _chunked_filter_smoother(
         # Donated: the filtered_probs slice (a copy) and the initial boundary
         # row are single-use per iteration.
         # Note: Small arrays may trigger benign donation warnings in tests
-        acausal_posterior_chunk = smoother_chunk(
+        acausal_posterior_chunk, pairs = smoother_chunk(
             filtered_probs=causal_posterior_jax[time_inds],
             initial=(
                 causal_posterior_jax[-1]
@@ -2409,11 +2692,19 @@ def _chunked_filter_smoother(
         acausal_state_probabilities.append(
             _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
         )
+        if pairs is not None:
+            transition_pairs.append(pairs)
 
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
     del acausal_posterior
+    # The last row has no successor (its pairs are zero).
+    transition_responses = (
+        np.asarray(jnp.concatenate(transition_pairs[::-1])[: n_time - 1])
+        if transition_pairs
+        else None
+    )
 
     # The state probabilities are small and always go to the host; the
     # (n_time, n_state_bins) posteriors only when the caller wants host arrays.
@@ -2427,13 +2718,16 @@ def _chunked_filter_smoother(
         # Keep as original (may be None or NumPy)
         log_likelihoods=log_likelihoods,
         causal_posterior=spatial(causal_posterior_jax),
-        predictive_posterior=spatial(predictive_posterior_jax),
+        predictive_posterior=None
+        if predictive_posterior_jax is None
+        else spatial(predictive_posterior_jax),
         degenerate_indices=degenerate_time_indices,
+        transition_responses=transition_responses,
     )
 
 
 def chunked_filter_smoother(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
@@ -2453,9 +2747,9 @@ def chunked_filter_smoother(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time of each decoding bin (bin centers, in seconds), passed to
-        ``log_likelihood_func``. Its length sets the number of time bins.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins (in seconds), passed to
+        ``log_likelihood_func``; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
@@ -2466,17 +2760,18 @@ def chunked_filter_smoother(
         each row summing to at most 1. A row below 1 loses probability, as an
         all-zero row does for a bin nothing can leave.
     log_likelihood_func : callable
-        Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)`` with the FULL ``time``. Without cached or given log
-        likelihoods, a callable marked by :func:`row_slice_aware` is called
-        per chunk and also receives ``row_slice=slice(start, stop)`` and the
-        chunk's ``is_missing`` rows, so each decoding spike is binned once
-        against the whole timeline and lands in the row that owns it. An
-        unmarked callable is called once for the whole timeline; with
-        ``n_chunks > 1`` and no cached likelihoods it raises ``ValidationError``.
+        Called as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` with the FULL ``time_edges``,
+        the signature of the detectors' ``compute_log_likelihood``. Without
+        cached or given log likelihoods, a callable marked by
+        :func:`row_slice_aware` is called per chunk and also receives
+        ``row_slice=slice(start, stop)`` and the chunk's ``is_missing`` rows,
+        so each decoding spike is binned once against the whole timeline and
+        lands in the row that owns it. An unmarked callable is called once for
+        the whole timeline; with ``n_chunks > 1`` and no cached likelihoods it
+        raises ``ValidationError``.
     log_likelihood_args : tuple
-        Extra positional arguments passed to ``log_likelihood_func`` after
-        ``time``.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         True for time bins without observations, which get neutral
         likelihoods. By default None (none missing).
@@ -2518,13 +2813,13 @@ def chunked_filter_smoother(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
     """
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -2553,22 +2848,20 @@ def chunked_filter_smoother(
         initial: jax.Array,
         time_inds: jax.Array,
         n_time: int,
-    ) -> jax.Array:
-        return cast(
-            jax.Array,
-            _smoother_internal(
-                transition_matrix=transition_matrix_jax,
-                filtered_probs=filtered_probs,
-                initial=initial,
-                ind=time_inds,
-                n_time=n_time,
-            ),
+    ) -> tuple[jax.Array, None]:
+        smoothed = _smoother_internal(
+            transition_matrix=transition_matrix_jax,
+            filtered_probs=filtered_probs,
+            initial=initial,
+            ind=time_inds,
+            n_time=n_time,
         )
+        return cast(jax.Array, smoothed), None
 
     return _chunked_filter_smoother(
         filter_chunk,
         smoother_chunk,
-        time=time,
+        time_edges=time_edges,
         state_ind=state_ind,
         initial_distribution=initial_distribution,
         log_likelihood_func=log_likelihood_func,
@@ -2656,6 +2949,11 @@ def viterbi(
     ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
+
+    As :func:`filter` does, a host-side ``logger.warning`` counts the time
+    steps whose log-likelihoods are all ``-inf`` (where the path's state is
+    arbitrary) and those with a NaN or ``+inf`` (where it is undefined),
+    unless the inputs are traced. The path is unchanged.
     """
     if not _is_traced(initial_distribution, transition_matrix, log_likelihoods):
         _check_hmm_arrays(
@@ -2665,6 +2963,10 @@ def viterbi(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    log_likelihoods = jnp.asarray(log_likelihoods)
+    # As the filters do: argmax over an all-(-inf) step returns state 0
+    # silently, and a NaN or +inf step leaves the path undefined.
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
         _viterbi_jit(initial_distribution, transition_matrix, log_likelihoods),
@@ -2672,7 +2974,7 @@ def viterbi(
 
 
 def most_likely_sequence(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
@@ -2686,17 +2988,20 @@ def most_likely_sequence(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time indices.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins, passed to ``log_likelihood_func``;
+        their number sets the time bins.
     initial_distribution : np.ndarray, shape (n_states,)
         Initial state distribution: nonnegative, summing to 1.
     transition_matrix : np.ndarray, shape (n_states, n_states)
         State transition probability matrix: nonnegative, each row summing
         to at most 1.
     log_likelihood_func : callable
-        Function to compute log likelihoods.
+        Called once as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` unless ``log_likelihoods`` is
+        given; returns shape (n_time, n_state_bins).
     log_likelihood_args : tuple
-        Arguments to pass to log_likelihood_func.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         Boolean array indicating missing observations, by default None.
     log_likelihoods : np.ndarray, shape (n_time, n_states), optional
@@ -2719,7 +3024,7 @@ def most_likely_sequence(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -2728,7 +3033,7 @@ def most_likely_sequence(
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         transition_matrix=transition_matrix,
@@ -2739,26 +3044,29 @@ def most_likely_sequence(
     if log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
-            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+            log_likelihood_func(
+                *log_likelihood_args, time_edges=time_edges, is_missing=is_missing
+            ),
         )
         _check_shape(
             "log_likelihood_func output",
             log_likelihoods,
-            (len(time), len(initial_distribution)),
+            (len(time_edges) - 1, len(initial_distribution)),
             _CALLBACK_SHAPE_HINT,
         )
+
+    # Cast to desired dtype for precision control
+    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
     # Viterbi-only workflow gets the same diagnostics as the filter/smoother
     # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
     # state 0, which this warning surfaces. context="viterbi" selects
     # Viterbi-appropriate wording (no posterior / marginal here).
-    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
+    _warn_if_degenerate_timesteps(log_likelihoods_jax, context="viterbi")
 
-    # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
-    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
     most_likely_states = _viterbi_jit(
         initial_distribution=initial_distribution_jax,
@@ -2867,12 +3175,13 @@ def filter_covariate_dependent(
     inputs before the transformation.
 
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A ``NaN`` at a
-    timestep is left to propagate (it signals a likelihood-computation bug, not
-    impossible data): because the filter carries state forward, a single NaN
-    contaminates the posterior at that step and every step after it. A
-    host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
-    steps is emitted when any are found.
+    falls back to the predicted distribution at that step. A ``NaN`` or
+    ``+inf`` at a timestep is left to propagate as NaN (it signals a
+    likelihood-computation bug, not impossible data): because the filter
+    carries state forward, a single NaN contaminates the posterior at that step
+    and every step after it. A host-side ``logger.warning`` summarizing the
+    count of degenerate and/or NaN (or ``+inf``) steps is emitted when any are
+    found.
 
     ``_condition_on`` also falls back (and marks the step ``-inf`` in the
     marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
@@ -2920,7 +3229,9 @@ def _smoother_covariate_dependent_impl(
     initial: ArrayLike | None = None,
     ind: ArrayLike | None = None,
     n_time: int | None = None,
-) -> jax.Array:
+    *,
+    pair_statistics: bool = False,
+) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Smoother step with covariate dependent transitions.
 
     Parameters
@@ -2940,19 +3251,26 @@ def _smoother_covariate_dependent_impl(
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
+    pair_statistics : bool, optional, keyword-only
+        Also return each row's expected discrete transitions to the next row
+        (see :func:`_smoother_scan`). By default False.
 
     Returns
     -------
     smoothed_probs : jax.Array, shape (n_time, n_state_bins)
+        Or ``(smoothed_probs, pairs)`` with ``pair_statistics``, pairs of
+        shape (n_time, n_states, n_states) and zero on the recording's last
+        row.
     """
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
-        ind = jnp.arange(n_time)
+        # From the static shape: ``n_time`` is traced under jit.
+        ind = jnp.arange(filtered_probs.shape[0])
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
-        jax.Array,
+        "jax.Array | tuple[jax.Array, jax.Array]",
         _smoother_scan(
             filtered_probs,
             discrete_transition_matrix,
@@ -2964,6 +3282,7 @@ def _smoother_covariate_dependent_impl(
             initial,
             ind,
             n_time,
+            pair_statistics=pair_statistics,
         )[1],
     )
 
@@ -2996,9 +3315,13 @@ def smoother_covariate_dependent(
     filtered_probs : jax.Array, shape (n_rows, n_state_bins)
         Filtered distribution of each time bin.
     initial : jax.Array, shape (n_state_bins,), optional
-        Smoothed row after the last row; by default the last filtered row.
-    ind : jax.Array, shape (n_rows,), optional
-        Row indices of the recording; by default ``arange(n_rows)``.
+        Smoothed row after the last row, up to scale (the smoothed rows are
+        normalized): nonnegative, finite, with a positive sum. By default
+        the last filtered row. Unused when the last row is the recording's
+        last (``ind[-1] == n_time - 1``).
+    ind : jax.Array of int, shape (n_rows,), optional
+        Row indices of the recording, in ``[0, n_time)``; by default
+        ``arange(n_rows)``, the recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -3012,7 +3335,7 @@ def smoother_covariate_dependent(
     ------
     ValidationError
         If the inputs are concrete and their shapes disagree or they break
-        the probability contract above.
+        the contracts above.
 
     Notes
     -----
@@ -3026,10 +3349,13 @@ def smoother_covariate_dependent(
         continuous_transition_matrix,
         state_ind,
         filtered_probs,
+        initial,
+        ind,
     ):
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind, n_time)
         _check_hmm_arrays(
-            n_time=np.shape(filtered_probs)[0],
-            n_bins=np.shape(filtered_probs)[-1],
+            n_time=n_rows,
+            n_bins=n_bins,
             state_ind=state_ind,
             discrete_transition_matrix=discrete_transition_matrix,
             continuous_transition_matrix=continuous_transition_matrix,
@@ -3053,12 +3379,14 @@ def smoother_covariate_dependent(
 # (a donated buffer without one makes JAX warn "Some donated buffers were not
 # usable"). Donation is specified by name because call sites pass by keyword.
 _smoother_covariate_dependent_internal = jax.jit(
-    _smoother_covariate_dependent_impl, donate_argnames=("filtered_probs",)
+    _smoother_covariate_dependent_impl,
+    donate_argnames=("filtered_probs",),
+    static_argnames=("pair_statistics",),
 )
 
 
 def chunked_filter_smoother_covariate_dependent(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     discrete_transition_matrix: np.ndarray,
@@ -3074,14 +3402,15 @@ def chunked_filter_smoother_covariate_dependent(
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
+    transition_responses: bool = False,
 ) -> FilterSmootherResult:
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time of each decoding bin (bin centers, in seconds), passed to
-        ``log_likelihood_func``. Its length sets the number of time bins.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins (in seconds), passed to
+        ``log_likelihood_func``; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
@@ -3094,17 +3423,18 @@ def chunked_filter_smoother_covariate_dependent(
         state space: nonnegative, each bin's row summing to at most 1 over
         the bins of each discrete state.
     log_likelihood_func : callable
-        Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)`` with the FULL ``time``. Without cached or given log
-        likelihoods, a callable marked by :func:`row_slice_aware` is called
-        per chunk and also receives ``row_slice=slice(start, stop)`` and the
-        chunk's ``is_missing`` rows, so each decoding spike is binned once
-        against the whole timeline and lands in the row that owns it. An
-        unmarked callable is called once for the whole timeline; with
-        ``n_chunks > 1`` and no cached likelihoods it raises ``ValidationError``.
+        Called as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` with the FULL ``time_edges``,
+        the signature of the detectors' ``compute_log_likelihood``. Without
+        cached or given log likelihoods, a callable marked by
+        :func:`row_slice_aware` is called per chunk and also receives
+        ``row_slice=slice(start, stop)`` and the chunk's ``is_missing`` rows,
+        so each decoding spike is binned once against the whole timeline and
+        lands in the row that owns it. An unmarked callable is called once for
+        the whole timeline; with ``n_chunks > 1`` and no cached likelihoods it
+        raises ``ValidationError``.
     log_likelihood_args : tuple
-        Extra positional arguments passed to ``log_likelihood_func`` after
-        ``time``.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         True for time bins without observations, which get neutral
         likelihoods. By default None (none missing).
@@ -3138,6 +3468,12 @@ def chunked_filter_smoother_covariate_dependent(
         returned as NumPy arrays. If False, they stay on the device as JAX
         arrays, so a caller that needs only some of them, or computes on them
         on the device, does not copy all three to the host.
+    transition_responses : bool, optional, keyword-only
+        If True, the smoother also returns the expected discrete transitions
+        between consecutive rows, the responses of the covariate M-step, as
+        ``transition_responses``. They are computed in the smoother's scan
+        from the filtered rows, so no posterior is read again, and
+        ``predictive_posterior`` is None. By default False.
 
     Returns
     -------
@@ -3145,20 +3481,21 @@ def chunked_filter_smoother_covariate_dependent(
         Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
         ``marginal_log_likelihood``, ``causal_state_probabilities``,
         ``predictive_state_probabilities``, ``log_likelihoods``,
-        ``causal_posterior``, ``predictive_posterior`` and
-        ``degenerate_indices``; see :class:`FilterSmootherResult` for shapes.
+        ``causal_posterior``, ``predictive_posterior``,
+        ``degenerate_indices`` and ``transition_responses``; see
+        :class:`FilterSmootherResult` for shapes.
 
     Raises
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
     """
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -3201,25 +3538,26 @@ def chunked_filter_smoother_covariate_dependent(
         initial: jax.Array,
         time_inds: jax.Array,
         n_time: int,
-    ) -> jax.Array:
+    ) -> tuple[jax.Array, jax.Array | None]:
         # The time slice is not donated: no output has its shape to reuse.
-        return cast(
-            jax.Array,
-            _smoother_covariate_dependent_internal(
-                discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
-                continuous_transition_matrix=continuous_transition_matrix_jax,
-                state_ind=state_ind_jax,
-                filtered_probs=filtered_probs,
-                initial=initial,
-                ind=time_inds,
-                n_time=n_time,
-            ),
+        smoothed = _smoother_covariate_dependent_internal(
+            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+            continuous_transition_matrix=continuous_transition_matrix_jax,
+            state_ind=state_ind_jax,
+            filtered_probs=filtered_probs,
+            initial=initial,
+            ind=time_inds,
+            n_time=n_time,
+            pair_statistics=transition_responses,
         )
+        if transition_responses:
+            return cast("tuple[jax.Array, jax.Array]", smoothed)
+        return cast(jax.Array, smoothed), None
 
     return _chunked_filter_smoother(
         filter_chunk,
         smoother_chunk,
-        time=time,
+        time_edges=time_edges,
         state_ind=state_ind,
         initial_distribution=initial_distribution,
         log_likelihood_func=log_likelihood_func,
@@ -3231,6 +3569,7 @@ def chunked_filter_smoother_covariate_dependent(
         dtype=dtype,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
         host_outputs=host_outputs,
+        keep_predictive_posterior=not transition_responses,
     )
 
 
@@ -3331,6 +3670,9 @@ def viterbi_covariate_dependent(
     ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
+
+    Degenerate and NaN or ``+inf`` time steps are reported as by
+    :func:`viterbi`.
     """
     if not _is_traced(
         initial_distribution,
@@ -3348,6 +3690,8 @@ def viterbi_covariate_dependent(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    log_likelihoods = jnp.asarray(log_likelihoods)
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
         _viterbi_covariate_dependent_jit(
@@ -3361,7 +3705,7 @@ def viterbi_covariate_dependent(
 
 
 def most_likely_sequence_covariate_dependent(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     discrete_transition_matrix: np.ndarray,
@@ -3379,8 +3723,9 @@ def most_likely_sequence_covariate_dependent(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time indices.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins, passed to ``log_likelihood_func``;
+        their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         State indices connecting discrete states to state space bins.
     initial_distribution : np.ndarray, shape (n_state_bins,)
@@ -3392,9 +3737,11 @@ def most_likely_sequence_covariate_dependent(
         Continuous transition matrix: nonnegative, each bin's row summing to
         at most 1 over the bins of each discrete state.
     log_likelihood_func : callable
-        Function to compute log likelihoods.
+        Called once as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` unless ``log_likelihoods`` is
+        given; returns shape (n_time, n_state_bins).
     log_likelihood_args : tuple
-        Arguments to pass to log_likelihood_func.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         Boolean array indicating missing observations, by default None.
     log_likelihoods : np.ndarray, shape (n_time, n_state_bins), optional
@@ -3417,7 +3764,7 @@ def most_likely_sequence_covariate_dependent(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -3426,7 +3773,7 @@ def most_likely_sequence_covariate_dependent(
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -3439,23 +3786,27 @@ def most_likely_sequence_covariate_dependent(
     if log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
-            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+            log_likelihood_func(
+                *log_likelihood_args, time_edges=time_edges, is_missing=is_missing
+            ),
         )
         _check_shape(
             "log_likelihood_func output",
             log_likelihoods,
-            (len(time), len(initial_distribution)),
+            (len(time_edges) - 1, len(initial_distribution)),
             _CALLBACK_SHAPE_HINT,
         )
+
+    # Cast to desired dtype for precision control
+    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
     # Viterbi-only workflow gets the same diagnostics as the filter/smoother
     # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
     # state 0, which this warning surfaces. context="viterbi" selects
     # Viterbi-appropriate wording (no posterior / marginal here).
-    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
+    _warn_if_degenerate_timesteps(log_likelihoods_jax, context="viterbi")
 
-    # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     discrete_transition_matrix_jax = jnp.asarray(
         discrete_transition_matrix, dtype=dtype
@@ -3464,7 +3815,6 @@ def most_likely_sequence_covariate_dependent(
         continuous_transition_matrix, dtype=dtype
     )
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
-    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
     most_likely_states = _viterbi_covariate_dependent_jit(
         initial_distribution=initial_distribution_jax,

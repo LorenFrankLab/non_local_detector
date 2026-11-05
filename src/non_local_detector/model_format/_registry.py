@@ -7,9 +7,12 @@ own types under fixed ``nld.`` names on first use; other packages register their
 with :func:`register_type`.
 """
 
+import contextlib
+import contextvars
 import copy
 import dataclasses
-from collections.abc import Callable, Mapping
+import warnings
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,6 +45,9 @@ class TypeSpec:
         For a continuous transition: its ``make_state_transition`` reads the
         fit data (``TransitionContext``), so the saved model stores its block
         instead of rebuilding it.
+    fields : tuple of str or None
+        The stored fields a reader passes ``from_state``; None for a type
+        with its own ``from_state``, which gets all of them.
     """
 
     name: str
@@ -50,6 +56,114 @@ class TypeSpec:
     from_state: FromState | None
     owner: str
     block_needs_fit_data: bool = False
+    fields: tuple[str, ...] | None = None
+
+    def readable_fields(self, state: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Return the stored fields of ``state`` this version of the type reads.
+
+        A field not in ``fields``, written by a newer version of the type, is
+        left undecoded: it may hold a type this version lacks. It is ignored
+        with a warning (``ignore_unread_names``).
+
+        Parameters
+        ----------
+        state : Mapping[str, Any]
+            The stored state, as JSON nodes.
+
+        Returns
+        -------
+        state : Mapping[str, Any]
+            ``state`` without the ignored fields.
+        """
+        if self.fields is None:
+            return state
+        return readable_names(f"{self.cls.__qualname__} fields", state, self.fields)
+
+
+# The names of a saved model this version does not read, collected while one
+# model loads (see ``ignoring_unread_names``).
+_UNREAD: contextvars.ContextVar[list[str]] = contextvars.ContextVar("_UNREAD")
+
+
+def ignore_unread_names(where: str, names: Iterable[str]) -> None:
+    """Note names of a saved model that this version does not read.
+
+    A newer version of the package wrote them; loading ignores them and
+    warns once (``ignoring_unread_names``, which every reader runs in).
+
+    Parameters
+    ----------
+    where : str
+        The document or object holding them, for the warning.
+    names : iterable of str
+        The names; none means nothing to note.
+    """
+    names = sorted(names)
+    if names:
+        _UNREAD.get().append(f"{where} {names}")
+
+
+def readable_names(
+    where: str, node: Mapping[str, Any], names: Collection[str]
+) -> dict[str, Any]:
+    """Return ``node`` with only ``names``, the ones this version reads.
+
+    The others are left undecoded, as they may hold a type this version
+    lacks, and ignored with a warning (``ignore_unread_names``).
+
+    Parameters
+    ----------
+    where : str
+        The document or object ``node`` is, for the warning.
+    node : Mapping[str, Any]
+        The stored names and their JSON nodes.
+    names : Collection[str]
+        The names this version reads.
+
+    Returns
+    -------
+    node : dict[str, Any]
+        ``node`` without the ignored names.
+    """
+    ignore_unread_names(where, set(node) - set(names))
+    return {name: node[name] for name in node if name in names}
+
+
+@contextlib.contextmanager
+def ignoring_unread_names(package_version: str | None) -> Iterator[None]:
+    """Warn once, after loading a saved model, of the names it ignored.
+
+    Parameters
+    ----------
+    package_version : str or None
+        The version that wrote the file, named in the warning.
+    """
+    collected: list[str] = []
+    token = _UNREAD.set(collected)
+    try:
+        yield
+    finally:
+        _UNREAD.reset(token)
+    if collected:
+        _warn_unread(collected, package_version)
+
+
+def _warn_unread(entries: list[str], package_version: str | None) -> None:
+    from non_local_detector._warnings import user_stacklevel
+    from non_local_detector.exceptions import DataQualityWarning
+
+    writer = (
+        f"non_local_detector {package_version}"
+        if package_version
+        else "a newer version of non_local_detector"
+    )
+    warnings.warn(
+        f"The saved model holds names this version does not read, which "
+        f"were ignored: {'; '.join(entries)}. It was written by {writer}, a "
+        "newer version; upgrade to use them.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
 
 
 _BY_NAME: dict[str, TypeSpec] = {}
@@ -92,14 +206,9 @@ def read_fields(
 
 
 def _dataclass_state(
-    cls: type, fields: tuple[str, ...] | None, defaults: Mapping[str, Any]
+    cls: type, names: tuple[str, ...], defaults: Mapping[str, Any]
 ) -> tuple[ToState, FromState]:
-    """``to_state`` and ``from_state`` of a dataclass built from ``fields``."""
-    names = (
-        tuple(f.name for f in dataclasses.fields(cls) if f.init)
-        if fields is None
-        else fields
-    )
+    """``to_state`` and ``from_state`` of a dataclass built from ``names``."""
     unknown = sorted(set(defaults) - set(names))
     if unknown:
         msg = f"defaults names fields {cls.__qualname__} does not store: {unknown}"
@@ -184,7 +293,9 @@ def register_type(
         For a dataclass registered without ``to_state``/``from_state``: the
         value of each optional field when a stored state lacks it, so a
         field added later reads files written before it. Other fields
-        missing from a state raise ``DataError``.
+        missing from a state raise ``DataError``; a field the dataclass
+        does not store (written by a newer version of it) is ignored with a
+        ``DataQualityWarning``.
 
     Raises
     ------
@@ -252,11 +363,13 @@ def _register(
             raise ValidationError(
                 msg, hint="Pass to_state and from_state to register it."
             )
+        if fields is None:
+            fields = tuple(f.name for f in dataclasses.fields(cls) if f.init)
         to_state, from_state = _dataclass_state(cls, fields, defaults or {})
     elif to_state is None or from_state is None:
         msg = "Pass both to_state and from_state, or neither (for a dataclass)"
         raise ValidationError(msg)
-    _add(TypeSpec(name, cls, to_state, from_state, owner, block_needs_fit_data))
+    _add(TypeSpec(name, cls, to_state, from_state, owner, block_needs_fit_data, fields))
 
 
 def unregistered_type_error(cls: type, where: str) -> ValidationError:

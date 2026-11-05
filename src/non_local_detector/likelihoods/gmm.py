@@ -23,6 +23,7 @@ import numpy as np
 from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from threadpoolctl import threadpool_limits
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import NumericalWarning
 from non_local_detector.likelihoods.common import padded_sample_count
@@ -174,7 +175,7 @@ def _estimate_gaussian_covariances_tied(
     # the covariance downward; eps only intervenes when there is effectively no
     # weight at all. Cast: under NumPy 1.x, 10 * a float32 eps is a float64
     # scalar, which would promote the covariance to float64 under x64.
-    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)  # type: ignore[no-untyped-call]  # jnp.finfo is untyped
+    eps = jnp.asarray(10 * finfo(X.dtype).eps, dtype=X.dtype)
     covariance = covariance_sum / jnp.maximum(sum_w, eps)
     # Symmetrize covariance for numerical stability (ensure exact symmetry)
     covariance = (covariance + covariance.T) * 0.5
@@ -406,7 +407,7 @@ def _estimate_gaussian_parameters(
         resp = resp_unweighted * sample_weight[:, None]
 
     # Cast: under NumPy 1.x, 10 * a float32 eps is a float64 scalar.
-    eps = jnp.asarray(10 * jnp.finfo(X.dtype).eps, dtype=X.dtype)  # type: ignore[no-untyped-call]  # jnp.finfo is untyped
+    eps = jnp.asarray(10 * finfo(X.dtype).eps, dtype=X.dtype)
     nk = resp.sum(axis=0) + eps  # (K,)
     means = (
         jnp.matmul(resp.T, X, precision=jax.lax.Precision.HIGHEST) / nk[:, jnp.newaxis]

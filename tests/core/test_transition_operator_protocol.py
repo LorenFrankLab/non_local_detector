@@ -6,21 +6,24 @@ import numpy as np
 import pytest
 
 from non_local_detector.checkpointed_inference import checkpointed_forward_backward
-from non_local_detector.continuous_state_transitions import Uniform
+from non_local_detector.continuous_state_transitions import RandomWalk, Uniform
 from non_local_detector.core import (
     TransitionOperator,
     TransitionProducts,
+    _check_operator_rows,
     _CovariateTransition,
     _StationaryTransition,
+    row_slice_aware,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.transition_operators import (
     BlockTransitionOperator,
     DenseBlock,
     build_transition_operator,
 )
-from tests.conftest import set_place_grid
+from tests.conftest import precision_mode, set_place_grid
 
 pytestmark = pytest.mark.unit
 
@@ -116,7 +119,8 @@ def test_checkpointed_prediction_needs_only_the_transition_products():
     matrix = _matrix()
     log_likelihoods = np.random.default_rng(5).normal(size=(4, N_BINS))
 
-    def likelihood(edges, **kw):
+    @row_slice_aware
+    def likelihood(**kw):
         return log_likelihoods[kw["row_slice"]]
 
     products = _checkpointed(_ForwardBackwardOnly(matrix), likelihood)
@@ -139,7 +143,7 @@ def test_checkpointed_statistics_reject_products_only_before_any_callback():
     with pytest.raises(TypeError, match="pair_products") as caught:
         _checkpointed(
             _ForwardBackwardOnly(_matrix()),
-            lambda edges, **kw: calls.append(1) or np.zeros((4, N_BINS)),
+            row_slice_aware(lambda **kw: calls.append(1) or np.zeros((4, N_BINS))),
             transition_statistics="counts",
         )
     message = str(caught.value)
@@ -156,7 +160,7 @@ def test_checkpointed_rejects_an_operator_without_products():
     with pytest.raises(
         TypeError, match="TransitionProducts; ForwardOnly lacks backward"
     ):
-        _checkpointed(ForwardOnly(_matrix()), lambda edges, **kw: None)
+        _checkpointed(ForwardOnly(_matrix()), row_slice_aware(lambda **kw: None))
 
 
 def _bad_block_operator(matrix):
@@ -180,7 +184,7 @@ def _rejects_before_any_callback(operator, *pieces, **kwargs):
     with pytest.raises(ValidationError) as caught:
         _checkpointed(
             operator,
-            lambda edges, **kw: calls.append(1) or np.zeros((4, N_BINS)),
+            row_slice_aware(lambda **kw: calls.append(1) or np.zeros((4, N_BINS))),
             **kwargs,
         )
     message = str(caught.value)
@@ -240,7 +244,7 @@ def test_checkpointed_accepts_substochastic_operator_rows():
     matrix[1] = 0
     _checkpointed(
         _StationaryTransition(jnp.asarray(matrix)),
-        lambda edges, **kw: np.zeros((4, N_BINS))[kw["row_slice"]],
+        row_slice_aware(lambda **kw: np.zeros((4, N_BINS))[kw["row_slice"]]),
     )
 
 
@@ -283,7 +287,8 @@ def test_checkpointed_rejects_covariate_operator_block_rows_above_one(name):
 
 
 @pytest.mark.parametrize("name", OPERATORS)
-def test_checkpointed_accepts_valid_operators(name):
+@pytest.mark.parametrize("statistics", [None, "counts"])
+def test_checkpointed_accepts_valid_operators(name, statistics):
     """The package's operators pass the check on both transition paths."""
     operator = OPERATORS[name]()
     if name in ("block", "fused"):
@@ -304,9 +309,10 @@ def test_checkpointed_accepts_valid_operators(name):
     checkpointed_forward_backward(
         np.arange(5) * 0.002,
         np.full(N_BINS, 1 / N_BINS, dtype=np.float32),
-        lambda edges, **kw: np.zeros((4, N_BINS))[kw["row_slice"]],
+        row_slice_aware(lambda **kw: np.zeros((4, N_BINS))[kw["row_slice"]]),
         transition_operator=operator,
         state_ind=state_ind,
+        transition_statistics=statistics,
         **weights,
     )
 
@@ -324,3 +330,146 @@ def test_checkpointed_reports_an_operator_that_cannot_be_applied():
         "needs each row's discrete weights",
     )
     assert "wrong shape" not in message, message
+
+
+@jax.tree_util.register_pytree_node_class
+class _MismatchedProducts(TransitionOperator):
+    """``forward`` with one matrix, ``backward`` and pairs with another.
+
+    Both are row-stochastic, so the row sums ``backward(1)`` are all 1.
+    """
+
+    def __init__(self, forward_matrix, backward_matrix, pair_scale=1.0):
+        self.forward_matrix, self.backward_matrix = forward_matrix, backward_matrix
+        self.pair_scale = pair_scale
+
+    def forward(self, p, weight=None):
+        return p @ self.forward_matrix
+
+    def backward(self, v, weight=None):
+        return self.backward_matrix @ v
+
+    def pair_products(self, filtered, ratio, weight=None):
+        states = jax.nn.one_hot(STATE_IND, 2, dtype=filtered.dtype)
+        terms = filtered[:, None] * self.backward_matrix * ratio[None, :]
+        return self.pair_scale * states.T @ terms @ states
+
+    def tree_flatten(self):
+        return (self.forward_matrix, self.backward_matrix), self.pair_scale
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return cls(*children, aux)
+
+
+def test_checkpointed_rejects_operator_whose_products_disagree():
+    """Forward and backward with different matrices predict and smooth with
+    different transitions; equal row sums do not show it."""
+    matrix = _matrix()
+    _rejects_before_any_callback(
+        _MismatchedProducts(jnp.roll(matrix, 1, axis=0), matrix),
+        "transition_operator's products do not apply one transition",
+        "forward(u) @ v",
+    )
+
+
+def test_checkpointed_rejects_pair_products_that_disagree_with_backward():
+    matrix = _matrix()
+    _rejects_before_any_callback(
+        _MismatchedProducts(matrix, matrix, pair_scale=2.0),
+        "transition_operator's products do not apply one transition",
+        "pair_products(u, v).sum()",
+        transition_statistics="counts",
+    )
+
+
+def test_checkpointed_rejects_pair_products_of_another_shape():
+    """Statistics are accumulated per discrete state pair of ``state_ind``."""
+    operator = _StationaryTransition(_matrix(), jnp.asarray(STATE_IND), 3)
+    _rejects_before_any_callback(
+        operator,
+        "transition_operator.pair_products has the wrong shape",
+        "Expected: shape (2, 2)",
+        "Got: shape (3, 3)",
+        transition_statistics="counts",
+    )
+    _rejects_before_any_callback(
+        _StationaryTransition(_matrix()),
+        "transition_operator could not be applied to probe vectors",
+        "Expected: forward, backward and pair_products of two (4,) vectors",
+        "needs state_ind and n_states",
+        transition_statistics="counts",
+    )
+
+
+def _default_detector_operator(shape, local_position_std):
+    """Structured operator of the default non-local detector's transitions."""
+    axes = [np.arange(n, dtype=float) for n in shape]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    is_track_interior = np.ones(shape, dtype=bool)
+    is_track_interior.ravel()[[0, 3, -2]] = False
+    env = set_place_grid(
+        Environment(),
+        place_bin_centers=np.stack([x.ravel() for x in mesh], axis=1),
+        centers_shape=shape,
+        is_track_interior=is_track_interior,
+    )
+    defaults = _ModelDefaults.non_local_defaults()
+    count = len(env.place_bin_centers_)
+    sizes = (1 if local_position_std is None else count, 1, count, count)
+    operator = build_transition_operator(
+        defaults["continuous_transition_types"](),
+        [env],
+        sizes,
+        defaults["observation_models"](),
+        local_position_std,
+    )
+    interior = np.concatenate(
+        [np.ones(1, dtype=bool) if n == 1 else is_track_interior.ravel() for n in sizes]
+    )
+    return operator, interior
+
+
+@pytest.mark.parametrize("local_position_std", [None, 2.0])
+@pytest.mark.parametrize("fused", [False, True])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_detector_operators_pass_the_product_checks(local_position_std, fused, dtype):
+    """The default detector's structured operators pass every check.
+
+    Per-row weights (as for covariate transitions) and bound weights on the
+    interior bins (as for stationary prediction), with the pair terms of the
+    transition statistics.
+    """
+    with precision_mode(dtype == np.float64):
+        operator, interior = _default_detector_operator((5, 7), local_position_std)
+        weights = np.full((4, 4), 0.25)
+        per_row = operator.fused() if fused else operator
+        _check_operator_rows(
+            jax.device_put(per_row), len(interior), dtype, 4, pair_states=4
+        )
+        bound = operator.restricted(interior).bind_discrete(weights)
+        bound = bound.fused() if fused else bound
+        _check_operator_rows(
+            jax.device_put(bound), int(interior.sum()), dtype, pair_states=4
+        )
+
+
+@pytest.mark.parametrize("fused", [False, True])
+def test_gaussian_grid_operator_passes_the_product_checks(fused):
+    """A 2-D random walk on a grid with holes, the structured Gaussian block."""
+    shape = (30, 40)
+    axes = [np.arange(n, dtype=float) for n in shape]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    is_track_interior = np.ones(shape, dtype=bool)
+    is_track_interior[10:14, 5:30] = False
+    env = set_place_grid(
+        Environment(),
+        place_bin_centers=np.stack([x.ravel() for x in mesh], axis=1),
+        centers_shape=shape,
+        is_track_interior=is_track_interior,
+    )
+    n_bins = int(np.prod(shape))
+    operator = build_transition_operator([[RandomWalk()]], [env], (n_bins,))
+    operator = operator.bind_discrete(np.ones((1, 1)))
+    operator = operator.fused() if fused else operator
+    _check_operator_rows(jax.device_put(operator), n_bins, np.float32, pair_states=1)

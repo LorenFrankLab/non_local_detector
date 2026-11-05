@@ -76,6 +76,7 @@ from numpy.typing import ArrayLike
 from patsy import build_design_matrices, dmatrix
 from patsy.design_info import DesignInfo
 
+from non_local_detector._jax_typing import optimization_barrier
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     EncodingSupport,
@@ -145,13 +146,11 @@ def _local_glm_log_likelihood(
 ) -> jax.Array:
     if counts.shape[1] == 0:
         return jnp.zeros((counts.shape[0],))
-    rate = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+    rate = optimization_barrier(
         jnp.exp(jnp.matmul(design, coefficients.T, precision=jax.lax.Precision.HIGHEST))
     )
-    rate = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-        jnp.clip(rate, min=RATE_EPS_HZ, max=None)
-    )
-    expected = jax.lax.optimization_barrier(rate * durations[:, None])  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+    rate = optimization_barrier(jnp.clip(rate, min=RATE_EPS_HZ, max=None))
+    expected = optimization_barrier(rate * durations[:, None])
     return cast(jax.Array, poisson_row_log_likelihood(counts, expected))
 
 

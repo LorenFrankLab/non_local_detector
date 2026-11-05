@@ -29,6 +29,7 @@ Example::
 """
 
 import argparse
+import functools
 import hashlib
 import inspect
 import json
@@ -74,18 +75,7 @@ def _prepare_reference_likelihood(model: Any, predict: dict) -> Callable:
     args = (predict["position_time"], predict["position"], predict["spike_times"])
     if "spike_waveform_features" in predict:
         args += (predict["spike_waveform_features"],)
-    prepared = model._decode_likelihood_callback(edges, args)
-    centers = (edges[:-1] + edges[1:]) / 2
-
-    def likelihood(
-        full_edges: np.ndarray,  # noqa: ARG001 -- likelihood callback signature
-        *,
-        row_slice: slice,
-        is_missing: np.ndarray,
-    ) -> Any:
-        return prepared(centers, *args, row_slice=row_slice, is_missing=is_missing)
-
-    return likelihood
+    return functools.partial(model._decode_likelihood_callback(edges, args), *args)
 
 
 def reference64_prediction(
@@ -104,13 +94,14 @@ def reference64_prediction(
     import jax
 
     from non_local_detector.checkpointed_inference import checkpointed_forward_backward
+    from non_local_detector.core import row_slice_aware
     from non_local_detector.models.base import _missing_bins
 
     if not jax.config.x64_enabled:
         msg = "reference64 requires JAX_ENABLE_X64=1"
         raise ValueError(msg)
     interior = model.is_track_interior_state_bins_
-    operator = model._continuous_transition_operator_.restricted(interior)
+    operator = model.state_space_.transition_operator.restricted(interior)
     operator = operator.bind_discrete(model.discrete_state_transitions_).fused()
     initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
 
@@ -133,11 +124,14 @@ def reference64_prediction(
     observed_dtypes: set[str] = set()
     inference_dtypes: set[str] = set()
 
+    @row_slice_aware
     def likelihood(
-        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
+        *, time_edges: np.ndarray, row_slice: slice, is_missing: np.ndarray
     ) -> Any:
         with float32_computation():
-            values = prepared(full_edges, row_slice=row_slice, is_missing=is_missing)
+            values = prepared(
+                time_edges=time_edges, row_slice=row_slice, is_missing=is_missing
+            )
         observed_dtypes.add(str(values.dtype))
         promoted = values.astype(np.float64)
         inference_dtypes.add(str(promoted.dtype))

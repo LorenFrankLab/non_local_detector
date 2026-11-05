@@ -142,14 +142,16 @@ def make_two_arm_track():
 def matches_annotation(value: object, annotation: object) -> bool:
     """Whether ``value`` has the type ``annotation``, as far as run time can tell.
 
-    Unions, lists, tuples and dicts are checked element by element and
-    classes with ``isinstance``; an int is a float, as for mypy.
+    Unions, lists, tuples and dicts are checked element by element, literals
+    by value and classes with ``isinstance``; an int is a float, as for mypy.
     """
     if annotation is typing.Any:
         return True
     if annotation is None or annotation is type(None):
         return value is None
     origin, args = typing.get_origin(annotation), typing.get_args(annotation)
+    if origin is typing.Literal:
+        return value in args
     if origin in (typing.Union, types.UnionType):
         return any(matches_annotation(value, arg) for arg in args)
     if origin is list:

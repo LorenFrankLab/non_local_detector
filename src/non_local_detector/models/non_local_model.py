@@ -16,6 +16,7 @@ from non_local_detector.models._defaults import (
     _ModelDefaults,
 )
 from non_local_detector.models._input_validation import _validate_penalty_params
+from non_local_detector.models._state_space import fitted_states
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
@@ -40,7 +41,7 @@ __all__ = [
 
 def _get_conditional_non_local_posterior(
     results: xr.Dataset,
-    state_names: list[str],
+    state_names: Sequence[str],
     observation_models: Sequence[ObservationModel],
 ) -> xr.DataArray:
     """Posterior over position given that activity is non-local.
@@ -54,7 +55,7 @@ def _get_conditional_non_local_posterior(
     results : xr.Dataset
         Results from the detector's ``predict`` method, containing
         ``acausal_posterior`` with a ``state`` coordinate.
-    state_names : list of str, length n_states
+    state_names : sequence of str, length n_states
         The detector's state names, as labelled in ``results``.
     observation_models : list of ObservationModel, length n_states
         The detector's observation models, in the same order.
@@ -119,7 +120,7 @@ class _NonLocalMixin:
     """Behaviour shared by the sorted-spikes and clusterless non-local detectors."""
 
     state_names: list[str]
-    observation_models: tuple[ObservationModel, ...]
+    observation_models: list[ObservationModel] | tuple[ObservationModel, ...]
     non_local_position_penalty: float
     non_local_penalty_std: float
 
@@ -151,9 +152,7 @@ class _NonLocalMixin:
         Local nor No-Spike, wherever they are listed. See
         :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        return _get_conditional_non_local_posterior(
-            results, self.state_names, self.observation_models
-        )
+        return _get_conditional_non_local_posterior(results, *fitted_states(self))
 
 
 class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):

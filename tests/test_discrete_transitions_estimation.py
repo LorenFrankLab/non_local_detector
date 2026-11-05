@@ -3,7 +3,7 @@
 Tests the core EM algorithm functions:
 - estimate_non_stationary_state_transition_from_responses
 - estimate_stationary_state_transition_from_counts
-- _discrete_transition_statistics and _discrete_transition_from_statistics
+- _discrete_transition_from_statistics, from the counts and responses
 """
 
 import inspect
@@ -20,22 +20,14 @@ from scipy.optimize import minimize
 from scipy.special import logsumexp, softmax, xlogy
 
 from non_local_detector.discrete_state_transitions import (
-    CovariateTransitionFit,
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     _discrete_transition_from_statistics,
-    _discrete_transition_statistics,
-    _state_aggregation_matrix,
     _stationary_counts_block,
     _transition_log_prior,
-    dirichlet_gradient,
-    dirichlet_hessian,
     dirichlet_neg_log_likelihood,
-    estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_counts_from_factorized_posteriors,
-    estimate_discrete_transition_responses_from_expanded_posteriors,
-    estimate_discrete_transition_responses_from_factorized_posteriors,
     estimate_non_stationary_state_transition_from_responses,
     estimate_stationary_state_transition_from_counts,
     get_transition_prior,
@@ -46,6 +38,12 @@ from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.models.base import _DetectorBase
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import time_edges_from_centers
+from tests._transition_statistics import (
+    dirichlet_gradient,
+    dirichlet_hessian,
+    expanded_counts,
+    expanded_responses,
+)
 from tests.conftest import assert_stochastic_matrix
 
 
@@ -238,35 +236,6 @@ def _centered_softmax_forward_numpy(linear_predictor: np.ndarray) -> np.ndarray:
     return probabilities / probabilities.sum(axis=-1, keepdims=True)
 
 
-def _expanded_responses_numpy_reference(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    transition_matrix: np.ndarray,
-    state_ind: np.ndarray,
-) -> np.ndarray:
-    """Reference implementation matching the original NumPy loop."""
-    aggregation = _state_aggregation_matrix(state_ind)
-    n_time = causal_posterior.shape[0]
-    n_states = aggregation.shape[1]
-    response = np.zeros((n_time - 1, n_states, n_states))
-
-    for t in range(n_time - 1):
-        ratio = np.divide(
-            acausal_posterior[t + 1],
-            predictive_posterior[t + 1],
-            out=np.zeros_like(acausal_posterior[t + 1]),
-            where=predictive_posterior[t + 1] != 0.0,
-        )
-        transition_t = (
-            transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
-        )
-        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
-        response[t] = aggregation.T @ xi @ aggregation
-
-    return response
-
-
 def _expanded_hmm_parameters() -> tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]:
     """Return a small identifiable expanded HMM for transition-recovery tests."""
     initial_conditions = np.full(3, 1.0 / 3.0)
@@ -437,9 +406,9 @@ def _low_high_covariate_transition_error(
 
 
 def _joint_sum_from_post(post):
-    """Return stationary joint counts via the exact singleton-bin helper."""
+    """Return stationary joint counts of singleton-bin states."""
     n_states = post["n_states"]
-    return estimate_discrete_transition_counts_from_expanded_posteriors(
+    return expanded_counts(
         causal_posterior=post["causal_posterior"],
         predictive_posterior=post["predictive_distribution"],
         acausal_posterior=post["acausal_posterior"],
@@ -449,9 +418,9 @@ def _joint_sum_from_post(post):
 
 
 def _response_from_post(post):
-    """Return per-time response tensor via the exact singleton-bin helper."""
+    """Return the per-time responses of singleton-bin states."""
     n_states = post["n_states"]
-    return estimate_discrete_transition_responses_from_expanded_posteriors(
+    return expanded_responses(
         causal_posterior=post["causal_posterior"],
         predictive_posterior=post["predictive_distribution"],
         acausal_posterior=post["acausal_posterior"],
@@ -463,37 +432,6 @@ def _response_from_post(post):
 @pytest.mark.unit
 class TestExpandedDiscreteTransitionCounts:
     """Test exact discrete transition counts from expanded-bin posteriors."""
-
-    def test_expanded_responses_match_numpy_reference(self):
-        """The JAX response kernel should match the original NumPy formula."""
-        rng = np.random.default_rng(5)
-        n_time = 6
-        state_ind = np.array([0, 0, 1, 2, 2])
-        n_bins = state_ind.size
-        causal = rng.random((n_time, n_bins))
-        causal /= causal.sum(axis=1, keepdims=True)
-        transition = rng.random((n_time, n_bins, n_bins))
-        transition /= transition.sum(axis=2, keepdims=True)
-        predictive = np.einsum("tk,tkl->tl", causal, transition)
-        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
-        acausal /= acausal.sum(axis=1, keepdims=True)
-
-        response = estimate_discrete_transition_responses_from_expanded_posteriors(
-            causal,
-            predictive,
-            acausal,
-            transition,
-            state_ind,
-        )
-        expected = _expanded_responses_numpy_reference(
-            causal,
-            predictive,
-            acausal,
-            transition,
-            state_ind,
-        )
-
-        np.testing.assert_allclose(response, expected, atol=1e-6)
 
     @staticmethod
     def _stationary_posteriors(rng, n_time, n_bins, state_ind, n_states):
@@ -586,9 +524,7 @@ class TestExpandedDiscreteTransitionCounts:
                 return estimate_discrete_transition_counts_from_factorized_posteriors(
                     *posteriors[:3], posteriors[3], posteriors[4], state_ind
                 )
-            return estimate_discrete_transition_counts_from_expanded_posteriors(
-                *posteriors[:3], posteriors[5], state_ind
-            )
+            return expanded_counts(*posteriors[:3], posteriors[5], state_ind)
 
         whole = counts()
         monkeypatch.setattr(transitions, "_PAIR_SUM_BLOCK_BYTES", 300 * n_bins * 4)
@@ -617,18 +553,16 @@ class TestExpandedDiscreteTransitionCounts:
         )
         causal, predictive, acausal, _continuous, _discrete, full = posteriors
         assert np.any(predictive == 0.0)
-        expected = _expanded_responses_numpy_reference(
-            causal, predictive, acausal, full, state_ind
-        ).sum(axis=0)
+        expected = expanded_responses(causal, predictive, acausal, full, state_ind).sum(
+            axis=0
+        )
         as32 = [np.asarray(array, np.float32) for array in posteriors]
         if factorized:
             counts = estimate_discrete_transition_counts_from_factorized_posteriors(
                 *as32[:3], as32[3], as32[4], state_ind
             )
         else:
-            counts = estimate_discrete_transition_counts_from_expanded_posteriors(
-                *as32[:3], as32[5], state_ind
-            )
+            counts = expanded_counts(*as32[:3], as32[5], state_ind)
 
         np.testing.assert_allclose(counts, expected, rtol=1e-5)
 
@@ -662,9 +596,7 @@ class TestExpandedDiscreteTransitionCounts:
                 state_ind,
             )
         else:
-            counts = estimate_discrete_transition_counts_from_expanded_posteriors(
-                causal, predictive, acausal, transition, state_ind
-            )
+            counts = expanded_counts(causal, predictive, acausal, transition, state_ind)
         np.testing.assert_allclose(
             counts, [[0.0, 50_000.0], [50_000.0, 0.0]], rtol=1e-5, atol=1e-3
         )
@@ -684,16 +616,14 @@ class TestExpandedDiscreteTransitionCounts:
         ).astype(np.float32)
         acausal = np.array([[1.0, 0.0], [0.0, 1.0], [0.99, 0.01]], np.float32)
         state_ind = np.array([0, 1])
-        expected = _expanded_responses_numpy_reference(
+        expected = expanded_responses(
             causal.astype(float),
             predictive.astype(float),
             acausal.astype(float),
             transition.astype(float),
             state_ind,
         ).sum(axis=0)
-        counts = estimate_discrete_transition_counts_from_expanded_posteriors(
-            causal, predictive, acausal, transition, state_ind
-        )
+        counts = expanded_counts(causal, predictive, acausal, transition, state_ind)
         assert expected[1, 1] == pytest.approx(0.01, rel=1e-5)
         np.testing.assert_allclose(counts, expected, rtol=1e-5, atol=1e-7)
 
@@ -736,7 +666,7 @@ class TestExpandedDiscreteTransitionCounts:
             discrete_transition,
             state_ind,
         )
-        expected = _expanded_responses_numpy_reference(
+        expected = expanded_responses(
             causal,
             predictive,
             acausal,
@@ -745,44 +675,6 @@ class TestExpandedDiscreteTransitionCounts:
         ).sum(axis=0)
 
         np.testing.assert_allclose(counts, expected, atol=1e-6)
-
-    def test_stationary_factorized_responses_match_materialized_full_transition(self):
-        """Stationary factorized responses should avoid changing the math."""
-        rng = np.random.default_rng(8)
-        n_time = 7
-        state_ind = np.array([0, 0, 1, 2, 2])
-        n_bins = state_ind.size
-        n_states = 3
-        causal = rng.random((n_time, n_bins))
-        causal /= causal.sum(axis=1, keepdims=True)
-        continuous_transition = rng.random((n_bins, n_bins))
-        continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
-        discrete_transition = rng.random((n_states, n_states))
-        discrete_transition /= discrete_transition.sum(axis=1, keepdims=True)
-        full_transition = (
-            continuous_transition * discrete_transition[np.ix_(state_ind, state_ind)]
-        )
-        predictive = causal @ full_transition
-        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
-        acausal /= acausal.sum(axis=1, keepdims=True)
-
-        factorized = estimate_discrete_transition_responses_from_factorized_posteriors(
-            causal,
-            predictive,
-            acausal,
-            continuous_transition,
-            discrete_transition,
-            state_ind,
-        )
-        materialized = estimate_discrete_transition_responses_from_expanded_posteriors(
-            causal,
-            predictive,
-            acausal,
-            full_transition,
-            state_ind,
-        )
-
-        np.testing.assert_allclose(factorized, materialized, atol=1e-6)
 
     def test_factorized_counts_requires_stationary_discrete_transition(self):
         """The count helper should reject time-varying discrete transitions."""
@@ -804,55 +696,19 @@ class TestExpandedDiscreteTransitionCounts:
             )
 
     @pytest.mark.parametrize(
-        ("estimator", "transition_args", "match"),
+        ("transition_args", "match"),
         [
-            # Broadcastable expanded transitions should not produce silent counts
-            (
-                estimate_discrete_transition_counts_from_expanded_posteriors,
-                (np.array([[0.2, 0.3, 0.5]]),),
-                "transition_matrix",
-            ),
-            # Time-varying expanded transitions must match n_time and n_state_bins
-            (
-                estimate_discrete_transition_responses_from_expanded_posteriors,
-                (np.ones((3, 1, 3)) / 3.0,),
-                "transition_matrix",
-            ),
             # Broadcastable stationary discrete transitions should raise
-            (
-                estimate_discrete_transition_counts_from_factorized_posteriors,
-                (np.eye(3), np.array([[0.2, 0.3, 0.5]])),
-                "discrete_transition_matrix",
-            ),
-            # Time-varying discrete transitions must match n_time and n_states
-            (
-                estimate_discrete_transition_responses_from_factorized_posteriors,
-                (np.eye(3), np.ones((3, 1, 3)) / 3.0),
-                "discrete_transition_matrix",
-            ),
+            ((np.eye(3), np.array([[0.2, 0.3, 0.5]])), "discrete_transition_matrix"),
             # Continuous transitions must match expanded state bins exactly
-            (
-                estimate_discrete_transition_responses_from_factorized_posteriors,
-                (np.array([[0.2, 0.3, 0.5]]), np.eye(3)),
-                "continuous_transition_matrix",
-            ),
+            ((np.array([[0.2, 0.3, 0.5]]), np.eye(3)), "continuous_transition_matrix"),
         ],
-        ids=[
-            "expanded-counts-broadcastable-transition",
-            "expanded-responses-bad-time-transition",
-            "factorized-counts-broadcastable-discrete",
-            "factorized-responses-bad-time-discrete",
-            "factorized-responses-bad-continuous",
-        ],
+        ids=["broadcastable-discrete", "bad-continuous"],
     )
-    def test_rejects_malformed_transition_shape(
-        self, estimator, transition_args, match
-    ):
+    def test_rejects_malformed_transition_shape(self, transition_args, match):
         """Malformed transition shapes should raise instead of broadcasting.
 
-        ``transition_args`` holds the arguments between the posteriors and
-        ``state_ind``: ``(transition_matrix,)`` for the expanded estimators,
-        ``(continuous_transition, discrete_transition)`` for the factorized.
+        ``transition_args`` holds the continuous and discrete transitions.
         """
         causal = np.ones((3, 3)) / 3.0
         predictive = causal.copy()
@@ -860,7 +716,9 @@ class TestExpandedDiscreteTransitionCounts:
         state_ind = np.array([0, 1, 2])
 
         with pytest.raises(ValueError, match=match):
-            estimator(causal, predictive, acausal, *transition_args, state_ind)
+            estimate_discrete_transition_counts_from_factorized_posteriors(
+                causal, predictive, acausal, *transition_args, state_ind
+            )
 
     def test_zero_predictive_bins_are_finite(self):
         """Zero predictive bins should not create NaN or inf counts."""
@@ -870,7 +728,7 @@ class TestExpandedDiscreteTransitionCounts:
         predictive = np.array([[1.0, 0.0], [0.0, 0.0]])
         acausal = np.array([[1.0, 0.0], [0.0, 1.0]])
 
-        counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+        counts = expanded_counts(
             causal, predictive, acausal, transition_matrix, state_ind
         )
 
@@ -896,7 +754,7 @@ class TestExpandedDiscreteTransitionCounts:
         # Smoother says the second bin was actually visited: ratio = 1 / eps.
         acausal = np.array([[1.0, 0.0], [0.0, 1.0]])
 
-        counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+        counts = expanded_counts(
             causal, predictive, acausal, transition_matrix, state_ind
         )
 
@@ -912,14 +770,14 @@ class TestExpandedDiscreteTransitionCounts:
         state_ind = np.arange(post["n_states"])
         transition_matrix = np.tile(post["transition_matrix"], (post["n_time"], 1, 1))
 
-        response = estimate_discrete_transition_responses_from_expanded_posteriors(
+        response = expanded_responses(
             post["causal_posterior"],
             post["predictive_distribution"],
             post["acausal_posterior"],
             transition_matrix,
             state_ind,
         )
-        counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+        counts = expanded_counts(
             post["causal_posterior"],
             post["predictive_distribution"],
             post["acausal_posterior"],
@@ -929,113 +787,93 @@ class TestExpandedDiscreteTransitionCounts:
 
         np.testing.assert_allclose(response.sum(axis=0), counts, atol=1e-5)
 
-    def test_factorized_responses_match_materialized_full_transition(self):
-        """The streaming nonstationary helper should avoid changing the math."""
-        state_ind = np.array([0, 1, 2, 2])
-        discrete_transition = np.tile(
-            np.array(
-                [
-                    [0.0, 0.0, 1.0],
-                    [0.0, 0.0, 1.0],
-                    [0.0, 0.0, 1.0],
-                ]
-            ),
-            (2, 1, 1),
-        )
-        continuous_transition = np.array(
-            [
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        full_transition = (
-            continuous_transition[np.newaxis]
-            * discrete_transition[:, state_ind][:, :, state_ind]
-        )
-        causal = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        predictive = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.8, 0.2],
-            ]
-        )
-        acausal = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
+    @pytest.mark.parametrize("n_chunks", [1, 3])
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "random",
+            "lossy_rows",
+            "impossible_rows",
+            "zero_discrete_rows",
+            "support_mismatch",
+        ],
+    )
+    def test_covariate_smoother_responses_match_numpy_reference(self, case, n_chunks):
+        """The covariate smoother's responses are the per-row expected transitions.
+
+        They are computed in the smoother's scan; the reference sums each row's
+        expanded pair probabilities from the returned posteriors. Besides random
+        inputs: bins that lose probability, including a row with none to give;
+        steps impossible in every bin; a discrete row that sends everything to
+        one state, leaving exact zeros in the prediction; and a step supported
+        only where the prediction has no mass. The structured rows straddle the
+        first boundary of the three-chunk split, between rows 3 and 4.
+        """
+        from non_local_detector.core import (
+            chunked_filter_smoother_covariate_dependent,
         )
 
-        factorized = estimate_discrete_transition_responses_from_factorized_posteriors(
-            causal,
-            predictive,
-            acausal,
-            continuous_transition,
-            discrete_transition,
-            state_ind,
-        )
-        materialized = estimate_discrete_transition_responses_from_expanded_posteriors(
-            causal,
-            predictive,
-            acausal,
-            full_transition,
-            state_ind,
-        )
-
-        np.testing.assert_allclose(factorized, materialized, atol=1e-5)
-
-    def test_nonstationary_factorized_responses_reduce_to_expanded_counts(self):
-        """Summed factorized responses should match materialized expanded counts."""
         rng = np.random.default_rng(7)
-        n_time = 6
+        n_time = 12
         state_ind = np.array([0, 0, 1, 2, 2])
         n_bins = state_ind.size
         n_states = 3
-        causal = rng.random((n_time, n_bins))
-        causal /= causal.sum(axis=1, keepdims=True)
         continuous_transition = rng.random((n_bins, n_bins))
         continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
         discrete_transition = rng.random((n_time, n_states, n_states))
         discrete_transition /= discrete_transition.sum(axis=2, keepdims=True)
+        log_likelihoods = rng.normal(size=(n_time, n_bins))
+        if case == "lossy_rows":
+            continuous_transition[1] *= 0.5
+            continuous_transition[3] = 0.0
+        elif case == "impossible_rows":
+            log_likelihoods[[3, 4]] = -np.inf
+        elif case in ("zero_discrete_rows", "support_mismatch"):
+            discrete_transition[3] = [[0.0, 0.0, 1.0]] * n_states
+        if case == "support_mismatch":
+            log_likelihoods[4, state_ind == 2] = -np.inf
+
+        def smooth(**kwargs):
+            return chunked_filter_smoother_covariate_dependent(
+                time_edges=np.arange(n_time + 1.0),
+                state_ind=state_ind,
+                initial_distribution=np.full(n_bins, 1 / n_bins),
+                discrete_transition_matrix=discrete_transition,
+                continuous_transition_matrix=continuous_transition,
+                log_likelihood_func=None,
+                log_likelihood_args=(),
+                log_likelihoods=log_likelihoods,
+                n_chunks=n_chunks,
+                **kwargs,
+            )
+
+        result = smooth(transition_responses=True)
+        # Asking for responses does not keep the predictive posterior.
+        assert result.predictive_posterior is None
+        predictive_posterior = smooth().predictive_posterior
+        # Each case reaches the structure it is named for.
+        if case == "impossible_rows":
+            np.testing.assert_array_equal(result.degenerate_indices, [3, 4])
+        elif case in ("zero_discrete_rows", "support_mismatch"):
+            assert np.all(predictive_posterior[4][state_ind != 2] == 0)
+            np.testing.assert_array_equal(result.transition_responses[3, :, :2], 0)
+        if case == "support_mismatch":
+            assert np.isneginf(result.marginal_log_likelihood)
         full_transition = (
             continuous_transition[np.newaxis]
             * discrete_transition[:, state_ind][:, :, state_ind]
         )
-        predictive = np.einsum("tk,tkl->tl", causal, full_transition)
-        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
-        acausal /= acausal.sum(axis=1, keepdims=True)
-
-        factorized_response = (
-            estimate_discrete_transition_responses_from_factorized_posteriors(
-                causal,
-                predictive,
-                acausal,
-                continuous_transition,
-                discrete_transition,
-                state_ind,
-            )
-        )
-        materialized_counts = (
-            estimate_discrete_transition_counts_from_expanded_posteriors(
-                causal,
-                predictive,
-                acausal,
-                full_transition,
-                state_ind,
-            )
+        expected = expanded_responses(
+            np.asarray(result.causal_posterior, np.float64),
+            np.asarray(predictive_posterior, np.float64),
+            np.asarray(result.acausal_posterior, np.float64),
+            full_transition,
+            state_ind,
         )
 
+        assert result.transition_responses.shape == (n_time - 1, n_states, n_states)
         np.testing.assert_allclose(
-            factorized_response.sum(axis=0),
-            materialized_counts,
-            atol=1e-5,
+            result.transition_responses, expected, rtol=1e-5, atol=1e-7
         )
 
 
@@ -2130,16 +1968,12 @@ class TestNonStationaryPriorAndConvergence:
         defaults = [
             inspect.signature(estimate_non_stationary_state_transition_from_responses)
             .parameters["transition_regularization"]
-            .default
-        ] + [
-            inspect.signature(function).parameters["l2_penalty"].default
-            for function in (
-                dirichlet_neg_log_likelihood,
-                dirichlet_gradient,
-                dirichlet_hessian,
-            )
+            .default,
+            inspect.signature(dirichlet_neg_log_likelihood)
+            .parameters["l2_penalty"]
+            .default,
         ]
-        assert defaults == [detector_default] * 4
+        assert defaults == [detector_default] * 2
 
     @pytest.mark.parametrize(
         ("regularization", "bounded"), [(0.1, True), (1e-10, False)]
@@ -2360,7 +2194,7 @@ class TestEstimateStationaryStateTransition:
         predictive_distribution = np.vstack(
             [causal_posterior[:1], causal_posterior[:-1] @ transition_matrix]
         )
-        joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
+        joint_sum = expanded_counts(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_distribution,
             acausal_posterior=acausal_posterior,
@@ -2498,7 +2332,7 @@ class TestPriorWeightScaling:
         predictive_distribution = np.vstack(
             [causal_posterior[:1], causal_posterior[:-1] @ transition_matrix]
         )
-        joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
+        joint_sum = expanded_counts(
             causal_posterior=causal_posterior,
             predictive_posterior=predictive_distribution,
             acausal_posterior=acausal_posterior,
@@ -2604,8 +2438,8 @@ class TestPriorWeightScaling:
 
 @pytest.mark.unit
 class TestDiscreteTransitionMStep:
-    """The EM discrete M-step: expected statistics from the expanded
-    posteriors, then the transition update from them."""
+    """The EM discrete M-step: the transition update from the expected
+    statistics of the expanded posteriors."""
 
     def test_stationary_diagonal(self, posterior_data):
         """Test with stationary diagonal transition type using singleton bins."""
@@ -2616,15 +2450,13 @@ class TestDiscreteTransitionMStep:
         state_ind = np.arange(n_states)
         continuous_transition = np.eye(n_states)
 
-        statistics = _discrete_transition_statistics(
-            causal_posterior=post["causal_posterior"],
-            predictive_posterior=post["predictive_distribution"],
-            acausal_posterior=post["acausal_posterior"],
-            continuous_transition=continuous_transition,
-            state_ind=state_ind,
-            discrete_transition=post["transition_matrix"],
-            discrete_transition_coefficients=None,
-            discrete_transition_design_matrix=None,
+        statistics = estimate_discrete_transition_counts_from_factorized_posteriors(
+            post["causal_posterior"],
+            post["predictive_distribution"],
+            post["acausal_posterior"],
+            continuous_transition,
+            post["transition_matrix"],
+            state_ind,
         )
         new_trans, *_ = _discrete_transition_from_statistics(
             statistics,
@@ -2675,15 +2507,13 @@ class TestDiscreteTransitionMStep:
             ]
         )
 
-        statistics = _discrete_transition_statistics(
-            causal_posterior=causal_posterior,
-            predictive_posterior=predictive_posterior,
-            acausal_posterior=acausal_posterior,
-            continuous_transition=continuous_transition,
-            state_ind=state_ind,
-            discrete_transition=discrete_transition,
-            discrete_transition_coefficients=None,
-            discrete_transition_design_matrix=None,
+        statistics = estimate_discrete_transition_counts_from_factorized_posteriors(
+            causal_posterior,
+            predictive_posterior,
+            acausal_posterior,
+            continuous_transition,
+            discrete_transition,
+            state_ind,
         )
         new_trans, *_ = _discrete_transition_from_statistics(
             statistics,
@@ -2706,15 +2536,14 @@ class TestDiscreteTransitionMStep:
         continuous_transition = np.eye(n_states)
         time_varying_trans = np.tile(post["transition_matrix"], (n_time, 1, 1))
 
-        statistics = _discrete_transition_statistics(
-            causal_posterior=post["causal_posterior"],
-            predictive_posterior=post["predictive_distribution"],
-            acausal_posterior=post["acausal_posterior"],
-            continuous_transition=continuous_transition,
-            state_ind=state_ind,
-            discrete_transition=time_varying_trans,
-            discrete_transition_coefficients=dm["transition_coefficients"],
-            discrete_transition_design_matrix=dm["design_matrix"][:n_time],
+        # Singleton bins with an identity continuous transition: the joint
+        # transition is the discrete one.
+        statistics = expanded_responses(
+            post["causal_posterior"],
+            post["predictive_distribution"],
+            post["acausal_posterior"],
+            time_varying_trans * continuous_transition[state_ind][:, state_ind],
+            state_ind,
         )
         new_trans, new_coeffs, *_ = _discrete_transition_from_statistics(
             statistics,
@@ -2729,90 +2558,6 @@ class TestDiscreteTransitionMStep:
         assert new_coeffs.shape == dm["transition_coefficients"].shape
         for t in range(min(5, new_trans.shape[0])):
             assert_stochastic_matrix(new_trans[t])
-
-    def test_nonstationary_uses_expanded_responses(self):
-        """Expanded nonstationary inputs reach the exact response path."""
-        state_ind = np.array([0, 1, 2, 2])
-        continuous_transition = np.array(
-            [
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        discrete_transition = np.tile(
-            np.array(
-                [
-                    [0.0, 0.0, 1.0],
-                    [0.0, 0.0, 1.0],
-                    [0.0, 0.0, 1.0],
-                ]
-            ),
-            (2, 1, 1),
-        )
-        causal_posterior = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        predictive_posterior = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.8, 0.2],
-            ]
-        )
-        acausal_posterior = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        transition_coefficients = np.zeros((1, 3, 2))
-        design_matrix = np.ones((2, 1))
-        captured = {}
-
-        def fake_fit(
-            transition_coefficients,
-            design_matrix,
-            response,
-            **kwargs,
-        ):
-            captured["response"] = response
-            return CovariateTransitionFit(
-                transition_coefficients,
-                np.tile(np.eye(3), (2, 1, 1)),
-                np.zeros(3),
-                np.zeros((3, 2, 2)),
-            )
-
-        with patch(
-            "non_local_detector.discrete_state_transitions._fit_covariate_transition",
-            side_effect=fake_fit,
-        ):
-            statistics = _discrete_transition_statistics(
-                causal_posterior=causal_posterior,
-                predictive_posterior=predictive_posterior,
-                acausal_posterior=acausal_posterior,
-                continuous_transition=continuous_transition,
-                state_ind=state_ind,
-                discrete_transition=discrete_transition,
-                discrete_transition_coefficients=transition_coefficients,
-                discrete_transition_design_matrix=design_matrix,
-            )
-            new_trans, new_coeffs, *_ = _discrete_transition_from_statistics(
-                statistics,
-                transition_coefficients,
-                design_matrix,
-                transition_concentration=1.0,
-                transition_stickiness=0.0,
-                transition_regularization=1e-5,
-            )
-
-        assert new_trans.shape == (2, 3, 3)
-        assert new_coeffs.shape == transition_coefficients.shape
-        assert captured["response"][0, 1, 2] > captured["response"][0, 0, 2]
 
 
 def _random_stochastic(rng: np.random.Generator, n_states: int) -> np.ndarray:

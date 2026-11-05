@@ -27,6 +27,7 @@ import numpy as np
 import psutil
 
 import non_local_detector.checkpointed_inference as engine
+from non_local_detector.core import row_slice_aware
 
 
 class DeviceMemory:
@@ -203,9 +204,10 @@ def run(args, devices, preflight):
             cache = folder / "likelihoods"
             cache.mkdir()
 
-            def callback(full_edges, *, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
+            @row_slice_aware
+            def callback(*, time_edges, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
                 nonlocal generated, reads, writes, max_host_chunk
-                assert full_edges is edges
+                assert time_edges is edges
                 start, stop = row_slice.start, row_slice.stop
                 assert stop - start <= length
                 filename = cache / f"{start}-{stop}.npy"

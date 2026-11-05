@@ -36,13 +36,11 @@ from non_local_detector.core import check_converged
 from non_local_detector.discrete_state_transitions import (
     _covariate_transition_covariance,
     _discrete_transition_from_statistics,
-    _discrete_transition_statistics,
     _max_transition_change,
     _transition_log_prior,
+    estimate_discrete_transition_counts_from_factorized_posteriors,
 )
 from non_local_detector.exceptions import (
-    CompatibilityWarning,
-    ConfigurationError,
     DataError,
     NumericalWarning,
     ParameterWarning,
@@ -57,7 +55,11 @@ from non_local_detector.time_edges import (
     decode_bin_centers,
     uniform_time_edges,
 )
-from non_local_detector.types import ReturnOutputs, TransitionRepresentation
+from non_local_detector.types import (
+    ReturnOutputs,
+    TransitionRepresentation,
+    TransitionStatistics,
+)
 
 if TYPE_CHECKING:
     import non_local_detector.models.base
@@ -341,7 +343,6 @@ def _validate_estimation_arguments(
     n_chunks: int,
     return_outputs: ReturnOutputs,
     *,
-    save_log_likelihood_to_results: bool | None,
     min_encoding_local_mass: float,
     min_encoding_local_ess: float,
 ) -> tuple[np.ndarray, float]:
@@ -357,10 +358,7 @@ def _validate_estimation_arguments(
     n_chunks : int
         Number of chunks the bins are split into; at most ``n_bins``.
     return_outputs : str, collection of str, or None, optional
-        Requested outputs; cannot be combined with
-        ``save_log_likelihood_to_results``.
-    save_log_likelihood_to_results : bool, optional
-        Deprecated flag to store the log likelihood in the results.
+        Requested outputs.
     min_encoding_local_mass : float
         Minimum local mass for an encoding update; must be >= 0.
     min_encoding_local_ess : float
@@ -380,8 +378,6 @@ def _validate_estimation_arguments(
     ValidationError
         If ``n_chunks`` exceeds the number of bins, ``return_outputs`` is
         invalid, or an encoding-update threshold is negative.
-    ConfigurationError
-        If ``return_outputs`` conflicts with ``save_log_likelihood_to_results``.
     """
     time_edges, time_bin_width = uniform_time_edges(time_edges)
     n_bins = len(time_edges) - 1
@@ -395,15 +391,6 @@ def _validate_estimation_arguments(
             expected=f"n_chunks <= {n_bins}",
             got=str(n_chunks),
             hint="Lower n_chunks or pass more time bins.",
-        )
-    if save_log_likelihood_to_results and return_outputs is not None:
-        msg = (
-            "Cannot specify both return_outputs and deprecated "
-            "save_log_likelihood_to_results flag. "
-            "Use return_outputs only."
-        )
-        raise ConfigurationError(
-            msg, hint="Drop save_log_likelihood_to_results and pass return_outputs."
         )
     _normalize_return_outputs(return_outputs)
     if min_encoding_local_mass < 0:
@@ -437,7 +424,7 @@ class _EMSettings:
     covariate_transitions : bool
         Whether the discrete transitions depend on covariates.
     transition_statistics : {None, "counts", "responses"}
-        What structured E-steps accumulate for the discrete M-step.
+        What each E-step returns for the discrete M-step.
     prior_tracks_counts : bool
         Whether the transition prior scales with each E-step's expected
         counts (``discrete_transition_prior_weight > 0``, stationary).
@@ -452,10 +439,11 @@ class _EMSettings:
     frozen_rows, free_rows : np.ndarray, shape (n_states,), or None
         Discrete-transition rows pinned and estimated.
     interior_state_ind : np.ndarray, shape (n_interior_state_bins,), or None
-        Dense EM with estimated transitions: state of each interior bin.
+        Dense EM with estimated stationary transitions: state of each
+        interior bin.
     interior_continuous_transition : np.ndarray or None
-        Dense EM with estimated transitions: the continuous transition over
-        the interior state bins.
+        Dense EM with estimated stationary transitions: the continuous
+        transition over the interior state bins.
     encoding_fit_arguments : dict or None
         Keyword arguments of ``_fit_encoding_model`` that the encoding M-step
         refits with, besides the posterior weights.
@@ -484,7 +472,7 @@ class _EMSettings:
     min_encoding_local_mass: float
     min_encoding_local_ess: float
     covariate_transitions: bool
-    transition_statistics: str | None
+    transition_statistics: TransitionStatistics | None
     prior_tracks_counts: bool
     prior_set_in_m_step: bool
     prior_changes: bool
@@ -722,12 +710,13 @@ class _EMMixin:
         n_time : int
             Decode bins.
         """
-        n_bins = int(np.count_nonzero(self.is_track_interior_state_bins_))
+        state_space = self.state_space_
+        n_bins = int(np.count_nonzero(state_space.is_track_interior))
         working, limit, where = _dense_em_memory(n_time, n_bins)
-        n_total = int(self.state_ind_.shape[0])
+        n_total = state_space.n_state_bins
         dense_preferred = (
             n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES
-            and n_total * n_total * 8 <= self._max_dense_transition_bytes_
+            and n_total * n_total * 8 <= state_space.max_dense_transition_bytes
         )
         dense_fits = limit is None or working <= limit // 2
         use_dense = dense_preferred and dense_fits
@@ -753,11 +742,7 @@ class _EMMixin:
             n_time,
         )
         if use_dense:
-            self.continuous_state_transitions_ = np.asarray(
-                self.continuous_state_transitions_
-            )
-            self.__dict__.pop("_continuous_transition_operator_", None)
-            self._transition_representation_ = "dense"
+            self.state_space_ = state_space.densified()
 
     def _run_em(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
@@ -774,7 +759,6 @@ class _EMMixin:
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
         return_outputs: ReturnOutputs = None,
-        save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         chunk_size: int | None = None,
@@ -849,9 +833,6 @@ class _EMMixin:
             A name adds the same outputs alone or in a list or set.
 
             By default None (only smoother posterior and state probabilities).
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead.
-            Whether to save the log likelihood to the results, by default None.
         min_encoding_local_mass : float, optional
             Minimum sum of local state weights required to update the encoding
             model. If the total mass is below this threshold, the encoding
@@ -931,7 +912,6 @@ class _EMMixin:
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
             chunk_size=chunk_size,
@@ -1015,7 +995,6 @@ class _EMMixin:
         store_log_likelihood: bool,
         n_chunks: int,
         return_outputs: ReturnOutputs,
-        save_log_likelihood_to_results: bool | None,
         min_encoding_local_mass: float,
         min_encoding_local_ess: float,
         chunk_size: int | None,
@@ -1036,7 +1015,6 @@ class _EMMixin:
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
         )
@@ -1053,9 +1031,8 @@ class _EMMixin:
                 hint="Call estimate_parameters, which passes its data, or pass "
                 "estimate_encoding_model=False.",
             )
-        checkpointed = (
-            getattr(self, "_continuous_transition_operator_", None) is not None
-        )
+        state_space = self.state_space_
+        checkpointed = state_space.transition_operator is not None
         _validate_em_options(
             structured=checkpointed,
             n_chunks=n_chunks,
@@ -1070,7 +1047,7 @@ class _EMMixin:
         if checkpointed:
             if chunk_size is None:
                 chunk_size = default_chunk_size(
-                    cast("int", np.count_nonzero(self.is_track_interior_state_bins_)),
+                    cast("int", np.count_nonzero(state_space.is_track_interior)),
                     np.float32,
                 )
             if replay_cache_bytes is None:
@@ -1088,7 +1065,7 @@ class _EMMixin:
             if n_chunks == 1:
                 _warn_if_dense_em_exceeds_memory(
                     len(time_edges) - 1,
-                    int(np.count_nonzero(self.is_track_interior_state_bins_)),
+                    int(np.count_nonzero(state_space.is_track_interior)),
                 )
         # Subclasses have already combined ``is_missing`` with the bins
         # without tracked position via ``_missing_bins``.
@@ -1100,17 +1077,6 @@ class _EMMixin:
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
-
-        # Handle deprecated boolean flag
-        if save_log_likelihood_to_results is not None:
-            warnings.warn(
-                "save_log_likelihood_to_results is deprecated. "
-                "Use return_outputs='log_likelihood' instead.",
-                CompatibilityWarning,
-                stacklevel=user_stacklevel(),
-            )
-            if save_log_likelihood_to_results:
-                return_outputs = "log_likelihood"
 
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
@@ -1127,10 +1093,12 @@ class _EMMixin:
             cache_likelihood = True
 
         covariate_transitions = not self.discrete_transition_type.is_stationary
-        # Structured EM accumulates the discrete M-step's statistics in its
-        # replay: per-row responses for covariate transitions, else counts.
-        transition_statistics = None
-        if checkpointed and estimate_discrete_transition:
+        # The discrete M-step's statistics: per-row responses for covariate
+        # transitions, accumulated in the smoother's scan (structured EM's
+        # replay or dense EM's smoother); else counts, which dense EM sums from
+        # the posteriors in one product over all rows.
+        transition_statistics: TransitionStatistics | None = None
+        if estimate_discrete_transition:
             transition_statistics = "responses" if covariate_transitions else "counts"
         # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary
         # transition) scale with each E-step's expected counts. Any other prior
@@ -1152,10 +1120,10 @@ class _EMMixin:
         prior_changes = prior_tracks_counts or prior_set_in_m_step
         interior_state_ind: np.ndarray | None = None
         interior_continuous_transition: np.ndarray | None = None
-        if estimate_discrete_transition and not checkpointed:
-            interior_state_bins = self.is_track_interior_state_bins_
-            interior_state_ind = self.state_ind_[interior_state_bins]
-            interior_continuous_transition = self.continuous_state_transitions_[
+        if transition_statistics == "counts" and not checkpointed:
+            interior_state_bins = state_space.is_track_interior
+            interior_state_ind = state_space.interior_state_ind
+            interior_continuous_transition = state_space.continuous_transitions[
                 np.ix_(interior_state_bins, interior_state_bins)
             ]
         prior = (
@@ -1293,6 +1261,7 @@ class _EMMixin:
                 cache_likelihood=settings.cache_likelihood,
                 log_likelihoods=state.run_log_likelihoods,
                 n_chunks=settings.n_chunks,
+                transition_responses=settings.transition_statistics == "responses",
             )
             acausal_state_probabilities = cast(
                 "np.ndarray", posterior.acausal_state_probabilities
@@ -1300,22 +1269,21 @@ class _EMMixin:
             marginal_log_likelihood = posterior.marginal_log_likelihood
             log_likelihood = posterior.log_likelihood
             first_smoothed = np.asarray(posterior.acausal_posterior[0])
-            # The transition statistics need only these posteriors, so
-            # take them now; the device arrays are released on return, before
-            # the M-step (an encoding refit allocates on the device too).
+            # Covariate responses come from the smoother. Stationary counts
+            # need only these posteriors, so take them now; the device arrays
+            # are released on return, before the M-step (an encoding refit
+            # allocates on the device too).
             transition_statistics = (
-                _discrete_transition_statistics(
+                estimate_discrete_transition_counts_from_factorized_posteriors(
                     posterior.causal_posterior,
                     posterior.predictive_posterior,
                     posterior.acausal_posterior,
                     cast("np.ndarray", settings.interior_continuous_transition),
-                    cast("np.ndarray", settings.interior_state_ind),
                     self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
+                    cast("np.ndarray", settings.interior_state_ind),
                 )
-                if settings.estimate_discrete_transition
-                else None
+                if settings.transition_statistics == "counts"
+                else posterior.transition_responses
             )
         # Reusable by the next iteration: the likelihood depends only on the
         # data and the encoding model, and the encoding M-step clears this when
@@ -1494,14 +1462,16 @@ class _EMMixin:
         self: "non_local_detector.models.base._DetectorBase", e_step: _EMEStep
     ) -> None:
         """Initial-condition M-step: the first bin's smoothed posterior."""
-        self.initial_conditions_[self.is_track_interior_state_bins_] = (
+        self.initial_conditions_[self.state_space_.is_track_interior] = (
             e_step.first_smoothed
         )
         self.discrete_initial_conditions_ = np.asarray(
             e_step.acausal_state_probabilities[0]
         )
 
-        expanded_discrete_ic = e_step.acausal_state_probabilities[0][self.state_ind_]
+        expanded_discrete_ic = e_step.acausal_state_probabilities[0][
+            self.state_space_.state_ind
+        ]
         is_zero = np.isclose(expanded_discrete_ic, 0.0)
         safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
         self.continuous_initial_conditions_ = np.where(
@@ -1704,7 +1674,7 @@ class _EMMixin:
             return _EMFinalEStep(
                 _PosteriorOutputs(
                     marginal_log_likelihood=float(
-                        stored.attrs["marginal_log_likelihood"]
+                        stored.attrs["marginal_log_likelihoods"][-1]
                     ),
                     degenerate_indices=degenerate_indices,
                 ),

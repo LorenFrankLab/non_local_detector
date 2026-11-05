@@ -1,7 +1,6 @@
 """Exact structured products against the unchanged dense model constructor."""
 
 import pickle
-from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -21,7 +20,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.models._defaults import _ModelDefaults
-from non_local_detector.models.base import _DetectorBase
+from non_local_detector.models._state_space import continuous_state_transitions
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.transition_operators import (
     DEFAULT_MAX_DENSE_BYTES,
@@ -290,14 +289,17 @@ def dense_reference(
 ):
     """Call the baseline constructor itself, including scalar block overrides."""
     observations = observations or [ObservationModel() for _ in sizes]
-    model = SimpleNamespace(
-        state_ind_=np.repeat(np.arange(len(sizes)), sizes),
-        environments_=tuple(envs),
-        observation_models=observations,
-        local_position_std=local_std,
+    state_ind = np.repeat(np.arange(len(sizes)), sizes)
+    matrix, _ = continuous_state_transitions(
+        transitions,
+        tuple(envs),
+        observations,
+        local_std,
+        state_ind,
+        np.asarray(sizes),
+        context=TransitionContext(**context),
     )
-    _DetectorBase._initialize_continuous_state_transition(model, transitions, **context)
-    return model.continuous_state_transitions_, model.state_ind_
+    return matrix, state_ind
 
 
 def default_layout(local_std=None):
@@ -784,17 +786,18 @@ def test_fallback_receives_original_empirical_context_and_defaults():
     )
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
     # The context defaults absent labels to group zero, as the detector fit
-    # always has.
+    # always has, so group 1 has no steps.
     transitions = [[EmpiricalMovement(encoding_group=1)]]
-    dense, _ = dense_reference(transitions, [env], (5,), position=position)
-    operator = build_transition_operator(
-        transitions,
-        [env],
-        (5,),
-        allow_dense_fallback=True,
-        context=TransitionContext(position),
-    )
-    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
+    with pytest.raises(ValidationError, match="no two consecutive"):
+        dense_reference(transitions, [env], (5,), position=position)
+    with pytest.raises(ValidationError, match="no two consecutive"):
+        build_transition_operator(
+            transitions,
+            [env],
+            (5,),
+            allow_dense_fallback=True,
+            context=TransitionContext(position),
+        )
 
 
 @pytest.mark.unit

@@ -1,5 +1,7 @@
 """``plot_discrete_state_transition`` draws the transition matrix as a heatmap."""
 
+from types import SimpleNamespace
+
 import matplotlib as mpl
 import numpy as np
 import pytest
@@ -25,6 +27,7 @@ TRANSITIONS = np.array(
 @pytest.fixture
 def detector():
     detector = NonLocalSortedSpikesDetector(state_names=STATE_NAMES)
+    detector.state_space_ = SimpleNamespace(state_names=STATE_NAMES)
     detector.discrete_state_transitions_ = TRANSITIONS
     return detector
 

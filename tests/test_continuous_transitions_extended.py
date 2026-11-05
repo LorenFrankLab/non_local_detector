@@ -145,6 +145,25 @@ class TestEstimateMovementVar:
         # Assert
         np.testing.assert_allclose(var, 0.0, atol=1e-12)
 
+    def test_estimate_movement_var_skips_steps_across_missing_samples(self):
+        """No displacement is taken across a NaN stretch.
+
+        Constant-speed motion with a tracking dropout, during which the
+        animal moved 50 units: the steps on either side all have the same
+        size, so the variance is zero; differencing across the dropout made
+        the 50-unit jump one step.
+        """
+        # Arrange
+        position = np.linspace(0, 10, 100)
+        position[50:] += 50.0
+        position[40:50] = np.nan
+
+        # Act
+        var = estimate_movement_var(position)
+
+        # Assert
+        np.testing.assert_allclose(var, 0.0, atol=1e-12)
+
     def test_estimate_movement_var_constant_position(self):
         """Constant position should give near-zero variance."""
         # Arrange

@@ -195,14 +195,15 @@ transition data must have one aligned row per decode bin. Slice or rebuild
 per-interval arguments for every prediction instead of reusing a full-recording
 mask.
 
-Viterbi uses the fitted covariate-transition tensor. Its rows must already align
-with the requested bins; a different row count raises before likelihood
-evaluation. The same check applies when `predict` reuses stored covariates,
-including cached-likelihood prediction. Fit/estimate with aligned covariates
-before Viterbi. `predict` also accepts new aligned
-`discrete_transition_covariate_data` for another grid.
-The length check cannot prove timestamp alignment: rebuild covariates whenever
-the requested centers change, even if the new grid has the same number of bins.
+A detector whose discrete transitions depend on covariates needs them in every
+call. `fit` takes the training covariates: they place the formula's spline knots,
+on any timeline (one row per position sample, say). `estimate_parameters`,
+`predict` and `most_likely_sequence` take one row per decode bin of their own
+`time_edges` and raise `ValidationError` without them or with another row count,
+before any likelihood is evaluated. Decoding never reuses the transitions
+fitted on the training covariates, which describe the training recording even
+when the decoded grid has as many bins. The length check cannot prove timestamp
+alignment: rebuild covariates whenever the requested centers change.
 
 For downstream tracking analysis, the public alignment helper returns one row
 per actual result time and a whole-bin measured-support mask:

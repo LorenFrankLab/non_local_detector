@@ -39,7 +39,10 @@ print(summary["detector_type"], place_fields.shape)
 
 `.nld` is the conventional suffix. `load_model` recognizes the format from
 the file's first bytes, not its name, and still reads the pickles that
-earlier releases wrote (below).
+earlier releases wrote (below). It returns an instance of the class it is
+called on, or of a subclass: `SortedSpikesDetector.load_model` (from
+`non_local_detector.models.base`) loads any sorted-spikes detector, and a
+file holding another class raises `ValidationError`.
 
 ## What a file holds
 
@@ -65,16 +68,28 @@ Only what cannot be rebuilt is stored. Loading rebuilds:
 - each environment's grid: an environment with a track graph from its
   configuration, an open field from its stored bin edges and interior mask
   (`Environment.fit_place_grid_from_edges`), with their graph distances;
-- the continuous transition, dense matrix or structured operator, from the
-  transitions and the environments;
+- the state bins and the continuous transition, dense matrix or structured
+  operator (the detector's `state_space_`), from the configured states,
+  transitions and environments;
 - the patsy design of a covariate-dependent discrete transition, from the
   stored covariates, and the GLM spline basis from its stored inputs.
 
 A transition block built from the fit data, such as `EmpiricalMovement`, is
 stored instead, since the training positions are not.
 
+Since the state bins and the transitions are rebuilt from `config.json`,
+`save_model` refuses a detector whose `state_names`, `observation_models`,
+`continuous_transition_types`, `local_position_std`,
+`discrete_transition_type`, `discrete_initial_conditions` or `environments`
+were changed with `set_params` after it was fitted: set them back, or refit.
+Such a detector still decodes with the values it was fitted with.
+
 A covariate transition's covariates are stored only as numeric or string
 arrays (a categorical as its codes and categories).
+
+A JAX array loads as a JAX array of its stored dtype. One that is 64-bit,
+saved with `JAX_ENABLE_X64` set, loads as a NumPy array when x64 is off,
+since JAX would round it to 32 bits.
 
 Rebuilding repeats the fit's arithmetic, so on the same machine a reloaded
 model decodes exactly as the original. A newer NumPy, patsy or
@@ -112,7 +127,9 @@ at most 32 calls.
 By default, loading never runs code from a `.nld` file. A crafted file can
 still make loading or decoding slow or memory-hungry, for example with a
 formula whose spline terms interact into a very large design, which these
-limits do not prevent. Load files from untrusted sources with care.
+limits do not prevent, or with an array of ones, which a file stores as its
+dtype and shape alone (`$fill`), so the archive's checks on each member's
+size do not bound it. Load files from untrusted sources with care.
 
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design
@@ -224,8 +241,19 @@ the details.
 
 ## Versions
 
-`format_version` (currently 1) changes when stored names or meanings change.
+`format_version` (currently 1) changes when a stored name is renamed or
+removed, or a stored value changes meaning. Adding a name does not change it.
 A newer release reads every older version through migrations of the stored
-data, run before anything is built. A file written in a newer format version
-than the installed release reads is refused, naming the version to upgrade
-to.
+data, run before anything is built.
+
+That gives a file from a newer package version one of two outcomes. If it only
+adds names, its `format_version` is one the installed release reads: it
+loads, and the names the installed release does not read are ignored, with a
+`DataQualityWarning` listing them. If its `format_version` is newer than the
+installed release reads, it is refused, naming the version to upgrade to.
+
+A field added to the format has a default, so files written before it still
+load. A fitted file missing a name that rebuilding its kind of model reads
+raises `DataError`, as does an encoding model missing a key its likelihood
+algorithm stores, or naming an algorithm the installed release does not
+register.

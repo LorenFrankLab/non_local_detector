@@ -62,9 +62,9 @@ def test_posterior_panel_uses_non_local_states_whatever_their_names():
 
 
 def _stub_detector(cls, observation_models, environments, encoding_model=None):
-    """An unfitted detector carrying only what ``_unit_order`` reads."""
+    """A detector carrying only what ``_unit_order`` reads."""
     detector = cls.__new__(cls)
-    detector.observation_models = observation_models
+    detector.state_space_ = SimpleNamespace(observation_models=observation_models)
     detector.environments_ = environments
     detector.encoding_model_ = encoding_model or {}
     return detector

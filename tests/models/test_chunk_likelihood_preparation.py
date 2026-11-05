@@ -10,13 +10,11 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
 )
 from non_local_detector.core import row_slice_aware
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import SpikeTimeOrder, select_spikes_in_rows
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("row_aware", [False, True])
-def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
+def test_prepared_no_spike_durations_match_exact_global_rows():
     """Chunk ownership adjustments must not alter physical bin durations.
 
     Uniform Unix timestamps have alternating representable widths. Reusing the
@@ -24,48 +22,23 @@ def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
     """
     from non_local_detector.likelihoods import predict_no_spike_log_likelihood
     from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
-    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = 1.7e9 + np.arange(5) * 0.002
     durations = no_spike_time_bin_sizes(edges)  # prepared once, as decoding does
 
-    def likelihood(time_edges, *, row_slice=None):
+    def likelihood(row_slice=None):
         return predict_no_spike_log_likelihood(
             [[]],
             no_spike_rate=1.0,
-            time_edges=time_edges,
+            time_edges=edges,
             row_slice=row_slice,
             _time_bin_sizes=durations,
         )
 
-    if row_aware:
-        row_slice_aware(likelihood)
-    callback = _custom_likelihood_callback(likelihood, edges)
-    full = callback(None)
-    if not row_aware:
-        np.testing.assert_array_equal(full[:, 0], -np.diff(edges).astype(np.float32))
-        return
-    chunks = np.concatenate(
-        [callback(None, row_slice=slice(i, i + 1)) for i in range(4)]
-    )
+    full = likelihood()
+    chunks = np.concatenate([likelihood(row_slice=slice(i, i + 1)) for i in range(4)])
     np.testing.assert_array_equal(chunks, full)
     np.testing.assert_array_equal(full[:, 0], -np.diff(edges).astype(np.float32))
-
-
-@pytest.mark.unit
-def test_chunked_unmarked_callback_rejects_altered_physical_exposure():
-    """An edges-only callback cannot express an open chunk closing boundary."""
-    from non_local_detector.models.base import _custom_likelihood_callback
-
-    edges = 1.7e9 + np.arange(5) * 0.002
-
-    def likelihood(time_edges):
-        return -np.diff(time_edges)[:, None]
-
-    callback = _custom_likelihood_callback(likelihood, edges)
-    np.testing.assert_array_equal(callback(None)[:, 0], -np.diff(edges))
-    with pytest.raises(ValidationError, match="row_slice_aware"):
-        callback(None, row_slice=slice(0, 1))
 
 
 @pytest.mark.unit
@@ -237,17 +210,17 @@ def test_cached_likelihood_skips_duration_preparation(fitted_detector, monkeypat
 
 
 @pytest.mark.integration
-def test_custom_likelihood_signature_remains_supported(fitted_detector, monkeypatch):
-    """An override with the existing row-slice API needs no new keyword."""
+def test_custom_likelihood_with_the_detector_signature(fitted_detector, monkeypatch):
+    """An override with the detector's signature is called by chunk."""
     detector, args = fitted_detector
     original = detector.compute_log_likelihood
     time = np.arange(31) * 0.002
     expected = np.asarray(original(*args, time_edges=time))
 
     @row_slice_aware
-    def custom_likelihood(time, *args, is_missing=None, row_slice=None):
+    def custom_likelihood(*args, time_edges, is_missing=None, row_slice=None):
         return original(
-            *args, time_edges=time, is_missing=is_missing, row_slice=row_slice
+            *args, time_edges=time_edges, is_missing=is_missing, row_slice=row_slice
         )
 
     monkeypatch.setattr(detector, "compute_log_likelihood", custom_likelihood)

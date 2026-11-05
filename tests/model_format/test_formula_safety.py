@@ -27,10 +27,17 @@ from non_local_detector.likelihoods import sorted_spikes_glm
 from non_local_detector.model_format import read_model_summary
 from tests.model_format._compare import assert_same_fitted_state
 from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
+from tests.model_format.test_refusals import _edit_json
 
 pytestmark = pytest.mark.integration
 
 ATTACKS = ["1 + C(speed, breakpoint)", "1 + __import__('os').system('x')"]
+# Every evaluation of SENTINEL_FORMULA appends to SENTINEL_CALLS.
+SENTINEL_CALLS: list[int] = []
+SENTINEL_FORMULA = (
+    "1 + I(__import__('tests.model_format.test_formula_safety', fromlist=['_'])"
+    ".SENTINEL_CALLS.append(1) or speed)"
+)
 # Outside the formula grammar, but a formula a user may fit with.
 OUTSIDE_GRAMMAR = "1 + np.tanh(speed) + I(speed % 2.0)"
 
@@ -288,6 +295,19 @@ def _refit(detector, sorted_recording):
     )
 
 
+def test_a_formula_given_to_a_fitted_model_needs_a_refit_to_save(
+    fitted_outside_grammar, tmp_path
+):
+    path = tmp_path / "model.nld"
+    fitted_outside_grammar.save_model(path)
+    with pytest.warns(ParameterWarning, match="trust_formulas=True"):
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+    loaded.discrete_transition_type.formula = "1 + speed"
+
+    with pytest.raises(ValidationError, match="changed after it was fitted"):
+        loaded.save_model(tmp_path / "again.nld")
+
+
 @pytest.mark.parametrize("formula", ATTACKS)
 @pytest.mark.parametrize("fit_before_saving", [True, False], ids=["fitted", "unfitted"])
 def test_a_model_loaded_for_inspection_refuses_to_fit(
@@ -310,6 +330,45 @@ def test_a_model_loaded_for_inspection_refuses_to_fit(
     with pytest.raises(ValidationError, match="trust_formulas=True") as refused:
         _refit(loaded, sorted_recording)
     assert repr(formula) in str(refused.value)
+
+
+def test_a_fitted_file_without_stored_covariates_still_marks_its_formula(
+    fitted, sorted_recording, tmp_path
+):
+    """A fitted file whose covariates are null and whose transitions are
+    stored, as a stationary transition's are, cannot carry a formula past the
+    check: loading marks it, and refitting refuses it instead of evaluating
+    it. patsy is not patched out, so an evaluation would run the payload."""
+    path = tmp_path / "model.nld"
+    fitted.save_model(path)
+    _with_formula(path, SENTINEL_FORMULA)
+    n_states = len(fitted.state_names)
+
+    def stationary(state):
+        state["discrete_transition_covariate_data"] = None
+        state["discrete_state_transitions"] = np.full(
+            (n_states, n_states), 1 / n_states
+        ).tolist()
+
+    _edit_json(path, "state.json", stationary)
+    SENTINEL_CALLS.clear()
+
+    with pytest.warns(ParameterWarning, match="trust_formulas=True"):
+        loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
+    with pytest.raises(ValidationError, match="trust_formulas=True"):
+        _refit(loaded, sorted_recording)
+
+    assert loaded.discrete_transition_type.formula == UntrustedFormula(SENTINEL_FORMULA)
+    assert SENTINEL_CALLS == []
+
+
+def test_the_sentinel_formula_runs_when_evaluated(sorted_recording):
+    """The payload of the test above does run if patsy evaluates it."""
+    SENTINEL_CALLS.clear()
+
+    _fit(sorted_recording, SENTINEL_FORMULA)
+
+    assert SENTINEL_CALLS
 
 
 def test_an_unfitted_model_with_a_trusted_formula_loads_without_warning(

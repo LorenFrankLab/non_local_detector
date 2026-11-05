@@ -8,7 +8,7 @@ used in Hidden Markov Model-based neural decoding.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import Literal
 
 import numpy as np
@@ -16,7 +16,7 @@ import numpy as np
 from non_local_detector.continuous_state_transitions import ContinuousTransition
 from non_local_detector.discrete_state_transitions import DiscreteTransition
 from non_local_detector.environment import Environment
-from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.initial_conditions import ContinuousInitialCondition
 from non_local_detector.observation_models import ObservationModel
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "ContinuousTransitions",
     "DiscreteTransitions",
     "Environments",
+    "EvidenceAccumulation",
     "FrozenTransitionRows",
     "InferenceMode",
     "Observations",
@@ -33,6 +34,7 @@ __all__ = [
     "StateNames",
     "Stickiness",
     "TransitionRepresentation",
+    "TransitionStatistics",
 ]
 
 
@@ -60,11 +62,12 @@ Can be a single ObservationModel, list of models for different conditions,
 or None when observation models are not explicitly specified.
 """
 
-ContinuousInitialConditions = list[UniformInitialConditions]
+ContinuousInitialConditions = Sequence[ContinuousInitialCondition]
 """Type alias for continuous initial condition specifications.
 
-List of initial condition models, typically UniformInitialConditions,
-one for each discrete state in the HMM.
+Sequence of initial condition models, one for each discrete state in the HMM.
+Each entry is any object satisfying the ``ContinuousInitialCondition``
+protocol (e.g., UniformInitialConditions or a user-defined class).
 """
 
 Stickiness = float | np.ndarray
@@ -133,3 +136,16 @@ ReturnOutputs = OutputName | Collection[OutputName] | None
 """A ``return_outputs`` value: one output name, any non-string collection of
 them (list, tuple, set, frozenset), or None for the smoother only. A name
 means the same alone or in a collection."""
+
+# ---------------------------------------------------------------------------
+# String options of checkpointed_forward_backward
+# ---------------------------------------------------------------------------
+
+EvidenceAccumulation = Literal["stable", "reference"]
+"""How the marginal log likelihood is summed: per-row increments in host
+float64 (``"stable"``) or the original running total in the working dtype
+(``"reference"``)."""
+
+TransitionStatistics = Literal["counts", "responses"]
+"""Expected discrete transitions accumulated in the replay: summed over the
+recording (``"counts"``) or kept per row (``"responses"``)."""
