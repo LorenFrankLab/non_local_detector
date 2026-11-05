@@ -388,6 +388,69 @@ def test_empirical_movement_does_not_pair_samples_across_excluded_samples(
     np.testing.assert_array_equal(transition, expected)
 
 
+def _l_track_environment():
+    """L-shaped track graph with a gap bin between its two edges."""
+    import networkx as nx
+
+    graph = nx.Graph()
+    for node, xy in {0: (0.0, 0.0), 1: (50.0, 0.0), 2: (50.0, 50.0)}.items():
+        graph.add_node(node, pos=xy)
+    graph.add_edge(0, 1, distance=50.0, edge_id=0)
+    graph.add_edge(1, 2, distance=50.0, edge_id=1)
+    return Environment(
+        place_bin_size=5.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=15.0,
+    )
+
+
+def _open_field_with_sparse_bins():
+    """2-D random walk whose rarely visited bins are left off the interior."""
+    rng = np.random.default_rng(0)
+    position = np.cumsum(rng.normal(size=(5000, 2)), axis=0)
+    env = Environment(place_bin_size=5.0, bin_count_threshold=5)
+    return env.fit_place_grid(position, infer_track_interior=True), position
+
+
+@pytest.mark.parametrize("layout", ["track_graph", "open_field"])
+def test_empirical_movement_bins_positions_as_the_environment_does(layout):
+    """Positions are assigned to bins by ``Environment.get_bin_ind``.
+
+    It snaps a position that lands in a bin off the track interior, such as
+    the end of a track edge next to an ``edge_spacing`` gap, or a rarely
+    visited open-field bin, to the nearest interior bin. Binned by the raw
+    bin edges instead, those steps went to bins the decoder drops, so the
+    interior rows leaked mass.
+    """
+    if layout == "track_graph":
+        # Laps along the L in 2-D, through the junction node at linear 50.
+        first = np.stack([np.linspace(0.0, 50.0, 51), np.zeros(51)], axis=1)
+        second = np.stack([np.full(51, 50.0), np.linspace(0.0, 50.0, 51)], axis=1)
+        lap = np.concatenate([first, second[1:], second[::-1][1:], first[::-1][1:]])
+        position = np.concatenate([lap] * 3)
+        env = _l_track_environment().fit_place_grid(position)
+    else:
+        env, position = _open_field_with_sparse_bins()
+    interior = env.is_track_interior_flat_
+    assert not interior.all()
+
+    transition = EmpiricalMovement().make_state_transition(
+        (env,), TransitionContext(position=position)
+    )
+    bins = env.get_bin_ind(env.decoding_position(position))
+
+    n_bins = interior.size
+    expected = np.zeros((n_bins, n_bins))
+    np.add.at(expected, (bins[:-1], bins[1:]), 1)
+    expected /= np.maximum(expected.sum(axis=1, keepdims=True), 1)
+    np.testing.assert_allclose(transition, expected, rtol=1e-12)
+    assert not transition[~interior].any()
+    assert not transition[:, ~interior].any()
+    visited = np.unique(bins[:-1])
+    np.testing.assert_allclose(transition[visited].sum(axis=1), 1.0, rtol=1e-12)
+
+
 @pytest.mark.parametrize("encoding_group", [0, 1])
 def test_context_construction_routes_give_identical_empirical_movement(
     encoding_group,

@@ -923,7 +923,10 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
             points, in ``encoding_group``, in this environment (all if
             ``environment_labels`` is None) and finite are counted, so no
             step is taken across an excluded stretch; see
-            ``TransitionContext`` for the defaults.
+            ``TransitionContext`` for the defaults. Positions are binned by
+            ``Environment.get_bin_ind``, so a position off the track interior
+            counts in the nearest interior bin and one outside the grid in
+            the bin at its edge.
 
         Returns
         -------
@@ -963,24 +966,23 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
         # dropping the others would take a step across each excluded stretch.
         position = np.full((n_time, used_position.shape[1]), np.nan)
         position[is_used] = used_position
-        is_step = np.all(np.isfinite(position[:-1]), axis=1) & np.all(
-            np.isfinite(position[1:]), axis=1
-        )
-        source, destination = position[:-1][is_step], position[1:][is_step]
+        is_finite = np.all(np.isfinite(position), axis=1)
+        is_step = is_finite[:-1] & is_finite[1:]
+        in_step = np.zeros(n_time, dtype=bool)
+        in_step[:-1] |= is_step
+        in_step[1:] |= is_step
+        # Bins as everywhere else in the package: a position in a bin off the
+        # track interior (an edge_spacing gap, a rarely visited bin) snaps to
+        # the nearest interior bin, which the decoder keeps.
+        bin_ind = np.zeros(n_time, dtype=np.intp)
+        bin_ind[in_step] = environment.get_bin_ind(position[in_step])
+        source, destination = bin_ind[:-1][is_step], bin_ind[1:][is_step]
         if self.is_time_reversed:
             source, destination = destination, source
-        samples = np.concatenate((source, destination), axis=1)
-        # Fitted edges define the source and destination ranges, including
-        # environments whose ranges were inferred from their position data.
-        state_transition, _ = np.histogramdd(
-            samples,
-            bins=environment.edges_ * 2,
-        )
-        original_shape = state_transition.shape
-        n_position_dims = position.shape[1]
-        shape_2d = np.prod(original_shape[:n_position_dims])
+        n_bins = environment.place_bin_centers_.shape[0]
+        counts = np.bincount(source * n_bins + destination, minlength=n_bins**2)
         state_transition = _normalize_row_probability(
-            state_transition.reshape((shape_2d, shape_2d))
+            counts.reshape((n_bins, n_bins)).astype(float)
         )
 
         return np.linalg.matrix_power(state_transition, self.speedup)
