@@ -95,6 +95,10 @@ from non_local_detector.model_format._registry import (
     spec_for_object,
     unregistered_type_error,
 )
+from non_local_detector.models._em import (
+    _EM_DIAGNOSTIC_ATTRIBUTES,
+    _restore_em_diagnostics,
+)
 from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
@@ -152,6 +156,7 @@ _REBUILT = frozenset(
         "environments_",
         "encoding_model_",
         "state_space_",
+        "_em_diagnostics_",
         "discrete_state_transitions_",
         "discrete_transition_design_matrix_",
         "discrete_transition_smoothness_matrix_",
@@ -770,7 +775,7 @@ def detector_documents(
             state[name] = encoder.encode(
                 getattr(detector.state_space_, attribute), name
             )
-        elif attribute in fitted:
+        elif hasattr(detector, attribute):
             state[name] = encoder.encode(getattr(detector, attribute), name)
     if getattr(detector, "_discrete_transition_covariate_data_", None) is None:
         state["discrete_state_transitions"] = encoder.encode(
@@ -1313,9 +1318,15 @@ def _build_detector(
         for entry in state["stored_transition_blocks"]
     }
     fingerprints = decoder.decode(state["fingerprints"])
+    em_diagnostics = {}
     for name, attribute in _STORED:
-        if name in values and name not in _STATE_SPACE_STORED:
+        if name not in values or name in _STATE_SPACE_STORED:
+            continue
+        if attribute in _EM_DIAGNOSTIC_ATTRIBUTES:
+            em_diagnostics[attribute] = values[name]
+        else:
             setattr(detector, attribute, values[name])
+    _restore_em_diagnostics(detector, em_diagnostics)
     _check_fingerprints(fingerprints, len(environments))
     layout = state_layout(
         detector.observation_models, environments, detector.local_position_std

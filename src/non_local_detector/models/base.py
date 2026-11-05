@@ -99,6 +99,7 @@ from non_local_detector.models._checkpointed import (
 
 # EM looks these names up in models._em: patch them there, not here.
 from non_local_detector.models._em import (
+    _EMDiagnostics,
     _EMMixin,
     _require_observed_bins,
     _resolve_em_options,
@@ -574,26 +575,27 @@ class _DetectorBase(
     converged_ : bool
         True if EM converged within max_iter iterations and the final E-step,
         which evaluates the returned parameters, did not decrease the
-        penalized log-likelihood. Set by ``estimate_parameters``.
+        penalized log-likelihood. Read-only, set by ``estimate_parameters``
+        and cleared by ``fit``, as are the next two and
+        ``degenerate_timesteps_``.
     n_iter_ : int
-        Number of EM iterations actually performed. Set by
-        ``estimate_parameters``.
+        Number of EM iterations actually performed.
     em_monotonicity_violations_ : list[int]
         Iteration indices (1-based) where the penalized log-likelihood
         (marginal log-likelihood plus the discrete-transition log prior)
         decreased; the final E-step counts as iteration ``n_iter_ + 1``.
-        Empty list when EM is well-behaved. Set by ``estimate_parameters``.
+        Empty list when EM is well-behaved.
     degenerate_timesteps_ : np.ndarray
         Time indices (0-based) where the final E-step had all-``-inf``
         log-likelihoods (every state impossible) and the posterior fell back
-        to the predicted distribution. Empty array when none occur. Set by
-        ``estimate_parameters`` (reflects the training data); ``predict`` does
-        not refresh it, though it still logs a degenerate-timestep warning for
-        the data it is given.
+        to the predicted distribution. Empty array when none occur. Reflects
+        the training data; ``predict`` does not refresh it, though it still
+        logs a degenerate-timestep warning for the data it is given.
     discrete_initial_conditions_ : np.ndarray, shape (n_states,)
         Fitted initial-condition distribution over discrete states. Set by
-        ``estimate_parameters``; initially equal to the user-supplied
-        ``discrete_initial_conditions`` constructor argument.
+        ``estimate_parameters``, starting from the user-supplied
+        ``discrete_initial_conditions`` constructor argument, and cleared by
+        ``fit``.
     state_space_ : StateSpace
         The fit's state bins and continuous transition, with the
         ``state_names``, ``observation_models``,
@@ -615,10 +617,6 @@ class _DetectorBase(
     discrete_transition_smoothness_: np.ndarray | None
     discrete_transition_coefficient_covariance_: np.ndarray | None
     state_space_: StateSpace
-    converged_: bool
-    n_iter_: int
-    em_monotonicity_violations_: list[int]
-    degenerate_timesteps_: np.ndarray
     initial_conditions_: np.ndarray
 
     def __init__(
@@ -1393,6 +1391,48 @@ class _DetectorBase(
             "continuous_state_transitions_"
         ).continuous_transitions
 
+    def _fitted_em_diagnostics(self, name: str) -> _EMDiagnostics:
+        """Diagnostics of the last EM run, or NotFittedError naming ``name``."""
+        diagnostics = self.__dict__.get("_em_diagnostics_")
+        if diagnostics is None:
+            msg = (
+                f"{name} is set by estimate_parameters, and this detector's "
+                "last fit did not run it"
+            )
+            raise NotFittedError(msg, hint="Call estimate_parameters(...) first.")
+        return cast("_EMDiagnostics", diagnostics)
+
+    @property
+    def n_iter_(self) -> int:
+        """Number of EM iterations performed by the last ``estimate_parameters``."""
+        return self._fitted_em_diagnostics("n_iter_").n_iter
+
+    @property
+    def converged_(self) -> bool:
+        """Whether the last ``estimate_parameters`` converged.
+
+        EM must converge within max_iter iterations and the final E-step must
+        not decrease the penalized log-likelihood.
+        """
+        return self._fitted_em_diagnostics("converged_").converged
+
+    @property
+    def em_monotonicity_violations_(self) -> list[int]:
+        """Iterations (1-based) whose penalized log-likelihood decreased.
+
+        The final E-step counts as iteration ``n_iter_ + 1``.
+        """
+        return list(
+            self._fitted_em_diagnostics(
+                "em_monotonicity_violations_"
+            ).monotonicity_violations
+        )
+
+    @property
+    def degenerate_timesteps_(self) -> np.ndarray:
+        """Time indices (0-based) the final E-step found all-impossible."""
+        return self._fitted_em_diagnostics("degenerate_timesteps_").degenerate_timesteps
+
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.
 
@@ -1637,8 +1677,11 @@ class _DetectorBase(
                 "discrete_transition_covariate_data={'speed': speed})",
             )
         self._invalidate_stored_log_likelihood()  # stale after a refit
-        # A refit replaces every structure a loaded detector rebuilt.
+        # A refit replaces every structure a loaded detector rebuilt, and what
+        # an earlier estimation found no longer describes the detector.
         self.__dict__.pop("_rebuild_check_", None)
+        self.__dict__.pop("_em_diagnostics_", None)
+        self.__dict__.pop("discrete_initial_conditions_", None)
         self.initialize_environments(
             position=position,
             environment_labels=environment_labels,

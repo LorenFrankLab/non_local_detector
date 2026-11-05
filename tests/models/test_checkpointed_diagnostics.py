@@ -5,6 +5,8 @@ from functools import wraps
 import numpy as np
 import pytest
 
+from non_local_detector.models._em import _EMDiagnostics
+
 pytestmark = pytest.mark.integration
 
 
@@ -37,7 +39,7 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
     monkeypatch.setattr(model, "compute_log_likelihood", damaged)
     # The result describes the predicted recording; the public final-E-step
     # attribute continues to describe training data.
-    model.degenerate_timesteps_ = np.array([98])
+    model._em_diagnostics_ = _EMDiagnostics(0, False, (), np.array([98]))
     missing = np.zeros(100, bool)
     missing[45] = neutralize_missing
     expected = np.array([7] if neutralize_missing else [7, 45])

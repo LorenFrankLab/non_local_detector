@@ -29,6 +29,10 @@ from non_local_detector.likelihoods import (
     _record_legacy_encoding_algorithm,
     _unify_stored_encoding_values,
 )
+from non_local_detector.models._em import (
+    _EM_DIAGNOSTIC_ATTRIBUTES,
+    _restore_em_diagnostics,
+)
 from non_local_detector.models._results import (
     label_checkpointed_result,
     unify_marginal_log_likelihoods,
@@ -151,6 +155,15 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     # Earlier versions cached the environment lookup on the detector;
     # nothing reads it now.
     detector.__dict__.pop("_env_lookup_cache_", None)
+    # Earlier versions kept each EM diagnostic in an attribute of its own.
+    _restore_em_diagnostics(
+        detector,
+        {
+            name: detector.__dict__.pop(name)
+            for name in _EM_DIAGNOSTIC_ATTRIBUTES
+            if name in detector.__dict__
+        },
+    )
     covariate_data = state.get("_discrete_transition_covariate_data_")
     # A formula a saved model file was not trusted with stays unevaluated:
     # the copy is for inspection only, as the loaded model is.

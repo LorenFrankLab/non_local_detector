@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### EM diagnostics
+
+- **Changed:** `fit` clears what an earlier `estimate_parameters` reported. `n_iter_`, `converged_`, `em_monotonicity_violations_`, `degenerate_timesteps_` and `discrete_initial_conditions_` are unset after a `fit` that follows one (reading the first four raises `NotFittedError`, an `AttributeError`, naming `estimate_parameters`), so the detector looks like a fresh fit; before, they stayed and described a model that no longer existed. The four are now read-only properties. Pickles from earlier versions and saved model files keep their values, and the saved format is unchanged.
+
 ### Extension checks
 
 - **Fixed:** a likelihood algorithm whose `predict` returns the wrong shape raises `ValidationError` naming the algorithm and the state. Before, a shape that broadcast to the state's block, such as one column for every bin, spread that value over the bins silently.
