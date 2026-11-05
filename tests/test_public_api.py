@@ -121,3 +121,14 @@ SPYGLASS_IMPORTS = {
 def test_spyglass_imports_are_listed(module_name):
     module = importlib.import_module(module_name)
     assert set(SPYGLASS_IMPORTS[module_name]) <= set(module.__all__)
+
+
+@pytest.mark.unit
+def test_detector_constructor_types_are_top_level():
+    """The types a detector's constructor takes import from the package root."""
+    from non_local_detector.environment import Environment
+    from non_local_detector.observation_models import ObservationModel
+
+    for cls in (Environment, ObservationModel):
+        assert cls.__name__ in non_local_detector.__all__
+        assert getattr(non_local_detector, cls.__name__) is cls

@@ -2,8 +2,8 @@
 
 The models (detectors, classifiers and decoders) are in
 :mod:`non_local_detector.models` and re-exported here, with the
-:class:`Environment`, the transition and initial-condition types, the time-bin
-helpers and the package's exceptions.
+:class:`Environment` and :class:`ObservationModel`, the transition and
+initial-condition types, the time-bin helpers and the package's exceptions.
 """
 
 import contextlib
@@ -49,6 +49,7 @@ from non_local_detector.models import (
     NoSpikeContFragSortedSpikesClassifier,
     SortedSpikesDecoder,
 )
+from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
     calculate_time_edges,
     time_edges_from_centers,
@@ -83,6 +84,7 @@ __all__ = [
     "NonLocalSortedSpikesDetector",
     "NotFittedError",
     "NumericalWarning",
+    "ObservationModel",
     "ParameterWarning",
     "RandomWalk",
     "RandomWalkDirection1",
