@@ -248,6 +248,27 @@ def test_decoding_after_set_params_warns_once(fitted, decoding):
     assert "Refit" in str(warning.message)
 
 
+def test_a_parameter_set_to_none_after_a_fit_is_a_change(sorted_sim):
+    """None is a parameter's saved form, not the lack of one."""
+    time, position, spike_times = sorted_sim
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=2.0,
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times)
+    detector.set_params(local_position_std=None)
+
+    with pytest.warns(ParameterWarning) as record:
+        detector.predict(
+            spike_times=spike_times,
+            time_edges=time_edges_from_centers(time[:50]),
+            position_time=time,
+            position=position,
+        )
+
+    assert _changed_parameter_warnings(record, "local_position_std")
+
+
 @pytest.mark.parametrize("name", RECORDED)
 def test_decoding_after_setting_an_equal_copy_does_not_warn(fitted, name):
     detector, decode, expected = fitted

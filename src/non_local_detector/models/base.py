@@ -1947,7 +1947,7 @@ class _DetectorBase(
             changed_layout_parameters,
         )
 
-        changed = changed_layout_parameters(self, skip_incomparable=True)
+        changed = changed_layout_parameters(self)
         if changed:
             warnings.warn(
                 f"The detector's {changed} changed after it was fitted; "

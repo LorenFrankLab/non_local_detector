@@ -637,51 +637,44 @@ def _stored_form(value: Any, name: str) -> JSON:
     Two values with the same stored form save to the same file, whatever
     their objects' ``==`` says (``Discrete`` compares by identity, and a
     dataclass holding an array cannot reduce ``==`` to one bool).
+
+    Returns
+    -------
+    form : dict or None
+        ``{name: node}``, so a value stored as null still has a form; None if
+        it holds what a saved model cannot, an object of a type not registered
+        for saving or an object array.
     """
-    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, name)
+    try:
+        return {name: Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, name)}
+    except ValidationError:
+        return None
 
 
-def changed_layout_parameters(
-    detector: "_DetectorBase", *, skip_incomparable: bool = False
-) -> list[str]:
+def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
     """Return the recorded parameters that changed since the detector was fitted.
 
     A parameter changed when its saved form differs from that of the value
     its fit recorded in ``state_space_`` (see ``layout_parameters``), or the
-    recorded value has none, as a file's unevaluated formula does.
+    recorded value has none, as a file's unevaluated formula does. A parameter
+    that has no saved form cannot be compared and is left out; ``save_model``
+    refuses it when encoding the parameters.
 
     Parameters
     ----------
     detector : _DetectorBase
         Fitted detector.
-    skip_incomparable : bool, optional
-        Leave out a parameter that holds what a saved model cannot, which has
-        no saved form, instead of raising. By default False.
 
     Returns
     -------
     changed : list of str
         Names of the changed parameters, in ``layout_parameters`` order.
-
-    Raises
-    ------
-    ValidationError
-        If a parameter holds what a saved model cannot, an object of a type
-        not registered for saving or an object array, and
-        ``skip_incomparable`` is False.
     """
     changed = []
     for name, value in layout_parameters(detector).items():
-        try:
-            form = _stored_form(value, name)
-        except ValidationError:
-            if skip_incomparable:
-                continue
-            raise
-        try:
-            if form != _stored_form(getattr(detector.state_space_, name), name):
-                changed.append(name)
-        except ValidationError:
+        form = _stored_form(value, name)
+        recorded = getattr(detector.state_space_, name)
+        if form is not None and form != _stored_form(recorded, name):
             changed.append(name)
     return changed
 
