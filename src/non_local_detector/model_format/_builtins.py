@@ -11,11 +11,9 @@ from typing import Any
 from non_local_detector.model_format._registry import read_fields
 
 # (stored name, class, stored fields, options); fields None means "not a
-# dataclass". A field added to one of these classes is a new stored name,
-# which earlier releases refuse, so it needs a FORMAT_VERSION bump (pinned in
-# tests/model_format/test_format_names.py), and a default for files written
-# before it: in options' "defaults" (see ``register_type``) or the version's
-# MIGRATIONS entry.
+# dataclass". Options may give "defaults" for optional fields (see
+# ``register_type``); a field added to one of these classes needs one, so
+# files written before it still load.
 BuiltinType = tuple[str, type, tuple[str, ...] | None, dict[str, Any]]
 
 ENVIRONMENT_FIELDS = (
@@ -72,7 +70,7 @@ def _restored(
 
 def _stateless(cls: type) -> dict[str, Callable[..., Any]]:
     def from_state(state: dict[str, Any]) -> Any:
-        read_fields(state, (), {}, cls)  # refuses any field
+        read_fields(state, (), {}, cls)  # warns of any field
         return cls()
 
     return {"to_state": lambda obj: {}, "from_state": from_state}  # noqa: ARG005 -- stateless

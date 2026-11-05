@@ -35,8 +35,16 @@ from non_local_detector.model_format._container import (
     is_saved_model_format,
     open_model,
 )
-from non_local_detector.model_format._detector import check_documents, data_errors
-from non_local_detector.model_format._registry import register_type, registered_types
+from non_local_detector.model_format._detector import (
+    check_documents,
+    data_errors,
+    encoding_model_keys,
+)
+from non_local_detector.model_format._registry import (
+    ignoring_unread_names,
+    register_type,
+    registered_types,
+)
 
 if TYPE_CHECKING:
     from non_local_detector.models.base import _DetectorBase
@@ -119,13 +127,22 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
     ValidationError
         If the file is a pickle; read it with ``load_model``.
     DataError
-        If the file is corrupt or was edited, or holds a name this version
-        does not read (written by a newer or different version).
+        If the file is corrupt or was edited.
+
+    Warns
+    -----
+    CompatibilityWarning
+        Once, if the file holds names this version does not read (a newer
+        version wrote it), which are left out.
     """
     if not is_saved_model_format(path):
         msg = f"{path} is not in the saved-model format (it is probably a pickle)"
         raise ValidationError(msg, hint="Read it with load_model.")
-    with open_model(path) as stored, data_errors("read"):
+    with (
+        open_model(path) as stored,
+        ignoring_unread_names(stored.manifest.get("package_version")),
+        data_errors("read"),
+    ):
         check_documents(stored)
         return _summary(stored)
 
@@ -161,7 +178,7 @@ def _summary(stored: StoredModel) -> dict[str, Any]:
             **{
                 key: decoder.decode(value)
                 for key, value in entry["model"].items()
-                if _is_small(value)
+                if _is_small(value) and key in encoding_model_keys(entry["model"])
             },
         }
         for entry in state["encoding_models"]

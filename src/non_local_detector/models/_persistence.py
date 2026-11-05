@@ -361,8 +361,13 @@ class _PersistenceMixin:
             class this is called on.
         DataError
             If the file is corrupt or was edited (an array that does not
-            match its checksum, a malformed or missing entry), or holds a
-            name this version does not read.
+            match its checksum, a malformed or missing entry).
+
+        Warns
+        -----
+        CompatibilityWarning
+            Once, if the file holds names this version does not read (a
+            newer version wrote it), which are ignored.
         """
         from non_local_detector.model_format._container import is_saved_model_format
 

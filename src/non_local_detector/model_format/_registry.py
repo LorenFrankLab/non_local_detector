@@ -7,9 +7,12 @@ own types under fixed ``nld.`` names on first use; other packages register their
 with :func:`register_type`.
 """
 
+import contextlib
+import contextvars
 import copy
 import dataclasses
-from collections.abc import Callable, Mapping
+import warnings
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,6 +55,74 @@ class TypeSpec:
     block_needs_fit_data: bool = False
 
 
+# The names of a saved model this version does not read, collected while one
+# model loads (see ``ignoring_unread_names``).
+_UNREAD: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "_UNREAD", default=None
+)
+
+
+def ignore_unread_names(where: str, names: Iterable[str]) -> None:
+    """Note names of a saved model that this version does not read.
+
+    A newer version of the package wrote them; loading ignores them and
+    warns once (``ignoring_unread_names``), or, outside a load, warns now.
+
+    Parameters
+    ----------
+    where : str
+        The document or object holding them, for the warning.
+    names : iterable of str
+        The names; none means nothing to note.
+    """
+    names = sorted(names)
+    if not names:
+        return
+    entry = f"{where} {names}"
+    collected = _UNREAD.get()
+    if collected is None:
+        _warn_unread([entry], None)
+    else:
+        collected.append(entry)
+
+
+@contextlib.contextmanager
+def ignoring_unread_names(package_version: str | None) -> Iterator[None]:
+    """Warn once, after loading a saved model, of the names it ignored.
+
+    Parameters
+    ----------
+    package_version : str or None
+        The version that wrote the file, named in the warning.
+    """
+    token = _UNREAD.set([])
+    try:
+        yield
+        collected = _UNREAD.get() or []
+    finally:
+        _UNREAD.reset(token)
+    if collected:
+        _warn_unread(collected, package_version)
+
+
+def _warn_unread(entries: list[str], package_version: str | None) -> None:
+    from non_local_detector._warnings import user_stacklevel
+    from non_local_detector.exceptions import CompatibilityWarning
+
+    writer = (
+        f"non_local_detector {package_version}"
+        if package_version
+        else "a newer version of non_local_detector"
+    )
+    warnings.warn(
+        f"The saved model holds names this version does not read, which "
+        f"were ignored: {'; '.join(entries)}. It was written by {writer}, a "
+        "newer version; upgrade to use them.",
+        CompatibilityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
 _BY_NAME: dict[str, TypeSpec] = {}
 _BY_CLASS: dict[type, TypeSpec] = {}
 _BUILTINS_REGISTERED = False
@@ -66,27 +137,18 @@ def read_fields(
     """Return the ``names`` fields of a stored state, defaulting optional ones.
 
     A field added to a type after files were written is absent from those
-    files; ``defaults`` gives its value then (a copy). A field the type does
-    not store is refused: a newer or different version of the type wrote
-    it, and reading on without it could build a different object.
+    files; ``defaults`` gives its value then (a copy). A field not in
+    ``names``, written by a newer version of the type, is ignored with a
+    warning (``ignore_unread_names``).
 
     Raises
     ------
     DataError
-        If a field without a default is missing, or the state holds a field
-        not in ``names``.
+        If a field without a default is missing.
     """
     from non_local_detector.exceptions import DataError
 
-    unread = sorted(set(state) - set(names))
-    if unread:
-        package = cls.__module__.split(".")[0]
-        msg = f"The saved {cls.__qualname__} has fields {unread} that this version does not read"
-        raise DataError(
-            msg,
-            hint=f"The file was written by a newer or different version of "
-            f"{package}, or was edited. Read it with the version that wrote it.",
-        )
+    ignore_unread_names(f"{cls.__qualname__} fields", set(state) - set(names))
     values = {}
     for name in names:
         if name in state:
@@ -196,8 +258,9 @@ def register_type(
         For a dataclass registered without ``to_state``/``from_state``: the
         value of each optional field when a stored state lacks it, so a
         field added later reads files written before it. Other fields
-        missing from a state raise ``DataError``, as does a field the
-        dataclass does not store (written by a newer version of it).
+        missing from a state raise ``DataError``; a field the dataclass
+        does not store (written by a newer version of it) is ignored with a
+        ``CompatibilityWarning``.
 
     Raises
     ------
