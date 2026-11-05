@@ -1079,9 +1079,8 @@ def detector_from_stored(
         If the file is corrupt or was edited: a configuration key the
         detector does not take, a document name this version does not read
         (``check_documents``), missing fitted state, or a malformed entry.
-        Built-in ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError``
-        from reading the file become this, chained to the original; package
-        errors pass through unchanged.
+        Built-in errors from reading the file become this (``data_errors``),
+        chained to the original; package errors pass through unchanged.
     """
     with data_errors("rebuild"):
         check_documents(stored)
