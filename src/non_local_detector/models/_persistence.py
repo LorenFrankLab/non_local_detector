@@ -80,6 +80,21 @@ def _attribute_type(value: object) -> str | None:
     return None
 
 
+def _netcdf_attribute(value: object) -> object:
+    """Return a results attribute in a form every netCDF format can store.
+
+    netCDF holds no booleans, and netCDF3, written when neither netCDF4 nor
+    h5netcdf is installed, no integers beyond 32 bits, such as a cache size in
+    bytes. Floats hold such a value exactly up to 2**53. ``_attribute_type``
+    records the type ``load_results`` restores.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if type(value) is int and not -(2**31) <= value < 2**31:
+        return float(value)
+    return value
+
+
 def _restore_attribute(value: Any, attribute_type: str) -> Any:
     """Return an attribute as read from netCDF with its recorded type."""
     if attribute_type == "bool":
@@ -488,8 +503,9 @@ class _PersistenceMixin:
         Save the results to a netCDF file.
 
         ``state_bins`` is a MultiIndex, which netCDF does not support, so it
-        is converted before saving. Boolean attributes are stored as integers
-        and the internal ``_native_metadata`` attribute is dropped. The dtype
+        is converted before saving. Boolean attributes are stored as integers,
+        integer attributes beyond 32 bits as floats (exact up to 2**53), and
+        the internal ``_native_metadata`` attribute is dropped. The dtype
         of each integer variable and coordinate, and the type of each
         boolean, integer, float and numeric-array attribute, are recorded so
         that ``load_results`` restores them: netCDF3, written when neither netCDF4 nor h5netcdf is
@@ -520,7 +536,7 @@ class _PersistenceMixin:
             else results.copy(deep=False)
         )
         export.attrs = {
-            name: int(value) if isinstance(value, (bool, np.bool_)) else value
+            name: _netcdf_attribute(value)
             for name, value in results.attrs.items()
             if name != "_native_metadata"
         }
