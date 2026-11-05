@@ -7,6 +7,7 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    SortedSpikesDecoder,
 )
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 
@@ -196,3 +197,23 @@ def test_track_interior_holes_do_not_warn():
         position=position,
         position_time=time,
     )
+
+
+@pytest.mark.parametrize("method", DECODE_METHODS)
+def test_position_a_decoder_ignores_is_not_checked(method):
+    """A model whose likelihood never reads position (no Local state, no
+    non-local penalty) decodes with a position it would reject otherwise."""
+    detector = SortedSpikesDecoder(
+        environments=Environment(place_bin_size=2, position_range=((0, 10), (0, 10))),
+        infer_track_interior=False,
+        sampling_frequency=50.0,
+    ).fit(TIME, POSITION, **SPIKE_DATA["sorted"])
+    position_time = TIME.copy()
+    position_time[10] = position_time[9]
+    arguments = {
+        "position_time": position_time,
+        "position": np.column_stack([POSITION, POSITION[:, 0]]),
+        "time_edges": np.linspace(0, 2, 101),
+        **SPIKE_DATA["sorted"],
+    }
+    _decode(detector, method, arguments)

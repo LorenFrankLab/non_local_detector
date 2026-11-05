@@ -420,7 +420,8 @@ def _missing_bins(
         If ``is_missing`` does not have one entry per bin, or ``position`` does
         not have one row per ``position_time`` sample.
     DataError
-        If ``position_time`` is not finite and strictly increasing.
+        If ``position_time`` is not finite and increasing, strictly when
+        ``reads_position``.
     """
     n_bins = len(time_edges) - 1
     if is_missing is not None:
@@ -439,8 +440,11 @@ def _missing_bins(
             got=f"{position.shape[0]} rows",
         )
     val.ensure_all_finite(position_time, "position_time")
-    # Strictly, as fitting requires: position is interpolated in time.
-    val.ensure_monotonic_increasing(position_time, "position_time", strict=True)
+    # Strictly when the likelihood interpolates position in time, as fitting
+    # requires.
+    val.ensure_monotonic_increasing(
+        position_time, "position_time", strict=reads_position
+    )
     if not reads_position:
         return is_missing
     affected = _bins_outside_tracking(time_edges, position_time)

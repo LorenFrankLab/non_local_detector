@@ -1280,8 +1280,8 @@ class _InputValidationMixin:
             If position is None but Local states or a non-local position
             penalty read it, position is 1-D (one column) while an
             environment has a track graph, which needs raw 2-D positions, or
-            position has another number of columns than a fitted
-            environment's positions.
+            the likelihood reads position and it has another number of
+            columns than a fitted environment's positions.
 
         Warns
         -----
@@ -1291,6 +1291,8 @@ class _InputValidationMixin:
         """
         if position is not None:
             self._validate_position_dimensionality(position, context="predict")
+            if not self._decode_reads_position():
+                return
             n_columns = 1 if position.ndim == 1 else position.shape[1]
             for environment in self.environments_:
                 expected = _position_columns(environment)
@@ -1307,11 +1309,10 @@ class _InputValidationMixin:
                         hint="Decode with the same position columns, in the same "
                         "order and units, as the detector was fitted with.",
                     )
-            if self._decode_reads_position():
-                _warn_if_off_grid(
-                    position[:, np.newaxis] if position.ndim == 1 else position,
-                    self.environments_,
-                )
+            _warn_if_off_grid(
+                position[:, np.newaxis] if position.ndim == 1 else position,
+                self.environments_,
+            )
             return
         if not self._decode_reads_position():
             return
