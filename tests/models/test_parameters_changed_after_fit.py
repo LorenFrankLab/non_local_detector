@@ -146,6 +146,29 @@ def test_decoding_after_setting_an_equal_copy_does_not_warn(fitted, name):
     )
 
 
+class _CopyRefusingName(str):
+    """A state name that fails if it is deep-copied."""
+
+    __slots__ = ()
+
+    def __deepcopy__(self, memo):
+        msg = "the live parameters were deep-copied"
+        raise AssertionError(msg)
+
+
+def test_decoding_does_not_copy_the_parameters(fitted):
+    """The change check runs on every decode, so it reads them in place."""
+    detector, decode, expected = fitted
+    names = [_CopyRefusingName(name) for name in detector.state_names]
+    unchanged = detector.copy().set_params(state_names=names)
+
+    actual = unchanged.predict(**decode, return_outputs="all")
+
+    np.testing.assert_array_equal(
+        actual.acausal_posterior.values, expected.acausal_posterior.values
+    )
+
+
 @pytest.mark.parametrize("change", CHANGES)
 def test_saving_after_set_params_is_refused(fitted, change, tmp_path):
     detector, _, _ = fitted

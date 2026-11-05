@@ -141,7 +141,7 @@ from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
     initial_conditions,
-    layout_parameters,
+    recorded_layout_parameters,
     state_layout,
 )
 from non_local_detector.observation_models import ObservationModel
@@ -1696,7 +1696,7 @@ class _DetectorBase(
             max_dense_transition_bytes=max_dense_transition_bytes,
         )
         self.state_space_ = StateSpace(
-            **layout_parameters(self),
+            **recorded_layout_parameters(self),
             state_ind=state_ind,
             bin_sizes=bin_sizes,
             is_track_interior=is_track_interior,

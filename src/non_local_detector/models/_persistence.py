@@ -35,7 +35,10 @@ from non_local_detector.models._results import (
     label_checkpointed_result,
     unify_marginal_log_likelihoods,
 )
-from non_local_detector.models._state_space import StateSpace, layout_parameters
+from non_local_detector.models._state_space import (
+    StateSpace,
+    recorded_layout_parameters,
+)
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 
@@ -269,7 +272,7 @@ def _upgrade_state_space(detector: "_DetectorBase", state: dict[str, Any]) -> No
     representation = stored["_transition_representation_"]
     max_bytes = stored["_max_dense_transition_bytes_"]
     detector.state_space_ = StateSpace(
-        **layout_parameters(detector),
+        **recorded_layout_parameters(detector),
         state_ind=state_ind,
         bin_sizes=bin_sizes,
         is_track_interior=stored["is_track_interior_state_bins_"],

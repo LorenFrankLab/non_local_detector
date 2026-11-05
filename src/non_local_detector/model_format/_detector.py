@@ -97,6 +97,7 @@ from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
     layout_parameters,
+    recorded_layout_parameters,
     state_layout,
 )
 
@@ -953,7 +954,7 @@ def _rebuild_state_space(
         max_dense_transition_bytes=max_dense_transition_bytes,
     )
     state_space = StateSpace(
-        **layout_parameters(detector),
+        **recorded_layout_parameters(detector),
         state_ind=state_ind,
         bin_sizes=bin_sizes,
         is_track_interior=is_track_interior,
