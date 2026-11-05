@@ -79,6 +79,10 @@ stored instead, since the training positions are not.
 A covariate transition's covariates are stored only as numeric or string
 arrays (a categorical as its codes and categories).
 
+A JAX array loads as a JAX array of its stored dtype. One that is 64-bit,
+saved with `JAX_ENABLE_X64` set, loads as a NumPy array when x64 is off,
+since JAX would round it to 32 bits.
+
 Rebuilding repeats the fit's arithmetic, so on the same machine a reloaded
 model decodes exactly as the original. A newer NumPy, patsy or
 non_local_detector could rebuild these structures differently, so the file

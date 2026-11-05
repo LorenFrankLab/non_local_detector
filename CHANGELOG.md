@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Environment.load_environment(filename, *, allow_pickle=False)` refuses to unpickle unless `allow_pickle=True`, since unpickling can run arbitrary code from the file, and refuses a file holding anything other than an environment. Pass `allow_pickle=True` for files you saved yourself with `save_environment`. A fitted detector's environments are saved with it by `save_model`, without pickle.
 - Format version 1 is frozen: `tests/compat_data/format_v1` holds a sorted-spikes and a clusterless `.nld` file written now, and the test suite checks that they load and decode to the posteriors saved with them.
 - **Fixed:** a `.nld` file whose JSON is nested too deeply to parse or decode raises `DataError` instead of `RecursionError`.
+- **Fixed:** a 64-bit JAX array in a `.nld` file saved with `JAX_ENABLE_X64` loads as a NumPy array of its stored values when x64 is off. It loaded as a 32-bit JAX array, silently rounding floats and wrapping integers beyond the int32 range.
 - Unpickling a detector drops the environment-lookup cache earlier versions kept on it, which nothing reads.
 - **Added:** `Environment.fit_place_grid_from_edges(edges, is_track_interior, ...)` fits the grid of an environment without a track graph from the bin edges and interior mask an earlier `fit_place_grid` chose (`edges_`, `is_track_interior_`), without the position data. The rebuilt grid (centers, boundary, bin graph, distances) is identical to the original fit's.
 
