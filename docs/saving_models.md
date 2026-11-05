@@ -240,9 +240,9 @@ A file written in a newer format version than the installed release reads is
 refused, naming the version to upgrade to.
 
 Reading is strict. A file holding a name the installed release does not
-read (an entry of `manifest.json` or `state.json`, a field of an entry, or a
-field of a stored object) raises `DataError` naming it and the package
-versions: a newer or different version wrote it, and reading on without it
+read (an entry of `manifest.json` or `state.json`, a field of an entry, or,
+for `load_model`, which builds them, a field of a stored object) raises
+`DataError` naming it and the package versions: a newer or different version wrote it, and reading on without it
 could build a different model. A fitted file missing a name its kind of
 model always has raises `DataError` as well, as does an encoding model whose
 keys are not exactly those its likelihood algorithm stores, or that names an
