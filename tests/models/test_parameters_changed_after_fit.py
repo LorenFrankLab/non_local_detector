@@ -6,15 +6,31 @@ next fit, and a detector whose parameters no longer describe its fit is not
 saved.
 """
 
+import copy
+
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
+from non_local_detector import (
+    Environment,
+    NonLocalSortedSpikesDetector,
+    RandomWalk,
+    SortedSpikesDecoder,
+    time_edges_from_centers,
+)
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
 from tests.models._helpers import SORTED_SIM_RATE
 
 pytestmark = pytest.mark.integration
+
+# The parameters a fit records in ``state_space_``.
+RECORDED = (
+    "state_names",
+    "observation_models",
+    "continuous_transition_types",
+    "local_position_std",
+)
 
 
 @pytest.fixture(scope="module")
@@ -86,3 +102,46 @@ def test_saving_after_set_params_is_refused(fitted, change, tmp_path):
     changed.set_params(**{change: detector.get_params(deep=False)[change]}).save_model(
         tmp_path / "model.nld"
     )
+
+
+@pytest.mark.parametrize("name", RECORDED)
+def test_saving_after_setting_an_equal_copy_works(fitted, name, tmp_path):
+    """An equal copy of a recorded parameter is not a change, whatever the
+    equality of its objects (``Discrete`` compares by identity)."""
+    detector, _, _ = fitted
+    value = copy.deepcopy(detector.get_params(deep=False)[name])
+    detector.copy().set_params(**{name: value}).save_model(tmp_path / "model.nld")
+
+
+def test_saving_after_copying_a_transition_with_an_array_field_works(
+    sorted_sim, tmp_path
+):
+    """A 2-D random walk's covariance is an array, which ``==`` cannot reduce."""
+    time, linear, spike_times = sorted_sim
+    position = np.column_stack([linear, 14.0 + 10.0 * np.sin(time)])
+    detector = SortedSpikesDecoder(
+        environments=Environment(place_bin_size=4.0),
+        continuous_transition_types=[[RandomWalk(movement_var=6.0 * np.eye(2))]],
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    )
+    detector.fit(time, position, spike_times)
+    detector.set_params(
+        continuous_transition_types=copy.deepcopy(detector.continuous_transition_types)
+    ).save_model(tmp_path / "model.nld")
+
+
+def test_saving_after_changing_a_transition_in_place_is_refused(fitted, tmp_path):
+    """The fit records copies, so an in-place change is a change too."""
+    detector, _, _ = fitted
+    changed = detector.copy()
+    walk = next(
+        transition
+        for row in changed.continuous_transition_types
+        for transition in row
+        if isinstance(transition, RandomWalk)
+    )
+    walk.movement_var = 2 * walk.movement_var
+
+    with pytest.raises(ValidationError, match="continuous_transition_types"):
+        changed.save_model(tmp_path / "model.nld")

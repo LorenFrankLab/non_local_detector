@@ -12,6 +12,7 @@ with the parameters they were built from, in a ``StateSpace``
 Saved detectors name ``StateSpace`` by this module's path.
 """
 
+import copy
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from logging import getLogger
@@ -160,7 +161,10 @@ class StateSpace:
 
 
 def layout_parameters(detector: Any) -> dict[str, Any]:
-    """Return the detector parameters a ``StateSpace`` records, as tuples.
+    """Return copies of the detector parameters a ``StateSpace`` records.
+
+    The copies are deep, so changing a parameter's objects in place after a
+    fit leaves the recorded ones as they were.
 
     Parameters
     ----------
@@ -174,14 +178,16 @@ def layout_parameters(detector: Any) -> dict[str, Any]:
         ``continuous_transition_types`` (a tuple of rows) as tuples, and
         ``local_position_std``.
     """
-    return {
-        "state_names": tuple(detector.state_names),
-        "observation_models": tuple(detector.observation_models),
-        "continuous_transition_types": tuple(
-            tuple(row) for row in detector.continuous_transition_types
-        ),
-        "local_position_std": detector.local_position_std,
-    }
+    return copy.deepcopy(
+        {
+            "state_names": tuple(detector.state_names),
+            "observation_models": tuple(detector.observation_models),
+            "continuous_transition_types": tuple(
+                tuple(row) for row in detector.continuous_transition_types
+            ),
+            "local_position_std": detector.local_position_std,
+        }
+    )
 
 
 def has_place_bins(

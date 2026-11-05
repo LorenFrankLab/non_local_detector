@@ -78,6 +78,7 @@ from non_local_detector.model_format._container import (
     FORMAT_NAME,
     FORMAT_VERSION,
     StoredModel,
+    array_digest,
     new_model_file,
     open_model,
     write_document,
@@ -617,18 +618,21 @@ def _fitted_attributes(
     return set(vars(detector)) - set(constructed) - _NOT_SAVED
 
 
-def _same_parameter(value: Any, fitted: Any) -> bool:
-    """Whether a parameter equals the value the fit recorded, item by item."""
-    if value is fitted:
-        return True
-    if isinstance(value, tuple) and isinstance(fitted, tuple):
-        return len(value) == len(fitted) and all(
-            _same_parameter(a, b) for a, b in zip(value, fitted, strict=True)
-        )
-    try:
-        return bool(np.all(value == fitted))
-    except (TypeError, ValueError):
-        return False
+class _DigestWriter:
+    """Stands in for ``ArrayWriter``: names each array by its ``.npy`` digest."""
+
+    def put(self, array: np.ndarray, where: str) -> str:  # noqa: ARG002 -- ArrayWriter.put signature
+        return array_digest(np.require(array, requirements="C"))
+
+
+def _stored_form(value: Any) -> JSON:
+    """Return ``value`` as a saved model stores it, its arrays named by content.
+
+    Two values with the same stored form save to the same file, whatever
+    their objects' ``==`` says (``Discrete`` compares by identity, and a
+    dataclass holding an array cannot reduce ``==`` to one bool).
+    """
+    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, "parameter")
 
 
 def detector_documents(
@@ -672,7 +676,7 @@ def detector_documents(
     changed = [
         name
         for name, value in layout_parameters(detector).items()
-        if not _same_parameter(value, getattr(detector.state_space_, name))
+        if _stored_form(value) != _stored_form(getattr(detector.state_space_, name))
     ]
     if changed:
         msg = (
