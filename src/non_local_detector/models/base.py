@@ -3326,7 +3326,8 @@ class ClusterlessDetector(_DetectorBase):
         Training weights span every encoding group of the requested
         environments, are formed on the full tracking timeline, and are
         interpolated to spike times within the encoding support, as for the
-        encoding models.
+        encoding models. The environments are those of the current
+        ``observation_models``, not those of the last fit (``state_space_``).
         """
         requested_environments = [
             obs.environment_name for obs in self.observation_models
@@ -3367,6 +3368,10 @@ class ClusterlessDetector(_DetectorBase):
     ) -> None:
         """
         Fit the encoding model to the data.
+
+        Fits one model per ``(environment_name, encoding_group)`` of the
+        current ``observation_models``, not those of the last fit
+        (``state_space_``).
 
         Parameters
         ----------
@@ -4428,6 +4433,10 @@ class SortedSpikesDetector(_DetectorBase):
     ) -> None:
         """
         Fit place fields to the data.
+
+        Fits one model per ``(environment_name, encoding_group)`` of the
+        current ``observation_models``, not those of the last fit
+        (``state_space_``).
 
         Parameters
         ----------
