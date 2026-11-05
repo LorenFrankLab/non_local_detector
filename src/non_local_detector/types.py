@@ -24,6 +24,7 @@ __all__ = [
     "ContinuousTransitions",
     "DiscreteTransitions",
     "Environments",
+    "EvidenceAccumulation",
     "FrozenTransitionRows",
     "InferenceMode",
     "Observations",
@@ -33,6 +34,7 @@ __all__ = [
     "StateNames",
     "Stickiness",
     "TransitionRepresentation",
+    "TransitionStatistics",
 ]
 
 
@@ -134,3 +136,16 @@ ReturnOutputs = OutputName | Collection[OutputName] | None
 """A ``return_outputs`` value: one output name, any non-string collection of
 them (list, tuple, set, frozenset), or None for the smoother only. A name
 means the same alone or in a collection."""
+
+# ---------------------------------------------------------------------------
+# String options of checkpointed_forward_backward
+# ---------------------------------------------------------------------------
+
+EvidenceAccumulation = Literal["stable", "reference"]
+"""How the marginal log likelihood is summed: per-row increments in host
+float64 (``"stable"``) or the original running total in the working dtype
+(``"reference"``)."""
+
+TransitionStatistics = Literal["counts", "responses"]
+"""Expected discrete transitions accumulated in the replay: summed over the
+recording (``"counts"``) or kept per row (``"responses"``)."""

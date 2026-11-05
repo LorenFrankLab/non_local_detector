@@ -23,7 +23,7 @@ EM refits.
 """
 
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any, Literal, cast, get_args
 
 import jax
 import jax.numpy as jnp
@@ -83,10 +83,14 @@ __all__ = [
 ]
 
 
-_LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
+LocalInterpolation = Literal["linear", "nearest"]
+"""How local place fields are read at the animal's position: interpolated
+between bin centers (``"linear"``) or from the nearest bin (``"nearest"``)."""
+
+_LOCAL_INTERPOLATION_MODES = set(get_args(LocalInterpolation))
 
 
-def validate_local_interpolation(local_interpolation: str) -> str:
+def validate_local_interpolation(local_interpolation: str) -> LocalInterpolation:
     """Validate the local place-field lookup mode."""
     if local_interpolation not in _LOCAL_INTERPOLATION_MODES:
         msg = (
@@ -94,7 +98,7 @@ def validate_local_interpolation(local_interpolation: str) -> str:
             f"{sorted(_LOCAL_INTERPOLATION_MODES)}, got {local_interpolation!r}"
         )
         raise ValidationError(msg)
-    return local_interpolation
+    return cast("LocalInterpolation", local_interpolation)
 
 
 def _grid_axes(environment: Environment) -> tuple[np.ndarray, ...]:
@@ -210,7 +214,7 @@ def _local_place_field_rates(
     place_fields: jax.Array,
     is_track_interior: np.ndarray,
     node_order: np.ndarray | None,
-    local_interpolation: str,
+    local_interpolation: LocalInterpolation,
 ) -> jax.Array:
     """Evaluate full-grid place fields at local positions.
 
@@ -417,7 +421,7 @@ class SortedSpikesDiffusionEncodingModel(SortedSpikesEncodingModel):
     is_track_interior: np.ndarray
     node_order: np.ndarray
     bin_sizes: np.ndarray
-    local_interpolation: str
+    local_interpolation: LocalInterpolation
 
 
 def fit_sorted_spikes_diffusion_encoding_model(
@@ -429,7 +433,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
     *,
     position_std: float = float(np.sqrt(12.5)),
     rank: int | None = None,
-    local_interpolation: str = "linear",
+    local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
@@ -626,7 +630,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_track_interior: np.ndarray,
     node_order: np.ndarray | None = None,
     bin_sizes: np.ndarray | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
-    local_interpolation: str = "linear",
+    local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
     is_local: bool = False,
     interior_log_place_fields: jax.Array | None = None,

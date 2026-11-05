@@ -11,7 +11,7 @@ import inspect
 import operator
 from collections.abc import Sequence
 from dataclasses import InitVar, dataclass
-from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
 import networkx as nx
 import numpy as np
@@ -510,7 +510,7 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     movement_var: float = 6.0
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
-    direction: str | None = None
+    direction: Literal["inward", "outward"] | None = None
     use_diffusion: InitVar[bool] = False
 
     def __post_init__(self, use_diffusion: bool) -> None:

@@ -11,7 +11,15 @@ Adapted from dynamax (https://github.com/probml/dynamax) with modifications.
 import functools
 import logging
 from collections.abc import Callable
-from typing import Any, NamedTuple, Protocol, TypeAlias, cast, runtime_checkable
+from typing import (
+    Any,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeAlias,
+    cast,
+    runtime_checkable,
+)
 
 import jax
 import jax.numpy as jnp
@@ -328,7 +336,7 @@ def _warn_degenerate_and_nan_timesteps(
     n_total: int,
     *,
     marginal_log_likelihood: float | None = None,
-    context: str = "filter",
+    context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
     """Emit host-side warnings summarizing degenerate and NaN time steps.
 
@@ -406,7 +414,7 @@ def _warn_if_degenerate_timesteps(
     log_likelihoods: ArrayLike,
     *,
     marginal_log_likelihood: ArrayLike | None = None,
-    context: str = "filter",
+    context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
     """Emit host-side warnings if any time step is all-``-inf`` or has a NaN or ``+inf``.
 

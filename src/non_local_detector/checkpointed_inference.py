@@ -50,6 +50,11 @@ from non_local_detector.result_store import (
     open_result_store,
 )
 from non_local_detector.time_edges import decode_bin_centers, uniform_time_edges
+from non_local_detector.types import (
+    EvidenceAccumulation,
+    OutputMode,
+    TransitionStatistics,
+)
 
 _SPATIAL = {
     "causal_posterior",
@@ -406,7 +411,7 @@ def checkpointed_forward_backward(
     n_states: int | None = None,
     is_missing: ArrayLike | None = None,
     chunk_size: int = 2000,
-    output_mode: str = "compact",
+    output_mode: OutputMode = "compact",
     result_path: str | Path | None = None,
     checkpoint_dir: str | Path | None = None,
     return_outputs: str | Iterable[str] | None = None,
@@ -414,8 +419,8 @@ def checkpointed_forward_backward(
     dtype: DTypeLike = np.float32,
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
     result_attrs: dict[str, Any] | Callable[[float], dict[str, Any]] | None = None,
-    evidence_accumulation: str = "stable",
-    transition_statistics: str | None = None,
+    evidence_accumulation: EvidenceAccumulation = "stable",
+    transition_statistics: TransitionStatistics | None = None,
     replay_cache_bytes: int = 0,
 ) -> CheckpointedResult:
     """Filter once, replay each chunk in reverse, and emit exact requested rows.

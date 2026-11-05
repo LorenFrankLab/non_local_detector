@@ -57,7 +57,11 @@ from non_local_detector.time_edges import (
     decode_bin_centers,
     uniform_time_edges,
 )
-from non_local_detector.types import ReturnOutputs, TransitionRepresentation
+from non_local_detector.types import (
+    ReturnOutputs,
+    TransitionRepresentation,
+    TransitionStatistics,
+)
 
 if TYPE_CHECKING:
     import non_local_detector.models.base
@@ -484,7 +488,7 @@ class _EMSettings:
     min_encoding_local_mass: float
     min_encoding_local_ess: float
     covariate_transitions: bool
-    transition_statistics: str | None
+    transition_statistics: TransitionStatistics | None
     prior_tracks_counts: bool
     prior_set_in_m_step: bool
     prior_changes: bool
@@ -1129,7 +1133,7 @@ class _EMMixin:
         covariate_transitions = not self.discrete_transition_type.is_stationary
         # Structured EM accumulates the discrete M-step's statistics in its
         # replay: per-row responses for covariate transitions, else counts.
-        transition_statistics = None
+        transition_statistics: TransitionStatistics | None = None
         if checkpointed and estimate_discrete_transition:
             transition_statistics = "responses" if covariate_transitions else "counts"
         # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary

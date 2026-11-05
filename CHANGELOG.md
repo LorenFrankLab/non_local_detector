@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Type annotations
 
+- String options name their accepted values in their annotations (`Literal`) instead of `str`: `checkpointed_forward_backward`'s `output_mode` (`types.OutputMode`), `evidence_accumulation` (`types.EvidenceAccumulation`) and `transition_statistics` (`types.TransitionStatistics`); `RandomWalk.direction`; the clusterless GMM's covariance types (`gmm.CovType`); and the sorted diffusion and MRF likelihoods' `local_interpolation` (`sorted_spikes_diffusion.LocalInterpolation`). Values are still checked at run time, and `RandomWalk.direction` still accepts either case.
 - Array annotations follow JAX's guidance: `jnp.ndarray` is now `jax.Array`, and the `time_edges` argument of the public detector methods (`estimate_parameters`, `most_likely_sequence`, `compute_log_likelihood`, `predict`) is typed `ArrayLike`. No runtime change. The convention is in CONTRIBUTING.md.
 
 ### Dependencies

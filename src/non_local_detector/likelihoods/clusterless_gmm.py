@@ -195,7 +195,7 @@ def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jax.Array, ...]:
 
 
 def _gmm_score(
-    points: jax.Array, parameters: tuple[jax.Array, ...], covariance_type: str
+    points: jax.Array, parameters: tuple[jax.Array, ...], covariance_type: CovType
 ) -> jax.Array:
     """Traceable ``GaussianMixtureModel.score_samples`` on fitted parameters."""
     means, precisions_chol, weights = parameters
@@ -222,7 +222,7 @@ def _add_electrode_gmm_intensities(
     log_occupancy: jax.Array,
     log_background: jax.Array,
     *,
-    covariance_type: str,
+    covariance_type: CovType,
     block_size: int,
     indices_are_sorted: bool,
 ) -> jax.Array:
@@ -246,7 +246,7 @@ def _add_electrode_gmm_intensities(
         Log occupancy density at each bin.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
-    covariance_type : str
+    covariance_type : {"full", "tied", "diag", "spherical"}
         Covariance structure of the joint GMM.
     block_size : int
         Decoding spikes per block.
@@ -304,8 +304,8 @@ def _add_electrode_gmm_spike_terms(
     mean_rate: jax.Array,
     log_background: jax.Array,
     *,
-    joint_type: str,
-    occupancy_type: str,
+    joint_type: CovType,
+    occupancy_type: CovType,
     indices_are_sorted: bool,
 ) -> jax.Array:
     """Add one electrode's local spike terms to their rows.
@@ -326,9 +326,9 @@ def _add_electrode_gmm_spike_terms(
         Electrode's mean rate.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
-    joint_type : str
+    joint_type : {"full", "tied", "diag", "spherical"}
         Covariance structure of the joint GMM.
-    occupancy_type : str
+    occupancy_type : {"full", "tied", "diag", "spherical"}
         Covariance structure of the occupancy GMM.
     indices_are_sorted : bool
         Whether ``row_ids`` are sorted in nondecreasing order.
@@ -362,7 +362,7 @@ def _add_gmm_expected_counts(
     log_occupancy: jax.Array,
     mean_rate: jax.Array,
     *,
-    gpi_type: str,
+    gpi_type: CovType,
 ) -> jax.Array:
     """Add one electrode's expected count rate at the animal's position.
 
@@ -381,7 +381,7 @@ def _add_gmm_expected_counts(
         Log occupancy density at ``positions``.
     mean_rate : jax.Array, scalar
         Electrode's mean rate.
-    gpi_type : str
+    gpi_type : {"full", "tied", "diag", "spherical"}
         Covariance structure of the ground-process-intensity GMM.
 
     Returns
@@ -430,7 +430,7 @@ def _fit_gmm_density(
     weights: jax.Array | np.ndarray | None,
     n_components: int,
     random_state: int | None,
-    covariance_type: str = "full",
+    covariance_type: CovType = "full",
     reg_covar: float = 1e-6,
     max_iter: int = 200,
     tol: float = 1e-3,
@@ -450,7 +450,7 @@ def _fit_gmm_density(
         Number of Gaussian components in the mixture.
     random_state : int, optional
         Random seed for reproducible initialization, by default None.
-    covariance_type : str, optional
+    covariance_type : {"full", "tied", "diag", "spherical"}, optional
         Covariance parameterization {'full', 'tied', 'diag', 'spherical'},
         by default "full".
     reg_covar : float, optional
@@ -470,7 +470,7 @@ def _fit_gmm_density(
     key = jax.random.PRNGKey(0 if random_state is None else random_state)
     gmm = GaussianMixtureModel(
         n_components=n_components,
-        covariance_type=cast("CovType", covariance_type),
+        covariance_type=covariance_type,
         reg_covar=reg_covar,
         max_iter=max_iter,
         tol=tol,
@@ -610,8 +610,8 @@ def fit_clusterless_gmm_encoding_model(
     *,
     gmm_components_occupancy: int = 32,
     gmm_components_joint: int = 64,
-    gmm_covariance_type_occupancy: str = "full",
-    gmm_covariance_type_joint: str = "full",
+    gmm_covariance_type_occupancy: CovType = "full",
+    gmm_covariance_type_joint: CovType = "full",
     gmm_random_state: int | None = 0,
     gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR,
     gmm_max_iter: int = 200,
@@ -646,9 +646,9 @@ def fit_clusterless_gmm_encoding_model(
         Number of mixture components for occupancy GMM.
     gmm_components_joint : int, default=64
         Number of mixture components for joint (position+mark) GMM.
-    gmm_covariance_type_occupancy : str, default="full"
+    gmm_covariance_type_occupancy : {"full", "tied", "diag", "spherical"}, default="full"
         Covariance type for occupancy GMM. Options: "full", "tied", "diag", "spherical".
-    gmm_covariance_type_joint : str, default="full"
+    gmm_covariance_type_joint : {"full", "tied", "diag", "spherical"}, default="full"
         Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
     gmm_random_state : int | None, default=0
         Random state for reproducibility.

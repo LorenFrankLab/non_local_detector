@@ -36,7 +36,7 @@ from non_local_detector.models._results import (
     label_checkpointed_result,
     state_bin_positions,
 )
-from non_local_detector.types import OutputMode
+from non_local_detector.types import OutputMode, TransitionStatistics
 
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
@@ -210,7 +210,7 @@ class _CheckpointedPredictionMixin:
         chunk_size: int,
         *,
         outputs: Iterable[str] = ("acausal_state_probabilities",),
-        transition_statistics: str | None = None,
+        transition_statistics: TransitionStatistics | None = None,
         replay_cache_bytes: int,
     ) -> CheckpointedResult:
         """One whole-recording E-step on the checkpointed driver.
