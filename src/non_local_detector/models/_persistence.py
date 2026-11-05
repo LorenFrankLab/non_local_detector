@@ -180,10 +180,18 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
         },
     )
     covariate_data = state.get("_discrete_transition_covariate_data_")
+    # The design is the fit's, whatever set_params changed since. A detector
+    # saved before the state space recorded the transition has only its
+    # current parameter.
+    fitted_transition = getattr(
+        state.get("state_space_"),
+        "discrete_transition_type",
+        detector.discrete_transition_type,
+    )
     # A formula a saved model file was not trusted with stays unevaluated:
     # the copy is for inspection only, as the loaded model is.
     untrusted = isinstance(
-        getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
+        getattr(fitted_transition, "formula", None), UntrustedFormula
     )
     if (
         covariate_data is not None
@@ -191,9 +199,7 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
         and not untrusted
     ):
         detector.discrete_transition_design_matrix_ = (
-            detector.discrete_transition_type.make_state_transition(
-                covariate_data
-            ).design_matrix
+            fitted_transition.make_state_transition(covariate_data).design_matrix
         )
     # Detectors fitted before transition smoothing existed: no penalty
     # strengths and no covariance, so EM and intervals see an unsmoothed
