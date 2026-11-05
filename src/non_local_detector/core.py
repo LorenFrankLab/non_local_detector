@@ -1286,9 +1286,10 @@ def _smoother_impl(
     initial : jax.Array, optional
         Initial state distribution, by default None
     ind : jax.Array, optional
-        Time indices, by default None
+        Row indices of the recording; by default ``arange(n_rows)``.
     n_time : int, optional
-        Number of time points, by default None
+        Rows in the whole recording; by default the length of
+        ``filtered_probs``.
 
     Returns
     -------
@@ -1298,7 +1299,8 @@ def _smoother_impl(
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
-        ind = jnp.arange(n_time)
+        # From the static shape: ``n_time`` is traced under jit.
+        ind = jnp.arange(filtered_probs.shape[0])
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
@@ -1337,7 +1339,8 @@ def smoother(
     initial : jax.Array, shape (n_states,), optional
         Smoothed row after the last row; by default the last filtered row.
     ind : jax.Array, shape (n_time,), optional
-        Row indices of the recording; by default ``arange(n_time)``.
+        Row indices of the recording; by default ``arange(n_time)``, the
+        recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -1350,8 +1353,10 @@ def smoother(
     Raises
     ------
     ValidationError
-        If ``transition_matrix`` and ``filtered_probs`` are concrete and the
-        matrix does not have shape (n_states, n_states) or breaks the
+        If the inputs are concrete and ``filtered_probs`` is not
+        (n_time, n_states), ``initial`` or ``ind`` does not match it,
+        ``initial`` has a negative or non-finite entry or sums above 1, or
+        the matrix does not have shape (n_states, n_states) or breaks the
         probability contract above.
 
     Notes
@@ -1361,11 +1366,10 @@ def smoother(
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
     """
-    if not _is_traced(transition_matrix, filtered_probs):
+    if not _is_traced(transition_matrix, filtered_probs, initial, ind):
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind)
         _check_hmm_arrays(
-            n_time=np.shape(filtered_probs)[0],
-            n_bins=np.shape(filtered_probs)[-1],
-            transition_matrix=transition_matrix,
+            n_time=n_rows, n_bins=n_bins, transition_matrix=transition_matrix
         )
     return cast(
         jax.Array,
@@ -2059,6 +2063,53 @@ def _check_hmm_arrays(
                 np.asarray(continuous_transition_matrix), state_ind, n_states
             )
     return cast(int, n_states)
+
+
+def _check_smoother_rows(
+    filtered_probs: Any, initial: Any, ind: Any
+) -> tuple[int, int]:
+    """Check the rows a public smoother pass is given and return their shape.
+
+    Parameters
+    ----------
+    filtered_probs : array_like, shape (n_rows, n_state_bins)
+        Filtered distribution of each row.
+    initial : array_like, shape (n_state_bins,), or None
+        Smoothed row after the last row: nonnegative and finite, summing to
+        at most 1 (its scale does not change the result).
+    ind : array_like, shape (n_rows,), or None
+        Recording row index of each row.
+
+    Returns
+    -------
+    n_rows, n_state_bins : int
+
+    Raises
+    ------
+    ValidationError
+        If ``filtered_probs`` is not a nonempty 2-D array, or ``initial`` or
+        ``ind`` breaks the contract above.
+    """
+    shape = np.shape(filtered_probs)
+    if len(shape) != 2 or 0 in shape:
+        msg = "filtered_probs must have one row of state bins per time bin"
+        raise ValidationError(
+            msg,
+            expected="shape (n_time, n_state_bins) with both at least 1",
+            got=f"shape {shape}",
+            hint="Pass the filtered rows a filter pass returns, such as "
+            "filter(...)[1][0].",
+        )
+    n_rows, n_bins = shape
+    shape_hint = (
+        f"filtered_probs sets n_time = {n_rows} rows and n_state_bins = {n_bins}."
+    )
+    if initial is not None:
+        _check_shape("initial", initial, (n_bins,), shape_hint)
+        _check_distribution("initial", np.asarray(initial), allow_mass_loss=True)
+    if ind is not None:
+        _check_shape("ind", ind, (n_rows,), shape_hint)
+    return n_rows, n_bins
 
 
 def _store_chunk_rows(
@@ -2953,7 +3004,8 @@ def _smoother_covariate_dependent_impl(
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
-        ind = jnp.arange(n_time)
+        # From the static shape: ``n_time`` is traced under jit.
+        ind = jnp.arange(filtered_probs.shape[0])
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
@@ -3003,7 +3055,8 @@ def smoother_covariate_dependent(
     initial : jax.Array, shape (n_state_bins,), optional
         Smoothed row after the last row; by default the last filtered row.
     ind : jax.Array, shape (n_rows,), optional
-        Row indices of the recording; by default ``arange(n_rows)``.
+        Row indices of the recording; by default ``arange(n_rows)``, the
+        recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -3016,8 +3069,9 @@ def smoother_covariate_dependent(
     Raises
     ------
     ValidationError
-        If the inputs are concrete and their shapes disagree or they break
-        the probability contract above.
+        If the inputs are concrete and their shapes disagree, ``initial``
+        has a negative or non-finite entry or sums above 1, or they break the
+        probability contract above.
 
     Notes
     -----
@@ -3031,10 +3085,13 @@ def smoother_covariate_dependent(
         continuous_transition_matrix,
         state_ind,
         filtered_probs,
+        initial,
+        ind,
     ):
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind)
         _check_hmm_arrays(
-            n_time=np.shape(filtered_probs)[0],
-            n_bins=np.shape(filtered_probs)[-1],
+            n_time=n_rows,
+            n_bins=n_bins,
             state_ind=state_ind,
             discrete_transition_matrix=discrete_transition_matrix,
             continuous_transition_matrix=continuous_transition_matrix,

@@ -743,3 +743,64 @@ def test_public_passes_skip_checks_under_jit(name):
     )
     with jax.transfer_guard_device_to_host("disallow"):
         jax.block_until_ready(jitted(*bad))
+
+
+SMOOTHERS = ["smoother", "smoother_covariate"]
+
+
+def _smooth(name, **keywords):
+    return PUBLIC_PASSES[name][0](*_public_args(name), **keywords)
+
+
+@pytest.mark.parametrize("name", SMOOTHERS)
+def test_public_smoothers_default_rows_with_n_time(name):
+    """``n_time`` alone means the rows are the whole recording's first rows.
+
+    The rows default to ``arange(n_rows)`` from the static shape, so giving
+    ``n_time`` without ``ind`` no longer builds an index from a traced value.
+    """
+    np.testing.assert_array_equal(
+        _smooth(name, n_time=N_TIME), _smooth(name, ind=np.arange(N_TIME))
+    )
+    np.testing.assert_array_equal(
+        _smooth(name, n_time=N_TIME + 3),
+        _smooth(name, ind=np.arange(N_TIME), n_time=N_TIME + 3),
+    )
+
+
+@pytest.mark.parametrize("name", SMOOTHERS)
+@pytest.mark.parametrize(
+    ("keywords", "pieces"),
+    [
+        (
+            {"initial": np.full(N_BINS + 1, 1 / (N_BINS + 1))},
+            ("initial has the wrong shape", f"Expected: shape ({N_BINS},)"),
+        ),
+        (
+            {"initial": np.array([0.6, 0.5, -0.1])},
+            ("initial must be a probability distribution", "minimum entry -0.1"),
+        ),
+        (
+            {"ind": np.arange(N_TIME - 1)},
+            ("ind has the wrong shape", f"Expected: shape ({N_TIME},)"),
+        ),
+    ],
+    ids=["initial_shape", "initial_negative", "ind_length"],
+)
+def test_public_smoothers_check_initial_and_ind(name, keywords, pieces):
+    with pytest.raises(ValidationError) as caught:
+        _smooth(name, **keywords)
+    message = str(caught.value)
+    for piece in pieces:
+        assert piece in message, message
+    assert "Hint:" in message, message
+
+
+@pytest.mark.parametrize("name", SMOOTHERS)
+def test_public_smoothers_reject_filtered_probs_that_are_not_rows(name):
+    _public_raises(
+        name,
+        "filtered_probs must have one row of state bins per time bin",
+        f"Got: shape (1, {N_TIME}, {N_BINS})",
+        filtered_probs=_filtered()[None],
+    )
