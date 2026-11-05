@@ -109,7 +109,7 @@ def main():
     model.fit(**fit_kwargs)
     # The same restricted, bound operator that checkpointed prediction uses.
     operator = jax.device_put(
-        model._continuous_transition_operator_.restricted(
+        model.state_space_.transition_operator.restricted(
             model.is_track_interior_state_bins_
         )
         .bind_discrete(np.asarray(model.discrete_state_transitions_))

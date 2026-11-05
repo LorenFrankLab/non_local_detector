@@ -55,6 +55,7 @@ from non_local_detector._formula_grammar import (
 )
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
+    TransitionContext,
     _declared_destination,
     _no_structured_block,
 )
@@ -77,6 +78,7 @@ from non_local_detector.model_format._container import (
     FORMAT_NAME,
     FORMAT_VERSION,
     StoredModel,
+    array_digest,
     new_model_file,
     open_model,
     write_document,
@@ -90,6 +92,12 @@ from non_local_detector.model_format._registry import (
     spec_for_object,
     unregistered_type_error,
 )
+from non_local_detector.models._state_space import (
+    StateSpace,
+    continuous_state_transitions,
+    layout_parameters,
+    state_layout,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -98,7 +106,9 @@ if TYPE_CHECKING:
     from non_local_detector.types import TransitionRepresentation
 
 # (file name, detector attribute) of the fitted state stored as is. An
-# attribute the detector does not have is left out of the file.
+# attribute the detector does not have is left out of the file. The names in
+# ``_STATE_SPACE_STORED`` are fields of the detector's ``state_space_``
+# instead, which is rebuilt from them on load.
 _STORED = (
     ("initial_conditions", "initial_conditions_"),
     ("continuous_initial_conditions", "continuous_initial_conditions_"),
@@ -116,8 +126,8 @@ _STORED = (
     ),
     ("transition_time_bin_width", "transition_time_bin_width_"),
     ("transition_time_bin_width_tolerance", "_transition_time_bin_width_tolerance"),
-    ("transition_representation", "_transition_representation_"),
-    ("max_dense_transition_bytes", "_max_dense_transition_bytes_"),
+    ("transition_representation", "transition_representation"),
+    ("max_dense_transition_bytes", "max_dense_transition_bytes"),
     ("time_contract", "time_contract_"),
     ("mark_reference", "mark_reference_"),
     ("converged", "converged_"),
@@ -126,19 +136,16 @@ _STORED = (
     ("degenerate_timesteps", "degenerate_timesteps_"),
     ("log_likelihood", "log_likelihood_"),
 )
+_STATE_SPACE_STORED = frozenset(
+    {"transition_representation", "max_dense_transition_bytes"}
+)
 # Fitted attributes rebuilt on load (or written separately, as
 # ``environments_`` and ``encoding_model_``).
 _REBUILT = frozenset(
     {
         "environments_",
         "encoding_model_",
-        "n_discrete_states_",
-        "state_ind_",
-        "n_state_bins_",
-        "bin_sizes_",
-        "is_track_interior_state_bins_",
-        "continuous_state_transitions_",
-        "_continuous_transition_operator_",
+        "state_space_",
         "discrete_state_transitions_",
         "discrete_transition_design_matrix_",
         "discrete_transition_smoothness_matrix_",
@@ -147,7 +154,7 @@ _REBUILT = frozenset(
 # Not part of a model: the pending rebuild check of a loaded detector.
 _NOT_SAVED = frozenset({"_rebuild_check_"})
 # Every fitted detector has these.
-_REQUIRED = ("environments_", "encoding_model_", "continuous_state_transitions_")
+_REQUIRED = ("environments_", "encoding_model_", "state_space_")
 
 # A rebuilt structure (continuous transition blocks, environment grids and
 # their graph distances, a covariate design) matches its fingerprint to this
@@ -265,10 +272,11 @@ def _transition_fingerprints(
     a change to any entry shows. It reads the dense matrix's block, or the
     structured operator's block through its products.
     """
-    transitions = detector.continuous_state_transitions_
+    state_space = detector.state_space_
+    transitions = state_space.continuous_transitions
     operator = getattr(transitions, "operator", None)
-    state_ind = np.asarray(detector.state_ind_)
-    n_states = int(detector.n_discrete_states_)
+    state_ind = np.asarray(state_space.state_ind)
+    n_states = state_space.n_states
     fingerprints = []
     for source in range(n_states):
         rows = np.flatnonzero(state_ind == source)
@@ -352,7 +360,9 @@ class _RebuildCheck:
             rebuilt["continuous_transitions"],
             strict=True,
         ):
-            why = _mismatch(before, after, max(detector.bin_sizes_[[source, target]]))
+            why = _mismatch(
+                before, after, max(detector.state_space_.bin_sizes[[source, target]])
+            )
             if why is not None:
                 problems.append(
                     f"continuous transition from state {source} to {target} ({why})"
@@ -433,9 +443,10 @@ class _FittedBlock:
 
 def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]:
     """Return the continuous blocks built from fit data, by (from_state, to_state)."""
-    state_ind = np.asarray(detector.state_ind_)
+    state_space = detector.state_space_
+    state_ind = np.asarray(state_space.state_ind)
     blocks = {}
-    for source, row in enumerate(detector.continuous_transition_types):
+    for source, row in enumerate(state_space.continuous_transition_types):
         for target, transition in enumerate(row):
             spec = spec_for_object(transition)
             if spec is None or not spec.block_needs_fit_data:
@@ -445,7 +456,7 @@ def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]
             if len(rows) == 1 or len(columns) == 1:
                 continue  # built from the one-bin rule, not the transition
             blocks[(source, target)] = np.array(
-                detector.continuous_state_transitions_[np.ix_(rows, columns)]
+                state_space.continuous_transitions[np.ix_(rows, columns)]
             )
     return blocks
 
@@ -607,6 +618,51 @@ def _fitted_attributes(
     return set(vars(detector)) - set(constructed) - _NOT_SAVED
 
 
+class _DigestWriter:
+    """Stands in for ``ArrayWriter``: names each array by its ``.npy`` digest."""
+
+    def put(self, array: np.ndarray, where: str) -> str:  # noqa: ARG002 -- ArrayWriter.put signature
+        return array_digest(np.require(array, requirements="C"))
+
+
+def _stored_form(value: Any) -> JSON:
+    """Return ``value`` as a saved model stores it, its arrays named by content.
+
+    Two values with the same stored form save to the same file, whatever
+    their objects' ``==`` says (``Discrete`` compares by identity, and a
+    dataclass holding an array cannot reduce ``==`` to one bool).
+    """
+    return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, "parameter")
+
+
+def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
+    """Return the recorded parameters that changed since the detector was fitted.
+
+    A parameter changed when its saved form differs from that of the value
+    its fit recorded in ``state_space_`` (see ``layout_parameters``).
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Fitted detector.
+
+    Returns
+    -------
+    changed : list of str
+        Names of the changed parameters, in ``layout_parameters`` order.
+
+    Raises
+    ------
+    ValidationError
+        If a parameter holds an object of a type not registered for saving.
+    """
+    return [
+        name
+        for name, value in layout_parameters(detector).items()
+        if _stored_form(value) != _stored_form(getattr(detector.state_space_, name))
+    ]
+
+
 def detector_documents(
     detector: "_DetectorBase", writer: ArrayWriter
 ) -> tuple[dict[str, Any], JSON, dict[str, Any]]:
@@ -616,8 +672,9 @@ def detector_documents(
     ------
     ValidationError
         If the detector or an object it holds is of an unregistered type, it
-        holds an attribute the format does not know, or it is a loaded
-        detector whose rebuilt structures no longer match.
+        holds an attribute the format does not know, it is a loaded
+        detector whose rebuilt structures no longer match, or a parameter its
+        ``state_space_`` records changed after it was fitted.
     NotFittedError
         If it is partly fitted.
     """
@@ -625,7 +682,9 @@ def detector_documents(
     params = detector.get_params(deep=False)
     config = Encoder(writer).encode(params, "config")
     fitted = _fitted_attributes(detector, params)
-    stored_names = {attribute for _, attribute in _STORED}
+    stored_names = {
+        attribute for name, attribute in _STORED if name not in _STATE_SPACE_STORED
+    }
     unknown = sorted(fitted - stored_names - _REBUILT)
     if unknown:
         msg = f"Cannot save the detector's attributes {unknown}, which the saved format does not hold"
@@ -640,6 +699,18 @@ def detector_documents(
     if missing:
         msg = f"Cannot save a partly fitted detector (it has no {missing})"
         raise NotFittedError(msg, hint="Call fit(...) before save_model.")
+    # The file holds the current parameters, and loading rebuilds the state
+    # space from them.
+    changed = changed_layout_parameters(detector)
+    if changed:
+        msg = (
+            f"Cannot save the detector: its {changed} changed after it was "
+            "fitted, so they no longer describe the fit"
+        )
+        raise ValidationError(
+            msg,
+            hint="Set them back with set_params, or refit before save_model.",
+        )
     check = vars(detector).get("_rebuild_check_")
     if check is not None:
         check.verify(detector)
@@ -660,7 +731,11 @@ def detector_documents(
         for i, (key, model) in enumerate(detector.encoding_model_.items())
     ]
     for name, attribute in _STORED:
-        if attribute in fitted:
+        if name in _STATE_SPACE_STORED:
+            state[name] = encoder.encode(
+                getattr(detector.state_space_, attribute), name
+            )
+        elif attribute in fitted:
             state[name] = encoder.encode(getattr(detector, attribute), name)
     if getattr(detector, "_discrete_transition_covariate_data_", None) is None:
         state["discrete_state_transitions"] = encoder.encode(
@@ -818,10 +893,25 @@ def _rebuild_discrete(
     )
 
 
-def _rebuild_continuous(
-    detector: "_DetectorBase", blocks: Mapping[tuple[int, int], np.ndarray]
+def _rebuild_state_space(
+    detector: "_DetectorBase",
+    blocks: Mapping[tuple[int, int], np.ndarray],
+    layout: tuple[np.ndarray, np.ndarray, np.ndarray],
+    stored: Mapping[str, Any],
 ) -> None:
-    configured = detector.continuous_transition_types
+    """Rebuild the detector's ``state_space_`` from its stored inputs.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        The detector being loaded, with its environments set.
+    blocks : mapping
+        The stored continuous transition blocks, by (from_state, to_state).
+    layout : tuple of np.ndarray
+        ``state_layout`` of the detector's parameters and environments.
+    stored : mapping
+        The decoded stored state, holding the ``_STATE_SPACE_STORED`` names.
+    """
     building = [
         [
             _FittedBlock(
@@ -833,30 +923,42 @@ def _rebuild_continuous(
             else transition
             for target, transition in enumerate(row)
         ]
-        for source, row in enumerate(configured)
+        for source, row in enumerate(detector.continuous_transition_types)
     ]
-    representation = detector._transition_representation_
+    representation = stored["transition_representation"]
+    max_dense_transition_bytes = stored["max_dense_transition_bytes"]
     # Dense EM after an "auto" fit converts the fitted operator (whose
     # environments keep deferred distances) to a dense matrix: rebuild that.
     from_operator = representation == "dense" and any(
         isinstance(env.distance_between_nodes_, LazyGraphDistances)
         for env in detector.environments_
     )
-    detector._initialize_continuous_state_transition(
-        cast(Any, building),
-        transition_representation=cast(
-            "TransitionRepresentation",
-            "auto" if from_operator else representation,
-        ),
-        max_dense_transition_bytes=detector._max_dense_transition_bytes_,
+    built_as = cast(
+        "TransitionRepresentation", "auto" if from_operator else representation
     )
-    detector.continuous_transition_types = configured
-    if from_operator:
-        detector.continuous_state_transitions_ = np.asarray(
-            detector.continuous_state_transitions_
-        )
-        detector.__dict__.pop("_continuous_transition_operator_", None)
-        detector._transition_representation_ = "dense"
+    state_ind, bin_sizes, is_track_interior = layout
+    transitions, operator = continuous_state_transitions(
+        cast(Any, building),
+        detector.environments_,
+        detector.observation_models,
+        detector.local_position_std,
+        state_ind,
+        bin_sizes,
+        context=TransitionContext(),
+        transition_representation=built_as,
+        max_dense_transition_bytes=max_dense_transition_bytes,
+    )
+    state_space = StateSpace(
+        **layout_parameters(detector),
+        state_ind=state_ind,
+        bin_sizes=bin_sizes,
+        is_track_interior=is_track_interior,
+        continuous_transitions=transitions,
+        transition_operator=operator,
+        transition_representation=built_as,
+        max_dense_transition_bytes=int(max_dense_transition_bytes),
+    )
+    detector.state_space_ = state_space.densified() if from_operator else state_space
 
 
 # The schema of the documents ``detector_documents`` writes. A reader ignores,
@@ -1151,16 +1253,18 @@ def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorB
         if name in state
     }
     for name, attribute in _STORED:
-        if name in values:
+        if name in values and name not in _STATE_SPACE_STORED:
             setattr(detector, attribute, values[name])
     _check_fingerprints(values["fingerprints"], len(environments))
-    detector._initialize_state_index()
+    layout = state_layout(
+        detector.observation_models, environments, detector.local_position_std
+    )
     _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
     blocks = {
         (entry["from_state"], entry["to_state"]): np.asarray(entry["block"])
         for entry in values["stored_transition_blocks"]
     }
-    _rebuild_continuous(detector, blocks)
+    _rebuild_state_space(detector, blocks, layout, values)
     detector._rebuild_check_ = _RebuildCheck(
         values["fingerprints"],
         list(blocks),

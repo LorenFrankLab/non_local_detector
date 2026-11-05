@@ -327,13 +327,15 @@ def instrumented(profiler, detector_class):
         (detector_class, "fit", "fit"),
         (detector_class, "initialize_environments", "environments"),
         (environment_module.Environment, "fit_place_grid", "fit_place_grid"),
-        (detector_class, "_initialize_state_index", "state_index"),
+        (base, "state_layout", "state_index"),
+        (detector_class, "_initialize_state_index", "state_index"),  # older checkouts
         (
             detector_class,
             "_initialize_discrete_state_transition",
             "discrete_transition",
         ),
-        (
+        (base, "continuous_state_transitions", "continuous_transition"),
+        (  # older checkouts
             detector_class,
             "_initialize_continuous_state_transition",
             "continuous_transition",

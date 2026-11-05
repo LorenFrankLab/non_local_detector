@@ -201,7 +201,7 @@ def test_em_after_an_auto_fit_rebuilds_the_dense_matrix(
         time_edges=time_edges_from_centers(time[:2000]),
         max_iter=1,
     )
-    assert detector._transition_representation_ == "dense"
+    assert detector.state_space_.transition_representation == "dense"
 
     _assert_round_trip(detector, tmp_path, time, position, spikes)
 

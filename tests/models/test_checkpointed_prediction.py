@@ -373,7 +373,7 @@ def test_fit_rejects_invalid_transition_arguments_before_refit(
 def test_fit_accepts_numpy_integer_transition_budget(checkpoint_recording):
     model, fit, _ = checkpoint_recording("sorted")
     model.fit(**fit, max_dense_transition_bytes=np.int64(2**20))
-    assert model._max_dense_transition_bytes_ == 2**20
+    assert model.state_space_.max_dense_transition_bytes == 2**20
 
 
 @pytest.mark.parametrize("chunk_size", [None, 13])

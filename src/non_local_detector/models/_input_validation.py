@@ -1289,9 +1289,10 @@ class _InputValidationMixin:
             If the decode likelihood reads position and many positions lie
             far outside the fitted grids (see ``_warn_if_off_grid``).
         """
+        observation_models = self.state_space_.observation_models
         if position is not None:
             self._validate_position_dimensionality(position, context="predict")
-            if not self._decode_reads_position():
+            if not self._decode_reads_position(observation_models):
                 return
             n_columns = 1 if position.ndim == 1 else position.shape[1]
             for environment in self.environments_:
@@ -1314,10 +1315,10 @@ class _InputValidationMixin:
                 self.environments_,
             )
             return
-        if not self._decode_reads_position():
+        if not self._decode_reads_position(observation_models):
             return
         reason = []
-        if any(obs.is_local for obs in self.observation_models):
+        if any(obs.is_local for obs in observation_models):
             reason.append("local observation models")
         if self._non_local_position_penalty() > 0:
             reason.append("non_local_position_penalty > 0")
@@ -1632,7 +1633,7 @@ class _InputValidationMixin:
         # wrongly rejects unused entries, including No-Spike-only keys.
         required_keys = {
             (obs.environment_name, obs.encoding_group)
-            for obs in self.observation_models
+            for obs in self.state_space_.observation_models
             if not obs.is_no_spike
         }
         for key in required_keys:

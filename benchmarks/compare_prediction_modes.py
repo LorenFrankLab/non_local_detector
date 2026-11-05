@@ -101,7 +101,7 @@ def reference64_prediction(
         msg = "reference64 requires JAX_ENABLE_X64=1"
         raise ValueError(msg)
     interior = model.is_track_interior_state_bins_
-    operator = model._continuous_transition_operator_.restricted(interior)
+    operator = model.state_space_.transition_operator.restricted(interior)
     operator = operator.bind_discrete(model.discrete_state_transitions_).fused()
     initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
 

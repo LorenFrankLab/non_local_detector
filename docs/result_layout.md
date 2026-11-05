@@ -41,6 +41,11 @@ array for any model.
 
 "With `state_bins`" means dense results and checkpointed spatial results.
 
+The states, their environments, encoding groups and bins are those the
+detector was fitted with (`detector.state_space_`), so changing `state_names`
+or `observation_models` with `set_params` after fitting does not relabel
+results until the next fit.
+
 States without a position (No-Spike, and Local unless `local_position_std` is
 set) have one bin each, with NaN position. Unstacking `state_bins` puts that
 bin at the last position; `non_local_detector.analysis.get_spatial_posterior`

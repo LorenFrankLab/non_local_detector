@@ -74,7 +74,7 @@ def _fit(model, data, **kwargs):
     if kwargs.get("transition_representation") == "structured" or (
         "transition_representation" in kwargs and checkpoint_options & set(kwargs)
     ):
-        assert getattr(model, "_continuous_transition_operator_", None) is not None
+        assert model.state_space_.transition_operator is not None
     return results, {
         "discrete_state_transitions_": np.array(model.discrete_state_transitions_),
         "initial_conditions_": np.array(model.initial_conditions_),
@@ -579,7 +579,7 @@ def test_dense_em_rejects_a_replay_cache():
 
 
 def _uses_operator(model):
-    return getattr(model, "_continuous_transition_operator_", None) is not None
+    return model.state_space_.transition_operator is not None
 
 
 def test_auto_em_uses_dense_em_for_a_small_state_space(dense_fit):
@@ -588,7 +588,7 @@ def test_auto_em_uses_dense_em_for_a_small_state_space(dense_fit):
     model, data = _recording("sorted")
     auto = _fit(model, data, transition_representation="auto")
     assert not _uses_operator(model)
-    assert model._transition_representation_ == "dense"
+    assert model.state_space_.transition_representation == "dense"
     for name in dense[0].data_vars:
         np.testing.assert_array_equal(auto[0][name].values, dense[0][name].values)
     np.testing.assert_array_equal(
@@ -651,7 +651,7 @@ def test_auto_em_keeps_structured_em_when_the_full_dense_matrix_is_over_budget()
         transition_representation="auto",
     )
     n_bins = model.state_ind_.shape[0]
-    assert n_bins**2 * 8 > model._max_dense_transition_bytes_
+    assert n_bins**2 * 8 > model.state_space_.max_dense_transition_bytes
     assert model.is_track_interior_state_bins_.sum() ** 2 * 4 < 2**20
     assert _uses_operator(model)
     assert np.all(np.isfinite(results["acausal_state_probabilities"].values))

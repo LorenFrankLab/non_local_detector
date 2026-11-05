@@ -21,7 +21,7 @@ module.
 import abc
 import copy
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from logging import getLogger
@@ -39,13 +39,7 @@ from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.continuous_state_transitions import (
-    TransitionContext,
-    _check_block_environments,
-    _check_continuous_transition,
-    _make_transition_block,
-    _multi_bin_local_transition,
-)
+from non_local_detector.continuous_state_transitions import TransitionContext
 from non_local_detector.core import (
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
@@ -67,10 +61,10 @@ from non_local_detector.exceptions import (
     ConfigurationError,
     DataQualityWarning,
     NotFittedError,
+    ParameterWarning,
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
-from non_local_detector.initial_conditions import _check_state_initial_conditions
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -142,7 +136,13 @@ from non_local_detector.models._plotting import _PlottingMixin
 from non_local_detector.models._results import (
     convert_results_to_xarray,
     convert_seq_to_df,
-    has_place_bins,
+)
+from non_local_detector.models._state_space import (
+    StateSpace,
+    continuous_state_transitions,
+    initial_conditions,
+    layout_parameters,
+    state_layout,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -153,10 +153,7 @@ from non_local_detector.time_edges import (
     calculate_time_edges,
     requires_time_edges,
 )
-from non_local_detector.transition_operators import (
-    DEFAULT_MAX_DENSE_BYTES,
-    _one_bin_block,
-)
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -592,6 +589,15 @@ class _DetectorBase(
         Fitted initial-condition distribution over discrete states. Set by
         ``estimate_parameters``; initially equal to the user-supplied
         ``discrete_initial_conditions`` constructor argument.
+    state_space_ : StateSpace
+        The fit's state bins and continuous transition, with the
+        ``state_names``, ``observation_models``,
+        ``continuous_transition_types`` and ``local_position_std`` they were
+        built from. Set by ``fit``; decoding reads it rather than the current
+        parameters, so ``set_params`` takes effect at the next fit.
+        ``state_ind_``, ``n_state_bins_``, ``n_discrete_states_``,
+        ``bin_sizes_``, ``is_track_interior_state_bins_`` and
+        ``continuous_state_transitions_`` are read-only views of it.
     """
 
     # Type annotations for attributes assigned during fit
@@ -601,14 +607,12 @@ class _DetectorBase(
     discrete_transition_smoothness_matrix_: np.ndarray | None
     discrete_transition_smoothness_: np.ndarray | None
     discrete_transition_coefficient_covariance_: np.ndarray | None
-    # np.ndarray, or a LazyDenseTransition (a budgeted NumPy-compatible view)
-    continuous_state_transitions_: Any
+    state_space_: StateSpace
     converged_: bool
     n_iter_: int
     em_monotonicity_violations_: list[int]
     degenerate_timesteps_: np.ndarray
     initial_conditions_: np.ndarray
-    _max_dense_transition_bytes_: int
 
     def __init__(
         self,
@@ -825,10 +829,15 @@ class _DetectorBase(
         stays the list or tuple given, ``state_names=None`` becomes generated
         names) and validation are exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
-        attributes, including the fitted environments in ``environments_``,
-        are not touched. Changing ``environments``, ``state_names``,
-        ``observation_models`` or any other parameter a fit depends on after
-        fitting therefore requires refitting.
+        attributes, including the fitted environments in ``environments_``
+        and the state bins in ``state_space_``, are not touched, and decoding
+        reads them: a change to ``environments``, ``state_names``,
+        ``observation_models``, ``continuous_transition_types``,
+        ``local_position_std`` or any other parameter a fit depends on takes
+        effect at the next fit. Decoding a detector whose ``state_names``,
+        ``observation_models``, ``continuous_transition_types`` or
+        ``local_position_std`` changed after fitting warns
+        (``ParameterWarning``), and ``save_model`` refuses it.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -919,7 +928,9 @@ class _DetectorBase(
         """
         return 0.0
 
-    def _decode_reads_position(self) -> bool:
+    def _decode_reads_position(
+        self, observation_models: Sequence[ObservationModel]
+    ) -> bool:
         """Whether the decode likelihood reads the animal's position.
 
         Local observation models and a positive ``non_local_position_penalty``
@@ -927,12 +938,19 @@ class _DetectorBase(
         only shapes Local states). Fitting and EM encoding refits always use
         position for the encoding support, whatever this returns.
 
+        Parameters
+        ----------
+        observation_models : sequence of ObservationModel
+            The decoded states' observation models: the fit's
+            (``state_space_.observation_models``), or the parameters' before
+            EM's internal fit.
+
         Returns
         -------
         reads_position : bool
         """
         return bool(
-            any(obs.is_local for obs in self.observation_models)
+            any(obs.is_local for obs in observation_models)
             or self._non_local_position_penalty() > 0
         )
 
@@ -1025,10 +1043,11 @@ class _DetectorBase(
         position_time: jax.Array | np.ndarray,
         position: jax.Array | np.ndarray,
         environment: "Environment",
+        local_position_std: float,
     ) -> jax.Array:
         """Compute log position kernel for the local state.
 
-        Dispatches to one of two paths based on ``self.local_position_std``:
+        Dispatches to one of two paths based on ``local_position_std``:
 
         - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
           ``-inf`` elsewhere (one-hot).
@@ -1066,6 +1085,9 @@ class _DetectorBase(
             Position samples.
         environment : Environment
             The spatial environment.
+        local_position_std : float
+            Width of the kernel, the fit's ``local_position_std``: 0 for the
+            delta kernel.
 
         Returns
         -------
@@ -1074,8 +1096,6 @@ class _DetectorBase(
             time step (not 1).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
-
-        assert self.local_position_std is not None  # narrowing for type checker
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
@@ -1096,7 +1116,7 @@ class _DetectorBase(
         # gap-bin assignments to the nearest interior bin, so the only
         # remaining case needing uniform fallback is a truly NaN animal
         # position (tracking dropout).
-        if self.local_position_std == 0:
+        if local_position_std == 0:
             interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
             # Replace NaN animal positions with 0 before get_bin_ind (it
             # has no NaN guard); nan_mask below masks those rows.
@@ -1122,7 +1142,7 @@ class _DetectorBase(
         # avoids inf/NaN propagation through the arithmetic ops below.
         reachable = jnp.isfinite(sq_dist)
         log_kernel = jnp.where(
-            reachable, -0.5 * sq_dist / (self.local_position_std**2), -jnp.inf
+            reachable, -0.5 * sq_dist / (local_position_std**2), -jnp.inf
         )
         # Normalize to sum to n_bins (not 1) per time step. This compensates
         # for the 1/n_bins uniform continuous IC of the multi-bin local state
@@ -1329,218 +1349,60 @@ class _DetectorBase(
             fitted_environments.append(environment)
         self.environments_ = tuple(fitted_environments)
 
-    def _initialize_state_index(self) -> None:
-        """Initialize indices and parameters related to the combined state space.
+    def _fitted_state_space(self, name: str) -> StateSpace:
+        """``state_space_``, or NotFittedError naming the attribute ``name``."""
+        state_space = self.__dict__.get("state_space_")
+        if state_space is None:
+            msg = f"{name} is set by fit, and this detector is not fitted"
+            raise NotFittedError(msg, hint="Call fit(...) first.")
+        return cast("StateSpace", state_space)
 
-        Determines the total number of bins across all discrete states (spatial
-        bins for continuous states, 1 for discrete states like 'Local' or
-        'No-Spike') and creates mappings between these combined bins and the
-        original discrete states. Also identifies which combined bins correspond
-        to the track interior.
+    @property
+    def n_discrete_states_(self) -> int:
+        """Number of discrete states of the fit (``state_space_.n_states``)."""
+        return self._fitted_state_space("n_discrete_states_").n_states
 
-        Attributes
-        ----------
-        n_discrete_states_ : int
-            Total number of discrete states defined in the model.
-        state_ind_ : np.ndarray, shape (n_total_bins,)
-            Index mapping each combined bin to its corresponding discrete state index.
-        n_state_bins_ : int
-            Total number of bins across all states (sum of spatial bins for
-            continuous states and 1 for discrete states). Referred to as
-            `n_total_bins` in the shape description here for clarity.
-        bin_sizes_ : np.ndarray, shape (n_discrete_states_,)
-             Number of bins associated with each discrete state (e.g., number
-             of place bins for spatial states, 1 for non-spatial states).
-        is_track_interior_state_bins_ : np.ndarray, shape (n_total_bins,)
-             Boolean array indicating if a combined state bin corresponds to the
-             track interior. For non-spatial states, this is typically True.
+    @property
+    def state_ind_(self) -> np.ndarray:
+        """Discrete state of each state bin, shape (n_state_bins,).
+
+        The fit's ``state_space_.state_ind``.
         """
-        self.n_discrete_states_ = len(self.state_names)
-        bin_sizes = []
-        state_ind = []
-        is_track_interior = []
-        for ind, obs in enumerate(self.observation_models):
-            if not has_place_bins(self, obs):
-                bin_sizes.append(1)
-                state_ind.append(np.full(1, ind, dtype=int))
-                is_track_interior.append(np.ones(1, dtype=bool))
-            else:
-                environment = self._get_environment_by_name(obs.environment_name)
-                bin_sizes.append(environment.place_bin_centers_.shape[0])
-                state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
-                is_track_interior.append(environment.is_track_interior_flat_)
+        return self._fitted_state_space("state_ind_").state_ind
 
-        self.state_ind_ = np.concatenate(state_ind)
-        self.n_state_bins_ = len(self.state_ind_)
-        self.bin_sizes_ = np.array(bin_sizes)
-        self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
+    @property
+    def n_state_bins_(self) -> int:
+        """Number of state bins of the fit (``state_space_.n_state_bins``)."""
+        return self._fitted_state_space("n_state_bins_").n_state_bins
 
-    def _initialize_initial_conditions(self) -> None:
-        """Construct the initial probability for the state and each spatial bin.
+    @property
+    def bin_sizes_(self) -> np.ndarray:
+        """Number of bins of each discrete state, shape (n_states,).
 
-        Attributes
-        ----------
-        continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
-            Initial probability distribution over the bins within each state.
-        initial_conditions_ : np.ndarray, shape (n_state_bins,)
-            Overall initial probability distribution across all state bins.
+        The fit's ``state_space_.bin_sizes``.
         """
-        logger.info("Fitting initial conditions...")
-        from dataclasses import replace
+        return self._fitted_state_space("bin_sizes_").bin_sizes
 
-        ic_parts = []
-        for state, (obs, cont_ic) in enumerate(
-            zip(
-                self.observation_models,
-                self.continuous_initial_conditions_types,
-                strict=False,
-            )
-        ):
-            # Multi-bin local uses full spatial initial conditions
-            effective_obs = obs
-            if obs.is_local and self.local_position_std is not None:
-                effective_obs = replace(obs, is_local=False)
-            ic_parts.append(
-                cont_ic.make_initial_conditions(effective_obs, self.environments_)
-            )
-            _check_state_initial_conditions(
-                ic_parts[-1],
-                state_name=self.state_names[state],
-                initial_conditions=cont_ic,
-                is_interior=self.is_track_interior_state_bins_[
-                    self.state_ind_ == state
-                ],
-                discrete_weight=self.discrete_initial_conditions[state],
-            )
-        self.continuous_initial_conditions_ = np.concatenate(ic_parts)
-        self.initial_conditions_ = (
-            self.continuous_initial_conditions_
-            * self.discrete_initial_conditions[self.state_ind_]
-        )
+    @property
+    def is_track_interior_state_bins_(self) -> np.ndarray:
+        """Whether each state bin is on the track interior, shape (n_state_bins,).
 
-    def _initialize_continuous_state_transition(
-        self,
-        continuous_transition_types: ContinuousTransitions,
-        position: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        *,
-        transition_representation: TransitionRepresentation = "dense",
-        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> None:
+        The fit's ``state_space_.is_track_interior``.
         """
-        Construct the transition matrices for the continuous states.
+        return self._fitted_state_space(
+            "is_track_interior_state_bins_"
+        ).is_track_interior
 
-        Parameters
-        ----------
-        continuous_transition_types : ContinuousTransitions
-            Types of transition models.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data.
-        is_training : np.ndarray, optional, shape (n_time,)
-            Boolean array that determines what data to train the place fields on, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time,), optional
-            If place fields should correspond to each state, label each time point with the group name, by default None.
-        environment_labels : np.ndarray, shape (n_time,), optional
-            If there are multiple environments, label each time point with the environment name, by default None.
-        transition_representation : {"dense", "structured", "auto"}, optional
-            By default "dense", which builds the full matrix. "structured"
-            requires exact supported state-block operators; "auto" permits
-            budgeted dense fallback blocks.
-        max_dense_transition_bytes : int, optional
-            Byte limit for retained fallback blocks, temporary dense graph
-            distances, and explicit reads of the lazy view, by default
-            256 MiB. Does not limit "dense".
+    @property
+    def continuous_state_transitions_(self) -> Any:
+        """Continuous transition between state bins, shape (n_state_bins, n_state_bins).
 
-        Attributes
-        ----------
-        continuous_state_transitions_ : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
-            Probability of transitioning between bins, assuming a transition between the corresponding discrete states occurs.
-            A budgeted lazy view of the operator unless transition_representation="dense".
-        continuous_transition_types : ContinuousTransitions
-            Stores the continuous transition types used.
+        The fit's ``state_space_.continuous_transitions``: a dense matrix, or
+        a budgeted lazy view of a structured operator.
         """
-        logger.info("Fitting continuous state transition...")
-
-        self.continuous_transition_types = continuous_transition_types
-
-        _validate_transition_arguments(
-            transition_representation, max_dense_transition_bytes
-        )
-        self._transition_representation_ = transition_representation
-        self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
-        self.__dict__.pop("_continuous_transition_operator_", None)
-        context = TransitionContext(
-            position, is_training, encoding_group_labels, environment_labels
-        )
-        if transition_representation != "dense":
-            from non_local_detector.transition_operators import (
-                LazyDenseTransition,
-                build_transition_operator,
-            )
-
-            operator = build_transition_operator(
-                self.continuous_transition_types,
-                self.environments_,
-                self.bin_sizes_,  # type: ignore[arg-type]  # typed Sequence[int] in transition_operators; an ndarray works
-                observation_models=self.observation_models,
-                local_position_std=self.local_position_std,
-                allow_dense_fallback=transition_representation == "auto",
-                max_dense_bytes=int(max_dense_transition_bytes),
-                context=context,
-            )
-            self._continuous_transition_operator_ = operator
-            self.continuous_state_transitions_ = LazyDenseTransition(
-                operator, max_bytes=int(max_dense_transition_bytes)
-            )
-            return
-
-        n_total_bins = len(self.state_ind_)
-        self.continuous_state_transitions_ = np.zeros((n_total_bins, n_total_bins))
-
-        for from_state, row in enumerate(self.continuous_transition_types):
-            for to_state, transition in enumerate(row):
-                _check_continuous_transition(transition)
-                inds = np.ix_(
-                    self.state_ind_ == from_state, self.state_ind_ == to_state
-                )
-
-                transition = _multi_bin_local_transition(
-                    transition,
-                    self.observation_models[from_state],
-                    self.observation_models[to_state],
-                    self.local_position_std,
-                )
-
-                n_row_bins = int(np.max(inds[0].shape))
-                n_col_bins = int(np.max(inds[1].shape))
-
-                # Blocks between a one-bin and a spatial state follow the
-                # structured operator's rule, so both representations agree.
-                _check_block_environments(
-                    transition,
-                    self.environments_,
-                    self.observation_models[from_state].environment_name,
-                    self.observation_models[to_state].environment_name,
-                    n_row_bins,
-                    n_col_bins,
-                )
-                one_bin_block = _one_bin_block(
-                    transition, self.environments_, n_row_bins, n_col_bins
-                )
-                if one_bin_block is not None:
-                    self.continuous_state_transitions_[inds] = one_bin_block.entries(
-                        np.arange(n_row_bins)[:, np.newaxis],
-                        np.arange(n_col_bins)[np.newaxis],
-                    )
-                else:
-                    self.continuous_state_transitions_[inds] = _make_transition_block(
-                        transition,
-                        self.environments_,
-                        context,
-                        (n_row_bins, n_col_bins),
-                    )
+        return self._fitted_state_space(
+            "continuous_state_transitions_"
+        ).continuous_transitions
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.
@@ -1799,22 +1661,49 @@ class _DetectorBase(
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
-        self._initialize_state_index()
-        self._initialize_initial_conditions()
+        state_ind, bin_sizes, is_track_interior = state_layout(
+            self.observation_models, self.environments_, self.local_position_std
+        )
+        self.continuous_initial_conditions_, self.initial_conditions_ = (
+            initial_conditions(
+                observation_models=self.observation_models,
+                continuous_initial_conditions_types=self.continuous_initial_conditions_types,
+                environments=self.environments_,
+                local_position_std=self.local_position_std,
+                state_names=self.state_names,
+                discrete_initial_conditions=self.discrete_initial_conditions,
+                state_ind=state_ind,
+                is_track_interior=is_track_interior,
+            )
+        )
         self._initialize_discrete_state_transition(
             covariate_data=discrete_transition_covariate_data
         )
         # The transitions are rebuilt from their configuration, not learned.
         self.transition_time_bin_width_: float | None = None
         self._transition_time_bin_width_tolerance = 0.0
-        self._initialize_continuous_state_transition(
-            continuous_transition_types=self.continuous_transition_types,
+        transitions, operator = continuous_state_transitions(
+            self.continuous_transition_types,
+            self.environments_,
+            self.observation_models,
+            self.local_position_std,
+            state_ind,
+            bin_sizes,
+            context=TransitionContext(
+                position, is_training, encoding_group_labels, environment_labels
+            ),
             transition_representation=transition_representation,
             max_dense_transition_bytes=max_dense_transition_bytes,
-            position=position,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
+        )
+        self.state_space_ = StateSpace(
+            **layout_parameters(self),
+            state_ind=state_ind,
+            bin_sizes=bin_sizes,
+            is_track_interior=is_track_interior,
+            continuous_transitions=transitions,
+            transition_operator=operator,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=int(max_dense_transition_bytes),
         )
         # Each grid is fitted on its environment's samples. Warned once the
         # fit succeeds, so an EM fit that falls back to dense warns once.
@@ -1842,7 +1731,7 @@ class _DetectorBase(
         is_clusterless = isinstance(self, ClusterlessDetector)
         active_keys = {
             (obs.environment_name, obs.encoding_group)
-            for obs in self.observation_models
+            for obs in self.state_space_.observation_models
             if not obs.is_no_spike
         }
         # Each encoding model unpacks into its own algorithm's predict, which
@@ -2041,6 +1930,28 @@ class _DetectorBase(
         """Term added to the No-Spike log likelihood, or None when there is none."""
         return None
 
+    def _warn_if_layout_parameters_changed(self) -> None:
+        """Warn when a parameter the fit recorded was changed since.
+
+        Decoding uses the recorded values (``state_space_``). Parameters of a
+        type not registered for saving cannot be compared and do not warn.
+        """
+        from non_local_detector.model_format._detector import (
+            changed_layout_parameters,
+        )
+
+        try:
+            changed = changed_layout_parameters(self)
+        except ValidationError:
+            return
+        if changed:
+            warnings.warn(
+                f"The detector's {changed} changed after it was fitted; "
+                "decoding uses the values from the last fit. Refit to apply them.",
+                ParameterWarning,
+                stacklevel=user_stacklevel(),
+            )
+
     def _compute_spike_log_likelihood(
         self,
         position_time: ArrayLike | None,
@@ -2059,6 +1970,7 @@ class _DetectorBase(
         per call, then evaluates the requested rows.
         """
         self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
         decode = _DecodeInputs.from_arguments(position_time, position)
         time_edges, _ = _decode_time_edges(
             time_edges,
@@ -2106,7 +2018,9 @@ class _DetectorBase(
         context : _DecodeContext
         """
         position_time, position, *spike_data = log_likelihood_args
-        has_no_spike = any(obs.is_no_spike for obs in self.observation_models)
+        has_no_spike = any(
+            obs.is_no_spike for obs in self.state_space_.observation_models
+        )
         return _DecodeContext(
             time_edges=time_edges,
             time_grid=_uniform_time_grid(time_edges),
@@ -2116,7 +2030,9 @@ class _DetectorBase(
                 time_edges,
                 position_time,
                 position,
-                reads_position=self._decode_reads_position(),
+                reads_position=self._decode_reads_position(
+                    self.state_space_.observation_models
+                ),
                 warn_outside_tracking=warn_outside_tracking,
             ),
             spike_time_order=_SpikeTimeOrder(),
@@ -2228,17 +2144,17 @@ class _DetectorBase(
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
         if context.position_context.all_missing:
-            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
+            return jnp.zeros((n_rows, int(self.state_space_.is_track_interior.sum())))
         position = context.position_context.position
 
         likelihood_func = self._likelihood_predict_function()
         execution_settings = self._likelihood_execution_settings()
+        state_space = self.state_space_
 
         # Interior state bins per state. state_ind_ is built state by state, so
         # each state's bins are one contiguous block of columns.
         n_state_columns = np.bincount(
-            self.state_ind_[self.is_track_interior_state_bins_],
-            minlength=len(self.observation_models),
+            state_space.interior_state_ind, minlength=state_space.n_states
         )
 
         # Use dict for O(1) lookup instead of list
@@ -2246,10 +2162,10 @@ class _DetectorBase(
 
         # Compute all likelihoods first (stays in JAX/GPU if available)
         likelihood_results: dict[int, Any] = {}
-        for state_id, obs in enumerate(self.observation_models):
+        for state_id, obs in enumerate(state_space.observation_models):
             # Multi-bin local computes full spatial likelihood (is_local=False)
             # then adds position kernel afterward
-            effective_is_local = obs.is_local and self.local_position_std is None
+            effective_is_local = state_space.likelihood_is_local(state_id)
 
             likelihood_name = (
                 obs.environment_name,
@@ -2312,7 +2228,7 @@ class _DetectorBase(
         env_penalties: dict[str, jax.Array] = {}
         env_kernels: dict[str, jax.Array] = {}
         blocks: list[jax.Array] = []
-        for state_id, obs in enumerate(self.observation_models):
+        for state_id, obs in enumerate(state_space.observation_models):
             result = likelihood_results[state_id]
             if isinstance(result, int):
                 # Reuse the likelihood computed for an earlier state
@@ -2334,7 +2250,7 @@ class _DetectorBase(
                 block = (block + jnp.asarray(env_penalties[env_name])).astype(
                     jnp.float32
                 )
-            if self.local_position_std is not None and obs.is_local:
+            if state_space.local_position_std is not None and obs.is_local:
                 env_name = obs.environment_name
                 if env_name not in env_kernels:
                     env = self._get_environment_by_name(env_name)
@@ -2343,6 +2259,7 @@ class _DetectorBase(
                         cast("np.ndarray", position_time),
                         cast("np.ndarray", position),
                         env,
+                        state_space.local_position_std,
                     )
                 block = (block + jnp.asarray(env_kernels[env_name])).astype(jnp.float32)
             blocks.append(block)
@@ -2459,6 +2376,7 @@ class _DetectorBase(
         )
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
         time_edges, time_centers = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),
@@ -2471,7 +2389,9 @@ class _DetectorBase(
             is_missing,
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
+            reads_position=self._decode_reads_position(
+                self.state_space_.observation_models
+            ),
             warn_outside_tracking=True,
         )
 
@@ -2635,7 +2555,7 @@ class _DetectorBase(
             is_missing,
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
+            reads_position=self._decode_reads_position(self.observation_models),
             warn_outside_tracking=True,
         )
         # Before the internal fit, so a refused estimate leaves the model as is.
@@ -2722,6 +2642,7 @@ class _DetectorBase(
         decode = _DecodeInputs.from_arguments(position_time, position)
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
         time_edges, time_centers = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),
@@ -2734,7 +2655,9 @@ class _DetectorBase(
             is_missing,
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
+            reads_position=self._decode_reads_position(
+                self.state_space_.observation_models
+            ),
             warn_outside_tracking=True,
         )
         return self._run_viterbi(
@@ -2834,9 +2757,10 @@ class _DetectorBase(
             cache_likelihood = False
 
         logger.info("Computing posterior...")
-        is_track_interior = self.is_track_interior_state_bins_
+        state_space = self.state_space_
+        is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+        state_ind = state_space.interior_state_ind
 
         # Use provided transitions or fall back to fitted attribute
         discrete_transitions = (
@@ -2868,7 +2792,7 @@ class _DetectorBase(
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    state_space.continuous_transitions[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
@@ -2886,7 +2810,7 @@ class _DetectorBase(
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,
-                continuous_transition_matrix=self.continuous_state_transitions_[
+                continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],
                 log_likelihood_func=log_likelihood_func,
@@ -3145,15 +3069,16 @@ class _DetectorBase(
         log_likelihood_func = self._decode_likelihood_callback(
             time_edges, log_likelihood_args
         )
-        is_track_interior = self.is_track_interior_state_bins_
+        state_space = self.state_space_
+        is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+        state_ind = state_space.interior_state_ind
         if discrete_transitions.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
                 time_edges=time_edges,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    state_space.continuous_transitions[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
@@ -3167,7 +3092,7 @@ class _DetectorBase(
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,
-                continuous_transition_matrix=self.continuous_state_transitions_[
+                continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],
                 log_likelihood_func=log_likelihood_func,
@@ -3428,7 +3353,8 @@ class ClusterlessDetector(_DetectorBase):
         Training weights span every encoding group of the requested
         environments, are formed on the full tracking timeline, and are
         interpolated to spike times within the encoding support, as for the
-        encoding models.
+        encoding models. The environments are those of the current
+        ``observation_models``, not those of the last fit (``state_space_``).
         """
         requested_environments = [
             obs.environment_name for obs in self.observation_models
@@ -3469,6 +3395,10 @@ class ClusterlessDetector(_DetectorBase):
     ) -> None:
         """
         Fit the encoding model to the data.
+
+        Fits one model per ``(environment_name, encoding_group)`` of the
+        current ``observation_models``, not those of the last fit
+        (``state_space_``).
 
         Parameters
         ----------
@@ -4530,6 +4460,10 @@ class SortedSpikesDetector(_DetectorBase):
     ) -> None:
         """
         Fit place fields to the data.
+
+        Fits one model per ``(environment_name, encoding_group)`` of the
+        current ``observation_models``, not those of the last fit
+        (``state_space_``).
 
         Parameters
         ----------
