@@ -36,6 +36,13 @@ from tests.models._helpers import CLUSTERLESS_SIM_RATE
 N_TRAIN = 8_000
 N_TEST = 400
 
+# The test window runs past the positions of the training window, whose
+# data-derived grid does not reach them; these tests score marks, not where
+# the animal is decoded.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*outside the fitted grid:non_local_detector.exceptions.DataQualityWarning"
+)
+
 
 @pytest.fixture(scope="module")
 def run_data():

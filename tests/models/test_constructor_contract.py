@@ -128,6 +128,17 @@ class TestSetParams:
         assert detector.no_spike_rate == 1e-8
         assert detector.encoding_model_ is fitted
 
+    def test_observation_models_are_stored_as_given(self):
+        """A list or tuple of observation models is stored as given, as
+        ``set_params`` documents; ``None`` or one model builds a tuple."""
+        detector = _base_detector()
+        assert isinstance(detector.observation_models, tuple)
+        given = list(detector.observation_models)
+        detector.set_params(observation_models=given)
+        assert detector.observation_models is given
+        detector.set_params(observation_models=given[0])
+        assert detector.observation_models == tuple(given)
+
     def test_returns_self_and_no_params_is_noop(self):
         detector = NonLocalSortedSpikesDetector()
         assert detector.set_params() is detector

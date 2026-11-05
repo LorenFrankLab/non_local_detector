@@ -119,7 +119,7 @@ class _NonLocalMixin:
     """Behaviour shared by the sorted-spikes and clusterless non-local detectors."""
 
     state_names: list[str]
-    observation_models: tuple[ObservationModel, ...]
+    observation_models: list[ObservationModel] | tuple[ObservationModel, ...]
     non_local_position_penalty: float
     non_local_penalty_std: float
 

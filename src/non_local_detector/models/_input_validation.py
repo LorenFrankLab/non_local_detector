@@ -29,6 +29,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
+from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
     DataError,
     DataQualityWarning,
@@ -989,15 +990,136 @@ def _normalize_frozen_discrete_transition_rows(
     return mask
 
 
-def _validate_covariate_time_length(
-    predicted_transitions: np.ndarray, time: np.ndarray
-) -> None:
-    """Validate that covariate-derived transitions match decode time length.
+def _position_columns(environment: Environment) -> int:
+    """Return the number of position columns a fitted environment decodes.
 
     Parameters
     ----------
-    predicted_transitions : np.ndarray, shape (n_covariate_time, n_states, n_states)
-        Covariate-derived discrete transition matrices, one per time step.
+    environment : Environment
+        A fitted environment.
+
+    Returns
+    -------
+    n_columns : int
+        The coordinates of the track graph's nodes for a track-graph
+        environment, which linearizes raw positions, otherwise the
+        dimensions of its place grid.
+    """
+    if environment.track_graph is not None:
+        _, node_position = next(iter(environment.track_graph.nodes(data="pos")))
+        return len(node_position)
+    return int(environment.place_bin_centers_.shape[1])
+
+
+# A position sample more than this many place bins outside a grid's bounding
+# box is off the grid; fitting and decoding warn when more than this fraction
+# of the finite samples are. Tracking noise near the edge stays within a bin,
+# and a stray sample or two stays under the fraction.
+_OFF_GRID_BINS = 1.0
+_OFF_GRID_FRACTION = 0.01
+
+
+def _off_grid_distance(points: np.ndarray, environment: Environment) -> np.ndarray:
+    """Distance of each point outside a fitted grid's bounding box.
+
+    Parameters
+    ----------
+    points : np.ndarray, shape (n_points, n_position_dims)
+        Finite positions in the grid's coordinates.
+    environment : Environment
+        A fitted environment without a track graph.
+
+    Returns
+    -------
+    distance : np.ndarray, shape (n_points,)
+        Euclidean distance to the bounding box of the grid's bins, in
+        position units, or NaN for a point within ``_OFF_GRID_BINS`` bins of
+        it in every dimension.
+    """
+    edges = environment.edges_
+    lower = np.array([dimension_edges[0] for dimension_edges in edges])
+    upper = np.array([dimension_edges[-1] for dimension_edges in edges])
+    bin_width = np.array(
+        [np.max(np.diff(dimension_edges)) for dimension_edges in edges]
+    )
+    excess = np.maximum(lower - points, 0.0) + np.maximum(points - upper, 0.0)
+    is_off = np.any(excess > _OFF_GRID_BINS * bin_width, axis=1)
+    return np.where(is_off, np.linalg.norm(excess, axis=1), np.nan)
+
+
+def _warn_if_off_grid(
+    position: np.ndarray, environments: Sequence[Environment]
+) -> None:
+    """Warn when many positions lie far outside the fitted grids.
+
+    Likelihoods move a position outside the grid to the nearest interior bin
+    (``snap_off_track_positions``), which hides positions in other units than
+    the grid or outside its ``position_range``. A finite sample farther than
+    ``_OFF_GRID_BINS`` bins outside the bounding box of every environment's
+    grid is off the grid; more than ``_OFF_GRID_FRACTION`` of them warns.
+    Interior holes lie inside the bounding box. A track graph projects every
+    position onto its track, so nothing is checked when an environment has
+    one: its samples cannot be told apart from the others'.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time_position, n_position_dims)
+        Positions, with NaN rows for untracked samples.
+    environments : sequence of Environment
+        The fitted environments the samples may lie in.
+
+    Warns
+    -----
+    DataQualityWarning
+        If more than ``_OFF_GRID_FRACTION`` of the finite samples are off the
+        grid.
+    """
+    if any(environment.track_graph is not None for environment in environments):
+        return
+    points = position[np.all(np.isfinite(position), axis=1)]
+    n_samples = len(points)
+    if n_samples == 0:
+        return
+    # NaN (on the grid) wherever a sample is on any environment's grid.
+    distance = np.min(
+        [_off_grid_distance(points, environment) for environment in environments],
+        axis=0,
+    )
+    is_off = np.isfinite(distance)
+    n_off = int(np.count_nonzero(is_off))
+    if n_off <= _OFF_GRID_FRACTION * n_samples:
+        return
+    names = ", ".join(
+        repr(environment.environment_name) for environment in environments
+    )
+    warnings.warn(
+        f"{n_off / n_samples:.1%} of the {n_samples} finite position samples "
+        f"lie more than one place bin outside the fitted grid of environment "
+        f"{names}, up to {np.max(distance[is_off]):.3g} position units beyond "
+        "it. The likelihoods evaluate such a position at the nearest interior "
+        "bin instead. Position may be in larger units than the grid (for "
+        "example millimetres on a grid in centimetres), the environment's "
+        "position_range may not match the data, or, when decoding, the "
+        "positions may lie where the fitting positions never went (without "
+        "position_range a grid spans only the positions it was fitted on). "
+        "Check the units of position, the environment's position_range and "
+        "place_bin_size, and that the fitted positions cover the decoded ones.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
+def _validate_covariate_time_length(
+    covariate_rows: np.ndarray, time: np.ndarray
+) -> None:
+    """Validate that covariates have one row per decode bin.
+
+    Parameters
+    ----------
+    covariate_rows : np.ndarray, shape (n_covariate_time, ...)
+        One row per covariate time step: the covariate-derived discrete
+        transition matrices, shape (n_covariate_time, n_states, n_states), or
+        one covariate.
     time : np.ndarray, shape (n_bins,)
         Decode bin centers.
 
@@ -1006,7 +1128,7 @@ def _validate_covariate_time_length(
     ValidationError
         If the number of covariate time steps does not match decode time.
     """
-    n_covariate_time = predicted_transitions.shape[0]
+    n_covariate_time = covariate_rows.shape[0]
     n_decode_time = len(time)
     if n_covariate_time != n_decode_time:
         msg = (
@@ -1014,7 +1136,16 @@ def _validate_covariate_time_length(
             f"decode time has {n_decode_time} time steps. "
             f"These must match."
         )
-        raise ValidationError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"{n_decode_time} rows of discrete_transition_covariate_data, "
+            "one per decode bin",
+            got=f"{n_covariate_time} rows",
+            hint="Evaluate the covariates at the decode bin centers, "
+            "(time_edges[:-1] + time_edges[1:]) / 2, e.g. by interpolating them "
+            "from their own timeline. The row count cannot show that they are "
+            "aligned: rebuild them for every new time_edges.",
+        )
 
 
 def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
@@ -1147,11 +1278,41 @@ class _InputValidationMixin:
         ------
         ValidationError
             If position is None but Local states or a non-local position
-            penalty read it, or position is 1-D (one column) while an
-            environment has a track graph, which needs raw 2-D positions.
+            penalty read it, position is 1-D (one column) while an
+            environment has a track graph, which needs raw 2-D positions, or
+            the likelihood reads position and it has another number of
+            columns than a fitted environment's positions.
+
+        Warns
+        -----
+        DataQualityWarning
+            If the decode likelihood reads position and many positions lie
+            far outside the fitted grids (see ``_warn_if_off_grid``).
         """
         if position is not None:
             self._validate_position_dimensionality(position, context="predict")
+            if not self._decode_reads_position():
+                return
+            n_columns = 1 if position.ndim == 1 else position.shape[1]
+            for environment in self.environments_:
+                expected = _position_columns(environment)
+                if n_columns != expected:
+                    msg = (
+                        f"position has {n_columns} column(s), but environment "
+                        f"{environment.environment_name!r} was fitted on "
+                        f"positions with {expected} columns"
+                    )
+                    raise ValidationError(
+                        msg,
+                        expected=f"position of shape (n_time_position, {expected})",
+                        got=f"shape {position.shape}",
+                        hint="Decode with the same position columns, in the same "
+                        "order and units, as the detector was fitted with.",
+                    )
+            _warn_if_off_grid(
+                position[:, np.newaxis] if position.ndim == 1 else position,
+                self.environments_,
+            )
             return
         if not self._decode_reads_position():
             return
