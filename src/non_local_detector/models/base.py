@@ -2215,10 +2215,12 @@ class _DetectorBase(
             if isinstance(result, int):
                 # Reuse the likelihood computed for an earlier state
                 result = likelihood_results[result]
-            block = jnp.broadcast_to(
-                jnp.asarray(result, dtype=jnp.float32),
-                (n_rows, int(n_state_columns[state_id])),
-            )
+            expected_shape = (n_rows, int(n_state_columns[state_id]))
+            if jnp.shape(result) != expected_shape:
+                raise self._wrong_likelihood_shape(
+                    state_id, jnp.shape(result), expected_shape
+                )
+            block = jnp.asarray(result, dtype=jnp.float32)
             if non_local_penalty > 0 and not obs.is_local and not obs.is_no_spike:
                 env_name = obs.environment_name
                 if env_name not in env_penalties:
@@ -2249,6 +2251,49 @@ class _DetectorBase(
 
         # Apply missing data mask
         return jnp.where(jnp.asarray(is_missing)[:, jnp.newaxis], 0.0, log_likelihood)
+
+    def _wrong_likelihood_shape(
+        self,
+        state_id: int,
+        shape: tuple[int, ...],
+        expected_shape: tuple[int, int],
+    ) -> ValidationError:
+        """Build the error for a state's log likelihood of the wrong shape.
+
+        Parameters
+        ----------
+        state_id : int
+            Index of the state.
+        shape : tuple of int
+            Shape of the state's log likelihood.
+        expected_shape : tuple of int
+            ``(n_rows, n_columns)`` of the state's block.
+
+        Returns
+        -------
+        error : ValidationError
+        """
+        state_space = self.state_space_
+        obs = state_space.observation_models[state_id]
+        algorithm = (
+            "predict_no_spike_log_likelihood"
+            if obs.is_no_spike
+            else self.encoding_model_[(obs.environment_name, obs.encoding_group)][
+                "algorithm"
+            ]
+        )
+        msg = (
+            f"{algorithm} returned the wrong log likelihood shape for state "
+            f"{state_space.state_names[state_id]!r}"
+        )
+        return ValidationError(
+            msg,
+            expected=f"shape {expected_shape}, (n_rows, n_interior_bins) or "
+            "(n_rows, 1) when is_local",
+            got=f"shape {shape}",
+            hint="Predict returns one row per requested decode bin "
+            "(row_slice) and one column per interior bin.",
+        )
 
     def _decode_discrete_transitions(
         self,

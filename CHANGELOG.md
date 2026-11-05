@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Extension checks
+
+- **Fixed:** a likelihood algorithm whose `predict` returns the wrong shape raises `ValidationError` naming the algorithm and the state. Before, a shape that broadcast to the state's block, such as one column for every bin, spread that value over the bins silently.
+
 ### Transition estimates and HMM inputs that gave wrong results silently
 
 - **Fixed (changes results):** `EmpiricalMovement` no longer counts a step across samples it leaves out. It dropped the samples outside training, `encoding_group` or its environment and then paired the remaining ones in order, so the samples on either side of each excluded stretch counted as one step, however far apart they were. It now counts only steps between consecutive samples that are both used and finite. Affected: any `EmpiricalMovement` fit with `is_training`, encoding-group or environment labels that exclude samples in the middle of the recording; results change most when the animal moves during the excluded stretches. On a simulated 65-s linear-track session (500 Hz, 2.5-cm bins) with every other 5-s block held out, a step from bin 47 to bin 72 (62 cm in 2 ms) had probability 0.0079, and 0.024 of the transition's total row mass was more than five bins from the diagonal; both are now 0. The decoded posterior changed by at most 0.0049 and the state probabilities by at most 0.0033, with no change in the most likely state. Excluding only replay events and immobility, where the animal is in the same place on either side, the transition changed by at most 3e-5 and the posterior by at most 5e-5. Not affected: fits that use every sample, or exclude only the start or end of the recording. `estimate_movement_var` likewise no longer takes a step across NaN samples: it differenced the positions after dropping NaN rows, so the movement during a tracking dropout counted as one step.
