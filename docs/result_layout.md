@@ -99,7 +99,7 @@ store at `result_path`; one read larger than `max_read_bytes` raises an error.
 | `em_n_chunks` | int | Dense EM | Chunks of the dense E-step |
 | `em_chunk_size`, `em_replay_cache_bytes` | int | Structured EM | Checkpoint chunk rows and replay cache of the E-step |
 | `inference_mode`, `output_mode` | str | Checkpointed | `"checkpointed"`; `"compact"` or `"spatial"` |
-| `conditioning` | str | Checkpointed | Selected rows are conditioned on the whole recording |
+| `conditioning` | str | Checkpointed | How selected rows are conditioned: `"whole_recording"` |
 | `whole_recording_conditioning` | bool | Checkpointed | True: selected rows are conditioned on the whole recording |
 | `recording_rows`, `n_recording_bins` | int | Checkpointed | Bins in the full decode grid |
 | `transition_representation` | str | Checkpointed | Transition representation the decode used |

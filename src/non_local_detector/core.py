@@ -2374,8 +2374,9 @@ class FilterSmootherResult(NamedTuple):
     """Outputs of the chunked forward-backward drivers.
 
     Returned by :func:`chunked_filter_smoother` and
-    :func:`chunked_filter_smoother_covariate_dependent`. Its first eight
-    fields unpack like the positional tuple those drivers returned before.
+    :func:`chunked_filter_smoother_covariate_dependent`. It unpacks by
+    position: the eight fields through ``predictive_posterior`` keep the order
+    of the tuple those drivers returned before, and later fields follow them.
 
     Attributes
     ----------

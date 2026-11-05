@@ -9,14 +9,12 @@ and ``format_v1/nonlocal_clusterless_2d.nld`` (a 2-D open field), fitted on
 ``format_v1/predict_reference.npz``. The sorted-spikes model is fitted with
 ``estimate_parameters``, so its file holds EM's records too.
 
-Run it once per format version, with the release that freezes that version
-installed::
+Run it once per format version::
 
     uv run python tests/compat_data/generate_saved_model_files.py tests/compat_data
 
-The files in ``format_v1`` were written by non_local_detector 0.6.10.dev
-(main before 0.7.0, which freezes format version 1) on 2026-11-05 (macOS,
-arm64); ``format_v1/VERSION.json`` lists the main package versions.
+``format_v1`` holds one small ``.nld`` file per detector family; see
+``VERSION.json``.
 """
 
 from __future__ import annotations

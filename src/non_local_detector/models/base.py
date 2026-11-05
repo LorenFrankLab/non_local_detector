@@ -1241,7 +1241,7 @@ class _DetectorBase(
 
         Raises
         ------
-        ValueError
+        ValidationError
             If the number of state names does not match the number of discrete initial conditions.
         """
         if state_names is None:

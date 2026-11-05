@@ -1,8 +1,8 @@
 """Saved-model files of each format version load and decode as when written.
 
 ``tests/compat_data/format_v1`` holds one small ``.nld`` file per detector
-family, written when format version 1 froze, and each one's decode of the
-whole recording (``generate_saved_model_files.py``). Every later release must
+family and each one's decode of the whole recording
+(``generate_saved_model_files.py``); see ``VERSION.json``. Every later release must
 load them, with the family's ``load_model`` as Spyglass calls it, and decode
 them to the same posterior; a change to what the format stores or how it is
 read fails here first.

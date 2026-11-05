@@ -241,15 +241,19 @@ the details.
 
 ## Versions
 
-`format_version` (currently 1) changes when stored names or meanings change.
+`format_version` (currently 1) changes when a stored name is renamed or
+removed, or a stored value changes meaning. Adding a name does not change it.
 A newer release reads every older version through migrations of the stored
-data, run before anything is built. A file written in a newer format version
-than the installed release reads is refused, naming the version to upgrade
-to.
+data, run before anything is built.
+
+That gives a file from a newer package version one of two outcomes. If it only
+adds names, its `format_version` is one the installed release reads: it
+loads, and the names the installed release does not read are ignored, with a
+`DataQualityWarning` listing them. If its `format_version` is newer than the
+installed release reads, it is refused, naming the version to upgrade to.
 
 A field added to the format has a default, so files written before it still
-load. A release loading a file written by a newer one ignores the names it
-does not read, with a `DataQualityWarning` listing them. A fitted file
-missing a name its kind of model always has raises `DataError`, as does an
+load. A fitted file missing a name its kind of model always has raises
+`DataError`, as does an
 encoding model missing a key its likelihood algorithm stores, or naming an
 algorithm the installed release does not register.
