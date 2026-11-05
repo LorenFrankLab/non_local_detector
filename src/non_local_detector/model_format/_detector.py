@@ -73,6 +73,7 @@ from non_local_detector.model_format._codec import (
     ArrayWriter,
     Decoder,
     Encoder,
+    refuse_object_array,
 )
 from non_local_detector.model_format._container import (
     FORMAT_NAME,
@@ -621,7 +622,8 @@ def _fitted_attributes(
 class _DigestWriter:
     """Stands in for ``ArrayWriter``: names each array by its ``.npy`` digest."""
 
-    def put(self, array: np.ndarray, where: str) -> str:  # noqa: ARG002 -- ArrayWriter.put signature
+    def put(self, array: np.ndarray, where: str) -> str:
+        refuse_object_array(array, where)
         return array_digest(np.require(array, requirements="C"))
 
 
@@ -654,7 +656,8 @@ def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
     Raises
     ------
     ValidationError
-        If a parameter holds an object of a type not registered for saving.
+        If a parameter holds what a saved model cannot: an object of a type
+        not registered for saving, or an object array.
     """
     return [
         name

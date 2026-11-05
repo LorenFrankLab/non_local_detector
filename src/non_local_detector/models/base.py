@@ -1933,8 +1933,8 @@ class _DetectorBase(
     def _warn_if_layout_parameters_changed(self) -> None:
         """Warn when a parameter the fit recorded was changed since.
 
-        Decoding uses the recorded values (``state_space_``). Parameters of a
-        type not registered for saving cannot be compared and do not warn.
+        Decoding uses the recorded values (``state_space_``). Parameters a
+        saved model cannot hold cannot be compared and do not warn.
         """
         from non_local_detector.model_format._detector import (
             changed_layout_parameters,
