@@ -1,9 +1,14 @@
 """Reference computations of EM's discrete-transition statistics and M-step.
 
-The package computes the statistics in JAX (stationary counts from the
-posteriors, covariate responses in the smoother's scan) and the covariate
-M-step's loss, gradient and Hessian over blocks of rows. These are the
-straightforward forms the tests compare them with.
+The package computes the statistics in JAX: stationary counts from the
+posteriors, and covariate responses in the smoother's scan.
+
+``expanded_responses``, and ``expanded_counts`` for a time-varying transition,
+are independent of that code: a NumPy loop over rows, so they can check it.
+``expanded_counts`` for a stationary transition, ``dirichlet_gradient`` and
+``dirichlet_hessian`` call package code. They give tests the package's
+computation through a convenient signature and are not independent references;
+compare them with finite differences or ``expanded_responses``.
 """
 
 import numpy as np
