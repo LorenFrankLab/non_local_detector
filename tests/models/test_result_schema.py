@@ -215,17 +215,33 @@ def test_netcdf_round_trip_keeps_every_dtype(
     }
 
 
+# String and bytes array attributes a user adds to dense results; netCDF4
+# reads both back as lists of str, and netCDF3 cannot store them.
+_USER_ARRAY_ATTRS = {
+    "str_arr": np.array(["a", "bc"]),
+    "bytes_arr": np.array([b"a", b"bc"]),
+}
+
+
 @pytest.mark.parametrize("file_format", ["netCDF4", "netCDF3"])
-@pytest.mark.parametrize("kind", ["dense", "checkpointed", "em"])
+@pytest.mark.parametrize("kind", ["dense", "checkpointed", "em", *_USER_ARRAY_ATTRS])
 def test_netcdf_round_trip_restores_attribute_types_and_levels(
     fitted, kind, file_format, request, tmp_path, monkeypatch
 ):
     """Attributes come back with their types (netCDF reads booleans back as
     integers and one-element arrays as scalars), and the MultiIndex's
-    ``state`` level with its dtype; in netCDF4 the result is identical."""
+    ``state`` level with its dtype; in netCDF4 the result is identical.
+    String and bytes arrays come back as netCDF reads them."""
     if file_format == "netCDF4":
         pytest.importorskip("netCDF4")
-    result = request.getfixturevalue(kind)
+    user_attr = _USER_ARRAY_ATTRS.get(kind)
+    if user_attr is not None:
+        if file_format == "netCDF3":
+            pytest.skip("netCDF3 cannot store string array attributes")
+        result = request.getfixturevalue("dense").copy()
+        result.attrs["user_array"] = user_attr
+    else:
+        result = request.getfixturevalue(kind)
     filename = tmp_path / "results.nc"
     with monkeypatch.context() as patch:
         if file_format == "netCDF3":
@@ -236,6 +252,9 @@ def test_netcdf_round_trip_restores_attribute_types_and_levels(
         restored = restored.load()
     expected = result.copy().load()
     expected.attrs.pop("_native_metadata", None)
+    if user_attr is not None:
+        assert restored.attrs.pop("user_array") == ["a", "bc"]
+        del expected.attrs["user_array"]
 
     assert restored.attrs.keys() == expected.attrs.keys()
     for name, value in expected.attrs.items():

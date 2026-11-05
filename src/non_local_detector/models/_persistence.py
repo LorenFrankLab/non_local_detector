@@ -57,8 +57,10 @@ def _attribute_type(value: object) -> str | None:
 
     netCDF holds no booleans (``save_results`` stores them as integers),
     reads integers and floats back as NumPy scalars and a one-element array
-    as a scalar. None for a value it reads back as written (a string).
-    The names are those of the Result layout guide's attribute types.
+    as a scalar. None for a value whose type is not recorded: a string, or
+    an array of strings or bytes, which netCDF4 reads back as a list of
+    strings. The names are those of the Result layout guide's attribute
+    types.
     """
     if isinstance(value, (bool, np.bool_)):
         return "bool"
@@ -66,7 +68,7 @@ def _attribute_type(value: object) -> str | None:
         return "int"
     if type(value) is float:
         return "float"
-    if isinstance(value, np.ndarray) and value.ndim == 1:
+    if isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype.kind in "biuf":
         return f"{value.dtype.name} array"
     return None
 
@@ -387,8 +389,8 @@ class _PersistenceMixin:
         is converted before saving. Boolean attributes are stored as integers
         and the internal ``_native_metadata`` attribute is dropped. The dtype
         of each integer variable and coordinate, and the type of each
-        attribute that is not a string, are recorded so that ``load_results``
-        restores them: netCDF3, written when neither netCDF4 nor h5netcdf is
+        boolean, integer, float and numeric-array attribute, are recorded so
+        that ``load_results`` restores them: netCDF3, written when neither netCDF4 nor h5netcdf is
         installed, stores int64 as int32, and netCDF reads a boolean attribute
         back as an integer and a one-element array as a scalar.
 

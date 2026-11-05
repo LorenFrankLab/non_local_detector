@@ -119,10 +119,11 @@ in attributes as integers, and drops `_native_metadata`. It records the dtype
 of every integer variable and coordinate in the file's
 `non_local_detector_integer_dtypes` attribute, because netCDF3 (written when
 neither netCDF4 nor h5netcdf is installed) stores int64 as int32, and the
-type of every attribute that is not a string in its
+type of every boolean, integer, float and numeric-array attribute in its
 `non_local_detector_attribute_types` attribute, because netCDF reads a
 boolean back as an integer, an integer or float as a NumPy scalar and a
-one-element array as a scalar.
+one-element array as a scalar. An array attribute of strings or bytes comes
+back as netCDF4 reads it, a list of strings (netCDF3 cannot store one).
 `load_results("results.nc")` rebuilds the `state_bins` MultiIndex, keeping
 `state_ind` as an integer coordinate along it, gives the integer variables and
 coordinates (`state_ind`, `encoding_groups`, checkpointed `source_row`) their
