@@ -2110,7 +2110,7 @@ class _DetectorBase(
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
         if context.position_context.all_missing:
-            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
+            return jnp.zeros((n_rows, int(self.state_space_.is_track_interior.sum())))
         position = context.position_context.position
 
         likelihood_func = self._likelihood_predict_function()
@@ -2120,8 +2120,7 @@ class _DetectorBase(
         # Interior state bins per state. state_ind_ is built state by state, so
         # each state's bins are one contiguous block of columns.
         n_state_columns = np.bincount(
-            self.state_ind_[self.is_track_interior_state_bins_],
-            minlength=state_space.n_states,
+            state_space.interior_state_ind, minlength=state_space.n_states
         )
 
         # Use dict for O(1) lookup instead of list
@@ -2722,9 +2721,10 @@ class _DetectorBase(
             cache_likelihood = False
 
         logger.info("Computing posterior...")
-        is_track_interior = self.is_track_interior_state_bins_
+        state_space = self.state_space_
+        is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+        state_ind = state_space.interior_state_ind
 
         # Use provided transitions or fall back to fitted attribute
         discrete_transitions = (
@@ -2756,7 +2756,7 @@ class _DetectorBase(
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    state_space.continuous_transitions[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
@@ -2774,7 +2774,7 @@ class _DetectorBase(
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,
-                continuous_transition_matrix=self.continuous_state_transitions_[
+                continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],
                 log_likelihood_func=log_likelihood_func,
@@ -3033,15 +3033,16 @@ class _DetectorBase(
         log_likelihood_func = self._decode_likelihood_callback(
             time_edges, log_likelihood_args
         )
-        is_track_interior = self.is_track_interior_state_bins_
+        state_space = self.state_space_
+        is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+        state_ind = state_space.interior_state_ind
         if discrete_transitions.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
                 time_edges=time_edges,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    state_space.continuous_transitions[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
@@ -3055,7 +3056,7 @@ class _DetectorBase(
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,
-                continuous_transition_matrix=self.continuous_state_transitions_[
+                continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],
                 log_likelihood_func=log_likelihood_func,

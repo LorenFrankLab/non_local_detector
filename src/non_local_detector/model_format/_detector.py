@@ -271,10 +271,11 @@ def _transition_fingerprints(
     a change to any entry shows. It reads the dense matrix's block, or the
     structured operator's block through its products.
     """
-    transitions = detector.continuous_state_transitions_
+    state_space = detector.state_space_
+    transitions = state_space.continuous_transitions
     operator = getattr(transitions, "operator", None)
-    state_ind = np.asarray(detector.state_ind_)
-    n_states = int(detector.n_discrete_states_)
+    state_ind = np.asarray(state_space.state_ind)
+    n_states = state_space.n_states
     fingerprints = []
     for source in range(n_states):
         rows = np.flatnonzero(state_ind == source)
@@ -358,7 +359,9 @@ class _RebuildCheck:
             rebuilt["continuous_transitions"],
             strict=True,
         ):
-            why = _mismatch(before, after, max(detector.bin_sizes_[[source, target]]))
+            why = _mismatch(
+                before, after, max(detector.state_space_.bin_sizes[[source, target]])
+            )
             if why is not None:
                 problems.append(
                     f"continuous transition from state {source} to {target} ({why})"
@@ -439,9 +442,10 @@ class _FittedBlock:
 
 def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]:
     """Return the continuous blocks built from fit data, by (from_state, to_state)."""
-    state_ind = np.asarray(detector.state_ind_)
+    state_space = detector.state_space_
+    state_ind = np.asarray(state_space.state_ind)
     blocks = {}
-    for source, row in enumerate(detector.state_space_.continuous_transition_types):
+    for source, row in enumerate(state_space.continuous_transition_types):
         for target, transition in enumerate(row):
             spec = spec_for_object(transition)
             if spec is None or not spec.block_needs_fit_data:
@@ -451,7 +455,7 @@ def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]
             if len(rows) == 1 or len(columns) == 1:
                 continue  # built from the one-bin rule, not the transition
             blocks[(source, target)] = np.array(
-                detector.continuous_state_transitions_[np.ix_(rows, columns)]
+                state_space.continuous_transitions[np.ix_(rows, columns)]
             )
     return blocks
 

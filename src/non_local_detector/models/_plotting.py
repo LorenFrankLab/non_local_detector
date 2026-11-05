@@ -24,6 +24,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
 )
 from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.models._state_space import StateSpace
 
 
 class _FittedDetector(Protocol):
@@ -34,15 +35,12 @@ class _FittedDetector(Protocol):
     """
 
     state_names: list[str]
-    n_discrete_states_: int
-    state_ind_: np.ndarray
     discrete_transition_type: Any
-    bin_sizes_: np.ndarray
     initial_conditions_: np.ndarray
     discrete_state_transitions_: np.ndarray
     discrete_transition_coefficients_: np.ndarray | None
     discrete_transition_design_matrix_: DesignMatrix | None
-    continuous_state_transitions_: Any
+    state_space_: StateSpace
 
 
 class _PlottingMixin:
@@ -202,53 +200,57 @@ class _PlottingMixin:
             Maximum value for color scale, by default 0.3.
         """
         GOLDEN_RATIO = 1.618
+        state_space = self.state_space_
 
-        if self.n_discrete_states_ == 1:
+        if state_space.n_states == 1:
             # A single state has one panel, which needs room for its tick labels.
             _, ax = plt.subplots(
                 constrained_layout=True,
                 figsize=(4.0 * figsize_scaling, 3.5 * figsize_scaling),
             )
-            ax.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
+            ax.pcolormesh(state_space.continuous_transitions, vmin=0.0, vmax=vmax)
             ax.set_xlabel("To position bin")
             ax.set_ylabel("From position bin")
-            ax.set_title(self.state_names[0])
+            ax.set_title(state_space.state_names[0])
             return
 
         fig, axes = plt.subplots(
-            self.n_discrete_states_,
-            self.n_discrete_states_,
+            state_space.n_states,
+            state_space.n_states,
             gridspec_kw={
-                "width_ratios": self.bin_sizes_,
-                "height_ratios": self.bin_sizes_,
+                "width_ratios": state_space.bin_sizes,
+                "height_ratios": state_space.bin_sizes,
             },
             constrained_layout=True,
             figsize=(
-                self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO,
-                (self.n_discrete_states_ * figsize_scaling),
+                state_space.n_states * figsize_scaling * GOLDEN_RATIO,
+                (state_space.n_states * figsize_scaling),
             ),
         )
 
         for from_state, ax_row in enumerate(axes):
             for to_state, ax in enumerate(ax_row):
-                ind = np.ix_(self.state_ind_ == from_state, self.state_ind_ == to_state)
+                ind = np.ix_(
+                    state_space.state_ind == from_state,
+                    state_space.state_ind == to_state,
+                )
                 ax.pcolormesh(
-                    self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
+                    state_space.continuous_transitions[ind], vmin=0.0, vmax=vmax
                 )
                 ax.set_xticks([])
                 ax.set_yticks([])
 
                 if to_state == 0:
                     ax.set_ylabel(
-                        self.state_names[from_state],
+                        state_space.state_names[from_state],
                         rotation=0,
                         ha="right",
                         va="center",
                     )
 
-                if from_state == self.n_discrete_states_ - 1:
+                if from_state == state_space.n_states - 1:
                     ax.set_xlabel(
-                        self.state_names[to_state],
+                        state_space.state_names[to_state],
                         rotation=45,
                         ha="right",
                         va="top",
@@ -271,24 +273,25 @@ class _PlottingMixin:
             Maximum value for color scale, by default 0.3.
         """
         GOLDEN_RATIO = 1.618
+        state_space = self.state_space_
         fig, axes = plt.subplots(
             1,
-            self.n_discrete_states_,
-            gridspec_kw={"width_ratios": self.bin_sizes_},
+            state_space.n_states,
+            gridspec_kw={"width_ratios": state_space.bin_sizes},
             constrained_layout=True,
-            figsize=(self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO, 1.1),
+            figsize=(state_space.n_states * figsize_scaling * GOLDEN_RATIO, 1.1),
         )
 
         try:
             for state, ax in enumerate(axes):
-                ind = self.state_ind_ == state
+                ind = state_space.state_ind == state
                 ax.pcolormesh(
                     self.initial_conditions_[ind][:, np.newaxis], vmin=0.0, vmax=vmax
                 )
                 ax.set_xticks([])
                 ax.set_yticks([])
                 ax.set_xlabel(
-                    self.state_names[state],
+                    state_space.state_names[state],
                     rotation=45,
                     ha="right",
                     va="top",
@@ -301,7 +304,7 @@ class _PlottingMixin:
             axes.set_xticks([])
             axes.set_yticks([])
             axes.set_xlabel(
-                self.state_names[0],
+                state_space.state_names[0],
                 rotation=45,
                 ha="right",
                 va="top",

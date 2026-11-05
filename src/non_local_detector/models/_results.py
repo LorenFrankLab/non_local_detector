@@ -232,10 +232,11 @@ def convert_results_to_xarray(
     xr.Dataset
         Decoding results in an xarray Dataset.
     """
-    is_track_interior = detector.is_track_interior_state_bins_
+    state_space = detector.state_space_
+    is_track_interior = state_space.is_track_interior
 
     # Extract environment and encoding group names in single pass
-    observation_models = detector.state_space_.observation_models
+    observation_models = state_space.observation_models
     environment_names = [obs.environment_name for obs in observation_models]
     encoding_group_names = [obs.encoding_group for obs in observation_models]
 
@@ -249,13 +250,13 @@ def convert_results_to_xarray(
     position = np.concatenate(state_bin_positions(detector), axis=0)
     n_position_dims = position.shape[1]
 
-    states = np.asarray(detector.state_space_.state_names)
+    states = np.asarray(state_space.state_names)
 
     # Generate position dimension names (canonical convention)
     position_names = get_position_dim_names(n_position_dims)
     # Create MultiIndex for state_bins coordinate
     state_bins_mindex = pd.MultiIndex.from_arrays(
-        ((states[detector.state_ind_], *position.T)),
+        ((states[state_space.state_ind], *position.T)),
         names=("state", *position_names),
     )
 
@@ -276,7 +277,7 @@ def convert_results_to_xarray(
             "time",
             saved_missing,
         ),
-        "state_ind": ("state_bins", detector.state_ind_),
+        "state_ind": ("state_bins", state_space.state_ind),
         "states": states,
         "environments": ("states", environment_names),
         "encoding_groups": ("states", encoding_group_names),
@@ -391,15 +392,15 @@ def convert_seq_to_df(
     environment_names = np.concatenate(environment_names_blocks, axis=0)
     encoding_group_names = np.concatenate(encoding_group_names_blocks, axis=0)
 
-    states = np.asarray(detector.state_space_.state_names)
+    states = np.asarray(state_space.state_names)
     position_names = get_position_dim_names(position.shape[1])
     state_bins = pd.DataFrame(
         {
-            "state": states[detector.state_ind_],
+            "state": states[state_space.state_ind],
             **dict(zip(position_names, position.T, strict=False)),
             "environment": environment_names,
             "encoding_group_names": encoding_group_names,
         }
-    ).iloc[detector.is_track_interior_state_bins_]
+    ).iloc[state_space.is_track_interior]
 
     return state_bins.iloc[sequence_ind].set_index(pd.Index(time, name="time"))
