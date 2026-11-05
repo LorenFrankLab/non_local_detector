@@ -44,7 +44,7 @@ from non_local_detector.models.base import (
     _ModelUnpickler,
 )
 from non_local_detector.observation_models import ObservationModel
-from tests.models._helpers import type_violations
+from tests.models._helpers import SORTED_SIM_RATE, type_violations
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
 # Fitted before rates were recorded in Hz: refused at decode.
@@ -332,6 +332,44 @@ def test_unpickling_a_layout_that_disagrees_with_the_states_asks_for_a_refit(
 
     with pytest.raises(ValidationError, match="Refit the detector"):
         restored.__setstate__(state)
+
+
+def test_unpickling_a_structured_layout_keeps_its_operator_and_limit(sorted_sim):
+    """A structured detector saved before ``state_space_`` kept its operator,
+    representation and byte limit in attributes of its own."""
+    time, position, spike_times = sorted_sim
+    model = nld.NonLocalSortedSpikesDetector(
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(
+        time,
+        position,
+        spike_times,
+        transition_representation="structured",
+        max_dense_transition_bytes=2**24,
+    )
+    state = dict(vars(model))
+    state_space = state.pop("state_space_")
+    state.update(
+        state_ind_=state_space.state_ind,
+        bin_sizes_=state_space.bin_sizes,
+        is_track_interior_state_bins_=state_space.is_track_interior,
+        continuous_state_transitions_=state_space.continuous_transitions,
+        n_state_bins_=state_space.n_state_bins,
+        n_discrete_states_=state_space.n_states,
+        _continuous_transition_operator_=state_space.transition_operator,
+        _transition_representation_=state_space.transition_representation,
+        _max_dense_transition_bytes_=state_space.max_dense_transition_bytes,
+    )
+    restored = type(model).__new__(type(model))
+
+    restored.__setstate__(state)
+
+    upgraded = restored.state_space_
+    assert upgraded.transition_operator is state_space.transition_operator
+    assert upgraded.continuous_transitions is state_space.continuous_transitions
+    assert upgraded.transition_representation == "structured"
+    assert upgraded.max_dense_transition_bytes == 2**24
 
 
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
