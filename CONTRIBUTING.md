@@ -89,6 +89,7 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 - `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules. Add the new name to its `_CHANGED_FIT_PARAMETER` (a fit parameter that is not an execution setting, which prediction must ignore until the next fit; the test raises `KeyError` without it) and, if it has execution settings beyond `disable_progress_bar`, to `_CHANGED_SETTINGS` and `_INVALID_SETTINGS`.
 - The detector-level tests fit every registered algorithm through `tests/models/_helpers.py`'s `_decoder` on small fixtures; add parameters there if the defaults do not fit them (as the sorted GLM's knot spacing and the clusterless GMM's component counts do).
 - List each new class that its encoding model holds (a fitted density model, a basis) in `model_format/_builtins.py` with its fields, or `save_model` refuses the fitted detector (see "Saved-model format").
+- Add the encoding model's keys to `_STORED_KEYS` in `tests/model_format/test_encoding_model_format.py`: they are stored in saved models, and `load_model` refuses an encoding model whose keys differ from its type's. Changing a registered algorithm's keys needs a format version (see "Saved-model format").
 - Add the algorithm to the user-facing lists, the likelihood models in `README.md` ("Architecture") and the likelihood table in `docs/getting-started/core-concepts.md`; the contract tests check that both name every registered algorithm.
 
 ## Saved-model format

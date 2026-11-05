@@ -993,6 +993,46 @@ def check_documents(stored: StoredModel) -> None:
         unread = sorted(set(fingerprints) - _FINGERPRINT_FIELDS)
         if unread:
             _refuse_unread_names("state.json fingerprints", unread, manifest)
+    for entry in state.get("encoding_models", []):
+        _check_encoding_model(entry["model"], manifest)
+
+
+def _check_encoding_model(model: Any, manifest: Mapping[str, Any]) -> None:
+    """Raise ``DataError`` unless a stored encoding model has its type's keys.
+
+    The keys are those of the ``encoding_model_type`` of the registered
+    algorithm the model names.
+    """
+    from non_local_detector.likelihoods import (
+        _CLUSTERLESS_ALGORITHMS,
+        _SORTED_SPIKES_ALGORITHMS,
+        LikelihoodAlgorithm,
+    )
+
+    registry: dict[str, LikelihoodAlgorithm[Any, Any]] = {
+        **_SORTED_SPIKES_ALGORITHMS,
+        **_CLUSTERLESS_ALGORITHMS,
+    }
+    algorithm = model.get("algorithm") if isinstance(model, dict) else None
+    if algorithm not in registry:
+        msg = f"The saved model has an encoding model of algorithm {algorithm!r}, which is not registered"
+        raise DataError(
+            msg,
+            expected=f"one of {sorted(registry)}",
+            hint="The file was written by a newer or different version of "
+            "non_local_detector, or was edited.",
+        )
+    # A TypedDict, which mypy types as a plain type.
+    model_type: Any = registry[algorithm].encoding_model_type
+    unread = sorted(
+        set(model) - model_type.__required_keys__ - model_type.__optional_keys__
+    )
+    if unread:
+        _refuse_unread_names(f"{algorithm} encoding model", unread, manifest)
+    missing = sorted(model_type.__required_keys__ - set(model))
+    if missing:
+        msg = f"The saved {algorithm} encoding model has no {missing}"
+        raise DataError(msg, hint=_CORRUPT_HINT)
 
 
 @contextlib.contextmanager

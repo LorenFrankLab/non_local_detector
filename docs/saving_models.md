@@ -235,4 +235,6 @@ read (an entry of `manifest.json` or `state.json`, a field of an entry, or a
 field of a stored object) raises `DataError` naming it and the package
 versions: a newer or different version wrote it, and reading on without it
 could build a different model. A fitted file missing a name its kind of
-model always has raises `DataError` as well.
+model always has raises `DataError` as well, as does an encoding model whose
+keys are not exactly those its likelihood algorithm stores, or that names an
+algorithm the installed release does not register.
