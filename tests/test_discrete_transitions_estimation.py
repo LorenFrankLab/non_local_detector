@@ -788,11 +788,26 @@ class TestExpandedDiscreteTransitionCounts:
         np.testing.assert_allclose(response.sum(axis=0), counts, atol=1e-5)
 
     @pytest.mark.parametrize("n_chunks", [1, 3])
-    def test_covariate_smoother_responses_match_numpy_reference(self, n_chunks):
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "random",
+            "lossy_rows",
+            "impossible_rows",
+            "zero_discrete_rows",
+            "support_mismatch",
+        ],
+    )
+    def test_covariate_smoother_responses_match_numpy_reference(self, case, n_chunks):
         """The covariate smoother's responses are the per-row expected transitions.
 
         They are computed in the smoother's scan; the reference sums each row's
-        expanded pair probabilities from the returned posteriors.
+        expanded pair probabilities from the returned posteriors. Besides random
+        inputs: bins that lose probability, including a row with none to give;
+        steps impossible in every bin; a discrete row that sends everything to
+        one state, leaving exact zeros in the prediction; and a step supported
+        only where the prediction has no mass. The structured rows straddle the
+        first boundary of the three-chunk split, between rows 3 and 4.
         """
         from non_local_detector.core import (
             chunked_filter_smoother_covariate_dependent,
@@ -807,6 +822,17 @@ class TestExpandedDiscreteTransitionCounts:
         continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
         discrete_transition = rng.random((n_time, n_states, n_states))
         discrete_transition /= discrete_transition.sum(axis=2, keepdims=True)
+        log_likelihoods = rng.normal(size=(n_time, n_bins))
+        if case == "lossy_rows":
+            continuous_transition[1] *= 0.5
+            continuous_transition[3] = 0.0
+        elif case == "impossible_rows":
+            log_likelihoods[[3, 4]] = -np.inf
+        elif case in ("zero_discrete_rows", "support_mismatch"):
+            discrete_transition[3] = [[0.0, 0.0, 1.0]] * n_states
+        if case == "support_mismatch":
+            log_likelihoods[4, state_ind == 2] = -np.inf
+
         result = chunked_filter_smoother_covariate_dependent(
             time_edges=np.arange(n_time + 1.0),
             state_ind=state_ind,
@@ -815,10 +841,18 @@ class TestExpandedDiscreteTransitionCounts:
             continuous_transition_matrix=continuous_transition,
             log_likelihood_func=None,
             log_likelihood_args=(),
-            log_likelihoods=rng.normal(size=(n_time, n_bins)),
+            log_likelihoods=log_likelihoods,
             n_chunks=n_chunks,
             transition_responses=True,
         )
+        # Each case reaches the structure it is named for.
+        if case == "impossible_rows":
+            np.testing.assert_array_equal(result.degenerate_indices, [3, 4])
+        elif case in ("zero_discrete_rows", "support_mismatch"):
+            assert np.all(result.predictive_posterior[4][state_ind != 2] == 0)
+            np.testing.assert_array_equal(result.transition_responses[3, :, :2], 0)
+        if case == "support_mismatch":
+            assert np.isneginf(result.marginal_log_likelihood)
         full_transition = (
             continuous_transition[np.newaxis]
             * discrete_transition[:, state_ind][:, :, state_ind]
