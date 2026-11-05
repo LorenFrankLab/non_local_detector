@@ -1240,17 +1240,30 @@ def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
         )
 
 
+def _read_names(node: Any, names: frozenset[str]) -> Any:
+    """Return a stored entry with only ``names``, the ones this version reads.
+
+    The others, which ``check_documents`` ignored with a warning, stay
+    undecoded: they may hold a type this version lacks. Anything but a dict
+    is returned as is, for the checks of the decoded value to refuse.
+    """
+    if not isinstance(node, dict):
+        return node
+    return {name: value for name, value in node.items() if name in names}
+
+
 def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorBase":
     manifest = stored.manifest
     spec = spec_for_name(manifest["detector_type"], manifest.get("detector_type_owner"))
-    params = Decoder(stored.read_array).decode(stored.config)
+    config = stored.config
     accepted = inspect.signature(spec.cls).parameters
     if not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
         ignore_unread_names(
             f"config.json ({spec.cls.__name__} parameters)",
-            set(params) - set(accepted),
+            set(config) - set(accepted),
         )
-        params = {name: value for name, value in params.items() if name in accepted}
+        config = {name: node for name, node in config.items() if name in accepted}
+    params = Decoder(stored.read_array).decode(config)
     detector = cast("_DetectorBase", spec.cls(**params))
     state = stored.state
     if not state["fitted"]:
@@ -1281,14 +1294,18 @@ def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorB
         _unify_stored_encoding_values(model)
     values = {
         name: decoder.decode(state[name])
-        for name in (
-            *(name for name, _ in _STORED),
-            "discrete_state_transitions",
-            "stored_transition_blocks",
-            "fingerprints",
-        )
+        for name in (*(name for name, _ in _STORED), "discrete_state_transitions")
         if name in state
     }
+    values["stored_transition_blocks"] = decoder.decode(
+        [
+            _read_names(entry, _ENTRY_FIELDS["stored_transition_blocks"])
+            for entry in state["stored_transition_blocks"]
+        ]
+    )
+    values["fingerprints"] = decoder.decode(
+        _read_names(state["fingerprints"], _FINGERPRINT_FIELDS)
+    )
     for name, attribute in _STORED:
         if name in values and name not in _STATE_SPACE_STORED:
             setattr(detector, attribute, values[name])

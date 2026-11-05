@@ -178,12 +178,12 @@ def test_a_user_from_state_reading_a_missing_key_names_the_type():
 
 
 def _with_nested_tuples(data, depth):
-    """Set ``place_bin_size`` to tuples nested ``depth`` deep, as text.
+    """Set ``state_names`` to tuples nested ``depth`` deep, as text.
 
     Built as text because how deep ``json`` can go before a RecursionError
     depends on the Python version, so the file may fail to parse or to decode.
     """
-    config = json.dumps({**json.loads(data), "place_bin_size": "NESTED"})
+    config = json.dumps({**json.loads(data), "state_names": "NESTED"})
     nested = '{"$tuple": [' * depth + "]}" * depth
     return config.replace('"NESTED"', nested).encode()
 

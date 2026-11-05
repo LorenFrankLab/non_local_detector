@@ -45,6 +45,9 @@ class TypeSpec:
         For a continuous transition: its ``make_state_transition`` reads the
         fit data (``TransitionContext``), so the saved model stores its block
         instead of rebuilding it.
+    fields : tuple of str or None
+        The stored fields a reader passes ``from_state``; None for a type
+        with its own ``from_state``, which gets all of them.
     """
 
     name: str
@@ -53,6 +56,31 @@ class TypeSpec:
     from_state: FromState | None
     owner: str
     block_needs_fit_data: bool = False
+    fields: tuple[str, ...] | None = None
+
+    def readable_fields(self, state: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Return the stored fields of ``state`` this version of the type reads.
+
+        A field not in ``fields``, written by a newer version of the type, is
+        left undecoded: it may hold a type this version lacks. It is ignored
+        with a warning (``ignore_unread_names``).
+
+        Parameters
+        ----------
+        state : Mapping[str, Any]
+            The stored state, as JSON nodes.
+
+        Returns
+        -------
+        state : Mapping[str, Any]
+            ``state`` without the ignored fields.
+        """
+        if self.fields is None:
+            return state
+        ignore_unread_names(
+            f"{self.cls.__qualname__} fields", set(state) - set(self.fields)
+        )
+        return {name: node for name, node in state.items() if name in self.fields}
 
 
 # The names of a saved model this version does not read, collected while one
@@ -137,9 +165,7 @@ def read_fields(
     """Return the ``names`` fields of a stored state, defaulting optional ones.
 
     A field added to a type after files were written is absent from those
-    files; ``defaults`` gives its value then (a copy). A field not in
-    ``names``, written by a newer version of the type, is ignored with a
-    warning (``ignore_unread_names``).
+    files; ``defaults`` gives its value then (a copy).
 
     Raises
     ------
@@ -148,7 +174,6 @@ def read_fields(
     """
     from non_local_detector.exceptions import DataError
 
-    ignore_unread_names(f"{cls.__qualname__} fields", set(state) - set(names))
     values = {}
     for name in names:
         if name in state:
@@ -166,14 +191,9 @@ def read_fields(
 
 
 def _dataclass_state(
-    cls: type, fields: tuple[str, ...] | None, defaults: Mapping[str, Any]
+    cls: type, names: tuple[str, ...], defaults: Mapping[str, Any]
 ) -> tuple[ToState, FromState]:
-    """``to_state`` and ``from_state`` of a dataclass built from ``fields``."""
-    names = (
-        tuple(f.name for f in dataclasses.fields(cls) if f.init)
-        if fields is None
-        else fields
-    )
+    """``to_state`` and ``from_state`` of a dataclass built from ``names``."""
     unknown = sorted(set(defaults) - set(names))
     if unknown:
         msg = f"defaults names fields {cls.__qualname__} does not store: {unknown}"
@@ -328,11 +348,13 @@ def _register(
             raise ValidationError(
                 msg, hint="Pass to_state and from_state to register it."
             )
+        if fields is None:
+            fields = tuple(f.name for f in dataclasses.fields(cls) if f.init)
         to_state, from_state = _dataclass_state(cls, fields, defaults or {})
     elif to_state is None or from_state is None:
         msg = "Pass both to_state and from_state, or neither (for a dataclass)"
         raise ValidationError(msg)
-    _add(TypeSpec(name, cls, to_state, from_state, owner, block_needs_fit_data))
+    _add(TypeSpec(name, cls, to_state, from_state, owner, block_needs_fit_data, fields))
 
 
 def unregistered_type_error(cls: type, where: str) -> ValidationError:

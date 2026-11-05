@@ -15,9 +15,14 @@ import numpy as np
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    DataQualityWarning,
+    ValidationError,
+)
 from non_local_detector.model_format import _registry, register_type, registered_types
 from non_local_detector.model_format._builtins import builtin_types
+from non_local_detector.model_format._codec import Decoder
 from tests.model_format._compare import assert_same_fitted_state
 from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
@@ -176,7 +181,11 @@ def test_register_type_needs_functions_for_a_plain_class():
 
 @pytest.mark.parametrize(
     ("cls", "fields"),
-    [(cls, fields) for _, cls, fields, _ in builtin_types() if fields is not None],
+    [
+        (cls, fields)
+        for _, cls, fields, _ in builtin_types()
+        if dataclasses.is_dataclass(cls)
+    ],
     ids=lambda value: getattr(value, "__name__", ""),
 )
 def test_builtin_types_store_every_dataclass_field(cls, fields):
@@ -275,6 +284,48 @@ def test_a_missing_field_without_a_default_is_refused(sorted_recording, tmp_path
 
     with pytest.raises(DataError, match="no field 'weight'"):
         nld.SortedSpikesDecoder.load_model(path)
+
+
+def test_a_field_a_dataclass_does_not_store_is_not_decoded():
+    """A newer version of the type wrote it, perhaps as a type unknown here."""
+    register_type(FlatTransition, "testlab.FlatTransition")
+    node = {
+        "$type": "testlab.FlatTransition",
+        "owner": "testlab",
+        "state": {
+            "environment_name": "",
+            "weight": 2.0,
+            "future_field": {"$type": "nld.FutureThing", "owner": "x", "state": {}},
+        },
+    }
+
+    with pytest.warns(DataQualityWarning, match="future_field"):
+        transition = Decoder(np.load).decode(node)
+
+    assert transition == FlatTransition(weight=2.0)
+
+
+def test_a_type_with_its_own_from_state_gets_every_stored_field():
+    """Only its ``from_state`` knows which fields it reads."""
+    seen = []
+
+    def from_state(state):
+        seen.append(state)
+        return FlatTransition(weight=state["weight"])
+
+    register_type(
+        FlatTransition,
+        "testlab.FlatTransition",
+        to_state=dataclasses.asdict,
+        from_state=from_state,
+    )
+    state = {"weight": 2.0, "added_later": 1}
+
+    Decoder(np.load).decode(
+        {"$type": "testlab.FlatTransition", "owner": "testlab", "state": state}
+    )
+
+    assert seen == [state]
 
 
 def test_register_type_refuses_defaults_for_unknown_fields():

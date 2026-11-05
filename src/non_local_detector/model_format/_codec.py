@@ -572,14 +572,13 @@ class Decoder:
         return np.dtype(node["dtype"]).type(value)
 
     def _type(self, node: JSON) -> Any:
-        state = self.decode(node["state"])
         if self.plain:
-            return {"type": node["$type"], **state}
+            return {"type": node["$type"], **self.decode(node["state"])}
         spec = spec_for_name(node["$type"], node.get("owner"))
         if spec.from_state is None:
             msg = f"The saved model holds a detector ({spec.name!r}) inside its state"
             raise ValidationError(msg, hint="The file is corrupt or was edited.")
-        return spec.from_state(state)
+        return spec.from_state(self.decode(spec.readable_fields(node["state"])))
 
     def _environment(self, node: JSON) -> Any:
         name = node["$environment"]

@@ -134,6 +134,61 @@ def test_several_ignored_names_give_one_warning(saved):
     _loads_with_one_warning(saved, "future_state", "future_field", "future_param")
 
 
+# A value of a type a newer version added, which this version cannot build.
+_FUTURE_VALUE = {"$type": "nld.FutureThing", "owner": "non_local_detector", "state": {}}
+
+
+def _add_future_field(config):
+    config["environments"]["$tuple"][0]["state"]["future_field"] = _FUTURE_VALUE
+
+
+def test_a_config_parameter_of_a_type_this_version_lacks_is_ignored(saved, sorted_file):
+    _edit_json(saved, "config.json", lambda c: c.update(future_option=_FUTURE_VALUE))
+
+    model = _loads_with_one_warning(saved, "future_option", summary=False)
+
+    assert_same_fitted_state(
+        nld.NonLocalSortedSpikesDetector.load_model(sorted_file), model
+    )
+
+
+def test_a_stored_field_of_a_type_this_version_lacks_is_ignored(saved):
+    _edit_json(saved, "config.json", _add_future_field)
+
+    _loads_with_one_warning(saved, "future_field", summary=False)
+
+
+def test_a_fingerprint_of_a_type_this_version_lacks_is_ignored(saved):
+    _edit_json(
+        saved,
+        "state.json",
+        lambda state: state["fingerprints"].update(future_fingerprint=_FUTURE_VALUE),
+    )
+
+    _loads_with_one_warning(saved, "future_fingerprint")
+
+
+def test_a_block_field_of_a_type_this_version_lacks_is_ignored(
+    sorted_recording, tmp_path
+):
+    time, position, spike_times = sorted_recording
+    path = tmp_path / "model.nld"
+    nld.SortedSpikesDecoder(
+        continuous_transition_types=[[nld.EmpiricalMovement()]],
+        sampling_frequency=SORTED_RATE,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+    ).fit(time, position, spike_times).save_model(path)
+    _edit_json(
+        path,
+        "state.json",
+        lambda s: s["stored_transition_blocks"][0].update(future_field=_FUTURE_VALUE),
+    )
+
+    with pytest.warns(DataQualityWarning, match="future_field") as warned:
+        nld.SortedSpikesDecoder.load_model(path)
+    assert len(warned) == 1
+
+
 @pytest.mark.parametrize(
     "name",
     [
