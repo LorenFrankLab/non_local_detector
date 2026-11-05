@@ -18,6 +18,7 @@ from numpy.typing import ArrayLike, DTypeLike
 from scipy.spatial import cKDTree
 from scipy.stats import multivariate_normal, norm
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector.continuous_state_transitions import (
     ContinuousTransition,
     RandomWalk,
@@ -350,7 +351,7 @@ class GaussianGridBlock:
         # so a compiler-hoisted reciprocal remains normal instead of flushing
         # to zero; row-normalized products still undo exactly this scale.
         limit = jnp.asarray(
-            1 / jnp.finfo(values.dtype).tiny,  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+            1 / finfo(values.dtype).tiny,
             dtype=values.dtype,
         )
         scale = jnp.where(jnp.isfinite(scale), jnp.minimum(scale, limit), scale)
@@ -379,7 +380,7 @@ class GaussianGridBlock:
         safe = jnp.where(normalizer > 0, normalizer, 1)
         maximum = jnp.max(jnp.abs(values))
         scale = jnp.where(maximum > 0, maximum, 1)
-        limits = jnp.finfo(values.dtype)  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+        limits = finfo(values.dtype)
         scale = jnp.where(
             jnp.isfinite(scale),
             jnp.clip(

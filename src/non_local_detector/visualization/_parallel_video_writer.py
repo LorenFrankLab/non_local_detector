@@ -69,6 +69,7 @@ Notes
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import pickle
@@ -89,6 +90,8 @@ import matplotlib.pyplot as plt
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
+
+logger = logging.getLogger(__name__)
 
 # Constants
 MIN_DPI = 72  # Matplotlib requires minimum 72 DPI for readable output
@@ -379,7 +382,7 @@ def create_parallel_video(
     if max_workers is None:
         max_workers = max(2, (os.cpu_count() or 4) // 2)
 
-    print(f"[parallel] Using {max_workers} workers for {n_frames} frames")
+    logger.info("Rendering %d frames with %d workers", n_frames, max_workers)
 
     # Partition frames evenly across workers
     chunk_size = math.ceil(n_frames / max_workers)
@@ -390,7 +393,7 @@ def create_parallel_video(
     # Use TemporaryDirectory context manager for automatic cleanup (even on SIGINT)
     with tempfile.TemporaryDirectory(prefix="parallel_video_frames_") as tmpdir:
         pattern = str(Path(tmpdir) / "frame_%06d.png")
-        print(f"[parallel] Writing frames to {tmpdir}")
+        logger.info("Writing frames to %s", tmpdir)
 
         # Render chunks in parallel
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
@@ -411,7 +414,7 @@ def create_parallel_video(
             # Wait for all chunks to complete
             for i, fut in enumerate(futures):
                 fut.result()
-                print(f"[parallel] Chunk {i + 1}/{len(futures)} complete")
+                logger.info("Rendered chunk %d of %d", i + 1, len(futures))
 
         # Stitch frames into video
         _ffmpeg_stitch(
@@ -424,7 +427,7 @@ def create_parallel_video(
         )
         # TemporaryDirectory context manager automatically cleans up tmpdir here
 
-    print(f"[parallel] Video saved to: {output_path}")
+    logger.info("Video saved to %s", output_path)
     return output_path
 
 
@@ -565,7 +568,7 @@ def _ffmpeg_stitch(
         str(max(1, threads)),
         output_path,
     ]
-    print(f"[ffmpeg] {' '.join(cmd)}")
+    logger.info("Running %s", " ".join(cmd))
 
     # Control ffmpeg output visibility
     stdout = None if verbose else subprocess.DEVNULL

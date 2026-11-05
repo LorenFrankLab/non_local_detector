@@ -7,6 +7,7 @@ from non_local_detector import (
     DiscreteNonStationaryDiagonal,
     RandomWalk,
 )
+from non_local_detector.core import row_slice_aware
 from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.integration
@@ -422,6 +423,7 @@ def test_checkpointed_prediction_replay_cache(
         calls = []
 
         def counting_driver(time_edges, initial, likelihood, **driver_kwargs):
+            @row_slice_aware
             def counted(*args, **kw):
                 calls.append(kw["row_slice"].start)
                 return likelihood(*args, **kw)

@@ -11,6 +11,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
     time_edges_from_centers,
 )
+from non_local_detector.core import row_slice_aware
 from non_local_detector.exceptions import ValidationError
 
 # These tests cap max_iter for speed, so EM stops before convergence.
@@ -533,6 +534,7 @@ def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, famil
         calls = []
 
         def counting_driver(time_edges, initial, likelihood, **driver_kwargs):
+            @row_slice_aware
             def counted(*args, **kw):
                 calls.append(kw["row_slice"].start)
                 return likelihood(*args, **kw)

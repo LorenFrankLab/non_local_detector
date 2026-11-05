@@ -11,13 +11,23 @@ Adapted from dynamax (https://github.com/probml/dynamax) with modifications.
 import functools
 import logging
 from collections.abc import Callable
-from typing import Any, NamedTuple, Protocol, TypeAlias, cast, runtime_checkable
+from typing import (
+    Any,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeAlias,
+    cast,
+    runtime_checkable,
+)
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from jax.typing import DTypeLike
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.exceptions import ValidationError
 
@@ -103,7 +113,7 @@ def _condition_on_primal(
     # matters on backends that preserve them.)
     joint_shift = jnp.maximum(
         joint_shift,
-        jnp.log(jnp.finfo(probs.dtype).tiny),  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+        jnp.log(finfo(probs.dtype).tiny),
     )
 
     # The first shift excludes unreachable maxima; the second rescales tiny
@@ -230,8 +240,8 @@ def _condition_on_jvp(
     # is never repaired here. A strict ``where`` rather than ``jnp.minimum``:
     # at an exact tie ``minimum`` splits its derivative between operands and
     # would halve second derivatives of a derivative that sits on the bound.
-    finfo = jnp.finfo(probs.dtype)  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
-    max_exponent = jnp.nextafter(jnp.log(finfo.max), jnp.asarray(0.0, probs.dtype))
+    limits = finfo(probs.dtype)
+    max_exponent = jnp.nextafter(jnp.log(limits.max), jnp.asarray(0.0, probs.dtype))
     exponent = jnp.where(exponent > max_exponent, max_exponent, exponent)
     weight_dot = jnp.exp(exponent) * probs_dot + posterior * ll_dot
     log_norm_dot = weight_dot.sum()
@@ -328,7 +338,7 @@ def _warn_degenerate_and_nan_timesteps(
     n_total: int,
     *,
     marginal_log_likelihood: float | None = None,
-    context: str = "filter",
+    context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
     """Emit host-side warnings summarizing degenerate and NaN time steps.
 
@@ -406,7 +416,7 @@ def _warn_if_degenerate_timesteps(
     log_likelihoods: ArrayLike,
     *,
     marginal_log_likelihood: ArrayLike | None = None,
-    context: str = "filter",
+    context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
     """Emit host-side warnings if any time step is all-``-inf`` or has a NaN or ``+inf``.
 
@@ -1396,20 +1406,24 @@ def row_slice_aware(
 ) -> Callable[..., ArrayLike]:
     """Mark a likelihood callback as accepting the ``row_slice`` keyword.
 
-    A marked callback bins the spikes against the FULL decoding ``time`` it is
-    handed and returns only the rows named by ``row_slice``, so chunked
-    prediction owns every spike exactly once. The chunked drivers require the
-    mark whenever they evaluate the likelihood chunk by chunk; an unmarked
-    callback is only ever called once, with the full ``time`` and no
-    ``row_slice``.
+    Every driver calls a likelihood callback as
+    ``log_likelihood_func(*log_likelihood_args, time_edges=time_edges,
+    is_missing=...)``, the signature of the detectors'
+    ``compute_log_likelihood``. A marked callback bins the spikes against the
+    FULL ``time_edges`` it is handed and returns only the rows named by
+    ``row_slice``, so chunked prediction owns every spike exactly once. The
+    drivers require the mark whenever they evaluate the likelihood chunk by
+    chunk; an unmarked callback is only ever called once, with the full
+    ``time_edges`` and no ``row_slice``.
 
     Parameters
     ----------
     log_likelihood_func : callable
-        Function (or unbound method) accepting ``is_missing=None`` and
-        ``row_slice=None``. When a row range is requested, ``time`` has shape
-        ``(n_time,)`` but ``is_missing`` is already sliced to ``(n_rows,)``;
-        the callback must not slice the missing-data mask again. It returns
+        Function (or unbound method) accepting the keywords ``time_edges``,
+        ``is_missing=None`` and ``row_slice=None``. When a row range is
+        requested, ``time_edges`` has shape ``(n_time + 1,)`` but
+        ``is_missing`` is already sliced to ``(n_rows,)``; the callback must
+        not slice the missing-data mask again. It returns
         ``(n_rows, n_state_bins)``. With ``row_slice=None``, both inputs and
         the result cover the full timeline.
 
@@ -1441,7 +1455,7 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
     accepts_row_slice : bool
         True if the callback (or anything it wraps) was marked by
         :func:`row_slice_aware`, in which case it is called with the full
-        ``time`` and a ``row_slice``.
+        ``time_edges`` and a ``row_slice``.
     """
     func: object = log_likelihood_func
     seen: set[int] = set()
@@ -1459,14 +1473,28 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
 
 
 def _require_row_slice_aware(
-    log_likelihood_func: Callable[..., ArrayLike], n_chunks: int
+    log_likelihood_func: Callable[..., ArrayLike],
+    n_chunks: int,
+    *,
+    chunking: str,
+    hint: str,
 ) -> None:
     """Reject chunk-by-chunk evaluation of an unmarked likelihood callback.
 
-    Handing a chunk only ``time[chunk]`` clips a callback that bins spikes
-    against the timeline it is given to that chunk, dropping every spike
-    between two chunks while still returning plausible numbers. Only a
+    An unmarked callback cannot be told which rows a chunk needs: it always
+    returns every row of the ``time_edges`` it is given. Only a
     ``row_slice_aware`` callback can be evaluated per chunk.
+
+    Parameters
+    ----------
+    log_likelihood_func : callable
+        The driver's likelihood callback.
+    n_chunks : int
+        Number of chunks the driver evaluates the likelihood in.
+    chunking : str
+        The driver setting that splits the rows, for the error message.
+    hint : str
+        How to avoid the chunks with that driver, for the error message.
 
     Raises
     ------
@@ -1475,25 +1503,25 @@ def _require_row_slice_aware(
     """
     if n_chunks > 1 and not accepts_row_slice(log_likelihood_func):
         msg = (
-            f"n_chunks={n_chunks} without cached log likelihoods evaluates the "
-            "likelihood callback chunk by chunk, which needs a callback marked "
-            "with non_local_detector.core.row_slice_aware"
+            f"{chunking} evaluates the likelihood callback in {n_chunks} "
+            "chunks, which needs a callback marked with "
+            "non_local_detector.core.row_slice_aware"
         )
         raise ValidationError(
             msg,
             expected="a row_slice_aware callback that bins against the full "
-            "time and returns the rows of row_slice",
+            "time_edges and returns the rows of row_slice",
             got=f"unmarked {type(log_likelihood_func).__name__}",
-            hint="Mark the callback, pass log_likelihoods or "
-            "cache_log_likelihoods=True, or use n_chunks=1.",
+            hint=hint,
         )
 
 
 _SUPPORTED_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 
 _CALLBACK_SHAPE_HINT = (
-    "log_likelihood_func must return one row per requested time bin and one "
-    "column per state bin (len(initial_distribution))."
+    "log_likelihood_func must return one row per requested time bin (not one "
+    "per edge: time_edges has n_time + 1 entries) and one column per state "
+    "bin (len(initial_distribution))."
 )
 
 
@@ -1536,17 +1564,18 @@ def _validate_dtype(dtype: DTypeLike) -> np.dtype[Any]:
     return dtype
 
 
-def _validate_time(time: Any) -> int:
-    """Return the number of time bins of a dense driver's nonempty ``time`` vector."""
-    if np.ndim(time) != 1 or np.shape(time)[0] == 0:
-        msg = "time must be a nonempty vector"
+def _validate_time_edges(time_edges: Any) -> int:
+    """Return the number of time bins of a dense driver's ``time_edges`` vector."""
+    if np.ndim(time_edges) != 1 or np.shape(time_edges)[0] < 2:
+        msg = "time_edges must be a vector of at least two bin edges"
         raise ValidationError(
             msg,
-            expected="shape (n_time,) with n_time >= 1",
-            got=f"shape {np.shape(time)}",
-            hint="Pass the decoding time bin centers as a 1-D array.",
+            expected="shape (n_time + 1,) with n_time >= 1",
+            got=f"shape {np.shape(time_edges)}",
+            hint="Pass the decoding bin boundaries as a 1-D array, one more "
+            "than the number of time bins.",
         )
-    return int(np.shape(time)[0])
+    return int(np.shape(time_edges)[0]) - 1
 
 
 def _bad_entries(
@@ -2297,27 +2326,29 @@ def _store_chunk_rows(
 
 def _call_log_likelihood_chunk(
     log_likelihood_func: Callable[..., ArrayLike],
-    time: np.ndarray,
+    time_edges: npt.ArrayLike,
     log_likelihood_args: tuple[Any, ...],
-    time_inds: np.ndarray,
+    rows: slice,
     is_missing_chunk: np.ndarray | None,
 ) -> ArrayLike:
     """Evaluate one chunk's log likelihood with global spike binning.
 
-    A ``row_slice_aware`` callback receives the FULL ``time`` plus the chunk's
-    global row range, so a spike lands in the row that owns it on the full
-    timeline. An unmarked callback reaches here only as the single chunk (see
-    :func:`_require_row_slice_aware`) and is called on the full timeline.
+    A ``row_slice_aware`` callback receives the FULL ``time_edges`` plus the
+    chunk's global row range ``rows``, so a spike lands in the row that owns it
+    on the full timeline. An unmarked callback reaches here only as the single
+    chunk (see :func:`_require_row_slice_aware`) and is called on the full
+    timeline. ``time_edges`` is passed through unchanged, as the driver's
+    caller gave it.
     """
     if not accepts_row_slice(log_likelihood_func):
         return log_likelihood_func(
-            time, *log_likelihood_args, is_missing=is_missing_chunk
+            *log_likelihood_args, time_edges=time_edges, is_missing=is_missing_chunk
         )
     return log_likelihood_func(
-        time,
         *log_likelihood_args,
+        time_edges=time_edges,
         is_missing=is_missing_chunk,
-        row_slice=slice(int(time_inds[0]), int(time_inds[-1]) + 1),
+        row_slice=rows,
     )
 
 
@@ -2387,7 +2418,7 @@ def _chunked_filter_smoother(
     filter_chunk: Callable[..., tuple[Any, ...]],
     smoother_chunk: Callable[..., jax.Array],
     *,
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
@@ -2420,16 +2451,17 @@ def _chunked_filter_smoother(
         (the last filtered row for the final chunk), as :func:`_smoother_impl`
         does.
 
-    time : np.ndarray, shape (n_time,)
-        Time of each decoding bin; its length sets the number of time bins.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
         Initial probability of each state bin.
     log_likelihood_func : callable
-        Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)``; a callable marked by :func:`row_slice_aware` also
-        receives ``row_slice=slice(start, stop)`` per chunk.
+        Called as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)``; a callable marked by
+        :func:`row_slice_aware` also receives ``row_slice=slice(start, stop)``
+        per chunk.
     log_likelihood_args : tuple
         Extra positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), or None
@@ -2464,7 +2496,7 @@ def _chunked_filter_smoother(
     degenerate_indices = []
     n_nan_total = 0
 
-    n_time = len(time)
+    n_time = len(time_edges) - 1
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
     if n_chunks > n_time:
         msg = f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time})"
@@ -2482,10 +2514,12 @@ def _chunked_filter_smoother(
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
 
     # Create aggregation matrix for marginalizing state bins -> discrete states
-    # This is reused across all chunks
+    # This is reused across all chunks. In the working dtype, so the state
+    # probabilities have the posteriors' dtype: one_hot's default follows
+    # JAX's 64-bit mode instead.
     n_discrete_states = int(jnp.max(state_ind_jax)) + 1
     state_aggregation_matrix = jax.nn.one_hot(
-        state_ind_jax, n_discrete_states
+        state_ind_jax, n_discrete_states, dtype=dtype
     )  # (n_state_bins, n_states)
 
     # Initialize variables that may be referenced in loop conditionals
@@ -2496,7 +2530,9 @@ def _chunked_filter_smoother(
     if cache_log_likelihoods and log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
-            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+            log_likelihood_func(
+                *log_likelihood_args, time_edges=time_edges, is_missing=is_missing
+            ),
         )
         _check_shape(
             "log_likelihood_func output",
@@ -2511,7 +2547,13 @@ def _chunked_filter_smoother(
     )
     accumulated_log_likelihoods: np.ndarray | None = None
     if log_likelihoods_jax is None:
-        _require_row_slice_aware(log_likelihood_func, n_chunks)
+        _require_row_slice_aware(
+            log_likelihood_func,
+            n_chunks,
+            chunking=f"n_chunks={n_chunks} without cached log likelihoods",
+            hint="Mark the callback, pass log_likelihoods or "
+            "cache_log_likelihoods=True, or use n_chunks=1.",
+        )
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -2526,9 +2568,9 @@ def _chunked_filter_smoother(
             )
             log_likelihood_chunk = _call_log_likelihood_chunk(
                 log_likelihood_func,
-                time,
+                time_edges,
                 log_likelihood_args,
-                time_inds_np,
+                slice(int(time_inds_np[0]), int(time_inds_np[-1]) + 1),
                 is_missing_chunk,
             )
             _check_shape(
@@ -2653,7 +2695,7 @@ def _chunked_filter_smoother(
 
 
 def chunked_filter_smoother(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
@@ -2673,9 +2715,9 @@ def chunked_filter_smoother(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time of each decoding bin (bin centers, in seconds), passed to
-        ``log_likelihood_func``. Its length sets the number of time bins.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins (in seconds), passed to
+        ``log_likelihood_func``; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
@@ -2686,17 +2728,18 @@ def chunked_filter_smoother(
         each row summing to at most 1. A row below 1 loses probability, as an
         all-zero row does for a bin nothing can leave.
     log_likelihood_func : callable
-        Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)`` with the FULL ``time``. Without cached or given log
-        likelihoods, a callable marked by :func:`row_slice_aware` is called
-        per chunk and also receives ``row_slice=slice(start, stop)`` and the
-        chunk's ``is_missing`` rows, so each decoding spike is binned once
-        against the whole timeline and lands in the row that owns it. An
-        unmarked callable is called once for the whole timeline; with
-        ``n_chunks > 1`` and no cached likelihoods it raises ``ValidationError``.
+        Called as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` with the FULL ``time_edges``,
+        the signature of the detectors' ``compute_log_likelihood``. Without
+        cached or given log likelihoods, a callable marked by
+        :func:`row_slice_aware` is called per chunk and also receives
+        ``row_slice=slice(start, stop)`` and the chunk's ``is_missing`` rows,
+        so each decoding spike is binned once against the whole timeline and
+        lands in the row that owns it. An unmarked callable is called once for
+        the whole timeline; with ``n_chunks > 1`` and no cached likelihoods it
+        raises ``ValidationError``.
     log_likelihood_args : tuple
-        Extra positional arguments passed to ``log_likelihood_func`` after
-        ``time``.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         True for time bins without observations, which get neutral
         likelihoods. By default None (none missing).
@@ -2738,13 +2781,13 @@ def chunked_filter_smoother(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
     """
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -2788,7 +2831,7 @@ def chunked_filter_smoother(
     return _chunked_filter_smoother(
         filter_chunk,
         smoother_chunk,
-        time=time,
+        time_edges=time_edges,
         state_ind=state_ind,
         initial_distribution=initial_distribution,
         log_likelihood_func=log_likelihood_func,
@@ -2876,6 +2919,11 @@ def viterbi(
     ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
+
+    As :func:`filter` does, a host-side ``logger.warning`` counts the time
+    steps whose log-likelihoods are all ``-inf`` (where the path's state is
+    arbitrary) and those with a NaN or ``+inf`` (where it is undefined),
+    unless the inputs are traced. The path is unchanged.
     """
     if not _is_traced(initial_distribution, transition_matrix, log_likelihoods):
         _check_hmm_arrays(
@@ -2885,6 +2933,9 @@ def viterbi(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    # As the filters do: argmax over an all-(-inf) step returns state 0
+    # silently, and a NaN or +inf step leaves the path undefined.
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
         _viterbi_jit(initial_distribution, transition_matrix, log_likelihoods),
@@ -2892,7 +2943,7 @@ def viterbi(
 
 
 def most_likely_sequence(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
     log_likelihood_func: Callable[..., ArrayLike],
@@ -2906,17 +2957,20 @@ def most_likely_sequence(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time indices.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins, passed to ``log_likelihood_func``;
+        their number sets the time bins.
     initial_distribution : np.ndarray, shape (n_states,)
         Initial state distribution: nonnegative, summing to 1.
     transition_matrix : np.ndarray, shape (n_states, n_states)
         State transition probability matrix: nonnegative, each row summing
         to at most 1.
     log_likelihood_func : callable
-        Function to compute log likelihoods.
+        Called once as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` unless ``log_likelihoods`` is
+        given; returns shape (n_time, n_state_bins).
     log_likelihood_args : tuple
-        Arguments to pass to log_likelihood_func.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         Boolean array indicating missing observations, by default None.
     log_likelihoods : np.ndarray, shape (n_time, n_states), optional
@@ -2939,7 +2993,7 @@ def most_likely_sequence(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -2948,7 +3002,7 @@ def most_likely_sequence(
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         transition_matrix=transition_matrix,
@@ -2959,12 +3013,14 @@ def most_likely_sequence(
     if log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
-            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+            log_likelihood_func(
+                *log_likelihood_args, time_edges=time_edges, is_missing=is_missing
+            ),
         )
         _check_shape(
             "log_likelihood_func output",
             log_likelihoods,
-            (len(time), len(initial_distribution)),
+            (len(time_edges) - 1, len(initial_distribution)),
             _CALLBACK_SHAPE_HINT,
         )
 
@@ -3287,7 +3343,7 @@ _smoother_covariate_dependent_internal = jax.jit(
 
 
 def chunked_filter_smoother_covariate_dependent(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     discrete_transition_matrix: np.ndarray,
@@ -3308,9 +3364,9 @@ def chunked_filter_smoother_covariate_dependent(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time of each decoding bin (bin centers, in seconds), passed to
-        ``log_likelihood_func``. Its length sets the number of time bins.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins (in seconds), passed to
+        ``log_likelihood_func``; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
     initial_distribution : np.ndarray, shape (n_state_bins,)
@@ -3323,17 +3379,18 @@ def chunked_filter_smoother_covariate_dependent(
         state space: nonnegative, each bin's row summing to at most 1 over
         the bins of each discrete state.
     log_likelihood_func : callable
-        Called as ``log_likelihood_func(time, *log_likelihood_args,
-        is_missing=...)`` with the FULL ``time``. Without cached or given log
-        likelihoods, a callable marked by :func:`row_slice_aware` is called
-        per chunk and also receives ``row_slice=slice(start, stop)`` and the
-        chunk's ``is_missing`` rows, so each decoding spike is binned once
-        against the whole timeline and lands in the row that owns it. An
-        unmarked callable is called once for the whole timeline; with
-        ``n_chunks > 1`` and no cached likelihoods it raises ``ValidationError``.
+        Called as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` with the FULL ``time_edges``,
+        the signature of the detectors' ``compute_log_likelihood``. Without
+        cached or given log likelihoods, a callable marked by
+        :func:`row_slice_aware` is called per chunk and also receives
+        ``row_slice=slice(start, stop)`` and the chunk's ``is_missing`` rows,
+        so each decoding spike is binned once against the whole timeline and
+        lands in the row that owns it. An unmarked callable is called once for
+        the whole timeline; with ``n_chunks > 1`` and no cached likelihoods it
+        raises ``ValidationError``.
     log_likelihood_args : tuple
-        Extra positional arguments passed to ``log_likelihood_func`` after
-        ``time``.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         True for time bins without observations, which get neutral
         likelihoods. By default None (none missing).
@@ -3381,13 +3438,13 @@ def chunked_filter_smoother_covariate_dependent(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
     """
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -3448,7 +3505,7 @@ def chunked_filter_smoother_covariate_dependent(
     return _chunked_filter_smoother(
         filter_chunk,
         smoother_chunk,
-        time=time,
+        time_edges=time_edges,
         state_ind=state_ind,
         initial_distribution=initial_distribution,
         log_likelihood_func=log_likelihood_func,
@@ -3560,6 +3617,9 @@ def viterbi_covariate_dependent(
     ``jax.jit``, ``vmap`` or ``grad`` they are tracers, and the checks are
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
+
+    Degenerate and NaN or ``+inf`` time steps are reported as by
+    :func:`viterbi`.
     """
     if not _is_traced(
         initial_distribution,
@@ -3577,6 +3637,7 @@ def viterbi_covariate_dependent(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
         _viterbi_covariate_dependent_jit(
@@ -3590,7 +3651,7 @@ def viterbi_covariate_dependent(
 
 
 def most_likely_sequence_covariate_dependent(
-    time: np.ndarray,
+    time_edges: ArrayLike,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     discrete_transition_matrix: np.ndarray,
@@ -3608,8 +3669,9 @@ def most_likely_sequence_covariate_dependent(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Time indices.
+    time_edges : array_like, shape (n_time + 1,)
+        Boundaries of the decoding bins, passed to ``log_likelihood_func``;
+        their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         State indices connecting discrete states to state space bins.
     initial_distribution : np.ndarray, shape (n_state_bins,)
@@ -3621,9 +3683,11 @@ def most_likely_sequence_covariate_dependent(
         Continuous transition matrix: nonnegative, each bin's row summing to
         at most 1 over the bins of each discrete state.
     log_likelihood_func : callable
-        Function to compute log likelihoods.
+        Called once as ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=...)`` unless ``log_likelihoods`` is
+        given; returns shape (n_time, n_state_bins).
     log_likelihood_args : tuple
-        Arguments to pass to log_likelihood_func.
+        Positional arguments passed to ``log_likelihood_func``.
     is_missing : np.ndarray, shape (n_time,), optional
         Boolean array indicating missing observations, by default None.
     log_likelihoods : np.ndarray, shape (n_time, n_state_bins), optional
@@ -3646,7 +3710,7 @@ def most_likely_sequence_covariate_dependent(
     ------
     ValidationError
         If ``dtype`` is neither float32 nor float64 with JAX's 64-bit mode
-        on; an input's shape does not match ``n_time = len(time)`` and
+        on; an input's shape does not match ``n_time = len(time_edges) - 1`` and
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
@@ -3655,7 +3719,7 @@ def most_likely_sequence_covariate_dependent(
         msg = "Chunked Viterbi is not yet implemented."
         raise NotImplementedError(msg)
     _validate_hmm_inputs(
-        n_time=_validate_time(time),
+        n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
         state_ind=state_ind,
@@ -3668,12 +3732,14 @@ def most_likely_sequence_covariate_dependent(
     if log_likelihoods is None:
         log_likelihoods = cast(
             np.ndarray,
-            log_likelihood_func(time, *log_likelihood_args, is_missing=is_missing),
+            log_likelihood_func(
+                *log_likelihood_args, time_edges=time_edges, is_missing=is_missing
+            ),
         )
         _check_shape(
             "log_likelihood_func output",
             log_likelihoods,
-            (len(time), len(initial_distribution)),
+            (len(time_edges) - 1, len(initial_distribution)),
             _CALLBACK_SHAPE_HINT,
         )
 

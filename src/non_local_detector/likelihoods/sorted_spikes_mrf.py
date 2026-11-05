@@ -81,6 +81,7 @@ from non_local_detector.likelihoods.diffusion import (
     n_connected_components,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    LocalInterpolation,
     SortedSpikesDiffusionEncodingModel,
     assemble_place_fields,
     pixellate_interior_fields,
@@ -842,7 +843,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     tol: float = 1e-10,
     log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
     reml_xatol: float = 0.001,
-    local_interpolation: str = "linear",
+    local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
@@ -1145,7 +1146,7 @@ def predict_sorted_spikes_mrf_log_likelihood(
     is_track_interior: np.ndarray,
     node_order: np.ndarray | None = None,
     bin_sizes: np.ndarray | None = None,
-    local_interpolation: str = "linear",
+    local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
     is_local: bool = False,
     interior_log_place_fields: jax.Array | None = None,

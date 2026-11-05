@@ -27,7 +27,7 @@ import numpy as np
 import psutil
 
 from non_local_detector.checkpointed_inference import checkpointed_forward_backward
-from non_local_detector.core import filter, smoother
+from non_local_detector.core import filter, row_slice_aware, smoother
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_prediction_modes import provenance
@@ -71,7 +71,8 @@ def worker(args):
     edges = np.arange(args.rows + 1, dtype=float) * 0.002
     columns = np.arange(args.bins, dtype=dtype)[None, :]
 
-    def ll(time_edges, *, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
+    @row_slice_aware
+    def ll(*, time_edges, row_slice, is_missing):  # noqa: ARG001 -- likelihood callback signature
         rows = np.arange(row_slice.start, row_slice.stop, dtype=dtype)[:, None]
         return -np.square(
             np.sin(
@@ -84,7 +85,9 @@ def worker(args):
 
     def run():
         if args.worker == "dense":
-            values = ll(edges, row_slice=slice(0, args.rows), is_missing=None)
+            values = ll(
+                time_edges=edges, row_slice=slice(0, args.rows), is_missing=None
+            )
             (evidence, _), (causal, _) = filter(initial, matrix, values)
             acausal = smoother(matrix, causal)
             acausal.block_until_ready()

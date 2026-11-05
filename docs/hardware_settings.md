@@ -203,10 +203,16 @@ distances would also take roughly 50 minutes (extrapolated).
 
 ## Precision
 
-The package computes in float32 by default, and every number on this page used
-float32. Enabling float64 (`jax_enable_x64`) doubles array memory, and most GPUs
-other than data-center cards like the A100 run float64 arithmetic many times
-slower than float32.
+The detectors filter and smooth in float32 whether or not JAX's 64-bit mode
+(`jax_enable_x64`) is on, and every number on this page used float32. Turning
+the mode on does not switch inference to float64: the posteriors and state
+probabilities stay float32, and only some likelihood intermediates are computed
+in float64 before they are rounded to float32, so results can change in the
+last float32 digit (about 1e-7 relative). The discrete-transition M-step runs in
+float64 either way. To run the HMM passes themselves in float64, call the
+drivers in `non_local_detector.core` with `dtype=np.float64`, which needs 64-bit
+mode, doubles each (time bins × state bins) array, and runs many times slower on
+most GPUs other than data-center cards like the A100.
 
 ## Where the numbers come from
 

@@ -39,7 +39,7 @@ def _inputs():
     rng = np.random.default_rng(0)
     continuous = np.full((N_BINS, N_BINS), 1 / N_BINS)
     return {
-        "time": np.arange(N_TIME, dtype=float),
+        "time_edges": np.arange(N_TIME + 1, dtype=float),
         "state_ind": STATE_IND,
         "initial_distribution": np.full(N_BINS, 1 / N_BINS),
         "transition_matrix": continuous,
@@ -53,12 +53,12 @@ def _inputs():
 DENSE_DRIVERS = {
     "chunked": (
         chunked_filter_smoother,
-        ("time", "state_ind", "initial_distribution", "transition_matrix"),
+        ("time_edges", "state_ind", "initial_distribution", "transition_matrix"),
     ),
     "chunked_covariate": (
         chunked_filter_smoother_covariate_dependent,
         (
-            "time",
+            "time_edges",
             "state_ind",
             "initial_distribution",
             "discrete_transition_matrix",
@@ -67,12 +67,12 @@ DENSE_DRIVERS = {
     ),
     "viterbi": (
         most_likely_sequence,
-        ("time", "initial_distribution", "transition_matrix"),
+        ("time_edges", "initial_distribution", "transition_matrix"),
     ),
     "viterbi_covariate": (
         most_likely_sequence_covariate_dependent,
         (
-            "time",
+            "time_edges",
             "state_ind",
             "initial_distribution",
             "discrete_transition_matrix",
@@ -110,7 +110,8 @@ def _call(name, inputs, **overrides):
 def _call_checkpointed(name, inputs, **overrides):
     calls = []
 
-    def likelihood(time_edges, *, row_slice, is_missing):
+    @row_slice_aware
+    def likelihood(*, time_edges, row_slice, is_missing):
         calls.append(row_slice)
         return inputs["log_likelihoods"][row_slice]
 
@@ -174,19 +175,19 @@ BAD_SHAPES = {
         f"shape ({N_TIME},)",
         f"shape ({N_TIME - 1},)",
     ),
-    "2-D time": (
-        "time",
-        np.zeros((N_TIME, 1)),
-        "time must be a nonempty vector",
-        "shape (n_time,) with n_time >= 1",
-        f"shape ({N_TIME}, 1)",
+    "2-D time_edges": (
+        "time_edges",
+        np.zeros((N_TIME + 1, 1)),
+        "time_edges must be a vector of at least two bin edges",
+        "shape (n_time + 1,) with n_time >= 1",
+        f"shape ({N_TIME + 1}, 1)",
     ),
-    "empty time": (
-        "time",
-        np.zeros(0),
-        "time must be a nonempty vector",
-        "shape (n_time,) with n_time >= 1",
-        "shape (0,)",
+    "one time edge": (
+        "time_edges",
+        np.zeros(1),
+        "time_edges must be a vector of at least two bin edges",
+        "shape (n_time + 1,) with n_time >= 1",
+        "shape (1,)",
     ),
 }
 
@@ -460,7 +461,7 @@ def test_callback_rows_must_match_the_request(name, cache):
     inputs = _inputs()
 
     @row_slice_aware
-    def short(time, is_missing=None, row_slice=None):
+    def short(*, time_edges, is_missing=None, row_slice=None):
         rows = inputs["log_likelihoods"][row_slice or slice(None)]
         return rows[:-1]
 

@@ -20,7 +20,6 @@ module.
 
 import abc
 import copy
-import inspect
 import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -48,7 +47,6 @@ from non_local_detector.continuous_state_transitions import (
     _multi_bin_local_transition,
 )
 from non_local_detector.core import (
-    accepts_row_slice,
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
     most_likely_sequence,
@@ -263,96 +261,6 @@ class _DecodeContext:
     position_context: _LikelihoodPositionContext
     spike_time_order: _SpikeTimeOrder
     no_spike_time_bin_sizes: np.ndarray | None
-
-
-def _check_likelihood_rows(result: Any, n_rows: int) -> Any:
-    """Return ``result`` if it has one row per requested decode bin."""
-    if np.shape(result)[0] != n_rows:
-        msg = "log likelihood callback returned the wrong number of rows"
-        raise ValidationError(
-            msg,
-            expected=f"{n_rows} rows, one per requested decode bin",
-            got=f"{np.shape(result)[0]} rows",
-            hint="Likelihoods receive time_edges (n_bins + 1 edges) and "
-            "return one row per bin, not one per edge.",
-        )
-    return result
-
-
-def _custom_likelihood_callback(
-    callback: Callable[..., Any], time_edges: np.ndarray
-) -> Callable[..., Any]:
-    """Adapt a replaced ``compute_log_likelihood`` to core's row callback contract.
-
-    Core indexes observations by row and hands the callback its row
-    coordinates (the bin centers). Detector likelihoods bin spikes against the
-    decode edges instead, so the adapter replaces the coordinates with
-    ``time_edges``:
-
-    * A ``@row_slice_aware`` callback receives the full ``time_edges``, a
-      global ``row_slice``, and an already sliced ``is_missing`` mask, and
-      returns only the requested rows.
-    * An unmarked callback receives the original full edges. Partial row
-      requests are rejected: an edges-only callback cannot represent a chunk's
-      open closing boundary without changing its physical duration and center.
-      Custom callbacks used with chunking must declare ``row_slice_aware`` and
-      forward the global row range to their likelihood implementation.
-
-    Both adapters are marked ``row_slice_aware``, so core hands them the
-    chunk's row range rather than only its row coordinates, and both check
-    that the callback returned one row per requested bin: a callback written
-    for one row per timestamp would otherwise be silently misaligned with the
-    bins. The callback receives only ``compute_log_likelihood``'s public
-    arguments; it does its own preparation.
-    """
-    parameters = inspect.signature(callback).parameters
-    n_bins = len(time_edges) - 1
-    edges_are_keyword_only = (
-        "time_edges" in parameters
-        and parameters["time_edges"].kind is inspect.Parameter.KEYWORD_ONLY
-    )
-
-    def evaluate(edges: np.ndarray, *args: Any, **kwargs: Any) -> Any:
-        if edges_are_keyword_only:
-            return callback(*args, time_edges=edges, **kwargs)
-        return callback(edges, *args, **kwargs)
-
-    if accepts_row_slice(callback):
-
-        def row_callback(
-            row_time: Any,  # noqa: ARG001 -- likelihood callback signature
-            *args: Any,
-            row_slice: slice | None = None,
-            **kwargs: Any,
-        ) -> Any:
-            row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-            return _check_likelihood_rows(
-                evaluate(time_edges, *args, row_slice=row_slice, **kwargs),
-                row_stop - row_start,
-            )
-
-        row_slice_aware(row_callback)  # marks the function in place
-        return row_callback
-
-    def chunk_callback(
-        row_time: Any,  # noqa: ARG001 -- likelihood callback signature
-        *args: Any,
-        row_slice: slice | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-        if (row_start, row_stop) != (0, n_bins):
-            msg = "Chunked custom likelihoods must be row_slice_aware"
-            raise ValidationError(
-                msg,
-                hint="Decorate the callback with @row_slice_aware from "
-                "non_local_detector.core and forward row_slice with the full "
-                "time_edges. This preserves durations and counts boundary spikes once.",
-            )
-        return _check_likelihood_rows(evaluate(time_edges, *args, **kwargs), n_bins)
-
-    row_slice_aware(chunk_callback)  # marks the function in place
-    return chunk_callback
 
 
 def _missing_bins(
@@ -2237,11 +2145,12 @@ class _DetectorBase(
     ) -> Callable[..., Any]:
         """Core's observation-row likelihood callback for one decoding call.
 
-        The callback is ``row_slice_aware`` and checks that each request
-        returns one row per requested bin. The detector's own likelihood
-        evaluates the rows with one ``_DecodeContext`` prepared here; a
-        replaced ``compute_log_likelihood`` is called with its public
-        arguments and prepares its own (see ``_custom_likelihood_callback``).
+        The detector's own likelihood is a ``row_slice_aware`` callback that
+        evaluates the rows with one ``_DecodeContext`` prepared here. A
+        replaced ``compute_log_likelihood`` is returned as is: core calls it
+        with its public arguments, as ``(*log_likelihood_args,
+        time_edges=..., is_missing=...)`` plus ``row_slice`` when it is
+        marked ``row_slice_aware``, and it prepares its own.
 
         Parameters
         ----------
@@ -2253,22 +2162,17 @@ class _DetectorBase(
         """
         replaced = self._replaced_log_likelihood()
         if replaced is not None:
-            return _custom_likelihood_callback(replaced, time_edges)
+            return replaced
         context = self._decode_context(time_edges, log_likelihood_args)
-        n_bins = len(time_edges) - 1
 
         @row_slice_aware
         def row_callback(
-            row_time: Any,  # noqa: ARG001 -- likelihood callback signature
             *args: Any,  # noqa: ARG001 -- the context holds them
+            time_edges: np.ndarray,  # noqa: ARG001 -- the context holds them
             row_slice: slice | None = None,
             is_missing: np.ndarray | None = None,
         ) -> Any:
-            row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-            return _check_likelihood_rows(
-                self._log_likelihood_rows(context, row_slice, is_missing),
-                row_stop - row_start,
-            )
+            return self._log_likelihood_rows(context, row_slice, is_missing)
 
         return row_callback
 
@@ -2954,7 +2858,7 @@ class _DetectorBase(
 
         if discrete_transitions.ndim == 2:
             result = chunked_filter_smoother(
-                time=time_centers,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
@@ -2972,7 +2876,7 @@ class _DetectorBase(
             )
         else:
             result = chunked_filter_smoother_covariate_dependent(
-                time=time_centers,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,
@@ -3238,7 +3142,7 @@ class _DetectorBase(
         state_ind = self.state_ind_[is_track_interior]
         if discrete_transitions.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
-                time=time_centers,
+                time_edges=time_edges,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
                     self.continuous_state_transitions_[cross_is_track_interior]
@@ -3251,7 +3155,7 @@ class _DetectorBase(
             )
         else:
             sequence_ind, _ = most_likely_sequence_covariate_dependent(
-                time=time_centers,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,

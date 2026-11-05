@@ -36,7 +36,7 @@ from non_local_detector.models._results import (
     label_checkpointed_result,
     state_bin_positions,
 )
-from non_local_detector.types import OutputMode
+from non_local_detector.types import OutputMode, TransitionStatistics
 
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
@@ -162,30 +162,6 @@ class _PosteriorOutputs:
 class _CheckpointedPredictionMixin:
     """Checkpointed-prediction methods of ``_DetectorBase``."""
 
-    def _checkpointed_likelihood(  # type: ignore[misc]
-        self: "non_local_detector.models.base._DetectorBase",
-        edges: np.ndarray,
-        centers: np.ndarray,
-        log_likelihood_args: tuple[Any, ...],
-    ) -> Callable[..., Any]:
-        """Row-slice likelihood callback for the checkpointed driver."""
-        prepared = self._decode_likelihood_callback(edges, log_likelihood_args)
-
-        def likelihood(
-            full_edges: np.ndarray,  # noqa: ARG001 -- likelihood callback signature
-            *,
-            row_slice: slice | None,
-            is_missing: np.ndarray | None,
-        ) -> Any:
-            return prepared(
-                centers,
-                *log_likelihood_args,
-                row_slice=row_slice,
-                is_missing=is_missing,
-            )
-
-        return likelihood
-
     def _checkpointed_transition_args(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
         discrete: np.ndarray,
@@ -234,7 +210,7 @@ class _CheckpointedPredictionMixin:
         chunk_size: int,
         *,
         outputs: Iterable[str] = ("acausal_state_probabilities",),
-        transition_statistics: str | None = None,
+        transition_statistics: TransitionStatistics | None = None,
         replay_cache_bytes: int,
     ) -> CheckpointedResult:
         """One whole-recording E-step on the checkpointed driver.
@@ -275,7 +251,8 @@ class _CheckpointedPredictionMixin:
         return checkpointed_forward_backward(
             edges,
             self.initial_conditions_[interior],
-            self._checkpointed_likelihood(edges, centers, log_likelihood_args),
+            self._decode_likelihood_callback(edges, log_likelihood_args),
+            log_likelihood_args=log_likelihood_args,
             state_ind=self.state_ind_[interior],
             n_states=len(self.state_names),
             is_missing=is_missing,
@@ -363,7 +340,7 @@ class _CheckpointedPredictionMixin:
             else discrete_transitions
         )
         transition_args = self._checkpointed_transition_args(discrete, len(centers))
-        likelihood = self._checkpointed_likelihood(edges, centers, log_likelihood_args)
+        likelihood = self._decode_likelihood_callback(edges, log_likelihood_args)
         selected: np.ndarray | None = None
         if selected_intervals is not None:
             intervals = np.asarray(selected_intervals, dtype=float)
@@ -447,6 +424,7 @@ class _CheckpointedPredictionMixin:
             edges,
             self.initial_conditions_[interior],
             likelihood,
+            log_likelihood_args=log_likelihood_args,
             state_ind=states,
             n_states=len(self.state_names),
             is_missing=is_missing,

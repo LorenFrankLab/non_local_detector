@@ -11,6 +11,7 @@ from non_local_detector.core import (
     TransitionOperator,
     filter,
     filter_covariate_dependent,
+    row_slice_aware,
     smoother,
     smoother_covariate_dependent,
 )
@@ -64,7 +65,8 @@ def test_dense_reference_and_global_callbacks(tmp_path, covariate, chunk_size):
     edges, initial, ll, state_ind, kwargs, reference = problem(covariate)
     calls = []
 
-    def likelihood(time_edges, *, row_slice, is_missing):
+    @row_slice_aware
+    def likelihood(*, time_edges, row_slice, is_missing):
         assert time_edges is edges
         calls.append((row_slice.start, row_slice.stop))
         # Every call has one shape, so compiled likelihoods are reused: a
@@ -134,7 +136,7 @@ def test_transition_statistics_match_dense_posterior_estimates(covariate, chunk_
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         chunk_size=chunk_size,
         transition_statistics="responses" if covariate else "counts",
@@ -169,7 +171,8 @@ def test_replay_cache_skips_recomputation(
     chunk_size = 4  # four chunks: rows 0-3, 4-7, 8-11, 12
     calls, replays = [], []
 
-    def likelihood(time_edges, *, row_slice, is_missing):
+    @row_slice_aware
+    def likelihood(*, time_edges, row_slice, is_missing):
         calls.append(row_slice.start)
         return ll[row_slice]
 
@@ -213,7 +216,7 @@ def test_compact_selected_rows_keep_whole_recording_context(tmp_path, covariate)
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         chunk_size=4,
         selected_rows=selected,
@@ -259,7 +262,7 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         chunk_size=3,
         is_missing=missing,
@@ -323,7 +326,7 @@ def test_transition_statistics_follow_degenerate_row_semantics(kind):
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         chunk_size=3,
         is_missing=missing,
@@ -339,7 +342,8 @@ def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     calls = 0
 
-    def fail_during_replay(edges, **kwargs):
+    @row_slice_aware
+    def fail_during_replay(*, time_edges, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 6:
@@ -406,7 +410,7 @@ def test_operator_forward_backward_protocol(tmp_path):
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         transition_operator=MatrixProductOperator(
             jnp.asarray(kwargs["transition_matrix"]), jnp.asarray(one_hot(state_ind))
         ),
@@ -422,7 +426,7 @@ def test_operator_forward_backward_protocol(tmp_path):
     dense = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         chunk_size=4,
         transition_statistics="counts",
@@ -451,7 +455,7 @@ def test_declared_zero_bin_state_and_no_implicit_causal_retention():
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         n_states=3,
         **kwargs,
@@ -474,7 +478,7 @@ def test_native_metadata_is_published_atomically_and_compact_has_no_spatial_dime
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         result_path=tmp_path / "result",
         result_attrs=metadata,
@@ -492,7 +496,8 @@ def test_changed_likelihood_replay_fails_atomically(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     counts = {}
 
-    def callback(edges, *, row_slice, is_missing):
+    @row_slice_aware
+    def callback(*, time_edges, row_slice, is_missing):
         counts[row_slice.start] = counts.get(row_slice.start, 0) + 1
         return ll[row_slice] + counts[row_slice.start]
 
@@ -604,7 +609,8 @@ def test_replay_change_in_an_earlier_chunk_fails_atomically(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     calls = {}
 
-    def callback(edges, *, row_slice, is_missing):
+    @row_slice_aware
+    def callback(*, time_edges, row_slice, is_missing):
         calls[row_slice.start] = calls.get(row_slice.start, 0) + 1
         # Only the first chunk, replayed last, changes; later chunks are
         # emitted before its checksum is checked.
@@ -635,7 +641,7 @@ def test_checkpoint_directory_failure_leaves_no_output_staging(tmp_path):
         checkpointed_forward_backward(
             edges,
             initial,
-            lambda edges, **kw: ll[kw["row_slice"]],
+            row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
             state_ind=state_ind,
             result_path=tmp_path / "result",
             checkpoint_dir=bad,
@@ -655,7 +661,7 @@ def test_float64_matches_the_original_dense_precision_path(tmp_path, x64):
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         transition_matrix=matrix,
         chunk_size=4,
@@ -680,8 +686,10 @@ def test_result_centers_use_original_overflow_safe_native_formula():
     result = checkpointed_forward_backward(
         edges,
         np.array([0.5, 0.5], np.float32),
-        lambda edges, **kw: np.zeros(
-            (kw["row_slice"].stop - kw["row_slice"].start, 2), np.float32
+        row_slice_aware(
+            lambda **kw: np.zeros(
+                (kw["row_slice"].stop - kw["row_slice"].start, 2), np.float32
+            )
         ),
         state_ind=np.array([0, 1]),
         transition_matrix=np.eye(2, dtype=np.float32),
@@ -703,14 +711,15 @@ def test_boundary_events_and_global_final_edge_keep_native_ownership(tmp_path):
     counts = np.array([1, 1, 1, 1, 1, 2])
     values = counts[:, None] * np.log(rates) - np.diff(edges)[:, None] * rates
 
-    def likelihood(original_edges, *, row_slice, is_missing):
+    @row_slice_aware
+    def likelihood(*, time_edges, row_slice, is_missing):
         selected = get_spikecount_per_time_bin(
-            spikes, row_slice=row_slice, time_edges=original_edges
+            spikes, row_slice=row_slice, time_edges=time_edges
         )
         np.testing.assert_array_equal(selected, counts[row_slice])
         return (
             selected[:, None] * np.log(rates)
-            - np.diff(original_edges)[row_slice, None] * rates
+            - np.diff(time_edges)[row_slice, None] * rates
         )
 
     result = checkpointed_forward_backward(
@@ -752,7 +761,7 @@ def test_global_diagnostic_indices_are_exact_once_and_packed_for_store(tmp_path)
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         is_missing=missing,
         chunk_size=4,
@@ -782,7 +791,7 @@ def test_all_impossible_diagnostics_use_numpy_metadata_not_per_row_python_object
     result = checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         state_ind=state_ind,
         chunk_size=1,
         **kwargs,
@@ -853,7 +862,7 @@ def test_unregistered_operator_is_rejected(tmp_path):
         checkpointed_forward_backward(
             edges,
             initial,
-            lambda edges, **kw: ll[kw["row_slice"]],
+            row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
             transition_operator=Unregistered(),
             state_ind=state_ind,
             chunk_size=4,
@@ -886,7 +895,7 @@ def test_production_grid_uniform_marginals_preserve_pairwise_normalization(tmp_p
     result = checkpointed_forward_backward(
         np.array([0.0, 0.002]),
         initial,
-        lambda edges, **kwargs: np.zeros((1, len(initial)), dtype=np.float32),
+        lambda **kwargs: np.zeros((1, len(initial)), dtype=np.float32),
         state_ind=state_ind,
         transition_operator=Identity(),
         chunk_size=1,
@@ -944,7 +953,7 @@ def test_stable_preserves_dense_probabilities(
     result = checkpointed_forward_backward(
         np.arange(14, dtype=float) * 0.002,
         initial,
-        lambda edges, row_slice, **kwargs: ll[row_slice],
+        row_slice_aware(lambda row_slice, **kwargs: ll[row_slice]),
         state_ind=np.array([0, 0, 1, 1]),
         transition_matrix=transition,
         chunk_size=chunk_size,
@@ -960,7 +969,7 @@ def test_stable_preserves_dense_probabilities(
     reference = checkpointed_forward_backward(
         np.arange(14, dtype=float) * 0.002,
         initial,
-        lambda edges, row_slice, **kwargs: ll[row_slice],
+        row_slice_aware(lambda row_slice, **kwargs: ll[row_slice]),
         state_ind=np.array([0, 0, 1, 1]),
         transition_matrix=transition,
         chunk_size=chunk_size,
@@ -1038,8 +1047,10 @@ def test_long_recording_full_driver(chunk_size):
     result = checkpointed_forward_backward(
         np.arange(n_rows + 1, dtype=float) * 0.002,
         np.ones(1, np.float32),
-        lambda edges, row_slice, **kwargs: np.full(
-            (row_slice.stop - row_slice.start, 1), increment, np.float32
+        row_slice_aware(
+            lambda row_slice, **kwargs: np.full(
+                (row_slice.stop - row_slice.start, 1), increment, np.float32
+            )
         ),
         transition_matrix=np.ones((1, 1), np.float32),
         state_ind=np.zeros(1, np.int32),
@@ -1086,7 +1097,8 @@ def test_likelihood_overflow_error_aborts_stable_checkpointed_pass(tmp_path):
 
     calls = []
 
-    def likelihood(edges, **kw):
+    @row_slice_aware
+    def likelihood(*, time_edges, **kw):
         # Fail once mid-forward pass; a swallowed error would surface later
         # as an unrelated missing-checkpoint failure during replay.
         calls.append(kw["row_slice"].start)
@@ -1142,7 +1154,7 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
     result = checkpointed.checkpointed_forward_backward(
         edges,
         initial,
-        lambda edges, **kw: ll[kw["row_slice"]],
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
         transition_operator=MatrixProductOperator(
             np.asarray(kwargs["transition_matrix"]), one_hot(state_ind)
         ),
@@ -1163,7 +1175,8 @@ def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail,
     ll = np.array([1e308, 1e308, *tail], np.float64)[:, None]
     calls = []
 
-    def likelihood(edges, row_slice, **kwargs):
+    @row_slice_aware
+    def likelihood(*, time_edges, row_slice, **kwargs):
         calls.append(row_slice.start)
         return ll[row_slice]
 

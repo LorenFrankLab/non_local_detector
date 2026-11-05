@@ -44,6 +44,7 @@ from non_local_detector._formula_grammar import (
     check_formula,
     refuse_untrusted,
 )
+from non_local_detector._jax_typing import finfo, optimization_barrier
 from non_local_detector.exceptions import ValidationError
 
 __all__ = [
@@ -441,7 +442,7 @@ def _stationary_counts_block(
     maximum = jnp.max(ratio, axis=0, initial=0.0)
     # The column sum is at most n_rows * maximum; keep it 256x below the
     # largest finite value.
-    headroom = jnp.finfo(ratio.dtype).max / 256  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+    headroom = finfo(ratio.dtype).max / 256
     exponent = jnp.ceil(
         jnp.log2(jnp.maximum(maximum / headroom * causal_posterior.shape[0], 1.0))
     )
@@ -450,7 +451,7 @@ def _stationary_counts_block(
     scale = jnp.ldexp(jnp.ones((), ratio.dtype), exponent.astype(jnp.int32))
     contraction = _blocked_contraction(causal_posterior, ratio / scale)
     # Weight first: the weighted terms are bounded, the unweighted sums are not.
-    weighted = jax.lax.optimization_barrier(transition_matrix * contraction)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+    weighted = optimization_barrier(transition_matrix * contraction)
     return _aggregate_xi_by_state_jax(weighted * scale, state_ind, n_states)
 
 

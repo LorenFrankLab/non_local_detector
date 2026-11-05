@@ -15,6 +15,7 @@ import pytest
 from non_local_detector.core import (
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
+    row_slice_aware,
 )
 
 pytestmark = pytest.mark.unit
@@ -49,7 +50,7 @@ def test_chunked_evidence_is_the_float64_sum(exact_evidence_model, n_chunks, cov
     log_likelihoods, expected = exact_evidence_model
     initial, uniform, state_ind, discrete = _arguments()
     common = {
-        "time": np.arange(N_TIME, dtype=float),
+        "time_edges": np.arange(N_TIME + 1, dtype=float),
         "state_ind": state_ind,
         "initial_distribution": initial,
         "log_likelihood_func": None,
@@ -78,7 +79,7 @@ def test_checkpointed_evidence_is_the_float64_sum(exact_evidence_model):
     result = checkpointed_forward_backward(
         np.arange(N_TIME + 1, dtype=float) * 0.002,
         initial,
-        lambda edges, **kwargs: log_likelihoods[kwargs["row_slice"]],
+        row_slice_aware(lambda **kwargs: log_likelihoods[kwargs["row_slice"]]),
         transition_matrix=uniform,
         state_ind=state_ind,
         chunk_size=N_TIME // 4,

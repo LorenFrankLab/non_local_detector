@@ -66,6 +66,14 @@ uv run pre-commit run --all-files
 
 or individually: `uv run ruff check src/ tests/`, `uv run ruff format src/ tests/`, `uv run mypy`.
 
+## Dtypes
+
+- The HMM drivers (`chunked_filter_smoother`, `most_likely_sequence`, their covariate-dependent variants and `checkpointed_forward_backward`), which the detectors use, run inference in float32. They cast their inputs to their `dtype`, float32 by default, so float64 inputs are rounded. The jit-composable passes (`filter`, `smoother`, `viterbi` and their covariate-dependent variants) compute in the dtype of their inputs. A driver given `dtype=np.float64` runs in float64, and raises `ValidationError` when JAX's 64-bit mode is off instead of silently computing in float32.
+- Products with a transition or state-aggregation matrix pass `precision=jax.lax.Precision.HIGHEST`. The default CUDA precision (TF32) rounds float32 matmuls to about 1e-3 relative, so CPU and GPU results would disagree.
+- Host-side estimation that needs float64, such as the discrete-transition M-step, runs inside `discrete_state_transitions._float64_jax()`, a scoped float64 context, so it does not depend on the global 64-bit mode. Its results are cast to the working dtype when they enter inference.
+- Results keep the working dtype whatever the global 64-bit mode. Give constants an explicit dtype: `jax.nn.one_hot`, `jnp.zeros` and `jnp.asarray` of Python or NumPy float64 values default to float64 under 64-bit mode and would promote float32 inputs.
+- Long sums whose accuracy matters, the marginal log likelihood and the checkpointed transition counts, are accumulated in float64 on the host.
+
 ## Numerical changes
 
 This package produces scientific results, so a change that alters numbers needs more care than one that does not.
@@ -90,6 +98,18 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 - The detector-level tests fit every registered algorithm through `tests/models/_helpers.py`'s `_decoder` on small fixtures; add parameters there if the defaults do not fit them (as the sorted GLM's knot spacing and the clusterless GMM's component counts do).
 - List each new class that its encoding model holds (a fitted density model, a basis) in `model_format/_builtins.py` with its fields, or `save_model` refuses the fitted detector (see "Saved-model format").
 - Add the algorithm to the user-facing lists, the likelihood models in `README.md` ("Architecture") and the likelihood table in `docs/getting-started/core-concepts.md`; the contract tests check that both name every registered algorithm.
+
+## Adding a transition
+
+A continuous transition, a discrete transition or an initial-condition class is any class with the methods of its protocol: `ContinuousTransition` (`non_local_detector.continuous_state_transitions`), `DiscreteTransition` (`non_local_detector.discrete_state_transitions`) or `ContinuousInitialCondition` (`non_local_detector.initial_conditions`). The detectors also rely on these rules, which the protocols cannot express:
+
+- `make_state_transition(environments, context=None)` returns the block between two spatial states (or two one-bin states) over every place bin, interior or not: shape `(n_source_bins, n_destination_bins)`, finite, nonnegative, each row summing to at most 1 (0 for a bin nothing can leave). The detectors set a block between a one-bin state (No-Spike, or Local without `local_position_std`) and a spatial state without calling it, from the declared destination environment (`environment2_name` when the class has it, else `environment_name`).
+- A continuous transition gets a structured operator (`transition_representation="structured"` or `"auto"`) only if its class body defines `structured_block`, `dense_block_shape` and `graph_distance_environment` (`transition_operators.SupportsStructuredBlock`; `_EnvironmentBlock` gives the last two for a transition within one environment). `structured_block` returns a block equal to `make_state_transition`'s, or raises `UnsupportedTransitionError` for a configuration that has none. An inherited `structured_block`, or a `make_state_transition` assigned on an instance, is ignored and the transition is planned densely, since the subclass may change the block.
+- An instance holds only its configuration: every attribute is an `__init__` argument, so `type(obj)(**vars(obj))` rebuilds it (Spyglass stores parameters this way), and a fit adds no attributes, such as the environment it was built on.
+- A discrete transition's `make_state_transition(covariate_data)` returns an `InitialDiscreteTransition` whose shape and coefficients match `is_stationary` and `n_states`; an initial-condition class returns one value per place bin of the state's environment (shape `(1,)` for a state without place bins), nonnegative and summing to 1 over the interior bins.
+- List each new class in `model_format/_builtins.py` with its fields, or `save_model` refuses a detector that holds it (see "Saved-model format").
+
+`tests/transitions/test_transition_contract.py` finds every class in those three modules and checks it against these rules on a 1-D grid, a 2-D grid with holes and a track graph, so adding a class needs no test edit: the test checks the instance its default constructor builds. A class whose constructor needs arguments is skipped until it has an entry in the test's `CONTINUOUS_CONFIGURATIONS`, `DISCRETE_CONFIGURATIONS` or `INITIAL_CONDITION_CONFIGURATIONS`, which can also add settings worth checking beyond the defaults.
 
 ## Saved-model format
 
