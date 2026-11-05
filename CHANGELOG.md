@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### One-off fixes
+
+- **Fixed:** a NaN in the covariates given to decode, `discrete_transition_intervals`, `plot_discrete_state_transition` or `predict_discrete_state_transitions` raises, as it does at fit, instead of patsy dropping the row. Decoding then failed with a confusing row count; the others returned a shorter array that no longer lined up with the covariates.
+
 ### Reading results
 
 - **Added:** `analysis.get_position_posterior` reduces any posterior layout (a raw `acausal_posterior`, the per-state grids of `get_spatial_posterior`, or a posterior already over position) to position alone.

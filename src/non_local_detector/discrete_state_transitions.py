@@ -1439,9 +1439,19 @@ def _design_on(
     Returns
     -------
     design_matrix : patsy.DesignMatrix, shape (n_new_time, n_coefficients)
+
+    Raises
+    ------
+    patsy.PatsyError
+        If a covariate is missing (NaN) on any row.
     """
     design_info = discrete_transition_design_matrix.design_info
-    return cast(DesignMatrix, build_design_matrices([design_info], covariate_data)[0])
+    # As at fit: dropping a row with a NaN covariate would shift every later
+    # row off its time step, or off the covariate value it is plotted against.
+    return cast(
+        DesignMatrix,
+        build_design_matrices([design_info], covariate_data, NA_action="raise")[0],
+    )
 
 
 def _refuse_untrusted_transition(transition: object, action: str) -> None:
