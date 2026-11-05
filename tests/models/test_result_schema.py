@@ -292,6 +292,19 @@ def test_saving_results_larger_than_the_read_budget_is_refused(
     assert sorted(path.name for path in tmp_path.iterdir()) == ["results.nc", "store"]
 
 
+def test_xarray_reports_which_store_variables_are_read_lazily(checkpointed):
+    """save_results tells a lazily read store variable from one in memory by
+    xarray's private ``Variable._in_memory`` (no public API says so without
+    reading it), which has done so since before the xarray floor
+    (2024.11). This fails if an xarray release changes it, before
+    save_results stops refusing a result it cannot write."""
+    lazy = checkpointed.acausal_posterior.variable
+
+    assert lazy._in_memory is False
+    assert lazy.copy(deep=False).load()._in_memory is True
+    assert checkpointed.time.variable._in_memory is True
+
+
 def test_a_failed_save_keeps_the_previous_file(fitted, dense, tmp_path, monkeypatch):
     filename = tmp_path / "results.nc"
     filename.write_bytes(b"previous results")

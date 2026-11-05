@@ -222,10 +222,13 @@ def _refuse_lazy_variables_beyond_budget(results: xr.Dataset) -> None:
     if not metadata:
         return
     budget = int(metadata["max_read_bytes"])
+    # xarray has no public way to ask whether a variable is in memory without
+    # reading it; a test checks that this private property still answers
+    # (and an xarray without it leaves the error to the read itself).
     too_large = {
         str(name): variable.nbytes
         for name, variable in results.variables.items()
-        if not variable._in_memory and variable.nbytes > budget
+        if not getattr(variable, "_in_memory", True) and variable.nbytes > budget
     }
     if too_large:
         msg = (
