@@ -216,6 +216,21 @@ class LikelihoodAlgorithm(Generic[FitT, PredictT]):
     protocols, which type them for mypy). Records pickle and deep-copy.
     ``tests/likelihoods/test_algorithm_contract.py`` checks every registered
     algorithm.
+
+    A detector refuses a ``predict`` of the wrong shape, and raises
+    ``DataError`` on a NaN or ``+inf`` once a pass has seen it. No code can
+    check the rest of what the model needs:
+
+    - The log likelihood is absolute, ``sum n log(rate dt) - rate dt`` over
+      the neurons with rates in Hz, not relative to a position-free rate or
+      to the row's maximum. No-Spike is compared against that reference, so a
+      row correct only up to a constant moves probability between states.
+    - Values are finite. ``-inf`` means the state is impossible, a row of all
+      ``-inf`` is only logged, and a pass under ``jax.jit`` cannot raise.
+    - ``fit`` calls ``prepare_encoding_support``. Spike counts use the
+      ``weights`` it returns and occupancy the ``exposure_weights``, which
+      multiply each sample's weight by its exposure in seconds, so a fit that
+      ignores them counts time the detector left out.
     """
 
     fit: FitT
