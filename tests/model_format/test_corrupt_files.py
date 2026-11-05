@@ -177,27 +177,29 @@ def test_a_user_from_state_reading_a_missing_key_names_the_type():
         _registry._BY_CLASS.pop(Keyed, None)
 
 
-def _nested_tuples(depth):
-    return json.loads('{"$tuple": [' * depth + "]}" * depth)
+def _with_nested_tuples(data, depth):
+    """Set ``place_bin_size`` to tuples nested ``depth`` deep, as text.
+
+    Built as text because how deep ``json`` can go before a RecursionError
+    depends on the Python version, so the file may fail to parse or to decode.
+    """
+    config = json.dumps({**json.loads(data), "place_bin_size": "NESTED"})
+    nested = '{"$tuple": [' * depth + "]}" * depth
+    return config.replace('"NESTED"', nested).encode()
 
 
 @pytest.mark.parametrize(
     ("document", "transform"),
     [
-        # Too deep for the JSON parser.
         ("state.json", lambda data: b"[" * 100_000 + b"]" * 100_000),
-        # Parsed, but too deep to decode.
-        (
-            "config.json",
-            lambda data: json.dumps(
-                {**json.loads(data), "place_bin_size": _nested_tuples(900)}
-            ).encode(),
-        ),
+        ("config.json", lambda data: _with_nested_tuples(data, 900)),
     ],
-    ids=["parse", "decode"],
+    ids=["arrays", "tuples"],
 )
 def test_deeply_nested_documents_are_data_errors(saved, document, transform):
     _rewrite(saved, document, transform)
 
-    with pytest.raises(DataError, match=r"not valid JSON|RecursionError"):
+    # Where it fails (parsing, checking or decoding) depends on the Python
+    # version; any of them must be a DataError, not a RecursionError.
+    with pytest.raises(DataError):
         nld.NonLocalSortedSpikesDetector.load_model(saved)
