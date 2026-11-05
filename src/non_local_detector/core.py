@@ -2963,6 +2963,7 @@ def viterbi(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    log_likelihoods = jnp.asarray(log_likelihoods)
     # As the filters do: argmax over an all-(-inf) step returns state 0
     # silently, and a NaN or +inf step leaves the path undefined.
     _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
@@ -3054,17 +3055,18 @@ def most_likely_sequence(
             _CALLBACK_SHAPE_HINT,
         )
 
+    # Cast to desired dtype for precision control
+    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
+
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
     # Viterbi-only workflow gets the same diagnostics as the filter/smoother
     # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
     # state 0, which this warning surfaces. context="viterbi" selects
     # Viterbi-appropriate wording (no posterior / marginal here).
-    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
+    _warn_if_degenerate_timesteps(log_likelihoods_jax, context="viterbi")
 
-    # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
-    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
     most_likely_states = _viterbi_jit(
         initial_distribution=initial_distribution_jax,
@@ -3688,6 +3690,7 @@ def viterbi_covariate_dependent(
             log_likelihoods=log_likelihoods,
             initial_mass_loss=True,
         )
+    log_likelihoods = jnp.asarray(log_likelihoods)
     _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
     return cast(
         jax.Array,
@@ -3794,14 +3797,16 @@ def most_likely_sequence_covariate_dependent(
             _CALLBACK_SHAPE_HINT,
         )
 
+    # Cast to desired dtype for precision control
+    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
+
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
     # Viterbi-only workflow gets the same diagnostics as the filter/smoother
     # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
     # state 0, which this warning surfaces. context="viterbi" selects
     # Viterbi-appropriate wording (no posterior / marginal here).
-    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
+    _warn_if_degenerate_timesteps(log_likelihoods_jax, context="viterbi")
 
-    # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     discrete_transition_matrix_jax = jnp.asarray(
         discrete_transition_matrix, dtype=dtype
@@ -3810,7 +3815,6 @@ def most_likely_sequence_covariate_dependent(
         continuous_transition_matrix, dtype=dtype
     )
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
-    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
 
     most_likely_states = _viterbi_covariate_dependent_jit(
         initial_distribution=initial_distribution_jax,
