@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import CompatibilityWarning, DataError
+from non_local_detector.exceptions import DataError, DataQualityWarning
 from non_local_detector.model_format import read_model_summary
 from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 from tests.model_format.test_refusals import _edit_json
@@ -67,9 +67,9 @@ def test_a_key_the_type_does_not_declare_is_ignored_with_a_warning(
     _edit_model(saved, lambda model: model.update(future_key=1))
     original = nld.SortedSpikesDecoder.load_model(sorted_file)
 
-    with pytest.warns(CompatibilityWarning, match="future_key"):
+    with pytest.warns(DataQualityWarning, match="future_key"):
         loaded = nld.SortedSpikesDecoder.load_model(saved)
-    with pytest.warns(CompatibilityWarning, match="future_key"):
+    with pytest.warns(DataQualityWarning, match="future_key"):
         summary = read_model_summary(saved)
 
     (model,) = loaded.encoding_model_.values()

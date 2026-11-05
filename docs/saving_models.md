@@ -241,7 +241,7 @@ to.
 
 A field added to the format has a default, so files written before it still
 load. A release loading a file written by a newer one ignores the names it
-does not read, with a `CompatibilityWarning` listing them. A fitted file
+does not read, with a `DataQualityWarning` listing them. A fitted file
 missing a name its kind of model always has raises `DataError`, as does an
 encoding model missing a key its likelihood algorithm stores, or naming an
 algorithm the installed release does not register.

@@ -1,7 +1,7 @@
 """What a saved model must hold, and what it may hold that is ignored.
 
 A newer version may add a stored name or field. An older version loads the
-file without it, with one ``CompatibilityWarning`` per load listing what it
+file without it, with one ``DataQualityWarning`` per load listing what it
 ignored, from ``load_model`` and ``read_model_summary`` alike. A fitted file
 must hold every name its kind of model always has, or ``DataError``; one
 missing raised a bare ``AttributeError`` (or loaded and failed later)
@@ -13,7 +13,7 @@ import shutil
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import CompatibilityWarning, DataError
+from non_local_detector.exceptions import DataError, DataQualityWarning
 from non_local_detector.model_format import read_model_summary
 from non_local_detector.model_format._detector import _OPTIONAL_STORED, _STORED
 from tests.model_format._compare import assert_same_fitted_state
@@ -58,13 +58,15 @@ def _refused(path, match):
 
 def _loads_with_one_warning(path, *names, summary=True):
     """Load (and summarize) ``path``, which warns once, naming ``names``."""
-    with pytest.warns(CompatibilityWarning, match="newer version") as warned:
+    with pytest.warns(DataQualityWarning, match="newer version") as warned:
         model = nld.NonLocalSortedSpikesDetector.load_model(path)
     assert len(warned) == 1
+    # A UserWarning, which Python's default filters show.
+    assert issubclass(warned[0].category, UserWarning)
     for name in names:
         assert name in str(warned[0].message)
     if summary:
-        with pytest.warns(CompatibilityWarning, match=names[0]) as warned:
+        with pytest.warns(DataQualityWarning, match=names[0]) as warned:
             read_model_summary(path)
         assert len(warned) == 1
     return model

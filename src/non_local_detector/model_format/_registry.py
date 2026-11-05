@@ -107,7 +107,7 @@ def ignoring_unread_names(package_version: str | None) -> Iterator[None]:
 
 def _warn_unread(entries: list[str], package_version: str | None) -> None:
     from non_local_detector._warnings import user_stacklevel
-    from non_local_detector.exceptions import CompatibilityWarning
+    from non_local_detector.exceptions import DataQualityWarning
 
     writer = (
         f"non_local_detector {package_version}"
@@ -118,7 +118,7 @@ def _warn_unread(entries: list[str], package_version: str | None) -> None:
         f"The saved model holds names this version does not read, which "
         f"were ignored: {'; '.join(entries)}. It was written by {writer}, a "
         "newer version; upgrade to use them.",
-        CompatibilityWarning,
+        DataQualityWarning,
         stacklevel=user_stacklevel(),
     )
 
@@ -260,7 +260,7 @@ def register_type(
         field added later reads files written before it. Other fields
         missing from a state raise ``DataError``; a field the dataclass
         does not store (written by a newer version of it) is ignored with a
-        ``CompatibilityWarning``.
+        ``DataQualityWarning``.
 
     Raises
     ------

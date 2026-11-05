@@ -365,7 +365,7 @@ class _PersistenceMixin:
 
         Warns
         -----
-        CompatibilityWarning
+        DataQualityWarning
             Once, if the file holds names this version does not read (a
             newer version wrote it), which are ignored.
         """

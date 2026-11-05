@@ -131,7 +131,7 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
 
     Warns
     -----
-    CompatibilityWarning
+    DataQualityWarning
         Once, if the file holds names this version does not read (a newer
         version wrote it), which are left out.
     """
