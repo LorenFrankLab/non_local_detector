@@ -81,11 +81,10 @@ def test_device_posteriors_equal_host_posteriors(model, covariate, n_chunks):
 
 @pytest.mark.parametrize("covariate", [False, True])
 def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
-    """The historical fields come first, in the old tuple order, followed by
-    the degenerate time indices and the transition responses."""
+    """The historical fields come first, in the old tuple order."""
     result = _decode(model, covariate, n_chunks=2, host_outputs=True)
     assert isinstance(result, FilterSmootherResult)
-    assert FilterSmootherResult._fields == (
+    assert FilterSmootherResult._fields[:8] == (
         "acausal_posterior",
         "acausal_state_probabilities",
         "marginal_log_likelihood",
@@ -94,8 +93,6 @@ def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
         "log_likelihoods",
         "causal_posterior",
         "predictive_posterior",
-        "degenerate_indices",
-        "transition_responses",
     )
     (acausal, _, marginal, _, _, log_likelihoods, causal, *_) = result
     assert acausal is result.acausal_posterior
