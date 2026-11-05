@@ -103,8 +103,9 @@ Decode bins that reach more than half a sample outside the tracked period are
 always missing, with one warning: position there could only be extrapolated.
 
 **Encoding support** is where spikes and occupancy count. By default it is the
-samples' span plus half a sample at each end. `encoding_time_range` replaces
-those outer bounds: inside the samples it clips the support, and past them it
+samples' span plus half a sample at each end, N * dt seconds in all; a single
+position sample needs `encoding_time_range` or an interval. `encoding_time_range`
+replaces those outer bounds, and does not assert that tracking was continuous: inside the samples it clips the support, and past them it
 extends it, holding the position at the first or last sample, which warns if
 it passes the samples by over one sample interval. With
 `valid_position_intervals`, support is bounded by the intervals; each needs a
