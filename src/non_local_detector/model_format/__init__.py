@@ -38,7 +38,6 @@ from non_local_detector.model_format._container import (
 from non_local_detector.model_format._detector import (
     check_documents,
     data_errors,
-    encoding_model_keys,
 )
 from non_local_detector.model_format._registry import (
     ignoring_unread_names,
@@ -143,23 +142,22 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
         ignoring_unread_names(stored.manifest.get("package_version")),
         data_errors("read"),
     ):
-        check_documents(stored)
-        return _summary(stored)
+        config, state = check_documents(stored)
+        return _summary(stored, config, state)
 
 
-def _summary(stored: StoredModel) -> dict[str, Any]:
+def _summary(stored: StoredModel, config: Any, state: dict[str, Any]) -> dict[str, Any]:
     """Return the summary ``read_model_summary`` returns, of checked documents."""
-    decoder = Decoder(stored.read_array, plain=True)
-    state = stored.state
     summary: dict[str, Any] = {
         "detector_type": stored.manifest["detector_type"],
         "format_version": stored.manifest["format_version"],
         "package_version": stored.manifest.get("package_version"),
-        "config": decoder.decode(stored.config),
+        "config": Decoder(stored.read_array, plain=True).decode(config),
         "fitted": state["fitted"],
     }
     if not state["fitted"]:
         return summary
+    # A decoder per document: each numbers its array refs from 0.
     decoder = Decoder(stored.read_array, plain=True)
     environments = []
     for entry in state["environments"]:
@@ -173,7 +171,6 @@ def _summary(stored: StoredModel) -> dict[str, Any]:
     summary["environments"] = environments
     summary["encoding_models"] = []
     for entry in state["encoding_models"]:
-        keys = encoding_model_keys(entry["model"])
         summary["encoding_models"].append(
             {
                 "environment_name": entry["environment_name"],
@@ -181,7 +178,7 @@ def _summary(stored: StoredModel) -> dict[str, Any]:
                 **{
                     key: decoder.decode(value)
                     for key, value in entry["model"].items()
-                    if key in keys and _is_small(value)
+                    if _is_small(value)
                 },
             }
         )

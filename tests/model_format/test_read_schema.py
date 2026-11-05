@@ -134,6 +134,16 @@ def test_several_ignored_names_give_one_warning(saved):
     _loads_with_one_warning(saved, "future_state", "future_field", "future_param")
 
 
+def test_the_summary_warns_about_and_drops_an_unknown_config_name(saved):
+    _edit_json(saved, "config.json", lambda config: config.update(future_param=1))
+
+    with pytest.warns(DataQualityWarning, match="future_param") as warned:
+        summary = read_model_summary(saved)
+
+    assert len(warned) == 1
+    assert "future_param" not in summary["config"]
+
+
 # A value of a type a newer version added, which this version cannot build.
 _FUTURE_VALUE = {"$type": "nld.FutureThing", "owner": "non_local_detector", "state": {}}
 

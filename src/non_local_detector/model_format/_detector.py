@@ -88,6 +88,8 @@ from non_local_detector.model_format._registry import (
     TypeSpec,
     ignore_unread_names,
     ignoring_unread_names,
+    readable_names,
+    registered_types,
     spec_for_class,
     spec_for_name,
     spec_for_object,
@@ -1080,20 +1082,41 @@ def _required_state_names(state: Any, config: Any) -> set[str]:
     return required
 
 
-def check_documents(stored: StoredModel) -> None:
-    """Raise ``DataError`` unless a saved model's documents hold what it needs.
+def _readable_encoding_model(entry: Any) -> dict[str, Any]:
+    """Return a stored ``encoding_models`` entry with only the model's type's keys."""
+    model = entry["model"]
+    keys = encoding_model_keys(model)
+    return {
+        **entry,
+        "model": readable_names(f"{model['algorithm']} encoding model", model, keys),
+    }
+
+
+def check_documents(stored: StoredModel) -> tuple[Any, dict[str, Any]]:
+    """Check a saved model's documents and return what this version reads of them.
 
     state.json must hold every name a model of its kind always has, and each
     encoding model every key of its algorithm's type. A name this version
     does not read (outside ``_MANIFEST_NAMES``, ``_FITTED_STATE``,
-    ``_STORED``, ``_ENTRY_FIELDS``, ``_FINGERPRINT_FIELDS`` or the encoding
-    model's type), which a newer version wrote, is ignored with a warning
-    (``ignore_unread_names``). The values are checked as they are decoded.
+    ``_STORED``, ``_ENTRY_FIELDS``, ``_FINGERPRINT_FIELDS``, the encoding
+    model's type or the detector's constructor), which a newer version wrote,
+    is ignored with a warning (``ignore_unread_names``) and left out of what
+    is returned, so a reader never decodes it. The values are checked as they
+    are decoded.
 
     Parameters
     ----------
     stored : StoredModel
         The open saved model, migrated to ``FORMAT_VERSION``.
+
+    Returns
+    -------
+    config : dict
+        The config document. It keeps every name if the detector's type is
+        not registered, which ``read_model_summary`` allows: no constructor
+        says which names it reads.
+    state : dict
+        The state document.
 
     Raises
     ------
@@ -1114,7 +1137,7 @@ def check_documents(stored: StoredModel) -> None:
     else:
         required = _required_state_names(state, config)
         allowed = required | _OPTIONAL_STORED | {"discrete_state_transitions"}
-    ignore_unread_names("state.json", set(state) - allowed)
+    state = readable_names("state.json", state, allowed)
     missing = sorted(required - set(state))
     if missing:
         msg = f"The saved model is marked fitted but its state has no {missing}"
@@ -1124,15 +1147,22 @@ def check_documents(stored: StoredModel) -> None:
         ignore_unread_names(
             f"state.json {name} entries", set().union(*entries) - fields
         )
-    fingerprints = state.get("fingerprints")
-    if isinstance(fingerprints, dict):
-        ignore_unread_names(
-            "state.json fingerprints", set(fingerprints) - _FINGERPRINT_FIELDS
-        )
-    for entry in state.get("encoding_models", []):
-        model = entry["model"]
-        keys = encoding_model_keys(model)
-        ignore_unread_names(f"{model['algorithm']} encoding model", set(model) - keys)
+    if state["fitted"]:
+        if isinstance(state["fingerprints"], dict):
+            state["fingerprints"] = readable_names(
+                "state.json fingerprints", state["fingerprints"], _FINGERPRINT_FIELDS
+            )
+        state["encoding_models"] = [
+            _readable_encoding_model(entry) for entry in state["encoding_models"]
+        ]
+    detector_class = registered_types().get(manifest["detector_type"])
+    if detector_class is not None:
+        accepted = inspect.signature(detector_class).parameters
+        if not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
+            config = readable_names(
+                f"config.json ({detector_class.__name__} parameters)", config, accepted
+            )
+    return config, state
 
 
 def encoding_model_keys(model: Any) -> frozenset[str]:
@@ -1233,8 +1263,8 @@ def detector_from_stored(
         ignoring_unread_names(stored.manifest.get("package_version")),
         data_errors("rebuild"),
     ):
-        check_documents(stored)
-        return _build_detector(stored, trust_formulas=trust_formulas)
+        config, state = check_documents(stored)
+        return _build_detector(stored, config, state, trust_formulas=trust_formulas)
 
 
 def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
@@ -1255,29 +1285,18 @@ def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
         )
 
 
-def _read_names(node: Any, names: frozenset[str]) -> Any:
-    """Return a stored entry with only ``names``, the ones this version reads.
-
-    The others, which ``check_documents`` ignored with a warning, stay
-    undecoded: they may hold a type this version lacks.
-    """
-    return {name: node[name] for name in node if name in names}
-
-
-def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorBase":
+def _build_detector(
+    stored: StoredModel,
+    config: Any,
+    state: dict[str, Any],
+    *,
+    trust_formulas: bool,
+) -> "_DetectorBase":
+    """Build the detector of ``check_documents``' ``config`` and ``state``."""
     manifest = stored.manifest
     spec = spec_for_name(manifest["detector_type"], manifest.get("detector_type_owner"))
-    config = stored.config
-    accepted = inspect.signature(spec.cls).parameters
-    if not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
-        ignore_unread_names(
-            f"config.json ({spec.cls.__name__} parameters)",
-            set(config) - set(accepted),
-        )
-        config = {name: node for name, node in config.items() if name in accepted}
     params = Decoder(stored.read_array).decode(config)
     detector = cast("_DetectorBase", spec.cls(**params))
-    state = stored.state
     if not state["fitted"]:
         if not trust_formulas:
             _mark_file_formula(detector, None)
@@ -1291,14 +1310,9 @@ def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorB
     decoder.environments = {env.environment_name: env for env in environments}
     detector.encoding_model_ = {}
     for entry in state["encoding_models"]:
-        keys = encoding_model_keys(entry["model"])
         detector.encoding_model_[
             (entry["environment_name"], decoder.decode(entry["encoding_group"]))
-        ] = {
-            key: decoder.decode(node)
-            for key, node in entry["model"].items()
-            if key in keys
-        }
+        ] = {key: decoder.decode(node) for key, node in entry["model"].items()}
     # Files saved before the shared keys' values were NumPy arrays.
     from non_local_detector.likelihoods import _unify_stored_encoding_values
 
@@ -1309,30 +1323,24 @@ def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorB
         for name in (*(name for name, _ in _STORED), "discrete_state_transitions")
         if name in state
     }
-    values["stored_transition_blocks"] = decoder.decode(
-        [
-            _read_names(entry, _ENTRY_FIELDS["stored_transition_blocks"])
-            for entry in state["stored_transition_blocks"]
-        ]
-    )
-    values["fingerprints"] = decoder.decode(
-        _read_names(state["fingerprints"], _FINGERPRINT_FIELDS)
-    )
+    blocks = {
+        (entry["from_state"], entry["to_state"]): np.asarray(
+            decoder.decode(entry["block"])
+        )
+        for entry in state["stored_transition_blocks"]
+    }
+    fingerprints = decoder.decode(state["fingerprints"])
     for name, attribute in _STORED:
         if name in values and name not in _STATE_SPACE_STORED:
             setattr(detector, attribute, values[name])
-    _check_fingerprints(values["fingerprints"], len(environments))
+    _check_fingerprints(fingerprints, len(environments))
     layout = state_layout(
         detector.observation_models, environments, detector.local_position_std
     )
     _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
-    blocks = {
-        (entry["from_state"], entry["to_state"]): np.asarray(entry["block"])
-        for entry in values["stored_transition_blocks"]
-    }
     _rebuild_state_space(detector, blocks, layout, values)
     detector._rebuild_check_ = _RebuildCheck(
-        values["fingerprints"],
+        fingerprints,
         list(blocks),
         manifest.get("package_version", "unknown"),
     )

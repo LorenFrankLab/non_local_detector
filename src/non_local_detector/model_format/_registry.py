@@ -12,7 +12,7 @@ import contextvars
 import copy
 import dataclasses
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,10 +77,7 @@ class TypeSpec:
         """
         if self.fields is None:
             return state
-        ignore_unread_names(
-            f"{self.cls.__qualname__} fields", set(state) - set(self.fields)
-        )
-        return {name: state[name] for name in state if name in self.fields}
+        return readable_names(f"{self.cls.__qualname__} fields", state, self.fields)
 
 
 # The names of a saved model this version does not read, collected while one
@@ -112,6 +109,32 @@ def ignore_unread_names(where: str, names: Iterable[str]) -> None:
         _warn_unread([entry], None)
     else:
         collected.append(entry)
+
+
+def readable_names(
+    where: str, node: Mapping[str, Any], names: Collection[str]
+) -> dict[str, Any]:
+    """Return ``node`` with only ``names``, the ones this version reads.
+
+    The others are left undecoded, as they may hold a type this version
+    lacks, and ignored with a warning (``ignore_unread_names``).
+
+    Parameters
+    ----------
+    where : str
+        The document or object ``node`` is, for the warning.
+    node : Mapping[str, Any]
+        The stored names and their JSON nodes.
+    names : Collection[str]
+        The names this version reads.
+
+    Returns
+    -------
+    node : dict[str, Any]
+        ``node`` without the ignored names.
+    """
+    ignore_unread_names(where, set(node) - set(names))
+    return {name: node[name] for name in node if name in names}
 
 
 @contextlib.contextmanager
