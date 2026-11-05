@@ -441,7 +441,7 @@ def _warn_about_encoding_extent(
     """Warn if the spikes and ``[start, stop]`` look like different units.
 
     Warns if under 1% of the spikes lie in the range and they reach over 10
-    of its lengths past it, or if they span under 1% of it.
+    of its lengths past it, if none lies in it, or if they span under 1% of it.
     """
     span = stop - start
     if span <= 0:
@@ -461,6 +461,15 @@ def _warn_about_encoding_extent(
             "seconds; the encoding model is fit to the few that fall inside. "
             "Convert them to seconds, or, if the position covers only a small part "
             "of the recording on purpose, pass the spikes of that part.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+    elif n_inside == 0:
+        warnings.warn(
+            f"None of the {n_spikes} spike times lies inside the position_time span "
+            f"[{start:.6g}, {stop:.6g}] s, so every encoding model is fit without "
+            "spikes and its rates sit at their floor. Check that spike_times "
+            "cover the tracked period.",
             DataQualityWarning,
             stacklevel=user_stacklevel(),
         )

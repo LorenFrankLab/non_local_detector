@@ -21,6 +21,8 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
+from tests.models._helpers import ALGORITHMS, _decoder
 
 pytestmark = pytest.mark.unit
 
@@ -308,3 +310,28 @@ class TestFitEncodingModelChecksPosition:
                 np.column_stack((position, position)),
                 *_spike_data(family, spikes, marks),
             )
+
+
+class TestNoSpikesInsideThePositionSpan:
+    """No spike inside the span means rate floors, at every algorithm."""
+
+    MESSAGE = "lies inside the position_time span"
+
+    @pytest.mark.parametrize("algorithm", ALGORITHMS)
+    def test_every_algorithm_warns_once(self, algorithm, recording):
+        time, position, spikes, marks = recording
+        keep = time < 20.0
+        late = [times > 30.0 for times in spikes]
+        family = "sorted" if algorithm in _SORTED_SPIKES_ALGORITHMS else "clusterless"
+        data = _spike_data(
+            family,
+            [times[mask] for times, mask in zip(spikes, late, strict=True)],
+            [features[mask] for features, mask in zip(marks, late, strict=True)],
+        )
+        decoder = _decoder(algorithm, sampling_frequency=RATE)
+
+        _, messages = _quality_warnings(
+            lambda: decoder.fit(time[keep], position[keep], *data), self.MESSAGE
+        )
+
+        assert len(messages) == 1
