@@ -427,15 +427,22 @@ def _numeric_spike_times(times: Any, unit: str, index: int) -> np.ndarray:
 # overlap the span, so they are not far from it; instead almost none lie
 # inside it (~0.1%) and they reach ~1000 spans past it. Spikes of a whole
 # recording with position for part of it (one epoch of a day) keep far more
-# than 1% inside and reach only a few spans past it.
+# than 1% inside and reach only a few spans past it. position_time in ms
+# against spikes in s is the mirror image: all spikes overlap its start, and
+# they span ~0.1% of it, where one epoch of a day spans several percent.
 _MIN_FRACTION_INSIDE = 0.01
 _MAX_SPANS_PAST = 10.0
+_MIN_FRACTION_OF_SPAN = 0.01
 
 
-def _warn_if_spikes_reach_far_past(
+def _warn_about_encoding_extent(
     arrays: list[np.ndarray], start: float, stop: float, first: float, last: float
 ) -> None:
-    """Warn if under 1% of the spikes lie in ``[start, stop]`` and they reach over 10 spans past it."""
+    """Warn if the spikes and ``[start, stop]`` look like different units.
+
+    Warns if under 1% of the spikes lie in the range and they reach over 10
+    of its lengths past it, or if they span under 1% of it.
+    """
     span = stop - start
     if span <= 0:
         return
@@ -444,20 +451,31 @@ def _warn_if_spikes_reach_far_past(
         int(np.count_nonzero((times >= start) & (times <= stop))) for times in arrays
     )
     reach = max(last - stop, start - first)
-    if n_inside >= _MIN_FRACTION_INSIDE * n_spikes or reach <= _MAX_SPANS_PAST * span:
-        return
-    warnings.warn(
-        f"Only {n_inside} of the {n_spikes} spike times "
-        f"({n_inside / n_spikes:.2%}) lie within the position_time span "
-        f"[{start:.6g}, {stop:.6g}] s, and they reach {reach / span:.3g} times "
-        f"its length past it (spanning [{first:.6g}, {last:.6g}]). The spike "
-        "times are probably in milliseconds (or other units) rather than "
-        "seconds; the encoding model is fit to the few that fall inside. "
-        "Convert them to seconds, or, if the position covers only a small part "
-        "of the recording on purpose, pass the spikes of that part.",
-        DataQualityWarning,
-        stacklevel=user_stacklevel(),
-    )
+    if n_inside < _MIN_FRACTION_INSIDE * n_spikes and reach > _MAX_SPANS_PAST * span:
+        warnings.warn(
+            f"Only {n_inside} of the {n_spikes} spike times "
+            f"({n_inside / n_spikes:.2%}) lie within the position_time span "
+            f"[{start:.6g}, {stop:.6g}] s, and they reach {reach / span:.3g} times "
+            f"its length past it (spanning [{first:.6g}, {last:.6g}]). The spike "
+            "times are probably in milliseconds (or other units) rather than "
+            "seconds; the encoding model is fit to the few that fall inside. "
+            "Convert them to seconds, or, if the position covers only a small part "
+            "of the recording on purpose, pass the spikes of that part.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+    elif 0 < last - first < _MIN_FRACTION_OF_SPAN * span:
+        warnings.warn(
+            f"The spike times span {last - first:.3g} s, {(last - first) / span:.2%} "
+            f"of the position_time span [{start:.6g}, {stop:.6g}] s. position_time "
+            "is probably in milliseconds (or other units) rather than seconds, "
+            "which also shrinks every firing rate; the encoding model counts the "
+            "whole span as occupancy. Convert position_time to seconds, or, if "
+            "the spikes cover only a small part of the tracking on purpose, pass "
+            "the position of that part.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
 
 
 def _warn_if_times_cannot_resolve_bins(
@@ -558,11 +576,10 @@ def _validate_spike_data(
     range_name : str, optional
         What ``time_range`` is, for the warning, e.g. "decode time_edges".
     check_extent : bool, optional
-        Also warn when the spikes overlap ``time_range`` but almost none lie
-        inside it and they reach far past it (see
-        ``_warn_if_spikes_reach_far_past``), by default False. For the
-        encoding period only: a decode window is legitimately short against
-        the recording its spikes come from.
+        Also warn when the spikes overlap ``time_range`` but look like other
+        units than it (see ``_warn_about_encoding_extent``), by default False.
+        For the encoding period only: a decode window is legitimately short
+        against the recording its spikes come from.
     bin_width : float or None, optional
         Decode bin width in seconds the spike times' dtype must resolve, by
         default None (not checked). Times it cannot resolve warn, and the
@@ -580,8 +597,8 @@ def _validate_spike_data(
     -----
     DataQualityWarning
         If the spikes lie farther from ``time_range`` than they span, with
-        ``check_extent`` reach far past it with almost none inside, or with
-        ``bin_width`` have a dtype too coarse for the bins.
+        ``check_extent`` look like other units than it, or with ``bin_width``
+        have a dtype too coarse for the bins.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -622,7 +639,7 @@ def _validate_spike_data(
     gap = max(first - stop, start - last)
     if gap <= last - first:
         if check_extent:
-            _warn_if_spikes_reach_far_past(arrays, start, stop, first, last)
+            _warn_about_encoding_extent(arrays, start, stop, first, last)
         return
     warnings.warn(
         f"None of the {n_spikes} spike times lies within the {range_name} "
@@ -1837,8 +1854,8 @@ class _InputValidationMixin:
         range_name : str, optional
             What ``time_range`` is, for the warning.
         check_extent : bool, optional
-            Also warn when almost no spike lies in ``time_range`` and they
-            reach far past it, by default False (encoding period only).
+            Also warn when the spikes overlap ``time_range`` but look like
+            other units than it, by default False (encoding period only).
         bin_width : float, optional
             Bin width in seconds the spike times' dtype must resolve, by
             default None.

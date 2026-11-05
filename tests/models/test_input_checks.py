@@ -225,3 +225,33 @@ class TestLowPrecisionSpikeTimes:
         _no_quality_warnings(
             lambda: _sorted(SortedSpikesDecoder).fit(time, position, spikes)
         )
+
+
+class TestPositionTimeInOtherUnits:
+    """position_time in ms against spikes in s: all spikes overlap its start."""
+
+    MESSAGE = "of the position_time span"
+
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_fit_warns_once(self, family, recording):
+        time, position, spikes, marks = recording
+        detector = _detector(family)
+
+        _, messages = _quality_warnings(
+            lambda: detector.fit(
+                time * 1000, position, *_spike_data(family, spikes, marks)
+            ),
+            self.MESSAGE,
+        )
+
+        assert len(messages) == 1
+
+    def test_spikes_of_a_small_part_of_the_tracking_are_fine(self, recording):
+        """Under 1% is a unit mismatch; 5% is one epoch of a longer session."""
+        time, position, spikes, _ = recording
+        epoch = [times[times < 0.05 * time[-1]] for times in spikes]
+        _no_quality_warnings(lambda: _sorted().fit(time, position, epoch))
+
+    def test_a_single_spike_has_no_span_to_compare(self, recording):
+        time, position, _, _ = recording
+        _no_quality_warnings(lambda: _sorted().fit(time, position, [np.array([10.0])]))
