@@ -212,6 +212,31 @@ def test_most_likely_sequence_uses_its_covariates(checkpoint_recording, family):
 
 
 @pytest.mark.unit
+@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")  # max_iter=1
+def test_estimating_ignores_a_covariate_the_formula_does_not_read(
+    checkpoint_recording,
+):
+    """As ``predict`` does: only the formula's columns must match the bins."""
+    model, fit, predict = checkpoint_recording("sorted")
+    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+    )
+    n_decode = len(predict["time_edges"]) - 1
+
+    model.estimate_parameters(
+        **fit,
+        time_edges=predict["time_edges"],
+        discrete_transition_covariate_data={
+            "speed": np.linspace(0.0, 1.0, n_decode),
+            "note": np.arange(3.0),
+        },
+        max_iter=1,
+    )
+
+    assert model.discrete_state_transitions_.shape[0] == n_decode
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_fitting_covariate_transitions_without_covariates_raises(
     checkpoint_recording, family

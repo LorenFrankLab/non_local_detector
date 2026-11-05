@@ -2527,16 +2527,20 @@ class _DetectorBase(
         _require_sampling_frequency_width(
             time_edges, time_bin_width, self.sampling_frequency
         )
-        # EM estimates covariate transitions at the decode bins. Each column
-        # is counted here, before the internal fit; the transitions it builds
-        # are checked again after it.
+        # EM estimates covariate transitions at the decode bins. Their rows,
+        # which come from the columns the formula reads, are counted here,
+        # before the internal fit, and checked again after it.
         time_centers = 0.5 * (time_edges[:-1] + time_edges[1:])
-        if discrete_transition_covariate_data is not None:
-            for name in discrete_transition_covariate_data:
-                _validate_covariate_time_length(
-                    np.atleast_1d(np.asarray(discrete_transition_covariate_data[name])),
-                    time_centers,
-                )
+        if (
+            discrete_transition_covariate_data is not None
+            and not self.discrete_transition_type.is_stationary
+        ):
+            _validate_covariate_time_length(
+                self.discrete_transition_type.make_state_transition(
+                    discrete_transition_covariate_data
+                ).transition_matrix,
+                time_centers,
+            )
         inputs = _EncodingInputs.from_arguments(
             position_time,
             position,
