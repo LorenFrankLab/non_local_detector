@@ -299,7 +299,10 @@ def test_a_field_a_dataclass_does_not_store_is_not_decoded():
         },
     }
 
-    with pytest.warns(DataQualityWarning, match="future_field"):
+    with (
+        pytest.warns(DataQualityWarning, match="future_field"),
+        _registry.ignoring_unread_names(None),
+    ):
         transition = Decoder(np.load).decode(node)
 
     assert transition == FlatTransition(weight=2.0)

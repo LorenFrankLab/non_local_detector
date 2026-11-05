@@ -82,16 +82,14 @@ class TypeSpec:
 
 # The names of a saved model this version does not read, collected while one
 # model loads (see ``ignoring_unread_names``).
-_UNREAD: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
-    "_UNREAD", default=None
-)
+_UNREAD: contextvars.ContextVar[list[str]] = contextvars.ContextVar("_UNREAD")
 
 
 def ignore_unread_names(where: str, names: Iterable[str]) -> None:
     """Note names of a saved model that this version does not read.
 
     A newer version of the package wrote them; loading ignores them and
-    warns once (``ignoring_unread_names``), or, outside a load, warns now.
+    warns once (``ignoring_unread_names``, which every reader runs in).
 
     Parameters
     ----------
@@ -101,14 +99,8 @@ def ignore_unread_names(where: str, names: Iterable[str]) -> None:
         The names; none means nothing to note.
     """
     names = sorted(names)
-    if not names:
-        return
-    entry = f"{where} {names}"
-    collected = _UNREAD.get()
-    if collected is None:
-        _warn_unread([entry], None)
-    else:
-        collected.append(entry)
+    if names:
+        _UNREAD.get().append(f"{where} {names}")
 
 
 def readable_names(
@@ -146,10 +138,10 @@ def ignoring_unread_names(package_version: str | None) -> Iterator[None]:
     package_version : str or None
         The version that wrote the file, named in the warning.
     """
-    token = _UNREAD.set([])
+    collected: list[str] = []
+    token = _UNREAD.set(collected)
     try:
         yield
-        collected = _UNREAD.get() or []
     finally:
         _UNREAD.reset(token)
     if collected:
