@@ -41,11 +41,11 @@ logger = logging.getLogger(__name__)
 # Concrete array inputs: the functions below call array methods (``.sum``,
 # ``.dtype``, indexing), which the scalar members of ``jax.typing.ArrayLike``
 # do not provide.
-ArrayLike: TypeAlias = jax.Array | np.ndarray
+ConcreteArray: TypeAlias = jax.Array | np.ndarray
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
-def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jax.Array, jax.Array]:
+def _normalize(u: ConcreteArray, axis: int = 0) -> tuple[jax.Array, jax.Array]:
     """Normalize the values within the axis in a way that they sum up to 1.
 
     Divides by the exact sum so any positive total mass — down to the smallest
@@ -74,7 +74,7 @@ def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jax.Array, jax.Array]:
 
 # Helper functions for the two key filtering steps
 def _condition_on_primal(
-    probs: ArrayLike, ll: ArrayLike
+    probs: ConcreteArray, ll: ConcreteArray
 ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
     """Stable Bayes update plus the shifts its derivative rule reuses.
 
@@ -132,7 +132,9 @@ def _condition_on_primal(
 
 
 @jax.custom_jvp
-def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jax.Array, jax.Array]:
+def _condition_on(
+    probs: ConcreteArray, ll: ConcreteArray
+) -> tuple[jax.Array, jax.Array]:
     """Condition on new emissions without numerical underflow.
 
     The emissions are given as log likelihoods for each discrete state.
@@ -255,7 +257,7 @@ def _condition_on_jvp(
 
 
 def _degenerate_and_nan_masks(
-    log_likelihoods: ArrayLike,
+    log_likelihoods: ConcreteArray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-timestep boolean masks for degenerate and NaN log-likelihoods.
 
@@ -301,7 +303,7 @@ def _degenerate_and_nan_masks_device(
 
 
 def _accumulate_chunk_degeneracy(
-    log_likelihood_chunk: ArrayLike,
+    log_likelihood_chunk: ConcreteArray,
     time_inds: np.ndarray,
 ) -> tuple[np.ndarray, int]:
     """Find a chunk's degenerate and NaN steps at one host sync point.
@@ -420,9 +422,9 @@ def _is_traced(*values: object) -> bool:
 
 
 def _report_degenerate_timesteps(
-    log_likelihoods: ArrayLike,
+    log_likelihoods: ConcreteArray,
     *,
-    marginal_log_likelihood: ArrayLike | None = None,
+    marginal_log_likelihood: ConcreteArray | None = None,
     context: Literal["filter", "viterbi"] = "filter",
 ) -> None:
     """Log all-``-inf`` time steps and raise on one with a NaN or ``+inf``.
@@ -468,7 +470,7 @@ def _report_degenerate_timesteps(
     )
 
 
-def _safe_log(p: ArrayLike) -> jax.Array:
+def _safe_log(p: ConcreteArray) -> jax.Array:
     """Compute log of probabilities safely, handling zeros.
 
     Returns -inf for zero probabilities (valid in log space) instead of NaN.
@@ -488,7 +490,7 @@ def _safe_log(p: ArrayLike) -> jax.Array:
     return jnp.where(p > 0, jnp.log(safe_p), -jnp.inf)
 
 
-def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jax.Array:
+def _divide_safe(numerator: ConcreteArray, denominator: ConcreteArray) -> jax.Array:
     """Divide two arrays, setting the result to 0.0 where the denominator is 0.0.
 
     Parameters
@@ -593,7 +595,7 @@ class TransitionOperator(TransitionProducts, Protocol):
         )
 
 
-def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jax.Array:
+def _state_one_hot(state_ind: ConcreteArray, n_states: int, dtype: Any) -> jax.Array:
     """One-hot discrete-state membership of each state bin.
 
     Parameters
@@ -613,11 +615,11 @@ def _state_one_hot(state_ind: ArrayLike, n_states: int, dtype: Any) -> jax.Array
 
 
 def _covariate_forward_product(
-    probs: ArrayLike,
-    discrete_transition_matrix_t: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    one_hot: ArrayLike,
+    probs: ConcreteArray,
+    discrete_transition_matrix_t: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    one_hot: ConcreteArray,
 ) -> jax.Array:
     """Propagate probabilities forward through one covariate-dependent step.
 
@@ -654,11 +656,11 @@ def _covariate_forward_product(
 
 
 def _covariate_backward_product(
-    values: ArrayLike,
-    discrete_transition_matrix_t: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    one_hot: ArrayLike,
+    values: ConcreteArray,
+    discrete_transition_matrix_t: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    one_hot: ConcreteArray,
 ) -> jax.Array:
     """Pull values backward through one covariate-dependent step.
 
@@ -771,7 +773,7 @@ class _StationaryTransition(TransitionOperator):
 
     def __init__(
         self,
-        matrix: ArrayLike,
+        matrix: ConcreteArray,
         state_ind: jax.Array | None = None,
         n_states: int | None = None,
     ) -> None:
@@ -812,14 +814,14 @@ class _StationaryTransition(TransitionOperator):
 
     def tree_flatten(
         self,
-    ) -> tuple[tuple[ArrayLike, jax.Array | None], int | None]:
+    ) -> tuple[tuple[ConcreteArray, jax.Array | None], int | None]:
         return (self.matrix, self.state_ind), self.n_states
 
     @classmethod
     def tree_unflatten(
         cls,
         aux: int | None,
-        children: tuple[ArrayLike, jax.Array | None],
+        children: tuple[ConcreteArray, jax.Array | None],
     ) -> "_StationaryTransition":
         return cls(*children, aux)
 
@@ -864,7 +866,7 @@ class _CovariateTransition(TransitionOperator):
 
     @classmethod
     def create(
-        cls, continuous: ArrayLike, state_ind: ArrayLike, n_states: int
+        cls, continuous: ConcreteArray, state_ind: ConcreteArray, n_states: int
     ) -> "_CovariateTransition":
         """Operator for ``continuous`` with ``n_states`` discrete states."""
         continuous, state_ind = jnp.asarray(continuous), jnp.asarray(state_ind)
@@ -927,10 +929,10 @@ class _CovariateTransition(TransitionOperator):
 
 
 def _filter_scan(
-    initial: ArrayLike,
-    evidence: ArrayLike | float,
-    log_likelihoods: ArrayLike,
-    weights: ArrayLike | None,
+    initial: ConcreteArray,
+    evidence: ConcreteArray | float,
+    log_likelihoods: ConcreteArray,
+    weights: ConcreteArray | None,
     operator: TransitionProducts,
     *,
     keep_rows: bool,
@@ -990,11 +992,11 @@ def _filter_scan(
 
 
 def _smoother_scan(
-    filtered: ArrayLike,
-    weights: ArrayLike | None,
+    filtered: ConcreteArray,
+    weights: ConcreteArray | None,
     operator: TransitionProducts,
-    next_smoothed: ArrayLike,
-    rows: ArrayLike,
+    next_smoothed: ConcreteArray,
+    rows: ConcreteArray,
     n_time: int,
     *,
     pair_statistics: bool = False,
@@ -1068,9 +1070,9 @@ def _smoother_scan(
 
 
 def _viterbi_scan(
-    initial_distribution: ArrayLike,
-    log_likelihoods: ArrayLike,
-    log_weights: ArrayLike | None,
+    initial_distribution: ConcreteArray,
+    log_likelihoods: ConcreteArray,
+    log_weights: ConcreteArray | None,
     log_operator: Any,
 ) -> jax.Array:
     """Most likely state-bin sequence: the one Viterbi scan body.
@@ -1139,9 +1141,9 @@ def _viterbi_scan(
 
 
 def _filter_impl(
-    initial_distribution: ArrayLike,
-    transition_matrix: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    transition_matrix: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
     """JIT-compiled forward pass of the forward-backward algorithm.
 
@@ -1168,7 +1170,7 @@ def _filter_impl(
     )
 
 
-def _float64_evidence(increments: ArrayLike) -> float:
+def _float64_evidence(increments: ConcreteArray) -> float:
     """Sum per-row evidence increments in float64.
 
     A float32 running total over a long recording drifts by many units (713
@@ -1203,9 +1205,9 @@ _filter_internal = jax.jit(
 
 
 def filter(
-    initial_distribution: ArrayLike,
-    transition_matrix: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    transition_matrix: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> tuple[tuple[float, jax.Array], tuple[jax.Array, jax.Array]]:
     """Perform the forward pass of the forward-backward algorithm (filtering).
 
@@ -1294,10 +1296,10 @@ def filter(
 
 
 def _smoother_impl(
-    transition_matrix: ArrayLike,
-    filtered_probs: ArrayLike,
-    initial: ArrayLike | None = None,
-    ind: ArrayLike | None = None,
+    transition_matrix: ConcreteArray,
+    filtered_probs: ConcreteArray,
+    initial: ConcreteArray | None = None,
+    ind: ConcreteArray | None = None,
     n_time: int | None = None,
 ) -> jax.Array:
     """Smoother step.
@@ -1346,10 +1348,10 @@ _smoother_jit = jax.jit(_smoother_impl)
 
 
 def smoother(
-    transition_matrix: ArrayLike,
-    filtered_probs: ArrayLike,
-    initial: ArrayLike | None = None,
-    ind: ArrayLike | None = None,
+    transition_matrix: ConcreteArray,
+    filtered_probs: ConcreteArray,
+    initial: ConcreteArray | None = None,
+    ind: ConcreteArray | None = None,
     n_time: int | None = None,
 ) -> jax.Array:
     """Perform the backward pass of the forward-backward algorithm (smoothing).
@@ -1417,8 +1419,8 @@ ROW_SLICE_ATTRIBUTE = "accepts_row_slice"
 
 
 def row_slice_aware(
-    log_likelihood_func: Callable[..., ArrayLike],
-) -> Callable[..., ArrayLike]:
+    log_likelihood_func: Callable[..., ConcreteArray],
+) -> Callable[..., ConcreteArray]:
     """Mark a likelihood callback as accepting the ``row_slice`` keyword.
 
     Every driver calls a likelihood callback as
@@ -1451,7 +1453,7 @@ def row_slice_aware(
     return log_likelihood_func
 
 
-def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
+def accepts_row_slice(log_likelihood_func: Callable[..., ConcreteArray]) -> bool:
     """Whether a likelihood callback was marked by :func:`row_slice_aware`.
 
     Bound methods forward the lookup to their underlying function, so marking
@@ -1488,7 +1490,7 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
 
 
 def _require_row_slice_aware(
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     n_chunks: int,
     *,
     chunking: str,
@@ -2340,12 +2342,12 @@ def _store_chunk_rows(
 
 
 def _call_log_likelihood_chunk(
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     time_edges: npt.ArrayLike,
     log_likelihood_args: tuple[Any, ...],
     rows: slice,
     is_missing_chunk: np.ndarray | None,
-) -> ArrayLike:
+) -> ConcreteArray:
     """Evaluate one chunk's log likelihood with global spike binning.
 
     A ``row_slice_aware`` callback receives the FULL ``time_edges`` plus the
@@ -2441,10 +2443,10 @@ def _chunked_filter_smoother(
     filter_chunk: Callable[..., tuple[Any, ...]],
     smoother_chunk: Callable[..., tuple[jax.Array, jax.Array | None]],
     *,
-    time_edges: ArrayLike,
+    time_edges: ConcreteArray,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None,
     n_chunks: int,
@@ -2593,7 +2595,7 @@ def _chunked_filter_smoother(
         time_inds = jnp.asarray(time_inds_np)
 
         if log_likelihoods_jax is not None:
-            log_likelihood_chunk: ArrayLike = log_likelihoods_jax[time_inds]
+            log_likelihood_chunk: ConcreteArray = log_likelihoods_jax[time_inds]
         else:
             is_missing_chunk = (
                 is_missing[time_inds_np] if is_missing is not None else None
@@ -2742,11 +2744,11 @@ def _chunked_filter_smoother(
 
 
 def chunked_filter_smoother(
-    time_edges: ArrayLike,
+    time_edges: ConcreteArray,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
@@ -2892,9 +2894,9 @@ def chunked_filter_smoother(
 
 
 def _viterbi_impl(
-    initial_distribution: ArrayLike,
-    transition_matrix: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    transition_matrix: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> jax.Array:
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
 
@@ -2930,9 +2932,9 @@ _viterbi_jit = jax.jit(_viterbi_impl)
 
 
 def viterbi(
-    initial_distribution: ArrayLike,
-    transition_matrix: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    transition_matrix: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> jax.Array:
     """Compute the most likely state sequence with the Viterbi algorithm.
 
@@ -2992,10 +2994,10 @@ def viterbi(
 
 
 def most_likely_sequence(
-    time_edges: ArrayLike,
+    time_edges: ConcreteArray,
     initial_distribution: np.ndarray,
     transition_matrix: np.ndarray,
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
@@ -3098,11 +3100,11 @@ def most_likely_sequence(
 
 ## Covariate dependent filtering and smoothing ##
 def _filter_covariate_dependent_impl(
-    initial_distribution: ArrayLike,
-    discrete_transition_matrix: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    discrete_transition_matrix: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, jax.Array, jax.Array]]:
     """JIT-compiled covariate-dependent forward pass.
 
@@ -3141,11 +3143,11 @@ _filter_covariate_dependent_internal = jax.jit(
 
 
 def filter_covariate_dependent(
-    initial_distribution: ArrayLike,
-    discrete_transition_matrix: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    discrete_transition_matrix: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> tuple[tuple[float, jax.Array], tuple[jax.Array, jax.Array]]:
     """Run a filtering step with covariate dependent transitions.
 
@@ -3243,12 +3245,12 @@ def filter_covariate_dependent(
 
 
 def _smoother_covariate_dependent_impl(
-    discrete_transition_matrix: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    filtered_probs: ArrayLike,
-    initial: ArrayLike | None = None,
-    ind: ArrayLike | None = None,
+    discrete_transition_matrix: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    filtered_probs: ConcreteArray,
+    initial: ConcreteArray | None = None,
+    ind: ConcreteArray | None = None,
     n_time: int | None = None,
     *,
     pair_statistics: bool = False,
@@ -3313,12 +3315,12 @@ _smoother_covariate_dependent_jit = jax.jit(_smoother_covariate_dependent_impl)
 
 
 def smoother_covariate_dependent(
-    discrete_transition_matrix: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    filtered_probs: ArrayLike,
-    initial: ArrayLike | None = None,
-    ind: ArrayLike | None = None,
+    discrete_transition_matrix: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    filtered_probs: ConcreteArray,
+    initial: ConcreteArray | None = None,
+    ind: ConcreteArray | None = None,
     n_time: int | None = None,
 ) -> jax.Array:
     """Run the smoother with covariate dependent transitions.
@@ -3407,12 +3409,12 @@ _smoother_covariate_dependent_internal = jax.jit(
 
 
 def chunked_filter_smoother_covariate_dependent(
-    time_edges: ArrayLike,
+    time_edges: ConcreteArray,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     discrete_transition_matrix: np.ndarray,
     continuous_transition_matrix: np.ndarray,
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
@@ -3595,11 +3597,11 @@ def chunked_filter_smoother_covariate_dependent(
 
 
 def _viterbi_covariate_dependent_impl(
-    initial_distribution: ArrayLike,
-    discrete_transition_matrix: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    discrete_transition_matrix: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> jax.Array:
     r"""Compute the most likely state sequence with covariate dependent transitions.
 
@@ -3650,11 +3652,11 @@ _viterbi_covariate_dependent_jit = jax.jit(_viterbi_covariate_dependent_impl)
 
 
 def viterbi_covariate_dependent(
-    initial_distribution: ArrayLike,
-    discrete_transition_matrix: ArrayLike,
-    continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike,
-    log_likelihoods: ArrayLike,
+    initial_distribution: ConcreteArray,
+    discrete_transition_matrix: ConcreteArray,
+    continuous_transition_matrix: ConcreteArray,
+    state_ind: ConcreteArray,
+    log_likelihoods: ConcreteArray,
 ) -> jax.Array:
     """Compute the most likely state sequence with covariate dependent transitions.
 
@@ -3726,12 +3728,12 @@ def viterbi_covariate_dependent(
 
 
 def most_likely_sequence_covariate_dependent(
-    time_edges: ArrayLike,
+    time_edges: ConcreteArray,
     state_ind: np.ndarray,
     initial_distribution: np.ndarray,
     discrete_transition_matrix: np.ndarray,
     continuous_transition_matrix: np.ndarray,
-    log_likelihood_func: Callable[..., ArrayLike],
+    log_likelihood_func: Callable[..., ConcreteArray],
     log_likelihood_args: tuple[Any, ...],
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,

@@ -52,7 +52,7 @@ Follow JAX's guidance (`jax.typing`, JEP 12049): lenient inputs, concrete output
 
 - NumPy-side code: inputs are `numpy.typing.ArrayLike` when the function converts them (`np.asarray`), outputs are `NDArray[<dtype>]` or `np.ndarray`. If a function needs an ndarray (`.shape`, `.ndim`, in-place use), annotate `np.ndarray`.
 - JAX-side code: inputs are `jax.typing.ArrayLike`, outputs are `jax.Array`. Never write `jnp.ndarray`, which is only an alias of `jax.Array`. Do not accept lists or tuples in place of arrays in jitted code.
-  If the body calls array methods (`.dtype`, `.sum`, indexing), which the scalar members of `jax.typing.ArrayLike` lack, annotate inputs `jax.Array | np.ndarray` instead (as `core.py` does with its `ArrayLike` alias).
+  If the body calls array methods (`.dtype`, `.sum`, indexing), which the scalar members of `jax.typing.ArrayLike` lack, annotate inputs `jax.Array | np.ndarray` instead (as `core.py` does with its `ConcreteArray` alias).
 - Dtypes are `DTypeLike` (`numpy.typing` or `jax.typing`, matching the side).
 - Keep a list type where the API takes a list of per-neuron or per-electrode arrays. For an input the function converts, write `Sequence[ArrayLike]`: `list` is invariant, so a `list[ArrayLike]` parameter rejects a caller's `list[np.ndarray]`.
 - Shapes go in the NumPy-style docstring, e.g. `(n_time, n_position_bins)`, not in the annotation.
