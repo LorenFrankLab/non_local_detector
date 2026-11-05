@@ -1259,12 +1259,9 @@ def _read_names(node: Any, names: frozenset[str]) -> Any:
     """Return a stored entry with only ``names``, the ones this version reads.
 
     The others, which ``check_documents`` ignored with a warning, stay
-    undecoded: they may hold a type this version lacks. Anything but a dict
-    is returned as is, for the checks of the decoded value to refuse.
+    undecoded: they may hold a type this version lacks.
     """
-    if not isinstance(node, dict):
-        return node
-    return {name: value for name, value in node.items() if name in names}
+    return {name: node[name] for name in node if name in names}
 
 
 def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorBase":

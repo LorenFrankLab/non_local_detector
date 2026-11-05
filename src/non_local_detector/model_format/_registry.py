@@ -80,7 +80,7 @@ class TypeSpec:
         ignore_unread_names(
             f"{self.cls.__qualname__} fields", set(state) - set(self.fields)
         )
-        return {name: node for name, node in state.items() if name in self.fields}
+        return {name: state[name] for name in state if name in self.fields}
 
 
 # The names of a saved model this version does not read, collected while one

@@ -79,6 +79,16 @@ def test_malformed_nodes_are_data_errors(node):
     assert isinstance(info.value.__cause__, (KeyError, TypeError))
 
 
+def test_a_stored_state_that_is_not_a_dict_is_a_data_error(saved):
+    def edit(config):
+        config["environments"]["$tuple"][0]["state"] = ["a"]
+
+    _edit_json(saved, "config.json", edit)
+
+    with pytest.raises(DataError, match="Environment"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+
 def test_a_registered_types_own_constructor_error_is_chained(sorted_recording):
     class Strict:
         def __init__(self, weight):
