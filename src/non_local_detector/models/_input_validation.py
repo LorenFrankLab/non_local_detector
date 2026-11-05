@@ -460,6 +460,49 @@ def _warn_if_spikes_reach_far_past(
     )
 
 
+def _warn_if_times_cannot_resolve_bins(
+    arrays: list[np.ndarray], bin_width: float
+) -> bool:
+    """Warn if a spike-time dtype is coarser than a decode bin near its values.
+
+    Spikes then round onto a few representable times, away from the bins they
+    fell in. Only ``time_edges`` have a dtype check of their own.
+
+    Parameters
+    ----------
+    arrays : list of np.ndarray, each shape (n_spikes,)
+        Finite spike times of each unit.
+    bin_width : float
+        Decode bin width, in seconds.
+
+    Returns
+    -------
+    warned : bool
+    """
+    coarsest = max(
+        (
+            (float(np.spacing(np.max(np.abs(times)))), times)
+            for times in arrays
+            if times.size and times.dtype.kind == "f"
+        ),
+        key=lambda spacing_times: spacing_times[0],
+        default=(0.0, None),
+    )
+    spacing, times = coarsest
+    if times is None or spacing <= bin_width:
+        return False
+    warnings.warn(
+        f"spike_times of dtype {times.dtype} resolve times near "
+        f"{np.max(np.abs(times)):.6g} s only to {spacing:.3g} s, more than the "
+        f"{bin_width:.3g} s decode bin, so spikes round onto a few values and "
+        "away from the bins they fell in. Use float64 timestamps, or subtract a "
+        "reference time before converting to a lower precision.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+    return True
+
+
 def _numeric_spike_times_list(
     spike_times: Sequence[Any], *, clusterless: bool
 ) -> list[np.ndarray]:
@@ -488,6 +531,7 @@ def _validate_spike_data(
     time_range: tuple[float, float] | None = None,
     range_name: str = "",
     check_extent: bool = False,
+    bin_width: float | None = None,
 ) -> None:
     """Check spike data where it enters a public fitting or decoding method.
 
@@ -519,6 +563,11 @@ def _validate_spike_data(
         ``_warn_if_spikes_reach_far_past``), by default False. For the
         encoding period only: a decode window is legitimately short against
         the recording its spikes come from.
+    bin_width : float or None, optional
+        Decode bin width in seconds the spike times' dtype must resolve, by
+        default None (not checked). Times it cannot resolve warn, and the
+        ``time_range`` warnings, which would read the rounded times, are
+        skipped.
 
     Raises
     ------
@@ -530,8 +579,9 @@ def _validate_spike_data(
     Warns
     -----
     DataQualityWarning
-        If the spikes lie farther from ``time_range`` than they span, or, with
-        ``check_extent``, reach far past it with almost none inside.
+        If the spikes lie farther from ``time_range`` than they span, with
+        ``check_extent`` reach far past it with almost none inside, or with
+        ``bin_width`` have a dtype too coarse for the bins.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -556,6 +606,8 @@ def _validate_spike_data(
             "times[np.isfinite(times)], with the matching feature rows) or "
             "fix the spike export that produced them.",
         )
+    if bin_width is not None and _warn_if_times_cannot_resolve_bins(arrays, bin_width):
+        return
     if time_range is None:
         return
     start, stop = time_range
@@ -1598,6 +1650,7 @@ class _InputValidationMixin:
                 else None,
                 range_name="position_time span",
                 check_extent=True,
+                bin_width=1.0 / self.sampling_frequency,
             )
             spike_data = self._numeric_spike_data(spike_data)
         if decoding:
@@ -1630,6 +1683,7 @@ class _InputValidationMixin:
                 spike_data,
                 time_range=(float(checked_edges[0]), float(checked_edges[-1])),
                 range_name="decode time_edges",
+                bin_width=1.0 / self.sampling_frequency,
             )
             self._validate_decode_position(position)
         if stage in ("fit", "estimate"):
@@ -1768,6 +1822,7 @@ class _InputValidationMixin:
         time_range: tuple[float, float] | None = None,
         range_name: str = "",
         check_extent: bool = False,
+        bin_width: float | None = None,
     ) -> None:
         """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
 
@@ -1784,6 +1839,9 @@ class _InputValidationMixin:
         check_extent : bool, optional
             Also warn when almost no spike lies in ``time_range`` and they
             reach far past it, by default False (encoding period only).
+        bin_width : float, optional
+            Bin width in seconds the spike times' dtype must resolve, by
+            default None.
         """
         _validate_spike_data(
             *spike_data,
@@ -1791,6 +1849,7 @@ class _InputValidationMixin:
             time_range=time_range,
             range_name=range_name,
             check_extent=check_extent,
+            bin_width=bin_width,
         )
 
     def _validate_position_dimensionality(  # type: ignore[misc]
