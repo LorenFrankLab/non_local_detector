@@ -5,13 +5,17 @@ place bin of its environment, or a single bin without a position (No-Spike,
 and Local without a position kernel). ``state_layout`` assigns the bins,
 ``initial_conditions`` builds the initial distribution over them, and
 ``continuous_state_transitions`` the transition between them, as a dense
-matrix or a structured operator.
+matrix or a structured operator. A fit records the layout and transition,
+with the parameters they were built from, in a ``StateSpace``
+(``detector.state_space_``), which decoding reads.
+
+Saved detectors name ``StateSpace`` by this module's path.
 """
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from logging import getLogger
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -33,6 +37,150 @@ from non_local_detector.transition_operators import (
 from non_local_detector.types import TransitionRepresentation
 
 logger = getLogger(__name__)
+
+
+@dataclass(frozen=True, eq=False)
+class StateSpace:
+    """Fit-time layout of a detector's state bins and its continuous transition.
+
+    ``fit`` builds it from the detector's parameters and fitted environments,
+    and decoding reads it instead of the parameters, so changing them with
+    ``set_params`` after a fit does not change what the fit decodes. The
+    parameters it records are those of ``layout_parameters``.
+
+    Attributes
+    ----------
+    state_names : tuple of str, length n_states
+        Names of the discrete states.
+    observation_models : tuple of ObservationModel, length n_states
+        Observation model of each discrete state.
+    continuous_transition_types : tuple of tuples, shape (n_states, n_states)
+        Continuous transition of each pair of discrete states, as configured.
+    local_position_std : float or None
+        Width of the Local states' position kernel; None for single-bin Local
+        states.
+    state_ind : np.ndarray of int, shape (n_state_bins,)
+        Discrete state of each state bin.
+    bin_sizes : np.ndarray of int, shape (n_states,)
+        Number of bins of each discrete state.
+    is_track_interior : np.ndarray of bool, shape (n_state_bins,)
+        Whether each state bin is on the track interior.
+    continuous_transitions : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
+        Probability of moving between bins given the discrete transition: a
+        dense matrix, or a budgeted lazy view of ``transition_operator``.
+    transition_operator : BlockTransitionOperator or None
+        The structured transition operator; None for a dense transition.
+    transition_representation : {"dense", "structured", "auto"}
+        How the transition was built; "dense" once it is a dense matrix.
+    max_dense_transition_bytes : int
+        Byte limit for dense reads of the structured transition.
+    """
+
+    state_names: tuple[str, ...]
+    observation_models: tuple[ObservationModel, ...]
+    continuous_transition_types: tuple[tuple[Any, ...], ...]
+    local_position_std: float | None
+    state_ind: np.ndarray
+    bin_sizes: np.ndarray
+    is_track_interior: np.ndarray
+    continuous_transitions: Any
+    transition_operator: Any
+    transition_representation: TransitionRepresentation
+    max_dense_transition_bytes: int
+
+    @property
+    def n_states(self) -> int:
+        """Number of discrete states."""
+        return len(self.bin_sizes)
+
+    @property
+    def n_state_bins(self) -> int:
+        """Number of state bins over every discrete state."""
+        return len(self.state_ind)
+
+    @property
+    def interior_state_ind(self) -> np.ndarray:
+        """Discrete state of each interior state bin, shape (n_interior_bins,)."""
+        return cast("np.ndarray", self.state_ind[self.is_track_interior])
+
+    def has_place_bins(self, state: int) -> bool:
+        """Whether a state's bins are its environment's place bins.
+
+        Parameters
+        ----------
+        state : int
+            Index of the discrete state.
+
+        Returns
+        -------
+        bool
+            True if the state has one bin per place bin of its environment,
+            False if it has a single bin without a position (see
+            ``has_place_bins``).
+        """
+        return has_place_bins(self.observation_models[state], self.local_position_std)
+
+    def likelihood_is_local(self, state: int) -> bool:
+        """Whether a state's likelihood is evaluated at the animal's position.
+
+        A Local state without a position kernel has one bin, whose likelihood
+        is evaluated at the interpolated position; a Local state with a
+        kernel is evaluated at every place bin and weighted by the kernel.
+
+        Parameters
+        ----------
+        state : int
+            Index of the discrete state.
+
+        Returns
+        -------
+        bool
+        """
+        return bool(
+            self.observation_models[state].is_local and self.local_position_std is None
+        )
+
+    def densified(self) -> "StateSpace":
+        """Return a copy with the transition read into a dense matrix.
+
+        Returns
+        -------
+        StateSpace
+            A copy with ``continuous_transitions`` a dense matrix (read
+            within ``max_dense_transition_bytes``), no operator, and
+            ``transition_representation`` "dense".
+        """
+        return replace(
+            self,
+            continuous_transitions=np.asarray(self.continuous_transitions),
+            transition_operator=None,
+            transition_representation="dense",
+        )
+
+
+def layout_parameters(detector: Any) -> dict[str, Any]:
+    """Return the detector parameters a ``StateSpace`` records, as tuples.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Detector whose current parameters to read.
+
+    Returns
+    -------
+    parameters : dict
+        ``state_names``, ``observation_models`` and
+        ``continuous_transition_types`` (a tuple of rows) as tuples, and
+        ``local_position_std``.
+    """
+    return {
+        "state_names": tuple(detector.state_names),
+        "observation_models": tuple(detector.observation_models),
+        "continuous_transition_types": tuple(
+            tuple(row) for row in detector.continuous_transition_types
+        ),
+        "local_position_std": detector.local_position_std,
+    }
 
 
 def has_place_bins(

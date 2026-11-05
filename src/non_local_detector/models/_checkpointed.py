@@ -183,7 +183,7 @@ class _CheckpointedPredictionMixin:
         interior = self.is_track_interior_state_bins_
         states = self.state_ind_[interior]
         transition_args: dict[str, Any] = {}
-        operator = getattr(self, "_continuous_transition_operator_", None)
+        operator = self.state_space_.transition_operator
         if operator is not None:
             operator = operator.restricted(interior)
             if discrete.ndim == 2:
@@ -191,7 +191,7 @@ class _CheckpointedPredictionMixin:
             else:
                 transition_args["discrete_transition_matrix"] = discrete
             transition_args["transition_operator"] = operator.fused(
-                self._max_dense_transition_bytes_
+                self.state_space_.max_dense_transition_bytes
             )
         else:
             continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
@@ -420,9 +420,7 @@ class _CheckpointedPredictionMixin:
             "conditioning": "whole_recording",
             "_native_metadata": metadata,
             "recording_rows": len(centers),
-            "transition_representation": getattr(
-                self, "_transition_representation_", "dense"
-            ),
+            "transition_representation": self.state_space_.transition_representation,
         }
         result = checkpointed_forward_backward(
             edges,

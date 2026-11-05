@@ -37,6 +37,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.models._state_space import state_layout
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
@@ -267,6 +268,46 @@ def _stored_environment_states(version, artifact):
     with path.open("rb") as file:
         detector = _StoredStateUnpickler(file).load()
     return [environment.state for environment in detector.state["environments"]]
+
+
+@pytest.mark.parametrize(("version", "artifact"), MODELS)
+def test_unpickled_detector_holds_its_fitted_state_space(version, artifact):
+    """A detector pickled before ``state_space_`` existed holds its stored
+    state bins and continuous transition there, exactly as stored, and they
+    describe the layout of its parameters and environments."""
+    model = _load_model(version, artifact)
+    path = COMPAT_DATA / version / f"{artifact}_model.pkl"
+    with path.open("rb") as file:
+        stored = _StoredStateUnpickler(file).load().state
+
+    state_space = model.state_space_
+    np.testing.assert_array_equal(state_space.state_ind, stored["state_ind_"])
+    np.testing.assert_array_equal(state_space.bin_sizes, stored["bin_sizes_"])
+    np.testing.assert_array_equal(
+        state_space.is_track_interior, stored["is_track_interior_state_bins_"]
+    )
+    np.testing.assert_array_equal(
+        state_space.continuous_transitions, stored["continuous_state_transitions_"]
+    )
+    assert state_space.transition_representation == stored.get(
+        "_transition_representation_", "dense"
+    )
+    for name, stored_name in (
+        ("state_ind_", "state_ind_"),
+        ("n_state_bins_", "n_state_bins_"),
+        ("n_discrete_states_", "n_discrete_states_"),
+    ):
+        np.testing.assert_array_equal(getattr(model, name), stored[stored_name])
+        assert stored_name not in vars(model)
+    layout = state_layout(
+        model.observation_models, model.environments_, model.local_position_std
+    )
+    for rebuilt, kept in zip(
+        layout,
+        (state_space.state_ind, state_space.bin_sizes, state_space.is_track_interior),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(rebuilt, kept)
 
 
 @pytest.mark.parametrize(("version", "artifact"), MODELS)

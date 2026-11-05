@@ -137,8 +137,10 @@ from non_local_detector.models._results import (
     convert_seq_to_df,
 )
 from non_local_detector.models._state_space import (
+    StateSpace,
     continuous_state_transitions,
     initial_conditions,
+    layout_parameters,
     state_layout,
 )
 from non_local_detector.observation_models import ObservationModel
@@ -595,14 +597,12 @@ class _DetectorBase(
     discrete_transition_smoothness_matrix_: np.ndarray | None
     discrete_transition_smoothness_: np.ndarray | None
     discrete_transition_coefficient_covariance_: np.ndarray | None
-    # np.ndarray, or a LazyDenseTransition (a budgeted NumPy-compatible view)
-    continuous_state_transitions_: Any
+    state_space_: StateSpace
     converged_: bool
     n_iter_: int
     em_monotonicity_violations_: list[int]
     degenerate_timesteps_: np.ndarray
     initial_conditions_: np.ndarray
-    _max_dense_transition_bytes_: int
 
     def __init__(
         self,
@@ -1323,123 +1323,60 @@ class _DetectorBase(
             fitted_environments.append(environment)
         self.environments_ = tuple(fitted_environments)
 
-    def _initialize_state_index(self) -> None:
-        """Initialize indices and parameters related to the combined state space.
+    def _fitted_state_space(self, name: str) -> StateSpace:
+        """``state_space_``, or NotFittedError naming the attribute ``name``."""
+        state_space = self.__dict__.get("state_space_")
+        if state_space is None:
+            msg = f"{name} is set by fit, and this detector is not fitted"
+            raise NotFittedError(msg, hint="Call fit(...) first.")
+        return cast("StateSpace", state_space)
 
-        See ``state_layout``.
+    @property
+    def n_discrete_states_(self) -> int:
+        """Number of discrete states of the fit (``state_space_.n_states``)."""
+        return self._fitted_state_space("n_discrete_states_").n_states
 
-        Attributes
-        ----------
-        n_discrete_states_ : int
-            Total number of discrete states defined in the model.
-        state_ind_ : np.ndarray, shape (n_state_bins,)
-            Index mapping each combined bin to its corresponding discrete state index.
-        n_state_bins_ : int
-            Total number of bins across all states.
-        bin_sizes_ : np.ndarray, shape (n_discrete_states_,)
-            Number of bins associated with each discrete state.
-        is_track_interior_state_bins_ : np.ndarray, shape (n_state_bins,)
-            Whether each combined state bin is on the track interior.
+    @property
+    def state_ind_(self) -> np.ndarray:
+        """Discrete state of each state bin, shape (n_state_bins,).
+
+        The fit's ``state_space_.state_ind``.
         """
-        self.n_discrete_states_ = len(self.state_names)
-        state_ind, bin_sizes, is_track_interior = state_layout(
-            self.observation_models, self.environments_, self.local_position_std
-        )
-        self.state_ind_ = state_ind
-        self.n_state_bins_ = len(self.state_ind_)
-        self.bin_sizes_ = bin_sizes
-        self.is_track_interior_state_bins_ = is_track_interior
+        return self._fitted_state_space("state_ind_").state_ind
 
-    def _initialize_initial_conditions(self) -> None:
-        """Construct the initial probability for the state and each spatial bin.
+    @property
+    def n_state_bins_(self) -> int:
+        """Number of state bins of the fit (``state_space_.n_state_bins``)."""
+        return self._fitted_state_space("n_state_bins_").n_state_bins
 
-        See ``initial_conditions``.
+    @property
+    def bin_sizes_(self) -> np.ndarray:
+        """Number of bins of each discrete state, shape (n_states,).
 
-        Attributes
-        ----------
-        continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
-            Initial probability distribution over the bins within each state.
-        initial_conditions_ : np.ndarray, shape (n_state_bins,)
-            Overall initial probability distribution across all state bins.
+        The fit's ``state_space_.bin_sizes``.
         """
-        self.continuous_initial_conditions_, self.initial_conditions_ = (
-            initial_conditions(
-                observation_models=self.observation_models,
-                continuous_initial_conditions_types=self.continuous_initial_conditions_types,
-                environments=self.environments_,
-                local_position_std=self.local_position_std,
-                state_names=self.state_names,
-                discrete_initial_conditions=self.discrete_initial_conditions,
-                state_ind=self.state_ind_,
-                is_track_interior=self.is_track_interior_state_bins_,
-            )
-        )
+        return self._fitted_state_space("bin_sizes_").bin_sizes
 
-    def _initialize_continuous_state_transition(
-        self,
-        continuous_transition_types: ContinuousTransitions,
-        position: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        *,
-        transition_representation: TransitionRepresentation = "dense",
-        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> None:
+    @property
+    def is_track_interior_state_bins_(self) -> np.ndarray:
+        """Whether each state bin is on the track interior, shape (n_state_bins,).
+
+        The fit's ``state_space_.is_track_interior``.
         """
-        Construct the transition matrices for the continuous states.
+        return self._fitted_state_space(
+            "is_track_interior_state_bins_"
+        ).is_track_interior
 
-        See ``continuous_state_transitions``.
+    @property
+    def continuous_state_transitions_(self) -> Any:
+        """Continuous transition between state bins, shape (n_state_bins, n_state_bins).
 
-        Parameters
-        ----------
-        continuous_transition_types : ContinuousTransitions
-            Types of transition models.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data.
-        is_training : np.ndarray, optional, shape (n_time,)
-            Boolean array that determines what data to train the place fields on, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time,), optional
-            If place fields should correspond to each state, label each time point with the group name, by default None.
-        environment_labels : np.ndarray, shape (n_time,), optional
-            If there are multiple environments, label each time point with the environment name, by default None.
-        transition_representation : {"dense", "structured", "auto"}, optional
-            By default "dense", which builds the full matrix. "structured"
-            requires exact supported state-block operators; "auto" permits
-            budgeted dense fallback blocks.
-        max_dense_transition_bytes : int, optional
-            Byte limit for retained fallback blocks, temporary dense graph
-            distances, and explicit reads of the lazy view, by default
-            256 MiB. Does not limit "dense".
-
-        Attributes
-        ----------
-        continuous_state_transitions_ : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
-            Probability of transitioning between bins, assuming a transition between the corresponding discrete states occurs.
-            A budgeted lazy view of the operator unless transition_representation="dense".
-        continuous_transition_types : ContinuousTransitions
-            Stores the continuous transition types used.
+        The fit's ``state_space_.continuous_transitions``: a dense matrix, or
+        a budgeted lazy view of a structured operator.
         """
-        self.continuous_transition_types = continuous_transition_types
-        self.__dict__.pop("_continuous_transition_operator_", None)
-        transitions, operator = continuous_state_transitions(
-            continuous_transition_types,
-            self.environments_,
-            self.observation_models,
-            self.local_position_std,
-            self.state_ind_,
-            self.bin_sizes_,
-            context=TransitionContext(
-                position, is_training, encoding_group_labels, environment_labels
-            ),
-            transition_representation=transition_representation,
-            max_dense_transition_bytes=max_dense_transition_bytes,
-        )
-        self._transition_representation_ = transition_representation
-        self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
-        if operator is not None:
-            self._continuous_transition_operator_ = operator
-        self.continuous_state_transitions_ = transitions
+        return self._fitted_state_space(
+            "continuous_state_transitions_"
+        ).continuous_transitions
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.
@@ -1698,22 +1635,49 @@ class _DetectorBase(
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
-        self._initialize_state_index()
-        self._initialize_initial_conditions()
+        state_ind, bin_sizes, is_track_interior = state_layout(
+            self.observation_models, self.environments_, self.local_position_std
+        )
+        self.continuous_initial_conditions_, self.initial_conditions_ = (
+            initial_conditions(
+                observation_models=self.observation_models,
+                continuous_initial_conditions_types=self.continuous_initial_conditions_types,
+                environments=self.environments_,
+                local_position_std=self.local_position_std,
+                state_names=self.state_names,
+                discrete_initial_conditions=self.discrete_initial_conditions,
+                state_ind=state_ind,
+                is_track_interior=is_track_interior,
+            )
+        )
         self._initialize_discrete_state_transition(
             covariate_data=discrete_transition_covariate_data
         )
         # The transitions are rebuilt from their configuration, not learned.
         self.transition_time_bin_width_: float | None = None
         self._transition_time_bin_width_tolerance = 0.0
-        self._initialize_continuous_state_transition(
-            continuous_transition_types=self.continuous_transition_types,
+        transitions, operator = continuous_state_transitions(
+            self.continuous_transition_types,
+            self.environments_,
+            self.observation_models,
+            self.local_position_std,
+            state_ind,
+            bin_sizes,
+            context=TransitionContext(
+                position, is_training, encoding_group_labels, environment_labels
+            ),
             transition_representation=transition_representation,
             max_dense_transition_bytes=max_dense_transition_bytes,
-            position=position,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
+        )
+        self.state_space_ = StateSpace(
+            **layout_parameters(self),
+            state_ind=state_ind,
+            bin_sizes=bin_sizes,
+            is_track_interior=is_track_interior,
+            continuous_transitions=transitions,
+            transition_operator=operator,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=int(max_dense_transition_bytes),
         )
         # Each grid is fitted on its environment's samples. Warned once the
         # fit succeeds, so an EM fit that falls back to dense warns once.

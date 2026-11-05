@@ -35,7 +35,9 @@ from non_local_detector.models._results import (
     label_checkpointed_result,
     unify_marginal_log_likelihoods,
 )
+from non_local_detector.models._state_space import StateSpace, layout_parameters
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 
 if TYPE_CHECKING:
     import non_local_detector.models.base
@@ -196,6 +198,7 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     ):
         detector.environments = tuple(detector.environments)
         detector.environments_ = detector.environments
+    _upgrade_state_space(detector, state)
     # Encoding models fitted before each recorded its algorithm, or before
     # the shared keys' values were NumPy arrays.
     encoding_model = state.get("encoding_model_")
@@ -203,6 +206,65 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
         for entry in encoding_model.values():
             _record_legacy_encoding_algorithm(entry)
             _unify_stored_encoding_values(entry)
+
+
+# The attributes in which detectors saved before ``state_space_`` existed kept
+# their fitted state layout and continuous transition.
+_STATE_SPACE_ATTRIBUTES = (
+    "n_discrete_states_",
+    "state_ind_",
+    "n_state_bins_",
+    "bin_sizes_",
+    "is_track_interior_state_bins_",
+    "continuous_state_transitions_",
+    "_continuous_transition_operator_",
+    "_transition_representation_",
+    "_max_dense_transition_bytes_",
+)
+
+
+def _upgrade_state_space(detector: "_DetectorBase", state: dict[str, Any]) -> None:
+    """Gather the fitted layout of a detector saved before ``state_space_``.
+
+    The stored arrays are kept as they are. Detectors saved before the
+    structured transition existed hold a dense matrix built with the default
+    byte limit.
+
+    Raises
+    ------
+    ValidationError
+        If the stored bin counts disagree with the stored state of each bin.
+    """
+    if "state_ind_" not in state:
+        return  # unfitted, or saved with its state_space_
+    stored = {
+        name: detector.__dict__.pop(name, None) for name in _STATE_SPACE_ATTRIBUTES
+    }
+    state_ind = stored["state_ind_"]
+    bin_sizes = stored["bin_sizes_"]
+    if bin_sizes is None or not np.array_equal(
+        np.bincount(np.asarray(state_ind), minlength=len(bin_sizes)), bin_sizes
+    ):
+        msg = "The saved detector's state bins disagree with its bin counts"
+        raise ValidationError(
+            msg,
+            expected=f"bin_sizes_ {bin_sizes} counting the states in state_ind_",
+            hint="Refit the detector with the version that saved it, or with this one.",
+        )
+    representation = stored["_transition_representation_"]
+    max_bytes = stored["_max_dense_transition_bytes_"]
+    detector.state_space_ = StateSpace(
+        **layout_parameters(detector),
+        state_ind=state_ind,
+        bin_sizes=bin_sizes,
+        is_track_interior=stored["is_track_interior_state_bins_"],
+        continuous_transitions=stored["continuous_state_transitions_"],
+        transition_operator=stored["_continuous_transition_operator_"],
+        transition_representation="dense" if representation is None else representation,
+        max_dense_transition_bytes=DEFAULT_MAX_DENSE_BYTES
+        if max_bytes is None
+        else int(max_bytes),
+    )
 
 
 def _refuse_lazy_variables_beyond_budget(results: xr.Dataset) -> None:

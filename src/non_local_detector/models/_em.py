@@ -710,12 +710,13 @@ class _EMMixin:
         n_time : int
             Decode bins.
         """
-        n_bins = int(np.count_nonzero(self.is_track_interior_state_bins_))
+        state_space = self.state_space_
+        n_bins = int(np.count_nonzero(state_space.is_track_interior))
         working, limit, where = _dense_em_memory(n_time, n_bins)
-        n_total = int(self.state_ind_.shape[0])
+        n_total = state_space.n_state_bins
         dense_preferred = (
             n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES
-            and n_total * n_total * 8 <= self._max_dense_transition_bytes_
+            and n_total * n_total * 8 <= state_space.max_dense_transition_bytes
         )
         dense_fits = limit is None or working <= limit // 2
         use_dense = dense_preferred and dense_fits
@@ -741,11 +742,7 @@ class _EMMixin:
             n_time,
         )
         if use_dense:
-            self.continuous_state_transitions_ = np.asarray(
-                self.continuous_state_transitions_
-            )
-            self.__dict__.pop("_continuous_transition_operator_", None)
-            self._transition_representation_ = "dense"
+            self.state_space_ = state_space.densified()
 
     def _run_em(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
@@ -1034,9 +1031,7 @@ class _EMMixin:
                 hint="Call estimate_parameters, which passes its data, or pass "
                 "estimate_encoding_model=False.",
             )
-        checkpointed = (
-            getattr(self, "_continuous_transition_operator_", None) is not None
-        )
+        checkpointed = self.state_space_.transition_operator is not None
         _validate_em_options(
             structured=checkpointed,
             n_chunks=n_chunks,

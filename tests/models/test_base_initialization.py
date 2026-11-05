@@ -5,7 +5,7 @@ These tests cover the initialization methods that set up model components:
 - _initialize_observation_models
 - _initialize_state_names
 - initialize_environments (environment fitting)
-- _initialize_state_index
+- state_layout (the fitted state bins)
 """
 
 import networkx as nx
@@ -26,6 +26,7 @@ from non_local_detector.models import (
     NonLocalClusterlessDetector,
     SortedSpikesDecoder,
 )
+from non_local_detector.models._state_space import state_layout
 from non_local_detector.models.base import (
     ObservationModel,
 )
@@ -467,71 +468,44 @@ def _n_state_decoder(environment, discrete_initial_conditions):
 
 
 @pytest.mark.unit
-class TestInitializeStateIndex:
-    """Test _initialize_state_index method."""
+class TestStateLayout:
+    """Test state_layout on a decoder's fitted environments."""
 
-    def test_initialize_state_index_sets_n_discrete_states(self, simple_1d_environment):
-        """Test that _initialize_state_index sets n_discrete_states_."""
-        # Arrange
+    @staticmethod
+    def _layout(decoder):
+        return state_layout(
+            decoder.observation_models,
+            decoder.environments_,
+            decoder.local_position_std,
+        )
+
+    def test_one_bin_count_per_discrete_state(self, simple_1d_environment):
+        """bin_sizes has one positive count per discrete state."""
         decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.3, 0.2]))
 
-        # Act
-        decoder._initialize_state_index()
+        _, bin_sizes, _ = self._layout(decoder)
 
-        # Assert
-        assert decoder.n_discrete_states_ == 3
+        assert len(bin_sizes) == 3
+        assert all(bs > 0 for bs in bin_sizes)
 
-    def test_initialize_state_index_sets_state_ind(self, simple_1d_environment):
-        """Test that _initialize_state_index creates state_ind_ array."""
-        # Arrange
-        decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.5]))
-
-        # Act
-        decoder._initialize_state_index()
-
-        # Assert
-        assert hasattr(decoder, "state_ind_")
-        assert decoder.state_ind_.ndim == 1
-        assert len(decoder.state_ind_) == decoder.n_state_bins_
-
-    def test_initialize_state_index_sets_bin_sizes(self, simple_1d_environment):
-        """Test that _initialize_state_index creates bin_sizes_ array."""
-        # Arrange
-        decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.5]))
-
-        # Act
-        decoder._initialize_state_index()
-
-        # Assert
-        assert hasattr(decoder, "bin_sizes_")
-        assert len(decoder.bin_sizes_) == decoder.n_discrete_states_
-        assert all(bs > 0 for bs in decoder.bin_sizes_)
-
-    def test_initialize_state_index_n_state_bins_equals_sum_of_bin_sizes(
-        self, simple_1d_environment
-    ):
-        """Test that n_state_bins_ equals sum of bin_sizes_."""
-        # Arrange
+    def test_state_ind_counts_match_bin_sizes(self, simple_1d_environment):
+        """state_ind labels each bin with its state, bin_sizes[i] bins of state i."""
         decoder = _n_state_decoder(simple_1d_environment, np.array([0.5, 0.3, 0.2]))
 
-        # Act
-        decoder._initialize_state_index()
+        state_ind, bin_sizes, _ = self._layout(decoder)
 
-        # Assert
-        assert decoder.n_state_bins_ == sum(decoder.bin_sizes_)
+        assert state_ind.ndim == 1
+        assert len(state_ind) == sum(bin_sizes)
+        np.testing.assert_array_equal(np.bincount(state_ind), bin_sizes)
 
-    def test_initialize_state_index_sets_is_track_interior(self, simple_1d_environment):
-        """Test that _initialize_state_index sets is_track_interior_state_bins_."""
-        # Arrange
+    def test_is_track_interior_has_one_entry_per_bin(self, simple_1d_environment):
+        """is_track_interior is a boolean flag per state bin."""
         decoder = _n_state_decoder(simple_1d_environment, np.array([1.0]))
 
-        # Act
-        decoder._initialize_state_index()
+        state_ind, _, is_track_interior = self._layout(decoder)
 
-        # Assert
-        assert hasattr(decoder, "is_track_interior_state_bins_")
-        assert decoder.is_track_interior_state_bins_.dtype == bool
-        assert len(decoder.is_track_interior_state_bins_) == decoder.n_state_bins_
+        assert is_track_interior.dtype == bool
+        assert len(is_track_interior) == len(state_ind)
 
 
 @pytest.mark.unit

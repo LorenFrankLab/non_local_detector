@@ -10,6 +10,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
 )
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
+from non_local_detector.models import base
 
 pytestmark = pytest.mark.unit
 
@@ -231,7 +232,7 @@ def test_estimation_falling_back_to_dense_warns_once(monkeypatch):
         infer_track_interior=False,
         sampling_frequency=30.0,
     )
-    build = detector._initialize_continuous_state_transition
+    build = base.continuous_state_transitions
 
     def dense_only(*args, transition_representation="dense", **kwargs):
         if transition_representation != "dense":
@@ -241,7 +242,7 @@ def test_estimation_falling_back_to_dense_warns_once(monkeypatch):
             *args, transition_representation=transition_representation, **kwargs
         )
 
-    monkeypatch.setattr(detector, "_initialize_continuous_state_transition", dense_only)
+    monkeypatch.setattr(base, "continuous_state_transitions", dense_only)
     with pytest.warns(DataQualityWarning, match="outside the fitted grid") as record:
         detector.estimate_parameters(
             TIME,
