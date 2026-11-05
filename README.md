@@ -166,10 +166,12 @@ Unix times) is rejected.
 
 Fitted firing rates and ground-process intensities are in **Hz**. Encoding uses
 sample exposure in seconds, independently of decode frequency. Irregular
-tracking needs explicit `valid_position_intervals`; saved models with unknown
-units require refitting. Results save exact bin bounds and effective missingness.
-See the [migration guide](docs/time_grid_migration.md) for support, masks,
-covariates, independent intervals, and downstream pipeline changes.
+tracking needs explicit `valid_position_intervals`, when fitting and when
+decoding; saved models with unknown units require refitting. Results save exact
+bin bounds and effective missingness. The [data contract](docs/data_contract.md)
+lists what the arrays must hold; see the
+[migration guide](docs/time_grid_migration.md) for covariates, independent
+intervals, and downstream pipeline changes.
 
 ## 🏗️ Architecture
 
