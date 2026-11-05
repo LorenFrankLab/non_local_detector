@@ -11,6 +11,7 @@ from non_local_detector import checkpointed_inference, core
 from non_local_detector.core import (
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
+    row_slice_aware,
 )
 from tests.likelihoods._sorted_spikes_helpers import dot_general_precisions
 
@@ -32,10 +33,10 @@ def test_state_aggregation_matches_float64_sum_without_tf32(covariate, n_chunks)
     prior = np.r_[0.99, np.full(n_bins - 1, 0.01 / (n_bins - 1))].astype(np.float32)
     likelihood = np.zeros((n_rows, n_bins), dtype=np.float32)
     arguments = {
-        "time": np.arange(n_rows),
+        "time_edges": np.arange(n_rows + 1),
         "state_ind": labels,
         "initial_distribution": prior,
-        "log_likelihood_func": lambda time, *args: likelihood[time],
+        "log_likelihood_func": lambda **kwargs: likelihood,
         "log_likelihood_args": (),
         "log_likelihoods": likelihood,
         "n_chunks": n_chunks,
@@ -172,7 +173,7 @@ def test_checkpointed_products_request_highest_precision(covariate, monkeypatch)
     checkpointed_inference.checkpointed_forward_backward(
         np.arange(n_time + 1, dtype=float),
         np.full(n_bins, 1 / n_bins),
-        lambda edges, *, row_slice, is_missing: log_likelihoods[row_slice],
+        row_slice_aware(lambda *, row_slice, **kwargs: log_likelihoods[row_slice]),
         state_ind=state_ind,
         n_states=2,
         chunk_size=4,

@@ -804,7 +804,6 @@ class TestMultiStepEnumerationReference:
         is_missing = np.zeros(n_time, dtype=bool)
         # Rows 1-2 straddle the first boundary of the three-chunk split.
         is_missing[[1, 2]] = True
-        time = np.arange(n_time)
 
         if path == "stationary":
             initial, transitions, ll = _tiny_model(n_time=n_time)
@@ -819,15 +818,16 @@ class TestMultiStepEnumerationReference:
         ref = enumerate_reference(initial, expanded, ll_without_missing)
 
         @row_slice_aware
-        def log_likelihood_func(time_idx, is_missing=None, row_slice=None):
-            rows = ll[np.asarray(time_idx, dtype=int)][row_slice or slice(None)].copy()
+        def log_likelihood_func(*, time_edges, is_missing=None, row_slice=None):
+            assert len(time_edges) == len(ll) + 1
+            rows = ll[row_slice or slice(None)].copy()
             assert is_missing is not None
             assert len(is_missing) == len(rows)
             rows[is_missing] = 0.0
             return rows
 
         common = {
-            "time": time,
+            "time_edges": np.arange(n_time + 1.0),
             "state_ind": state_ind,
             "initial_distribution": initial,
             "log_likelihood_func": log_likelihood_func,
@@ -867,7 +867,7 @@ class TestViterbiEnumerationReference:
             jnp.asarray(initial), jnp.asarray(transitions[0]), jnp.asarray(ll)
         )
         driver_path, _ = most_likely_sequence(
-            time=np.arange(len(ll)),
+            time_edges=np.arange(len(ll) + 1),
             initial_distribution=initial,
             transition_matrix=transitions[0],
             log_likelihood_func=None,
@@ -894,7 +894,7 @@ class TestViterbiEnumerationReference:
             jnp.asarray(ll),
         )
         driver_path, _ = most_likely_sequence_covariate_dependent(
-            time=np.arange(len(ll)),
+            time_edges=np.arange(len(ll) + 1),
             state_ind=state_ind,
             initial_distribution=initial,
             discrete_transition_matrix=discrete,

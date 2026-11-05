@@ -29,11 +29,11 @@ def run_chunked(init, trans, log_likes, n_chunks, **kwargs):
     """
     n_time, n_states = log_likes.shape
 
-    def log_likelihood_func(time_idx, *args):
-        return log_likes[time_idx]
+    def log_likelihood_func(*args, time_edges, is_missing=None):
+        return log_likes
 
     return chunked_filter_smoother(
-        time=np.arange(n_time),
+        time_edges=np.arange(n_time + 1),
         state_ind=np.arange(n_states),
         initial_distribution=np.array(init),
         transition_matrix=np.array(trans),

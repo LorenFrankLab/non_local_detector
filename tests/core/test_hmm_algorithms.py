@@ -590,7 +590,7 @@ class TestChunkedFilterDegenerateWarning:
         """Degenerate steps in different chunks are summed into one warning."""
         # Arrange: 4 timesteps, 2 chunks -> [0, 1] and [2, 3]. Put one
         # all-impossible step in each chunk (index 1 and index 2).
-        time = np.arange(4.0)
+        time_edges = np.arange(5.0)
         state_ind = np.array([0, 1])
         initial_distribution = np.array([0.5, 0.5])
         transition_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -607,7 +607,7 @@ class TestChunkedFilterDegenerateWarning:
         # Act
         with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
             chunked_filter_smoother(
-                time=time,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=initial_distribution,
                 transition_matrix=transition_matrix,
@@ -631,7 +631,7 @@ class TestChunkedFilterDegenerateWarning:
         steps, even when likelihoods are uncached (so they cannot be recovered
         from the returned ``log_likelihoods``, which is then ``None``)."""
         # Arrange: degenerate steps at global indices 1 and 2, across 2 chunks.
-        time = np.arange(4.0)
+        time_edges = np.arange(5.0)
         state_ind = np.array([0, 1])
         initial_distribution = np.array([0.5, 0.5])
         transition_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -648,12 +648,12 @@ class TestChunkedFilterDegenerateWarning:
         # Compute likelihoods per chunk (uncached) so the driver returns None
         # for log_likelihoods -- the indices then survive only via the collector.
         @row_slice_aware
-        def ll_func(time, *args, is_missing=None, row_slice=None):
-            return all_ll[np.asarray(time).astype(int)][row_slice]
+        def ll_func(*args, time_edges, is_missing=None, row_slice=None):
+            return all_ll[row_slice]
 
         # Act
         result = chunked_filter_smoother(
-            time=time,
+            time_edges=time_edges,
             state_ind=state_ind,
             initial_distribution=initial_distribution,
             transition_matrix=transition_matrix,
@@ -761,7 +761,7 @@ class TestViterbiDegenerateTimestepWarning:
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
         with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
             states, _ = most_likely_sequence(
-                time=np.arange(log_likes.shape[0]),
+                time_edges=np.arange(log_likes.shape[0] + 1),
                 initial_distribution=init,
                 transition_matrix=trans,
                 log_likelihood_func=None,
@@ -823,7 +823,7 @@ def _decode_with_log_likelihoods(path, log_likes):
         )
     elif path == "chunked_filter_smoother":
         chunked_filter_smoother(
-            time=np.arange(float(n_time)),
+            time_edges=np.arange(float(n_time) + 1),
             state_ind=np.array([0, 1]),
             initial_distribution=init,
             transition_matrix=trans,
@@ -834,7 +834,7 @@ def _decode_with_log_likelihoods(path, log_likes):
         )
     else:
         most_likely_sequence(
-            time=np.arange(n_time),
+            time_edges=np.arange(n_time + 1),
             initial_distribution=init,
             transition_matrix=trans,
             log_likelihood_func=None,

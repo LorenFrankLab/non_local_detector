@@ -13,6 +13,7 @@ from non_local_detector.core import (
     _check_operator_rows,
     _CovariateTransition,
     _StationaryTransition,
+    row_slice_aware,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -118,7 +119,8 @@ def test_checkpointed_prediction_needs_only_the_transition_products():
     matrix = _matrix()
     log_likelihoods = np.random.default_rng(5).normal(size=(4, N_BINS))
 
-    def likelihood(edges, **kw):
+    @row_slice_aware
+    def likelihood(**kw):
         return log_likelihoods[kw["row_slice"]]
 
     products = _checkpointed(_ForwardBackwardOnly(matrix), likelihood)
@@ -141,7 +143,7 @@ def test_checkpointed_statistics_reject_products_only_before_any_callback():
     with pytest.raises(TypeError, match="pair_products") as caught:
         _checkpointed(
             _ForwardBackwardOnly(_matrix()),
-            lambda edges, **kw: calls.append(1) or np.zeros((4, N_BINS)),
+            row_slice_aware(lambda **kw: calls.append(1) or np.zeros((4, N_BINS))),
             transition_statistics="counts",
         )
     message = str(caught.value)
@@ -158,7 +160,7 @@ def test_checkpointed_rejects_an_operator_without_products():
     with pytest.raises(
         TypeError, match="TransitionProducts; ForwardOnly lacks backward"
     ):
-        _checkpointed(ForwardOnly(_matrix()), lambda edges, **kw: None)
+        _checkpointed(ForwardOnly(_matrix()), row_slice_aware(lambda **kw: None))
 
 
 def _bad_block_operator(matrix):
@@ -182,7 +184,7 @@ def _rejects_before_any_callback(operator, *pieces, **kwargs):
     with pytest.raises(ValidationError) as caught:
         _checkpointed(
             operator,
-            lambda edges, **kw: calls.append(1) or np.zeros((4, N_BINS)),
+            row_slice_aware(lambda **kw: calls.append(1) or np.zeros((4, N_BINS))),
             **kwargs,
         )
     message = str(caught.value)
@@ -242,7 +244,7 @@ def test_checkpointed_accepts_substochastic_operator_rows():
     matrix[1] = 0
     _checkpointed(
         _StationaryTransition(jnp.asarray(matrix)),
-        lambda edges, **kw: np.zeros((4, N_BINS))[kw["row_slice"]],
+        row_slice_aware(lambda **kw: np.zeros((4, N_BINS))[kw["row_slice"]]),
     )
 
 
@@ -307,7 +309,7 @@ def test_checkpointed_accepts_valid_operators(name, statistics):
     checkpointed_forward_backward(
         np.arange(5) * 0.002,
         np.full(N_BINS, 1 / N_BINS, dtype=np.float32),
-        lambda edges, **kw: np.zeros((4, N_BINS))[kw["row_slice"]],
+        row_slice_aware(lambda **kw: np.zeros((4, N_BINS))[kw["row_slice"]]),
         transition_operator=operator,
         state_ind=state_ind,
         transition_statistics=statistics,

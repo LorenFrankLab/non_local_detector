@@ -457,7 +457,7 @@ def test_unmarked_callback_requires_row_slices_for_chunking(
     original = detector.compute_log_likelihood
     received = []
 
-    def unmarked(time_edges, *args, is_missing=None):
+    def unmarked(*args, time_edges, is_missing=None):
         received.append(len(time_edges))
         return original(*args, time_edges=time_edges, is_missing=is_missing)
 
@@ -499,7 +499,7 @@ def test_callback_returning_the_wrong_row_count_is_rejected(
     edges = _coarse_edges(family[1])
     original = detector.compute_log_likelihood
 
-    def one_row_per_edge(time_edges, *args, is_missing=None):
+    def one_row_per_edge(*args, time_edges, is_missing=None):
         rows = original(*args, time_edges=time_edges)
         return np.concatenate([rows, rows[-1:]])
 
@@ -779,31 +779,19 @@ def test_every_detector_entry_point_takes_keyword_only_time_edges():
 def test_row_aware_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
     """Excluding a shared chunk edge must not open a gap wider than the spike
     times' precision: float32 edges with float64 spikes just below an edge."""
-    from non_local_detector.core import accepts_row_slice, row_slice_aware
     from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
-    from non_local_detector.models.base import _custom_likelihood_callback
 
     edges = np.array([0.0, 1.0, 2.0], dtype=edge_dtype)
     spikes = np.array([0.99999999, 1.0])
-
-    @row_slice_aware
-    def likelihood(time_edges, spike_times, is_missing=None, row_slice=None):
-        return get_spikecount_per_time_bin(
-            spike_times, time_edges=time_edges, row_slice=row_slice
-        )[:, None]
-
-    callback = _custom_likelihood_callback(likelihood, edges)
-    # The adapter takes the chunk's global row range from core, like a marked
-    # callback, so it never has to recover it from the row coordinates.
-    assert accepts_row_slice(callback)
-    centers = edges[:-1] + 0.5 * np.diff(edges)
     chunked = np.concatenate(
         [
-            callback(centers, spikes, is_missing=None, row_slice=slice(i, i + 1))
+            get_spikecount_per_time_bin(
+                spikes, time_edges=edges, row_slice=slice(i, i + 1)
+            )
             for i in range(2)
         ]
     )
     np.testing.assert_array_equal(
-        chunked[:, 0], get_spikecount_per_time_bin(spikes, time_edges=edges)
+        chunked, get_spikecount_per_time_bin(spikes, time_edges=edges)
     )
-    np.testing.assert_array_equal(chunked[:, 0], [1, 1])
+    np.testing.assert_array_equal(chunked, [1, 1])

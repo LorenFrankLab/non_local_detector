@@ -43,7 +43,7 @@ def model():
 
 def _decode(model, covariate, n_chunks, host_outputs):
     common = {
-        "time": np.arange(N_TIME, dtype=float),
+        "time_edges": np.arange(N_TIME + 1, dtype=float),
         "state_ind": STATE_IND,
         "initial_distribution": model["initial"],
         "log_likelihood_func": None,
