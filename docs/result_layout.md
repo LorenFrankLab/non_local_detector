@@ -118,13 +118,21 @@ MultiIndex: it stores the `state_bins` levels as plain coordinates, booleans
 in attributes as integers, and drops `_native_metadata`. It records the dtype
 of every integer variable and coordinate in the file's
 `non_local_detector_integer_dtypes` attribute, because netCDF3 (written when
-neither netCDF4 nor h5netcdf is installed) stores int64 as int32.
+neither netCDF4 nor h5netcdf is installed) stores int64 as int32, and the
+type of every attribute that is not a string in its
+`non_local_detector_attribute_types` attribute, because netCDF reads a
+boolean back as an integer, an integer or float as a NumPy scalar and a
+one-element array as a scalar.
 `load_results("results.nc")` rebuilds the `state_bins` MultiIndex, keeping
-`state_ind` as an integer coordinate along it, and gives the integer
-variables and coordinates (`state_ind`, `encoding_groups`, checkpointed
-`source_row`) their recorded dtypes, unless a variable was changed to a
-non-integer dtype after saving; strings come back as object arrays, as xarray
-reads them. The netCDF data are read lazily, and closing the returned dataset
+`state_ind` as an integer coordinate along it, gives the integer variables and
+coordinates (`state_ind`, `encoding_groups`, checkpointed `source_row`) their
+recorded dtypes, unless a variable was changed to a non-integer dtype after
+saving, and gives the attributes their recorded types (the types in the table
+above). The MultiIndex's `state` level holds objects, as in the results
+saved; other string coordinates come back as xarray reads them (fixed-width
+strings from netCDF4). Files saved by earlier versions, which did not record
+attribute types, keep the attributes netCDF reads, except that
+`marginal_log_likelihoods` is made one-dimensional. The netCDF data are read lazily, and closing the returned dataset
 (or leaving a `with` block) closes the file. `load_results(result_path)`
 reopens a checkpointed store with lazy arrays.
 

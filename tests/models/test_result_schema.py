@@ -214,6 +214,43 @@ def test_netcdf_round_trip_keeps_every_dtype(
     }
 
 
+@pytest.mark.parametrize("file_format", ["netCDF4", "netCDF3"])
+@pytest.mark.parametrize("kind", ["dense", "checkpointed", "em"])
+def test_netcdf_round_trip_restores_attribute_types_and_levels(
+    fitted, kind, file_format, request, tmp_path, monkeypatch
+):
+    """Attributes come back with their types (netCDF reads booleans back as
+    integers and one-element arrays as scalars), and the MultiIndex's
+    ``state`` level with its dtype; in netCDF4 the result is identical."""
+    if file_format == "netCDF4":
+        pytest.importorskip("netCDF4")
+    result = request.getfixturevalue(kind)
+    filename = tmp_path / "results.nc"
+    with monkeypatch.context() as patch:
+        if file_format == "netCDF3":
+            for writer in ("netCDF4", "h5netcdf"):
+                patch.setitem(sys.modules, writer, None)
+        fitted.save_results(result, filename)
+    with fitted.load_results(filename) as restored:
+        restored = restored.load()
+    expected = result.copy().load()
+    expected.attrs.pop("_native_metadata", None)
+
+    assert restored.attrs.keys() == expected.attrs.keys()
+    for name, value in expected.attrs.items():
+        assert type(restored.attrs[name]) is type(value), name
+        np.testing.assert_array_equal(restored.attrs[name], value)
+    assert _attr_type_mismatches(restored.attrs) == {}
+    assert restored["state"].dtype == result["state"].dtype
+    assert restored.indexes["state_bins"].equals(expected.indexes["state_bins"])
+    if file_format == "netCDF4":
+        # Compared as levels: the MultiIndex's tuples hold NaN positions,
+        # which tuple equality does not match.
+        xr.testing.assert_identical(
+            restored.reset_index("state_bins"), expected.reset_index("state_bins")
+        )
+
+
 def test_a_recorded_dtype_is_not_forced_on_a_non_integer_variable(
     fitted, dense, tmp_path
 ):

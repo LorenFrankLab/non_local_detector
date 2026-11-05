@@ -47,6 +47,40 @@ _Detector = TypeVar("_Detector", bound="non_local_detector.models.base._Detector
 
 # Dataset attribute in which ``save_results`` records integer dtypes.
 _INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
+# Dataset attribute in which ``save_results`` records the other attributes'
+# types (see ``_attribute_type``).
+_ATTRIBUTE_TYPES_ATTR = "non_local_detector_attribute_types"
+
+
+def _attribute_type(value: object) -> str | None:
+    """Return the type ``load_results`` gives a results attribute back.
+
+    netCDF holds no booleans (``save_results`` stores them as integers),
+    reads integers and floats back as NumPy scalars and a one-element array
+    as a scalar. None for a value it reads back as written (a string).
+    The names are those of the Result layout guide's attribute types.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return "bool"
+    if type(value) is int:
+        return "int"
+    if type(value) is float:
+        return "float"
+    if isinstance(value, np.ndarray) and value.ndim == 1:
+        return f"{value.dtype.name} array"
+    return None
+
+
+def _restore_attribute(value: Any, attribute_type: str) -> Any:
+    """Return an attribute as read from netCDF with its recorded type."""
+    if attribute_type == "bool":
+        return bool(value)
+    if attribute_type == "int":
+        return int(value)
+    if attribute_type == "float":
+        return float(value)
+    dtype = attribute_type.removesuffix(" array")
+    return np.atleast_1d(np.asarray(value, dtype=dtype))
 
 
 # Constructor parameters added in 2026-04, with the value that reproduces how
@@ -315,9 +349,11 @@ class _PersistenceMixin:
         ``state_bins`` is a MultiIndex, which netCDF does not support, so it
         is converted before saving. Boolean attributes are stored as integers
         and the internal ``_native_metadata`` attribute is dropped. The dtype
-        of each integer variable and coordinate is recorded so that
-        ``load_results`` restores it: netCDF3, written when neither netCDF4
-        nor h5netcdf is installed, stores int64 as int32.
+        of each integer variable and coordinate, and the type of each
+        attribute that is not a string, are recorded so that ``load_results``
+        restores them: netCDF3, written when neither netCDF4 nor h5netcdf is
+        installed, stores int64 as int32, and netCDF reads a boolean attribute
+        back as an integer and a one-element array as a scalar.
 
         Parameters
         ----------
@@ -333,9 +369,17 @@ class _PersistenceMixin:
         )
         export.attrs = {
             name: int(value) if isinstance(value, (bool, np.bool_)) else value
-            for name, value in export.attrs.items()
+            for name, value in results.attrs.items()
             if name != "_native_metadata"
         }
+        export.attrs[_ATTRIBUTE_TYPES_ATTR] = json.dumps(
+            {
+                str(name): attribute_type
+                for name, value in results.attrs.items()
+                if name != "_native_metadata"
+                and (attribute_type := _attribute_type(value)) is not None
+            }
+        )
         export.attrs[_INTEGER_DTYPES_ATTR] = json.dumps(
             {
                 str(name): variable.dtype.name
@@ -355,9 +399,10 @@ class _PersistenceMixin:
         Load results saved by ``save_results`` or a checkpointed result_path.
 
         A netCDF file is read lazily and gets its ``state_bins`` MultiIndex
-        back and its integer variables and coordinates the dtypes they were
-        saved with; closing the returned dataset closes the file. A directory
-        is opened as a checkpointed result store with lazy arrays.
+        back, its integer variables and coordinates the dtypes they were
+        saved with and its attributes their types; closing the returned
+        dataset closes the file. A directory is opened as a checkpointed
+        result store with lazy arrays.
 
         Parameters
         ----------
@@ -384,6 +429,12 @@ class _PersistenceMixin:
             return results
         opened = xr.open_dataset(filename)
         results = opened
+        attribute_types = json.loads(results.attrs.pop(_ATTRIBUTE_TYPES_ATTR, "{}"))
+        for name, attribute_type in attribute_types.items():
+            if name in results.attrs:
+                results.attrs[name] = _restore_attribute(
+                    results.attrs[name], attribute_type
+                )
         if _INTEGER_DTYPES_ATTR in results.attrs:
             integer_dtypes = json.loads(results.attrs.pop(_INTEGER_DTYPES_ATTR))
         else:
@@ -423,7 +474,15 @@ class _PersistenceMixin:
                 if name not in {"state_bins", "state_ind"}
                 and coordinate.dims == ("state_bins",)
             ]
-            results = results.set_index(state_bins=coord_names)
+            # netCDF reads string levels back as fixed-width strings; the
+            # MultiIndex the results were built with (pandas) holds objects.
+            results = results.assign_coords(
+                {
+                    name: results[name].astype(object)
+                    for name in coord_names
+                    if results[name].dtype.kind == "U"
+                }
+            ).set_index(state_bins=coord_names)
         # The transformations above drop the file's close handle; closing the
         # returned results (or leaving a ``with`` block) must close the file.
         results.set_close(opened.close)
