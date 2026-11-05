@@ -247,26 +247,22 @@ def _upgrade_state_space(detector: "_DetectorBase", state: dict[str, Any]) -> No
     }
     state_ind = stored["state_ind_"]
     bin_sizes = stored["bin_sizes_"]
-    if bin_sizes is None or not np.array_equal(
-        np.bincount(np.asarray(state_ind), minlength=len(bin_sizes)), bin_sizes
-    ):
-        msg = "The saved detector's state bins disagree with its bin counts"
-        raise ValidationError(
-            msg,
-            expected=f"bin_sizes_ {bin_sizes} counting the states in state_ind_",
-            hint="Refit the detector with the version that saved it, or with this one.",
+    if (
+        bin_sizes is None
+        or not len(bin_sizes)
+        == len(detector.state_names)
+        == len(detector.observation_models)
+        or not np.array_equal(
+            np.bincount(np.asarray(state_ind), minlength=len(bin_sizes)), bin_sizes
         )
-    n_states = {
-        "bin_sizes_": len(bin_sizes),
-        "state_names": len(detector.state_names),
-        "observation_models": len(detector.observation_models),
-    }
-    if len(set(n_states.values())) > 1:
+    ):
         msg = "The saved detector's states disagree with its state bins"
         raise ValidationError(
             msg,
-            expected="one bin count, state name and observation model per state",
-            got=", ".join(f"{n} {name}" for name, n in n_states.items()),
+            expected="one bin count, state name and observation model per state, "
+            "each bin count counting the states in state_ind_",
+            got=f"bin_sizes_ {bin_sizes}, {len(detector.state_names)} state_names, "
+            f"{len(detector.observation_models)} observation_models",
             hint="Refit the detector with the version that saved it, or with this one.",
         )
     representation = stored["_transition_representation_"]
