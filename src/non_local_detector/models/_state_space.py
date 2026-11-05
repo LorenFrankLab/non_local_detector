@@ -55,6 +55,11 @@ class StateSpace:
     ``set_params`` after a fit does not change what the fit decodes. The
     parameters it records are from ``recorded_layout_parameters``.
 
+    ``discrete_transition_type``, ``discrete_initial_conditions`` and
+    ``environments`` are recorded only so a later change to those parameters
+    can be detected (``changed_layout_parameters``). Decoding does not read
+    them.
+
     Attributes
     ----------
     state_names : tuple of str, length n_states
