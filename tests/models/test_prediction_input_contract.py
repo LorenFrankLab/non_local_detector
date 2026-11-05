@@ -257,7 +257,11 @@ def test_fitted_covariate_rows_are_checked_before_hmm(
     )
     monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_work)
     snapshot = _snapshot(detector)
+    # predict never reuses the fitted rows: without its own covariates it
+    # asks for them.
+    message = "covariate transitions"
     if path == "predict":
+        message = "discrete_transition_covariate_data"
         call = functools.partial(
             detector.predict, *args, time_edges=edges, n_chunks=n_chunks
         )
@@ -270,7 +274,7 @@ def test_fitted_covariate_rows_are_checked_before_hmm(
             ),
             n_chunks=n_chunks,
         )
-    with pytest.raises(ValidationError, match="covariate transitions"):
+    with pytest.raises(ValidationError, match=message):
         call()
     _assert_unchanged(detector, snapshot)
 

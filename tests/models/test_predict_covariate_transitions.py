@@ -1,8 +1,10 @@
-"""Tests for predict-time covariate transition handling in base.py.
+"""Tests for decode-time covariate transition handling in base.py.
 
 Verifies:
 1. predict does not mutate self.discrete_state_transitions_ (state isolation)
 2. Mismatched covariate/decode time lengths raise ValueError
+3. Decoding covariate-dependent transitions requires the call's own
+   covariates, and fitting them requires training covariates
 """
 
 import numpy as np
@@ -12,6 +14,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryDiagonal,
     predict_discrete_state_transitions,
 )
+from non_local_detector.exceptions import ValidationError
 
 
 @pytest.fixture
@@ -121,3 +124,120 @@ class TestCovariateTimeLengthValidation:
 
         decode_time = np.arange(10)  # matches
         _validate_covariate_time_length(predicted, decode_time)  # should not raise
+
+
+def _covariate_model(checkpoint_recording, family):
+    """A detector fitted with speed-dependent transitions, and its arguments.
+
+    The training covariates have one row per decode bin, so their fitted
+    transitions have exactly the shape a decode of another recording on the
+    same grid would need.
+    """
+    model, fit, predict = checkpoint_recording(family)
+    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+    )
+    n_decode = len(predict["time_edges"]) - 1
+    model.fit(
+        **fit,
+        discrete_transition_covariate_data={"speed": np.linspace(0, 3, n_decode)},
+    )
+    # Give speed an effect so that different covariates decode differently.
+    model.discrete_transition_coefficients_[1] = np.arange(12).reshape(4, 3) / 10
+    return model, fit, predict
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+@pytest.mark.parametrize(
+    "decode",
+    [
+        {"method": "predict"},
+        {
+            "method": "predict",
+            "inference_mode": "checkpointed",
+            "output_mode": "compact",
+        },
+        {"method": "most_likely_sequence"},
+    ],
+    ids=["predict", "checkpointed", "most_likely_sequence"],
+)
+def test_decoding_covariate_transitions_requires_covariates(
+    checkpoint_recording, family, decode
+):
+    """Decoding never falls back on the training covariates' transitions,
+    which describe another recording even when the lengths agree."""
+    model, _, predict = _covariate_model(checkpoint_recording, family)
+    options = dict(decode)
+    method = getattr(model, options.pop("method"))
+    with pytest.raises(ValidationError, match="discrete_transition_covariate_data"):
+        method(**predict, **options)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_most_likely_sequence_uses_its_covariates(checkpoint_recording, family):
+    """``most_likely_sequence`` evaluates the transitions on the covariates it
+    is given, at any number of decode bins."""
+    model, _, predict = _covariate_model(checkpoint_recording, family)
+    n_decode = len(predict["time_edges"]) - 1
+    sequences = [
+        model.most_likely_sequence(
+            **predict, discrete_transition_covariate_data={"speed": speed}
+        )
+        for speed in (np.zeros(n_decode), np.full(n_decode, 3.0))
+    ]
+    assert len(sequences[0]) == n_decode
+    path = model._run_viterbi
+    calls = []
+
+    def recording_viterbi(*args, **kwargs):
+        calls.append(kwargs["discrete_state_transitions"])
+        return path(*args, **kwargs)
+
+    model._run_viterbi = recording_viterbi
+    model.most_likely_sequence(
+        **predict, discrete_transition_covariate_data={"speed": np.zeros(n_decode)}
+    )
+    np.testing.assert_allclose(
+        calls[0],
+        predict_discrete_state_transitions(
+            model.discrete_transition_design_matrix_,
+            model.discrete_transition_coefficients_,
+            {"speed": np.zeros(n_decode)},
+        ),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_fitting_covariate_transitions_without_covariates_raises(
+    checkpoint_recording, family
+):
+    """A formula transition fitted without covariates names the missing
+    argument instead of failing inside patsy."""
+    model, fit, _ = checkpoint_recording(family)
+    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+    )
+    with pytest.raises(ValidationError, match="discrete_transition_covariate_data"):
+        model.fit(**fit)
+
+
+@pytest.mark.unit
+def test_estimating_with_covariates_off_the_decode_grid_raises(checkpoint_recording):
+    """EM's covariates have one row per decode bin; another count raises before
+    EM starts and leaves the detector as it was."""
+    model, fit, predict = checkpoint_recording("sorted")
+    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+    )
+    n_decode = len(predict["time_edges"]) - 1
+    with pytest.raises(ValidationError, match="one per decode bin"):
+        model.estimate_parameters(
+            **fit,
+            time_edges=predict["time_edges"],
+            discrete_transition_covariate_data={"speed": np.zeros(n_decode - 1)},
+            max_iter=1,
+        )
+    assert not hasattr(model, "discrete_state_transitions_")

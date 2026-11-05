@@ -1829,7 +1829,12 @@ class _DetectorBase(
         environment_labels : np.ndarray, optional, shape (n_time,)
             If there are multiple environments, label each time point with the environment name, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            training values of the covariates named in the transition formula,
+            which place its spline knots (``quantile_bs``) and are kept to
+            rebuild its design. Any number of rows, e.g. one per position
+            sample: decoding evaluates the transitions on its own covariates.
+            By default None.
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full matrix. "structured"
             requires exact supported state-block operators; "auto" permits
@@ -1858,6 +1863,25 @@ class _DetectorBase(
         position = position[:, np.newaxis] if position.ndim == 1 else position
         # Before anything changes, so a refused fit keeps the loaded model.
         _refuse_untrusted_transition(self.discrete_transition_type, "fit")
+        if (
+            not self.discrete_transition_type.is_stationary
+            and discrete_transition_covariate_data is None
+        ):
+            msg = (
+                "Missing required parameter: discrete_transition_covariate_data "
+                f"({type(self.discrete_transition_type).__name__} depends on "
+                "covariates)"
+            )
+            raise ValidationError(
+                msg,
+                expected="the training values of the covariates named in the "
+                "transition formula",
+                got="None",
+                hint="Pass the covariates, or use a stationary transition such as "
+                "DiscreteStationaryDiagonal.",
+                example="    detector.fit(position_time, position, spike_times, "
+                "discrete_transition_covariate_data={'speed': speed})",
+            )
         self._invalidate_stored_log_likelihood()  # stale after a refit
         # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
@@ -2422,6 +2446,87 @@ class _DetectorBase(
         # Apply missing data mask
         return jnp.where(jnp.asarray(is_missing)[:, jnp.newaxis], 0.0, log_likelihood)
 
+    def _decode_discrete_transitions(
+        self,
+        covariate_data: pd.DataFrame | dict[str, Any] | None,
+        time_centers: np.ndarray,
+        *,
+        method: str,
+    ) -> np.ndarray | None:
+        """Discrete transitions at the decode bins of one decoding call.
+
+        Covariate-dependent transitions are evaluated on the call's own
+        covariates: the transitions fitted on the training covariates
+        describe the training recording, not the decoded one.
+
+        Parameters
+        ----------
+        covariate_data : dict or pd.DataFrame or None
+            The call's ``discrete_transition_covariate_data``.
+        time_centers : np.ndarray, shape (n_bins,)
+            Decode bin centers.
+        method : str
+            The public method, for the error message.
+
+        Returns
+        -------
+        discrete_transitions : np.ndarray, shape (n_bins, n_states, n_states), or None
+            None for transitions that do not depend on covariates, which
+            decode with ``discrete_state_transitions_``.
+
+        Raises
+        ------
+        ValidationError
+            If the transitions depend on covariates and none are given, or
+            the covariates do not have one row per decode bin.
+        ConfigurationError
+            If covariates are given but the transitions do not depend on them.
+        """
+        if covariate_data is None:
+            if self.discrete_transition_coefficients_ is None:
+                return None
+            msg = (
+                "Missing required parameter: discrete_transition_covariate_data "
+                "(the discrete transitions depend on covariates)"
+            )
+            raise ValidationError(
+                msg,
+                expected=(
+                    "the covariates named in the transition formula, one row per "
+                    f"decode bin ({len(time_centers)} rows)"
+                ),
+                got="None",
+                hint=(
+                    "The transitions fitted on the training covariates describe "
+                    "the training recording only. Pass the covariates of the "
+                    "decoded recording at the decode bin centers, "
+                    "(time_edges[:-1] + time_edges[1:]) / 2."
+                ),
+                example=(
+                    f"    detector.{method}(..., discrete_transition_covariate_data"
+                    "={'speed': speed_at_bin_centers})"
+                ),
+            )
+        if self.discrete_transition_coefficients_ is None:
+            msg = (
+                "discrete_transition_coefficients_ is None but covariate data provided"
+            )
+            raise ConfigurationError(
+                msg,
+                hint=(
+                    "The discrete transition does not depend on covariates; "
+                    "drop discrete_transition_covariate_data or use a "
+                    "covariate-dependent transition type."
+                ),
+            )
+        transitions = predict_discrete_state_transitions(
+            self.discrete_transition_design_matrix_,
+            self.discrete_transition_coefficients_,
+            covariate_data,
+        )
+        _validate_covariate_time_length(transitions, time_centers)
+        return transitions
+
     def _predict_spikes(
         self,
         spike_data: tuple[Any, ...],
@@ -2494,24 +2599,9 @@ class _DetectorBase(
         ):
             cache_likelihood = True
 
-        predicted_transitions = None
-        if discrete_transition_covariate_data is not None:
-            if self.discrete_transition_coefficients_ is None:
-                msg = "discrete_transition_coefficients_ is None but covariate data provided"
-                raise ConfigurationError(
-                    msg,
-                    hint=(
-                        "The discrete transition does not depend on covariates; "
-                        "drop discrete_transition_covariate_data or use a "
-                        "covariate-dependent transition type."
-                    ),
-                )
-            predicted_transitions = predict_discrete_state_transitions(
-                self.discrete_transition_design_matrix_,
-                self.discrete_transition_coefficients_,
-                discrete_transition_covariate_data,
-            )
-            _validate_covariate_time_length(predicted_transitions, time_centers)
+        predicted_transitions = self._decode_discrete_transitions(
+            discrete_transition_covariate_data, time_centers, method="predict"
+        )
         if inference_mode == "checkpointed":
             results, _ = self._predict_checkpointed(
                 time_edges=time_edges,
@@ -2664,6 +2754,12 @@ class _DetectorBase(
                     _structured_em_options(chunk_size, result_path, replay_cache_bytes)
                 ),
             )
+            if self.discrete_state_transitions_.ndim == 3:
+                # EM estimates covariate transitions at the decode bins.
+                _validate_covariate_time_length(
+                    self.discrete_state_transitions_,
+                    0.5 * (time_edges[:-1] + time_edges[1:]),
+                )
             return self._run_em(
                 time_edges=time_edges,
                 log_likelihood_args=(
@@ -2706,13 +2802,14 @@ class _DetectorBase(
         position: ArrayLike | None,
         position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         n_chunks: int,
     ) -> pd.DataFrame:
         """Body of the detectors' ``most_likely_sequence``; see ``_compute_spike_log_likelihood``."""
         decode = _DecodeInputs.from_arguments(position_time, position)
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
+        time_edges, time_centers = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),
             sampling_frequency=self.sampling_frequency,
@@ -2736,6 +2833,11 @@ class _DetectorBase(
             ),
             is_missing=is_missing,
             n_chunks=n_chunks,
+            discrete_state_transitions=self._decode_discrete_transitions(
+                discrete_transition_covariate_data,
+                time_centers,
+                method="most_likely_sequence",
+            ),
         )
 
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
@@ -3060,6 +3162,8 @@ class _DetectorBase(
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
+        *,
+        discrete_state_transitions: np.ndarray | None = None,
     ) -> pd.DataFrame:
         """Viterbi engine: the most likely sequence of states.
 
@@ -3078,6 +3182,9 @@ class _DetectorBase(
             Boolean array indicating missing data, by default None.
         n_chunks : int, optional
             Number of chunks, by default 1.
+        discrete_state_transitions : np.ndarray, shape (n_bins, n_states, n_states), optional
+            Covariate-driven transition matrices to use instead of
+            ``discrete_state_transitions_``, by default None.
 
         Returns
         -------
@@ -3096,16 +3203,22 @@ class _DetectorBase(
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
+        discrete_transitions = (
+            self.discrete_state_transitions_
+            if discrete_state_transitions is None
+            else discrete_state_transitions
+        )
         if (
-            self.discrete_state_transitions_.ndim == 3
-            and self.discrete_state_transitions_.shape[0] != len(time_edges) - 1
+            discrete_transitions.ndim == 3
+            and discrete_transitions.shape[0] != len(time_edges) - 1
         ):
             msg = "Viterbi covariate transitions must have one row per decode bin"
             raise ValidationError(
                 msg,
                 expected=f"{len(time_edges) - 1} transition rows",
-                got=f"{self.discrete_state_transitions_.shape[0]} rows",
-                hint="Viterbi uses the fitted covariate transitions. Fit or estimate with covariates aligned to this grid; predict(..., discrete_transition_covariate_data=...) accepts new aligned prediction covariates.",
+                got=f"{discrete_transitions.shape[0]} rows",
+                hint="Pass discrete_transition_covariate_data with one row per "
+                "decode bin to most_likely_sequence.",
             )
 
         log_likelihood_func = self._decode_likelihood_callback(
@@ -3114,13 +3227,13 @@ class _DetectorBase(
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
-        if self.discrete_state_transitions_.ndim == 2:
+        if discrete_transitions.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
                 time=time_centers,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
                     self.continuous_state_transitions_[cross_is_track_interior]
-                    * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
+                    * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
                 log_likelihood_args=log_likelihood_args,
@@ -3132,7 +3245,7 @@ class _DetectorBase(
                 time=time_centers,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
-                discrete_transition_matrix=self.discrete_state_transitions_,
+                discrete_transition_matrix=discrete_transitions,
                 continuous_transition_matrix=self.continuous_state_transitions_[
                     cross_is_track_interior
                 ],
@@ -3653,7 +3766,12 @@ class ClusterlessDetector(_DetectorBase):
         environment_labels : array_like of str, shape (n_time_position,), optional
             Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            training values of the covariates named in the transition formula,
+            which place its spline knots (``quantile_bs``) and are kept to
+            rebuild its design. Any number of rows, e.g. one per position
+            sample: decoding evaluates the transitions on its own covariates.
+            By default None.
 
         encoding_time_range : array_like, shape (2,), optional
             Acquisition start/stop in seconds. Clips encoding support using the
@@ -3893,8 +4011,12 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
-        discrete_transition_covariate_data : dict-like, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default False.
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
@@ -4118,8 +4240,12 @@ class ClusterlessDetector(_DetectorBase):
             models' ``encoding_group``, by default None (group 0).
         environment_labels : array_like of str, shape (n_time_position,), optional
             Environment name of each position sample, by default None.
-        discrete_transition_covariate_data : dict-like, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin of ``time_edges``, each the covariate's value at the bin
+            center. EM estimates the transitions on them, and they place the
+            formula's spline knots. By default None.
         estimate_initial_conditions : bool, optional
             Whether to estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
@@ -4280,6 +4406,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
@@ -4302,6 +4429,12 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
 
@@ -4317,6 +4450,7 @@ class ClusterlessDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )
 
@@ -4636,7 +4770,12 @@ class SortedSpikesDetector(_DetectorBase):
         environment_labels : array_like of str, shape (n_time_position,), optional
             Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            training values of the covariates named in the transition formula,
+            which place its spline knots (``quantile_bs``) and are kept to
+            rebuild its design. Any number of rows, e.g. one per position
+            sample: decoding evaluates the transitions on its own covariates.
+            By default None.
 
         encoding_time_range : array_like, shape (2,), optional
             Acquisition start/stop in seconds. Clips encoding support using the
@@ -4833,7 +4972,11 @@ class SortedSpikesDetector(_DetectorBase):
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default False.
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
@@ -4967,9 +5110,12 @@ class SortedSpikesDetector(_DetectorBase):
             models' ``encoding_group``, by default None (group 0).
         environment_labels : array_like of str, shape (n_time_position,), optional
             Environment name of each position sample, by default None.
-        discrete_transition_covariate_data : dict, optional
-            Covariate data for a covariate dependent discrete transition.
-            A dict-like object that can be used to look up variables, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin of ``time_edges``, each the covariate's value at the bin
+            center. EM estimates the transitions on them, and they place the
+            formula's spline knots. By default None.
         estimate_initial_conditions : bool, optional
             Estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
@@ -5129,6 +5275,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
@@ -5148,6 +5295,12 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         n_chunks : int, optional
             Number of chunks for processing, by default 1.
 
@@ -5163,6 +5316,7 @@ class SortedSpikesDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )
 

@@ -1134,7 +1134,16 @@ def _validate_covariate_time_length(
             f"decode time has {n_decode_time} time steps. "
             f"These must match."
         )
-        raise ValidationError(msg)
+        raise ValidationError(
+            msg,
+            expected=f"{n_decode_time} rows of discrete_transition_covariate_data, "
+            "one per decode bin",
+            got=f"{n_covariate_time} rows",
+            hint="Evaluate the covariates at the decode bin centers, "
+            "(time_edges[:-1] + time_edges[1:]) / 2, e.g. by interpolating them "
+            "from their own timeline. The row count cannot show that they are "
+            "aligned: rebuild them for every new time_edges.",
+        )
 
 
 def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
