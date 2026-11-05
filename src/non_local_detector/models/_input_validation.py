@@ -1097,13 +1097,13 @@ def _warn_if_off_grid(
         f"lie more than one place bin outside the fitted grid of environment "
         f"{names}, up to {np.max(distance[is_off]):.3g} position units beyond "
         "it. The likelihoods evaluate such a position at the nearest interior "
-        "bin instead. Position may be in other units than the grid (for "
-        "example metres for a grid in centimetres) or outside the "
-        "environment's position_range, or, when decoding, where the fitting "
-        "positions never went (without position_range a grid spans only the "
-        "positions it was fitted on). Check the units of position, the "
-        "environment's position_range and place_bin_size, and that the fitted "
-        "positions cover the decoded ones.",
+        "bin instead. Position may be in larger units than the grid (for "
+        "example millimetres on a grid in centimetres), the environment's "
+        "position_range may not match the data, or, when decoding, the "
+        "positions may lie where the fitting positions never went (without "
+        "position_range a grid spans only the positions it was fitted on). "
+        "Check the units of position, the environment's position_range and "
+        "place_bin_size, and that the fitted positions cover the decoded ones.",
         DataQualityWarning,
         stacklevel=user_stacklevel(),
     )
