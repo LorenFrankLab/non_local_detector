@@ -194,7 +194,7 @@ class _LikelihoodPositionContext:
         position: np.ndarray | None,
         *,
         reads_position: bool = True,
-        warn_outside_tracking: bool = False,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> "_LikelihoodPositionContext":
         missing = _missing_bins(
             time_edges,
@@ -202,7 +202,7 @@ class _LikelihoodPositionContext:
             position_time,
             position,
             reads_position=reads_position,
-            warn_outside_tracking=warn_outside_tracking,
+            valid_position_intervals=valid_position_intervals,
         )
         prepared = position
         all_missing = False
@@ -1598,6 +1598,7 @@ class _DetectorBase(
         row_slice: slice | None,
         *,
         time_edges: ArrayLike,
+        valid_position_intervals: ArrayLike | None,
     ) -> jax.Array:
         """Body of the detectors' ``compute_log_likelihood``.
 
@@ -1613,12 +1614,12 @@ class _DetectorBase(
             position=position,
             time_edges=time_edges,
             row_slice=row_slice,
+            valid_position_intervals=valid_position_intervals,
         )
         context = self._decode_context(
             cast("np.ndarray", inputs.time_edges),
             (inputs.position_time, inputs.position, *spike_data),
-            # A direct call warns like the other public decode entry points.
-            warn_outside_tracking=True,
+            valid_position_intervals=inputs.valid_position_intervals,
             share_no_spike_bin_sizes=False,
         )
         return self._log_likelihood_rows(context, row_slice, is_missing)
@@ -1628,7 +1629,7 @@ class _DetectorBase(
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...],
         *,
-        warn_outside_tracking: bool = False,
+        valid_position_intervals: np.ndarray | None = None,
         share_no_spike_bin_sizes: bool = True,
     ) -> _DecodeContext:
         """Prepare one likelihood evaluation over validated ``time_edges``.
@@ -1640,9 +1641,9 @@ class _DetectorBase(
         log_likelihood_args : tuple
             ``(position_time, position, *spike_data)``, position coerced by
             ``_validated_inputs``.
-        warn_outside_tracking : bool, optional
-            Warn about decode bins outside the tracked period, by default
-            False (the decoding methods warned when they marked them missing).
+        valid_position_intervals : np.ndarray, shape (n_intervals, 2), optional
+            Tracking intervals of a direct ``compute_log_likelihood`` call.
+            The decoding methods already mark those bins in ``is_missing``.
         share_no_spike_bin_sizes : bool, optional
             Compute the No-Spike bin durations once for every row request, by
             default True.
@@ -1667,7 +1668,7 @@ class _DetectorBase(
                 reads_position=self._decode_reads_position(
                     self.state_space_.observation_models
                 ),
-                warn_outside_tracking=warn_outside_tracking,
+                valid_position_intervals=valid_position_intervals,
             ),
             spike_time_order=_SpikeTimeOrder(),
             no_spike_time_bin_sizes=(
@@ -1987,6 +1988,7 @@ class _DetectorBase(
         position: ArrayLike | None,
         position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         cache_likelihood: bool,
         n_chunks: int,
@@ -2008,6 +2010,7 @@ class _DetectorBase(
             position=position,
             time_edges=time_edges,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             example=self._PREDICT_EXAMPLE,
         )
         position_time, position = inputs.position_time, inputs.position
@@ -2168,6 +2171,7 @@ class _DetectorBase(
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
+            valid_position_intervals=valid_position_intervals,
             time_edges=time_edges,
             is_missing=is_missing,
         )
@@ -2247,6 +2251,7 @@ class _DetectorBase(
         position: ArrayLike | None,
         position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         n_chunks: int,
     ) -> pd.DataFrame:
@@ -2258,6 +2263,7 @@ class _DetectorBase(
             position=position,
             time_edges=time_edges,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
         )
         position_time, position = inputs.position_time, inputs.position
         time_edges = cast("np.ndarray", inputs.time_edges)
@@ -3022,7 +3028,8 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the same
+            intervals to ``predict``.
 
         Attributes
         ----------
@@ -3191,7 +3198,8 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the same
+            intervals to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -3306,6 +3314,7 @@ class ClusterlessDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -3334,6 +3343,14 @@ class ClusterlessDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when ``position_time`` is irregular (dropped
+            samples, disconnected epochs): without them position is
+            interpolated across the gaps, with a ``DataQualityWarning``. A
+            model that does not read position ignores them. By default None.
 
         Returns
         -------
@@ -3377,6 +3394,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing,
             row_slice,
             time_edges=time_edges,
+            valid_position_intervals=valid_position_intervals,
         )
 
     @requires_time_edges
@@ -3389,6 +3407,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
@@ -3423,6 +3442,14 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when ``position_time`` is irregular (dropped
+            samples, disconnected epochs): without them position is
+            interpolated across the gaps, with a ``DataQualityWarning``. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -3575,6 +3602,7 @@ class ClusterlessDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
@@ -3719,7 +3747,7 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Bins outside them are missing in every E-step, as in ``predict``.
         transition_representation : {"auto", "dense", "structured"}, optional
             Which EM to run, by default "auto"; keep the default unless you
             need one path. "dense" EM holds several (time bins x state bins)
@@ -3823,6 +3851,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -3846,6 +3875,14 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when ``position_time`` is irregular (dropped
+            samples, disconnected epochs): without them position is
+            interpolated across the gaps, with a ``DataQualityWarning``. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -3867,6 +3904,7 @@ class ClusterlessDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )
@@ -4064,7 +4102,8 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the same
+            intervals to ``predict``.
 
         Attributes
         ----------
@@ -4189,7 +4228,8 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the same
+            intervals to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -4268,6 +4308,7 @@ class SortedSpikesDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -4293,6 +4334,14 @@ class SortedSpikesDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when ``position_time`` is irregular (dropped
+            samples, disconnected epochs): without them position is
+            interpolated across the gaps, with a ``DataQualityWarning``. A
+            model that does not read position ignores them. By default None.
 
         Returns
         -------
@@ -4336,6 +4385,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing,
             row_slice,
             time_edges=time_edges,
+            valid_position_intervals=valid_position_intervals,
         )
 
     @requires_time_edges
@@ -4347,6 +4397,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
@@ -4378,6 +4429,14 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when ``position_time`` is irregular (dropped
+            samples, disconnected epochs): without them position is
+            interpolated across the gaps, with a ``DataQualityWarning``. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -4443,6 +4502,7 @@ class SortedSpikesDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
@@ -4585,7 +4645,7 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Bins outside them are missing in every E-step, as in ``predict``.
         transition_representation : {"auto", "dense", "structured"}, optional
             Which EM to run, by default "auto"; keep the default unless you
             need one path. "dense" EM holds several (time bins x state bins)
@@ -4688,6 +4748,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -4708,6 +4769,14 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when ``position_time`` is irregular (dropped
+            samples, disconnected epochs): without them position is
+            interpolated across the gaps, with a ``DataQualityWarning``. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -4729,6 +4798,7 @@ class SortedSpikesDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )

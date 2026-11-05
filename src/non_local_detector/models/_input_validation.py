@@ -30,7 +30,10 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
-from non_local_detector.encoding_time import EncodingSupport
+from non_local_detector.encoding_time import (
+    EncodingSupport,
+    parse_tracking_intervals,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
     DataError,
@@ -48,6 +51,7 @@ from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _uniformity_tolerance,
     decode_bin_centers,
+    uniform_time_bin_width,
     uniform_time_edges,
 )
 from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
@@ -685,6 +689,8 @@ class _ValidatedInputs:
     weights : np.ndarray of float, shape (n_time_position,), or None
     encoding_support : EncodingSupport or None
         Support of an encoding fit.
+    valid_position_intervals : np.ndarray, shape (n_intervals, 2), or None
+        Parsed tracking intervals of a decoding call.
     time_edges : np.ndarray, shape (n_bins + 1,), or None
         Validated decode bin edges.
     time_centers : np.ndarray, shape (n_rows,), or None
@@ -701,6 +707,7 @@ class _ValidatedInputs:
     environment_labels: np.ndarray | None = None
     weights: np.ndarray | None = None
     encoding_support: EncodingSupport | None = None
+    valid_position_intervals: np.ndarray | None = None
     time_edges: np.ndarray | None = None
     time_centers: np.ndarray | None = None
     is_missing: np.ndarray | None = None
@@ -976,6 +983,7 @@ def _missing_bins(
     *,
     reads_position: bool = True,
     warn_outside_tracking: bool = False,
+    valid_position_intervals: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Combine the caller's missing mask with bins that lack tracked position.
 
@@ -990,13 +998,16 @@ def _missing_bins(
     not tracking, so it is missing too; the half sample keeps bins centered on
     the tracking samples, whose outer edges lie half a sample beyond them. The
     half sample is half the median sampling interval, plus the timestamp
-    uniformity tolerance. A bin is decoded as missing when any time it owns
-    (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
-    in such a span, so the center and every spike of a non-missing bin have
-    tracked, finite positions. Both rules apply only when the decode
-    likelihood reads position (``reads_position``); a model without Local
-    states or a non-local position penalty decodes every bin. This concerns
-    decoding only: encoding fits use position for their support.
+    uniformity tolerance. A read more than half a sample outside every declared
+    tracking interval is missing by the same reasoning: samples either side of
+    a gap would otherwise be interpolated across it. A bin is decoded as
+    missing when any time it owns (``[edges[i], edges[i + 1])``, plus
+    ``edges[-1]`` for the final bin) lies in such a span, so the center and
+    every spike of a non-missing bin have tracked, finite positions. These
+    rules apply only when the decode likelihood reads position
+    (``reads_position``); a model without Local states or a non-local position
+    penalty decodes every bin. This concerns decoding only: encoding fits use
+    position for their support.
 
     Parameters
     ----------
@@ -1015,6 +1026,8 @@ def _missing_bins(
         Warn when bins are missing because they extend outside the tracked
         period, by default False. Public decode entry points set it, so one
         call warns once however many chunks or EM iterations it runs.
+    valid_position_intervals : np.ndarray, shape (n_intervals, 2), optional
+        Parsed spans of continuous tracking, or None if none were declared.
 
     Returns
     -------
@@ -1077,9 +1090,31 @@ def _missing_bins(
     is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
     if np.any(is_nan):
         affected |= _bins_reading_nan_position(time_edges, position_time, is_nan)
+    if valid_position_intervals is not None:
+        affected |= _bins_outside_intervals(
+            time_edges, position_time, valid_position_intervals
+        )
     if not np.any(affected):
         return is_missing
     return affected if is_missing is None else is_missing | affected
+
+
+def _half_sample(position_time: np.ndarray) -> float:
+    """Half the median sampling interval, plus the uniformity tolerance.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing, at least two samples.
+
+    Returns
+    -------
+    half_sample : float
+    """
+    sample_interval = float(np.median(np.diff(position_time)))
+    return sample_interval / 2 + _uniformity_tolerance(position_time, sample_interval)
 
 
 def _bins_outside_tracking(
@@ -1103,10 +1138,7 @@ def _bins_outside_tracking(
     n_bins = len(time_edges) - 1
     if position_time.size < 2:
         return np.zeros(n_bins, dtype=bool)
-    sample_interval = float(np.median(np.diff(position_time)))
-    half_sample = sample_interval / 2 + _uniformity_tolerance(
-        position_time, sample_interval
-    )
+    half_sample = _half_sample(position_time)
     # Bin i owns [edges[i], edges[i + 1]) (the final bin also edges[-1]), so it
     # reaches before ``start`` iff edges[i] < start and after ``stop`` iff
     # edges[i + 1] > stop.
@@ -1135,7 +1167,6 @@ def _bins_reading_nan_position(
     -------
     affected : np.ndarray of bool, shape (n_bins,)
     """
-    n_bins = len(time_edges) - 1
     nan_index = np.flatnonzero(is_nan)
     # Spans of consecutive NaN samples, widened to the neighbouring samples.
     # Positions before the first sample (after the last) are extrapolated from
@@ -1152,6 +1183,54 @@ def _bins_reading_nan_position(
         position_time[np.minimum(run_ends + 1, n_samples - 1)],
         np.inf,
     )
+    return _bins_meeting_spans(time_edges, lower, upper)
+
+
+def _bins_outside_intervals(
+    time_edges: np.ndarray, position_time: np.ndarray, intervals: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time more than half a sample outside every interval.
+
+    See :func:`_missing_bins` for the rule. Intervals closer than a sample
+    leave no gap between them, so adjacent intervals keep the bin they share.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing.
+    intervals : np.ndarray, shape (n_intervals, 2)
+        Ordered, non-overlapping spans of continuous tracking.
+
+    Returns
+    -------
+    is_outside : np.ndarray of bool, shape (n_bins,)
+    """
+    half_sample = _half_sample(position_time) if position_time.size > 1 else 0.0
+    gap_start = np.r_[-np.inf, intervals[:, 1] + half_sample]
+    gap_stop = np.r_[intervals[:, 0] - half_sample, np.inf]
+    is_gap = gap_start < gap_stop
+    return _bins_meeting_spans(time_edges, gap_start[is_gap], gap_stop[is_gap])
+
+
+def _bins_meeting_spans(
+    time_edges: np.ndarray, lower: np.ndarray, upper: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time in any of the spans ``[lower, upper)``.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    lower, upper : np.ndarray, shape (n_spans,)
+        Ends of the spans, which may be infinite.
+
+    Returns
+    -------
+    affected : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
     # Bin i owns [edges[i], edges[i + 1]) and meets [lower, upper) iff
     # edges[i + 1] > lower and edges[i] < upper; the final bin also owns
     # edges[-1], so a read exactly there (lower == edges[-1]) marks it.
@@ -1162,6 +1241,41 @@ def _bins_reading_nan_position(
     np.add.at(change, first, 1)
     np.add.at(change, stop, -1)
     return np.cumsum(change[:-1]) > 0
+
+
+def _warn_if_tracking_is_irregular(position_time: np.ndarray) -> None:
+    """Warn when decoding interpolates over tracking gaps nobody declared.
+
+    Irregular samples mean dropped rows or disconnected epochs by the rule
+    fitting refuses them with (``uniform_time_bin_width``). Their bins are
+    not decoded as missing: only the caller knows where tracking stopped.
+
+    Parameters
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing.
+
+    Warns
+    -----
+    DataQualityWarning
+        If ``position_time`` is not uniform.
+    """
+    if position_time.size < 2:
+        return
+    try:
+        uniform_time_bin_width(position_time, name="position_time")
+    except DataError:
+        widest = float(np.max(np.diff(position_time)))
+        warnings.warn(
+            "position_time is irregular (its widest step is "
+            f"{widest:.3g} s), so position is interpolated between the samples "
+            "either side of each gap, and bins there are decoded on that "
+            "invented path: spikes that disagree with it can read as replay. "
+            "Pass valid_position_intervals=[[start, stop], ...] to decode bins "
+            "outside continuous tracking as missing, as fitting requires.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
 
 
 def _time_span(times: np.ndarray) -> tuple[float, float]:
@@ -1700,8 +1814,9 @@ class _InputValidationMixin:
           against it, the position against the model, and the missing bins.
         - ``likelihood`` (``compute_log_likelihood``): as ``decode``, except
           that the fitted model comes first, and ``is_missing`` has one entry
-          per requested row, so the rows it evaluates check it. ``row_slice``
-          selects the rows of ``time_centers``.
+          per requested row, so the rows it evaluates check it (this stage
+          takes none and returns the position's). ``row_slice`` selects the
+          rows of ``time_centers``.
         - ``estimate`` (``estimate_parameters``): ``time_edges`` come checked
           with EM's options, and the model is not fitted yet, so the training
           arrays are read as in ``fit``, the spikes against the edges and the
@@ -1729,7 +1844,7 @@ class _InputValidationMixin:
         encoding_time_range : array_like, shape (2,), optional
             See ``fit``.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
-            See ``fit``.
+            See ``fit`` and ``predict``.
         time_edges : array_like, shape (n_bins + 1,), optional
             Decode bin edges.
         row_slice : slice, optional
@@ -1827,7 +1942,7 @@ class _InputValidationMixin:
             self._validate_encoding_position(
                 cast("np.ndarray", position), inputs.environment_labels
             )
-        encoding_support = None
+        encoding_support = tracking_intervals = None
         if stage in ("encoding", "refit"):
             encoding_support = EncodingSupport(
                 cast("ArrayLike", position_time),
@@ -1841,24 +1956,35 @@ class _InputValidationMixin:
                 encoding_time_range,
                 valid_position_intervals,
             )
-        if stage in ("decode", "estimate"):
+        if stage in ("decode", "likelihood", "estimate"):
+            tracking_intervals = (
+                None
+                if valid_position_intervals is None
+                else parse_tracking_intervals(valid_position_intervals)
+            )
+            reads_position = self._decode_reads_position(
+                self.observation_models
+                if stage == "estimate"
+                else self.state_space_.observation_models
+            )
             is_missing = _missing_bins(
                 cast("np.ndarray", checked_edges),
                 is_missing,
                 position_time,
                 position,
-                reads_position=self._decode_reads_position(
-                    self.state_space_.observation_models
-                    if stage == "decode"
-                    else self.observation_models
-                ),
+                reads_position=reads_position,
                 warn_outside_tracking=True,
+                valid_position_intervals=tracking_intervals,
             )
+            # fit, which estimate_parameters runs next, refuses these samples.
+            if decoding and reads_position and tracking_intervals is None:
+                _warn_if_tracking_is_irregular(cast("np.ndarray", position_time))
         return replace(
             inputs,
             spike_data=spike_data,
             position=position,
             encoding_support=encoding_support,
+            valid_position_intervals=tracking_intervals,
             time_edges=checked_edges,
             time_centers=time_centers,
             is_missing=is_missing,

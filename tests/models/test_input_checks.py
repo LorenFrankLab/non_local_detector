@@ -22,6 +22,7 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
+from non_local_detector.models.base import _missing_bins
 from tests.models._helpers import ALGORITHMS, _decoder
 
 pytestmark = pytest.mark.unit
@@ -446,3 +447,346 @@ class TestWarningsFirePerPublicCall:
 
         assert len(n_refits) == 3
         assert len(messages) == 1
+
+
+def _gap_recording():
+    """Clean tracking, with its rows from 40 to 80 s dropped.
+
+    A 120 s sweep, ``(time, position, spikes, marks, tracked, intervals)``:
+    ``time`` covers the recording, and ``tracked`` selects the samples kept.
+    """
+    rng = np.random.default_rng(0)
+    time = np.arange(0.0, 120.0, 1.0 / RATE)
+    position = (50 + 50 * np.sin(2 * np.pi * time / 20))[:, None]
+    spikes, marks = [], []
+    for center in np.linspace(0, 100, 20):
+        rate = 30 * np.exp(-0.5 * ((position[:, 0] - center) / 8) ** 2) + 0.2
+        counts = rng.poisson(rate / RATE)
+        times = np.repeat(time, counts) + rng.uniform(
+            -0.5 / RATE, 0.5 / RATE, counts.sum()
+        )
+        order = np.argsort(times)
+        spikes.append(times[order])
+        marks.append(rng.normal(center, 3.0, (times.size, 2)))
+    tracked = (time < 40) | (time >= 80)
+    intervals = np.array(
+        [
+            [time[tracked][0], time[time < 40][-1]],
+            [time[time >= 80][0], time[tracked][-1]],
+        ]
+    )
+    return time, position, spikes, marks, tracked, intervals
+
+
+class TestValidPositionIntervals:
+    """Decoding knows what fitting knows about tracking.
+
+    Interpolating position across a gap the fit refused puts the animal on an
+    invented path, and spikes then disagree with it: the gap decoded as replay.
+    """
+
+    @pytest.fixture(scope="class")
+    def gap(self):
+        return _gap_recording()
+
+    @pytest.fixture(scope="class")
+    def detectors(self, gap):
+        """A detector of each family fitted on the tracked samples."""
+        time, position, spikes, marks, tracked, intervals = gap
+        return {
+            family: _detector(family).fit(
+                time[tracked],
+                position[tracked],
+                *_spike_data(family, spikes, marks),
+                valid_position_intervals=intervals,
+            )
+            for family in FAMILIES
+        }
+
+    @pytest.fixture(scope="class")
+    def in_gap(self, gap):
+        """Bins whose centers lie more than a bin inside the gap."""
+        time = gap[0]
+        return (time > 40 + 1 / RATE) & (time < 80 - 1 / RATE)
+
+    def _predict(self, family, detectors, gap, **kwargs):
+        time, position, spikes, marks, tracked, _ = gap
+        return detectors[family].predict(
+            *_spike_data(family, spikes, marks),
+            time_edges=time_edges_from_centers(time),
+            position=position[tracked],
+            position_time=time[tracked],
+            **kwargs,
+        )
+
+    def test_omitting_them_interpolates_and_warns_once(self, detectors, gap, in_gap):
+        results, messages = _quality_warnings(
+            lambda: self._predict("sorted", detectors, gap),
+            "valid_position_intervals",
+        )
+
+        assert len(messages) == 1
+        assert "irregular" in messages[0]
+        # Warned, not decoded as missing: the false replay this warns about.
+        assert not results.is_missing.values[in_gap].any()
+        non_local = results.acausal_state_probabilities.sel(
+            states="Non-Local Continuous"
+        ).values
+        assert non_local[in_gap].mean() > 0.5
+
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_passing_them_marks_the_gap_missing(self, family, detectors, gap, in_gap):
+        intervals = gap[-1]
+
+        results = _no_quality_warnings(
+            lambda: self._predict(
+                family, detectors, gap, valid_position_intervals=intervals
+            )
+        )
+
+        assert results.is_missing.values[in_gap].all()
+        assert not results.is_missing.values[gap[4]].any()
+        assert np.isfinite(results.acausal_posterior.values).all()
+
+    def test_passing_them_removes_the_false_replay(self, detectors, gap, in_gap):
+        """Without evidence in the gap, the states relax to the transitions'
+        steady state instead of locking onto Non-Local Continuous."""
+        results = self._predict(
+            "sorted", detectors, gap, valid_position_intervals=gap[-1]
+        )
+        probabilities = results.acausal_state_probabilities
+        non_local = probabilities.sel(states="Non-Local Continuous").values
+        transitions = detectors["sorted"].discrete_state_transitions_
+        eigenvalues, eigenvectors = np.linalg.eig(transitions.T)
+        steady = np.real(eigenvectors[:, np.argmax(np.real(eigenvalues))])
+        steady /= steady.sum()
+        index = list(probabilities.states.values).index("Non-Local Continuous")
+
+        assert non_local[in_gap].mean() < 2 * steady[index]
+
+    def test_all_decoding_methods_agree(self, detectors, gap, in_gap):
+        time, position, spikes, _, tracked, intervals = gap
+        detector = detectors["sorted"]
+        edges = time_edges_from_centers(time)
+        decode = {
+            "time_edges": edges,
+            "position": position[tracked],
+            "position_time": time[tracked],
+            "valid_position_intervals": intervals,
+        }
+        dense = _no_quality_warnings(lambda: detector.predict(spikes, **decode))
+
+        checkpointed = _no_quality_warnings(
+            lambda: detector.predict(
+                spikes,
+                **decode,
+                inference_mode="checkpointed",
+                output_mode="compact",
+                chunk_size=512,
+            )
+        )
+        np.testing.assert_array_equal(checkpointed.is_missing, dense.is_missing)
+        np.testing.assert_allclose(
+            checkpointed.acausal_state_probabilities,
+            dense.acausal_state_probabilities,
+            atol=1e-4,
+        )
+
+        chunked = _no_quality_warnings(
+            lambda: detector.predict(spikes, **decode, n_chunks=3)
+        )
+        np.testing.assert_array_equal(chunked.is_missing, dense.is_missing)
+
+        sequence = _no_quality_warnings(
+            lambda: detector.most_likely_sequence(spikes, **decode)
+        )
+        assert len(sequence) == len(time)
+
+        log_likelihood = np.asarray(
+            _no_quality_warnings(
+                lambda: detector.compute_log_likelihood(
+                    time[tracked],
+                    position[tracked],
+                    spikes,
+                    time_edges=edges,
+                    valid_position_intervals=intervals,
+                )
+            )
+        )
+        assert (log_likelihood[in_gap] == 0.0).all()
+        assert not (log_likelihood[~in_gap & ~dense.is_missing.values] == 0.0).all()
+
+        rows = slice(2_000, 2_100)  # inside the gap
+        requested = detector.compute_log_likelihood(
+            time[tracked],
+            position[tracked],
+            spikes,
+            row_slice=rows,
+            time_edges=edges,
+            valid_position_intervals=intervals,
+        )
+        assert requested.shape[0] == 100
+        assert (np.asarray(requested) == 0.0).all()
+
+    def test_every_door_warns_about_undeclared_gaps_once(self, detectors, gap):
+        time, position, spikes, _, tracked, _ = gap
+        detector = detectors["sorted"]
+        edges = time_edges_from_centers(time)
+        _, messages = _quality_warnings(
+            lambda: detector.most_likely_sequence(
+                spikes,
+                time_edges=edges,
+                position=position[tracked],
+                position_time=time[tracked],
+            ),
+            "valid_position_intervals",
+        )
+        assert len(messages) == 1
+        _, messages = _quality_warnings(
+            lambda: detector.compute_log_likelihood(
+                time[tracked], position[tracked], spikes, time_edges=edges
+            ),
+            "valid_position_intervals",
+        )
+        assert len(messages) == 1
+        _, messages = _quality_warnings(
+            lambda: detector.predict(
+                spikes,
+                time_edges=edges,
+                position=position[tracked],
+                position_time=time[tracked],
+                n_chunks=3,
+            ),
+            "valid_position_intervals",
+        )
+        assert len(messages) == 1
+
+    def test_estimate_parameters_masks_its_e_steps(self, gap, in_gap):
+        time, position, spikes, _, tracked, intervals = gap
+        detector = _sorted()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # EM stops at max_iter
+            results = _no_quality_warnings(
+                lambda: detector.estimate_parameters(
+                    time[tracked],
+                    position[tracked],
+                    spikes,
+                    time_edges=time_edges_from_centers(time),
+                    valid_position_intervals=intervals,
+                    max_iter=2,
+                    estimate_encoding_model=True,
+                    min_encoding_local_mass=0.0,
+                    min_encoding_local_ess=0.0,
+                )
+            )
+
+        assert results.is_missing.values[in_gap].all()
+        assert not results.is_missing.values[tracked].any()
+
+    def test_an_interval_over_all_the_tracking_changes_nothing(self, recording, fitted):
+        """Bins at the ends reach half a sample past it, like the tracked
+        period itself: declaring the truth must not cost them."""
+        time, position, spikes, _ = recording
+        decode = {
+            "time_edges": time_edges_from_centers(time),
+            "position": position,
+            "position_time": time,
+        }
+        plain = fitted["sorted"].predict(spikes, **decode)
+
+        declared = fitted["sorted"].predict(
+            spikes, **decode, valid_position_intervals=[[time[0], time[-1]]]
+        )
+
+        assert not declared.is_missing.values.any()
+        np.testing.assert_array_equal(
+            declared.acausal_posterior, plain.acausal_posterior
+        )
+
+    def test_a_model_that_reads_no_position_ignores_them(self, recording):
+        """It decodes without position, so tracking cannot make a bin missing."""
+        time, position, spikes, _ = recording
+        decoder = _sorted(SortedSpikesDecoder).fit(time, position, spikes)
+        edges = time_edges_from_centers(time)
+        plain = decoder.predict(spikes, time_edges=edges)
+
+        declared = _no_quality_warnings(
+            lambda: decoder.predict(
+                spikes, time_edges=edges, valid_position_intervals=[[10.0, 20.0]]
+            )
+        )
+        irregular = _no_quality_warnings(
+            lambda: decoder.predict(
+                spikes,
+                time_edges=edges,
+                position=position[::3][np.arange(len(time[::3])) != 5],
+                position_time=time[::3][np.arange(len(time[::3])) != 5],
+            )
+        )
+
+        assert not declared.is_missing.values.any()
+        assert not irregular.is_missing.values.any()
+        np.testing.assert_array_equal(
+            declared.acausal_posterior, plain.acausal_posterior
+        )
+
+    @pytest.mark.parametrize(
+        ("intervals", "match"),
+        [
+            ([1.0, 2.0], "shape"),
+            ([[0.0, 5.0], [4.0, 9.0]], "non-overlapping"),
+        ],
+    )
+    def test_decoding_refuses_what_fitting_refuses(self, intervals, match, recording):
+        time, position, spikes, _ = recording
+        detector = _sorted(SortedSpikesDecoder)
+        with pytest.raises(ValidationError, match=match):
+            detector.fit(time, position, spikes, valid_position_intervals=intervals)
+        detector.fit(time, position, spikes)
+        with pytest.raises(ValidationError, match=match):
+            detector.predict(
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                valid_position_intervals=intervals,
+            )
+
+
+@pytest.mark.parametrize(
+    ("edges", "expected"),
+    [
+        # Bins centered on the samples either side of the gap stay observed.
+        (np.arange(0.0, 13.0) - 0.5, [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]),
+        # A bin straddling the gap's edge by more than half a sample is masked
+        # whole: its center is inside the interval.
+        (np.array([1.0, 4.0, 5.0, 6.0]), [1, 1, 1]),
+        (np.array([0.0, 3.0, 6.0, 9.0, 11.0]), [0, 1, 1, 0]),
+    ],
+)
+def test_bins_outside_intervals_are_masked_whole(edges, expected):
+    position_time = np.array([0.0, 1, 2, 3, 8, 9, 10, 11])
+    position = position_time[:, None]
+
+    is_missing = _missing_bins(
+        edges,
+        None,
+        position_time,
+        position,
+        valid_position_intervals=np.array([[0.0, 3.0], [8.0, 11.0]]),
+    )
+
+    np.testing.assert_array_equal(is_missing, np.asarray(expected, dtype=bool))
+
+
+def test_touching_intervals_leave_no_gap():
+    position_time = np.arange(11.0)
+
+    is_missing = _missing_bins(
+        time_edges_from_centers(position_time),
+        None,
+        position_time,
+        position_time[:, None],
+        valid_position_intervals=np.array([[0.0, 5.0], [5.0, 10.0]]),
+    )
+
+    assert is_missing is None
