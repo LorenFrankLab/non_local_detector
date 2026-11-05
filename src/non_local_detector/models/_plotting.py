@@ -24,7 +24,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
 )
 from non_local_detector.exceptions import ConfigurationError, ValidationError
-from non_local_detector.models._state_space import StateSpace, fitted_states
+from non_local_detector.models._state_space import StateSpace
 
 
 class _FittedDetector(Protocol):
@@ -84,7 +84,7 @@ class _PlottingMixin:
         _refuse_untrusted_transition(
             self.discrete_transition_type, "plot the transitions"
         )
-        state_names = fitted_states(self).state_names
+        state_names = self.state_space_.state_names
         if self.discrete_state_transitions_.ndim == 2:
             if ax is None:
                 ax = plt.gca()

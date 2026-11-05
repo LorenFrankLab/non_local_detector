@@ -13,7 +13,6 @@ from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
-from non_local_detector.models._state_space import fitted_states
 from non_local_detector.models.base import SortedSpikesDetector
 
 __all__ = [
@@ -120,7 +119,7 @@ def _unit_order(
     label : str
         Axis label for the units.
     """
-    observation_models = fitted_states(detector).observation_models
+    observation_models = detector.state_space_.observation_models
     obs = next((o for o in observation_models if not o.is_no_spike), None)
     if not isinstance(detector, SortedSpikesDetector) or obs is None:
         return np.arange(n_units), "Electrode\nGroup"
@@ -177,7 +176,7 @@ def plot_non_local_model(
     env = detector.environments_[0]
     neuron_sort_ind, cell_label = _unit_order(detector, len(spike_times))
 
-    state_names = fitted_states(detector).state_names
+    state_names = detector.state_space_.state_names
     acausal_state_probabilities = results.sel(
         time=time_slice
     ).acausal_state_probabilities.values

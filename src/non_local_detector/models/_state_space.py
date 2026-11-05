@@ -247,12 +247,13 @@ def recorded_layout_parameters(detector: Any) -> dict[str, Any]:
     return copy.deepcopy(layout_parameters(detector))
 
 
-def fitted_states(detector: Any) -> Any:
-    """Return what holds the state names and observation models a detector decodes with.
+def fitted_states(
+    detector: Any,
+) -> tuple[Sequence[str], Sequence[ObservationModel]]:
+    """Return the state names and observation models that label a detector's results.
 
-    The fit's ``state_space_``, whose names label the detector's results; the
-    detector itself, with its current parameters, before a fit. Both have
-    ``state_names`` and ``observation_models``.
+    The fit's, from ``state_space_``; the detector's current parameters before
+    a fit, for results built without one.
 
     Parameters
     ----------
@@ -261,9 +262,11 @@ def fitted_states(detector: Any) -> Any:
 
     Returns
     -------
-    states : StateSpace or _DetectorBase
+    state_names : sequence of str, length n_states
+    observation_models : sequence of ObservationModel, length n_states
     """
-    return vars(detector).get("state_space_", detector)
+    states = vars(detector).get("state_space_", detector)
+    return states.state_names, states.observation_models
 
 
 def has_place_bins(

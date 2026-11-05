@@ -152,10 +152,7 @@ class _NonLocalMixin:
         Local nor No-Spike, wherever they are listed. See
         :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        states = fitted_states(self)
-        return _get_conditional_non_local_posterior(
-            results, states.state_names, states.observation_models
-        )
+        return _get_conditional_non_local_posterior(results, *fitted_states(self))
 
 
 class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):
