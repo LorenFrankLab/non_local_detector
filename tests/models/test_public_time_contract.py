@@ -203,10 +203,10 @@ def test_unknown_transition_clock_requires_refitting(recording, method):
     "method", ["predict", "most_likely_sequence", "compute_log_likelihood"]
 )
 def test_unfitted_decoder_explains_fit_requirement(method):
-    from non_local_detector.exceptions import ValidationError
+    from non_local_detector.exceptions import NotFittedError
 
     detector = SortedSpikesDecoder()
-    with pytest.raises(ValidationError, match="call fit"):
+    with pytest.raises(NotFittedError, match="call fit"):
         getattr(detector, method)(
             spike_times=[np.array([])],
             time_edges=np.array([0.0, 0.002]),
@@ -216,6 +216,9 @@ def test_unfitted_decoder_explains_fit_requirement(method):
 
 
 @pytest.mark.integration
+# With one bin, the recording's single spike lies after the window, and a
+# single spike has no spread to tell a quiet window from a clock mismatch.
+@pytest.mark.filterwarnings("ignore:None of the .* spike times:UserWarning")
 @pytest.mark.parametrize("n_bins", [1, 5])
 def test_one_spatial_bin_keeps_its_index_through_save_load(tmp_path, n_bins):
     from non_local_detector import Uniform

@@ -26,7 +26,10 @@ from non_local_detector.discrete_state_transitions import (
     _row_smoothness,
     _smoothness_matrix,
 )
-from non_local_detector.likelihoods import _record_legacy_encoding_algorithm
+from non_local_detector.likelihoods import (
+    _record_legacy_encoding_algorithm,
+    _unify_stored_encoding_values,
+)
 from non_local_detector.models._results import label_checkpointed_result
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 
@@ -150,11 +153,13 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     ):
         detector.environments = tuple(detector.environments)
         detector.environments_ = detector.environments
-    # Encoding models fitted before each recorded its algorithm.
+    # Encoding models fitted before each recorded its algorithm, or before
+    # the shared keys' values were NumPy arrays.
     encoding_model = state.get("encoding_model_")
     if isinstance(encoding_model, Mapping):
         for entry in encoding_model.values():
             _record_legacy_encoding_algorithm(entry)
+            _unify_stored_encoding_values(entry)
 
 
 class _PersistenceMixin:

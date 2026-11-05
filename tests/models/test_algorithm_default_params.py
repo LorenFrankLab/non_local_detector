@@ -23,6 +23,7 @@ from non_local_detector.likelihoods import (
 )
 from non_local_detector.models import ClusterlessDecoder, SortedSpikesDecoder
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 pytestmark = pytest.mark.unit
 
@@ -71,6 +72,7 @@ def _sorted_decoder(algorithm, params=None):
         environments=[_environment()],
         sorted_spikes_algorithm=algorithm,
         sorted_spikes_algorithm_params=params,
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
     )
 
 
@@ -79,6 +81,7 @@ def _clusterless_decoder(algorithm, params=None):
         environments=[_environment()],
         clusterless_algorithm=algorithm,
         clusterless_algorithm_params=params,
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
     )
 
 
@@ -260,6 +263,32 @@ def test_clusterless_unknown_param_raises(sim, algorithm, typo, accepted):
     with pytest.raises(ValidationError, match=typo) as error:
         _fit(decoder, sim)
     assert accepted in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "algorithm", sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
+)
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("encoding_time_range", (0.0, 0.2)),
+        ("valid_position_intervals", [[0.0, 0.2]]),
+    ],
+)
+def test_encoding_support_is_not_an_algorithm_param(sim, algorithm, name, value):
+    """The encoding support belongs to the detector's ``fit``, not the params.
+
+    The detector builds the support from its own ``fit`` arguments and passes
+    it to the algorithm's fit, which then ignores these parameters, so they
+    used to be dropped silently.
+    """
+    if algorithm in _SORTED_SPIKES_ALGORITHMS:
+        decoder = _sorted_decoder(algorithm, {name: value})
+    else:
+        decoder = _clusterless_decoder(algorithm, {name: value})
+    with pytest.raises(ValidationError, match=name) as error:
+        _fit(decoder, sim)
+    assert f"detector.fit(..., {name}=" in str(error.value)
 
 
 @pytest.mark.parametrize(

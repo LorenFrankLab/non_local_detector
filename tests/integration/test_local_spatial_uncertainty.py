@@ -60,6 +60,7 @@ def fit_predict(simulated_data):
         key = tuple(sorted(detector_kwargs.items()))
         if key not in cache:
             detector = NonLocalSortedSpikesDetector(
+                sampling_frequency=1500.0,
                 sorted_spikes_algorithm="sorted_spikes_kde",
                 sorted_spikes_algorithm_params={
                     "position_std": 6.0,
@@ -167,6 +168,7 @@ def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
     sim = clusterless_simulated_data
 
     detector = NonLocalClusterlessDetector(
+        sampling_frequency=1000.0,
         local_position_std=5.0,
         clusterless_algorithm="clusterless_kde",
         clusterless_algorithm_params={

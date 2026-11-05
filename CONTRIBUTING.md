@@ -54,7 +54,7 @@ Follow JAX's guidance (`jax.typing`, JEP 12049): lenient inputs, concrete output
 - JAX-side code: inputs are `jax.typing.ArrayLike`, outputs are `jax.Array`. Never write `jnp.ndarray`, which is only an alias of `jax.Array`. Do not accept lists or tuples in place of arrays in jitted code.
   If the body calls array methods (`.dtype`, `.sum`, indexing), which the scalar members of `jax.typing.ArrayLike` lack, annotate inputs `jax.Array | np.ndarray` instead (as `core.py` does with its `ArrayLike` alias).
 - Dtypes are `DTypeLike` (`numpy.typing` or `jax.typing`, matching the side).
-- Keep `list[...]` where the API takes a list of per-neuron or per-electrode arrays.
+- Keep a list type where the API takes a list of per-neuron or per-electrode arrays. For an input the function converts, write `Sequence[ArrayLike]`: `list` is invariant, so a `list[ArrayLike]` parameter rejects a caller's `list[np.ndarray]`.
 - Shapes go in the NumPy-style docstring, e.g. `(n_time, n_position_bins)`, not in the annotation.
 <!-- --8<-- [end:array-annotations] -->
 
@@ -83,9 +83,13 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 
 - The fit returns its encoding model as a plain dict. Describe it with a `TypedDict` derived from `SortedSpikesEncodingModel` or `ClusterlessEncodingModel` (`non_local_detector.likelihoods.encoding_model`) and annotate the fit with it, so mypy checks the returned keys and values. Set `algorithm` to the registered name.
 - The detector calls `predict(position_time, position, *spike_data, **encoding_model, ...)`. After the data arguments every fit and predict parameter is keyword-only, and predict declares every key of the encoding model (no `**kwargs`), including fit diagnostics it does not use.
-- Register a `LikelihoodAlgorithm(fit, predict, EncodingModelType)`, or for clusterless data a `ClusterlessLikelihoodAlgorithm` with its `mark_reference_scale` and, if model checking supports it, the name of its intensity class in `model_checking._clusterless_models` (`electrode_intensity`).
+- Annotate the data arguments as the protocols `SortedSpikesFit` / `ClusterlessFit` and `SortedSpikesPredict` / `ClusterlessPredict` of `non_local_detector.likelihoods` type them (the records' `fit` and `predict` fields have these types, so mypy checks the detector's calls): `position_time`, `position` and `weights` are `ArrayLike`, and `spike_times` and `spike_waveform_features` `Sequence[ArrayLike]`. The detector passes NumPy arrays; convert at entry with `as_array` and `as_arrays` from `likelihoods.common`, which keep a JAX array as is (a sharded input must not be gathered to the host) and convert any other array-like with `np.asarray`. Predict must accept `position_time=None` and `position=None` when `is_local` is False, because a detector whose states read no position (no Local state, no non-local position penalty) passes None for both; read them on the local path through `require_position`, which raises `ValidationError` for None.
+- Register a `LikelihoodAlgorithm(fit, predict, EncodingModelType)`, or for clusterless data a `ClusterlessLikelihoodAlgorithm` with its `mark_reference_scale` (a function of the fit parameters whose defaults equal the fit's, which the contract tests check) and, if model checking supports it, the name of its intensity class in `model_checking._clusterless_models` (`electrode_intensity`).
 - Name in `execution_settings` the fit parameters that only control how predict runs, such as block sizes, memory budgets and `disable_progress_bar`. The fit records them in the encoding model, and a detector passes predict the value its current algorithm params set, so they can change without refitting.
-- `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules.
+- `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules. Add the new name to its `_CHANGED_FIT_PARAMETER` (a fit parameter that is not an execution setting, which prediction must ignore until the next fit; the test raises `KeyError` without it) and, if it has execution settings beyond `disable_progress_bar`, to `_CHANGED_SETTINGS` and `_INVALID_SETTINGS`.
+- The detector-level tests fit every registered algorithm through `tests/models/_helpers.py`'s `_decoder` on small fixtures; add parameters there if the defaults do not fit them (as the sorted GLM's knot spacing and the clusterless GMM's component counts do).
+- List each new class that its encoding model holds (a fitted density model, a basis) in `model_format/_builtins.py` with its fields, or `save_model` refuses the fitted detector (see "Saved-model format").
+- Add the algorithm to the user-facing lists, the likelihood models in `README.md` ("Architecture") and the likelihood table in `docs/getting-started/core-concepts.md`; the contract tests check that both name every registered algorithm.
 
 ## Saved-model format
 

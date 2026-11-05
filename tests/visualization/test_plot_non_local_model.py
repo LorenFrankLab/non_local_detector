@@ -11,6 +11,7 @@ from non_local_detector.models.base import ClusterlessDetector, SortedSpikesDete
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from non_local_detector.visualization.static import _unit_order, plot_non_local_model
+from tests.models._helpers import SORTED_SIM_RATE
 
 mpl.use("Agg")
 import matplotlib.pyplot as plt
@@ -26,7 +27,8 @@ def test_posterior_panel_uses_non_local_states_whatever_their_names():
     time, position, speed = time[:n], position[:n], speed[:n]
     spike_times = [st[st <= time[-1]] for st in spike_times]
     detector = NonLocalSortedSpikesDetector(
-        state_names=["Here", "Quiet", "Replay-Smooth", "Replay-Jump"]
+        sampling_frequency=SORTED_SIM_RATE,
+        state_names=["Here", "Quiet", "Replay-Smooth", "Replay-Jump"],
     )
     detector.fit(time, position, spike_times)
     results = detector.predict(

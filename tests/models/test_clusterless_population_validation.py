@@ -23,6 +23,7 @@ from non_local_detector.likelihoods.mark_reference import (
     mark_reference_log_likelihood,
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 ALGORITHMS = [
     "clusterless_kde",
@@ -42,7 +43,9 @@ def sim():
 
 @pytest.fixture(scope="module", params=ALGORITHMS)
 def fitted_decoder(request, sim):
-    decoder = ClusterlessDecoder(clusterless_algorithm=request.param)
+    decoder = ClusterlessDecoder(
+        clusterless_algorithm=request.param, sampling_frequency=CLUSTERLESS_SIM_RATE
+    )
     return decoder.fit(
         sim.position_time, sim.position, sim.spike_times, sim.spike_waveform_features
     )
@@ -122,7 +125,7 @@ def test_predict_rejects_electrode_count_mismatch(fitted_decoder, sim):
 def test_refit_with_mismatch_leaves_fitted_state_unchanged(sim):
     """Validation runs before ``fit`` (or ``estimate_parameters``) rebuilds the
     environments and transitions of an already-fitted detector."""
-    detector = NonLocalClusterlessDetector().fit(
+    detector = NonLocalClusterlessDetector(sampling_frequency=CLUSTERLESS_SIM_RATE).fit(
         sim.position_time, sim.position, sim.spike_times, sim.spike_waveform_features
     )
     state_before = dict(vars(detector))

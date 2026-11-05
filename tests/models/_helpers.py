@@ -4,7 +4,11 @@
 detector and its environments untouched. ``_decoder`` builds a small one-state
 decoder for any registered likelihood algorithm, listed in ``ALGORITHMS``.
 ``make_two_arm_track`` builds a fitted environment with two disconnected arms.
+``type_violations`` checks an encoding model's values against its declared types.
 """
+
+import types
+import typing
 
 import networkx as nx
 import numpy as np
@@ -19,10 +23,17 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.simulate import clusterless_simulation, sorted_spikes_simulation
 
 # Every registered likelihood algorithm, so a new backend is covered without
 # editing this list.
 ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
+
+# Sample rates of the simulated recordings in ``tests/models/conftest.py``
+# (``sorted_sim`` and ``clusterless_sim``). A detector decoding one bin per
+# sample (``time_edges_from_centers(time)``) is constructed at this rate.
+SORTED_SIM_RATE = sorted_spikes_simulation.SAMPLING_FREQUENCY
+CLUSTERLESS_SIM_RATE = clusterless_simulation.SAMPLING_FREQUENCY
 
 
 def _snapshot(detector):
@@ -48,7 +59,7 @@ def _assert_unchanged(detector, snapshot):
             assert vars(env)[name] is value, (env.environment_name, name)
 
 
-def _decoder(algorithm, *, calibration=False):
+def _decoder(algorithm, *, calibration=False, sampling_frequency=500.0):
     """An unfitted one-state decoder with a Uniform transition.
 
     Parameters
@@ -58,6 +69,9 @@ def _decoder(algorithm, *, calibration=False):
     calibration : bool, optional
         If True, use 1-unit bins on ``(-1.5, 1.5)``; otherwise 5-unit bins on
         ``(40, 60)``.
+    sampling_frequency : float, optional
+        Decode bins per second, which the decode ``time_edges`` must match;
+        by default 500 (2 ms bins).
     """
     environment = Environment(
         place_bin_size=1 if calibration else 5,
@@ -67,6 +81,7 @@ def _decoder(algorithm, *, calibration=False):
         "environments": environment,
         "continuous_transition_types": [[Uniform()]],
         "infer_track_interior": False,
+        "sampling_frequency": sampling_frequency,
     }
     params = {"disable_progress_bar": True}
     if algorithm == "sorted_spikes_glm" and calibration:
@@ -122,3 +137,49 @@ def make_two_arm_track():
         [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
     )
     return environment.fit_place_grid(position_1d, infer_track_interior=True)
+
+
+def matches_annotation(value: object, annotation: object) -> bool:
+    """Whether ``value`` has the type ``annotation``, as far as run time can tell.
+
+    Unions, lists, tuples and dicts are checked element by element and
+    classes with ``isinstance``; an int is a float, as for mypy.
+    """
+    if annotation is typing.Any:
+        return True
+    if annotation is None or annotation is type(None):
+        return value is None
+    origin, args = typing.get_origin(annotation), typing.get_args(annotation)
+    if origin in (typing.Union, types.UnionType):
+        return any(matches_annotation(value, arg) for arg in args)
+    if origin is list:
+        return isinstance(value, list) and all(
+            matches_annotation(item, args[0]) for item in value
+        )
+    if origin is tuple:
+        if not isinstance(value, tuple):
+            return False
+        if len(args) == 2 and args[1] is Ellipsis:
+            return all(matches_annotation(item, args[0]) for item in value)
+        return len(value) == len(args) and all(map(matches_annotation, value, args))
+    if origin is dict:
+        return isinstance(value, dict) and all(
+            matches_annotation(k, args[0]) and matches_annotation(v, args[1])
+            for k, v in value.items()
+        )
+    if origin is not None:  # a parametrized class, such as NDArray[np.float64]
+        return isinstance(value, origin)
+    if annotation is float:
+        return isinstance(value, int | float)
+    assert isinstance(annotation, type), annotation
+    return isinstance(value, annotation)
+
+
+def type_violations(encoding_model: dict, encoding_model_type: type) -> list[str]:
+    """Each key whose value is not of the type ``encoding_model_type`` declares."""
+    hints = typing.get_type_hints(encoding_model_type)
+    return [
+        f"{key}: declared {hints[key]}, got {type(value).__name__}"
+        for key, value in encoding_model.items()
+        if key in hints and not matches_annotation(value, hints[key])
+    ]

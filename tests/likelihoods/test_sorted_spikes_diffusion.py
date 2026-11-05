@@ -1132,12 +1132,14 @@ def test_detectors_reject_population_mismatch(env_2d, algorithm):
     env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
     for detector_cls in (SortedSpikesDecoder, NonLocalSortedSpikesDetector):
-        detector = detector_cls(sorted_spikes_algorithm=algorithm).fit(
-            position_time=time, position=position, spike_times=spike_times
-        )
+        detector = detector_cls(
+            sorted_spikes_algorithm=algorithm,
+            sampling_frequency=100,  # simulate_place_data default rate
+        ).fit(position_time=time, position=position, spike_times=spike_times)
         with pytest.raises(ValidationError, match="neuron population lengths"):
             detector.predict(
-                spike_times=spike_times[:1],
+                # Spikes inside the decode window, so only the population is wrong.
+                spike_times=[times[times < time[200]] for times in spike_times[:1]],
                 time_edges=time_edges_from_centers(time[:200]),
                 position=position[:200],
                 position_time=time[:200],
@@ -1233,12 +1235,13 @@ def test_end_to_end_sorted_spikes_decoder(algorithm, algorithm_params):
         spike_times,
         time,
         _event_times,
-        _sampling_frequency,
+        sampling_frequency,
         is_event,
         _place_fields,
     ) = make_simulated_data(n_neurons=15)
 
     decoder = SortedSpikesDecoder(
+        sampling_frequency=sampling_frequency,
         sorted_spikes_algorithm=algorithm,
         sorted_spikes_algorithm_params=algorithm_params,
     ).fit(

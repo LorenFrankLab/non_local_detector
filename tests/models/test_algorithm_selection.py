@@ -30,7 +30,12 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.observation_models import ObservationModel
-from tests.models._helpers import ALGORITHMS, _decoder
+from tests.models._helpers import (
+    ALGORITHMS,
+    CLUSTERLESS_SIM_RATE,
+    SORTED_SIM_RATE,
+    _decoder,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -85,7 +90,9 @@ def _fit_sorted(algorithm, sorted_sim):
     if algorithm == "sorted_spikes_mrf":
         params["penalty"] = 1.0
     detector = SortedSpikesDecoder(
-        sorted_spikes_algorithm=algorithm, sorted_spikes_algorithm_params=params
+        sorted_spikes_algorithm=algorithm,
+        sorted_spikes_algorithm_params=params,
+        sampling_frequency=SORTED_SIM_RATE,
     )
     return detector.fit(time, position, spike_times)
 
@@ -149,7 +156,8 @@ def kde_detector(sorted_sim):
     """A non-local detector fitted with sorted KDE, copied by each test."""
     time, position, spike_times = sorted_sim
     return NonLocalSortedSpikesDetector(
-        sorted_spikes_algorithm_params={"disable_progress_bar": True}
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+        sampling_frequency=SORTED_SIM_RATE,
     ).fit(time, position, spike_times)
 
 
@@ -183,6 +191,7 @@ def test_no_spike_only_entries_are_not_checked(sorted_sim):
             ObservationModel(),
         ],
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
+        sampling_frequency=SORTED_SIM_RATE,
     )
     groups = (np.arange(time.size) >= time.size // 2).astype(int)
     detector.fit(time, position, spike_times, encoding_group_labels=groups)
@@ -201,6 +210,7 @@ def test_switching_the_clusterless_algorithm_after_fit_raises(clusterless_sim):
     detector = ClusterlessDecoder(
         clusterless_algorithm="clusterless_kde",
         clusterless_algorithm_params={"disable_progress_bar": True},
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
     ).fit(
         clusterless_sim.position_time,
         clusterless_sim.position,
@@ -238,14 +248,16 @@ def test_em_refit_does_not_go_through_the_public_fit_encoding_model(
     if family == "sorted":
         time, position, spike_times = sorted_sim
         detector = SortedSpikesDecoder(
-            sorted_spikes_algorithm_params={"disable_progress_bar": True}
+            sorted_spikes_algorithm_params={"disable_progress_bar": True},
+            sampling_frequency=SORTED_SIM_RATE,
         )
         data = {"spike_times": spike_times}
     else:
         time = clusterless_sim.position_time
         position = clusterless_sim.position
         detector = ClusterlessDecoder(
-            clusterless_algorithm_params={"disable_progress_bar": True}
+            clusterless_algorithm_params={"disable_progress_bar": True},
+            sampling_frequency=CLUSTERLESS_SIM_RATE,
         )
         data = {
             "spike_times": clusterless_sim.spike_times,

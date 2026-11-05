@@ -34,6 +34,7 @@ from non_local_detector.models.base import (
     _normalize_frozen_discrete_transition_rows,
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 # Four states with the No-Spike state second, as in the non-local detector.
 NO_SPIKE_1 = np.array([False, True, False, False])
@@ -274,6 +275,7 @@ class TestFrozenRowEndToEnd:
 
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_kde",
+            sampling_frequency=SORTED_SIM_RATE,
         )
         initial_no_spike_row = self._initial_transition_row(detector, 1)
         initial_other_row = self._initial_transition_row(detector, 0)
@@ -314,6 +316,7 @@ class TestFrozenRowEndToEnd:
             discrete_transition_type=DiscreteNonStationaryDiagonal(
                 np.array([0.99, 0.98, 0.96, 0.96]), formula="1 + speed"
             ),
+            sampling_frequency=SORTED_SIM_RATE,
         )
         initial_transitions, initial_coefficients, _ = (
             detector.discrete_transition_type.make_state_transition({"speed": speed})
@@ -351,7 +354,9 @@ class TestFrozenRowEndToEnd:
         """The no-spike/continuous/fragmented classifier keeps its No-Spike
         row (index 0) fixed through EM by default, while other rows move."""
         _, position, spike_times, time, is_event = em_recording
-        classifier = NoSpikeContFragSortedSpikesClassifier()
+        classifier = NoSpikeContFragSortedSpikesClassifier(
+            sampling_frequency=SORTED_SIM_RATE
+        )
         initial_no_spike_row = self._initial_transition_row(classifier, 0)
         initial_other_row = self._initial_transition_row(classifier, 1)
 
@@ -380,6 +385,7 @@ class TestFrozenRowEndToEnd:
 
         detector = NonLocalSortedSpikesDetector(
             sorted_spikes_algorithm="sorted_spikes_kde",
+            sampling_frequency=SORTED_SIM_RATE,
             frozen_discrete_transition_rows=None,
         )
         initial_no_spike_row = self._initial_transition_row(detector, 1)
@@ -418,7 +424,8 @@ def test_clusterless_classifier_frozen_row_unchanged_after_em(clusterless_sim):
     final_row = {}
     for label, frozen_rows in (("frozen", [0]), ("free", None)):
         classifier = ContFragClusterlessClassifier(
-            frozen_discrete_transition_rows=frozen_rows
+            frozen_discrete_transition_rows=frozen_rows,
+            sampling_frequency=CLUSTERLESS_SIM_RATE,
         )
         initial_row = TestFrozenRowEndToEnd._initial_transition_row(classifier, 0)
         classifier.estimate_parameters(**fit_args)

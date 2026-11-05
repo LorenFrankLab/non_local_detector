@@ -16,6 +16,16 @@ transition-clock contract too. For variable-duration likelihoods without an
 HMM, call the registered predictors in `non_local_detector.likelihoods`
 directly with freshly fitted Hz encoding fields.
 
+The bin width must be the detector's `1 / sampling_frequency` (500 Hz by
+default), within the same floating-point tolerance as the uniformity check;
+other widths raise `ValidationError`. The transitions (for example a random
+walk's `movement_var`) are per decode bin, so the detector's rate states the
+bin width they mean. `detector.calculate_time_edges(time_range)` builds edges
+at that rate. When you decode at your position samples instead, construct the
+detector with their rate, e.g.
+`SortedSpikesDecoder(sampling_frequency=1 / np.median(np.diff(position_time)))`
+for 30 Hz tracking.
+
 ```python
 from non_local_detector import calculate_time_edges, time_edges_from_centers
 
@@ -111,8 +121,10 @@ occupancy is weighted in seconds; spikes carry their dimensionless interpolated
 weight once. Fitted `mean_rates`, `place_fields`, and ground-process intensities
 are now Hz, independently of tracking frequency. Predictions multiply those
 rates by each decode-bin duration. The unused `sampling_frequency` argument has
-been removed from encoding fit functions; the detector setting remains useful
-for grid construction. The GLM penalty now comes from a prior on log firing
+been removed from encoding fit functions. The detector's `sampling_frequency`
+is the width of its decode bins: `calculate_time_edges` builds edges at that
+rate, and decoding raises `ValidationError` for `time_edges` of another width
+(set it with `set_params(sampling_frequency=...)`, which keeps the fit). The GLM penalty now comes from a prior on log firing
 rate (`log_rate_prior_std`, 2 nats by default) and penalizes the total log
 likelihood, so it no longer grows with recording length.
 

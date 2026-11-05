@@ -121,6 +121,7 @@ def test_default_detector_conditional_nonlocal_posterior():
     position = np.column_stack((10.0 * time, 5.0 * time))
     spikes = [np.array([0.1, 0.3, 0.6, 0.8])]
     detector = NonLocalSortedSpikesDetector(
+        sampling_frequency=10.0,  # decode bins are 0.1 s wide
         environments=Environment(place_bin_size=2.0),
         infer_track_interior=False,
     ).fit(time, position, spikes)

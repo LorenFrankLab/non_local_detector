@@ -17,6 +17,7 @@ import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import SORTED_SIM_RATE
 
 N_CHUNKS = 5
 DECODE = slice(10_000, 10_200)
@@ -31,6 +32,7 @@ def make_detector():
             "position_std": 6.0,
             "block_size": (2**12),
         },
+        sampling_frequency=SORTED_SIM_RATE,
     )
 
 

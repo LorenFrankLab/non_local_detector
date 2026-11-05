@@ -13,6 +13,7 @@ from non_local_detector.initial_conditions import (
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from tests.conftest import assert_probability_distribution, set_place_grid
+from tests.models._helpers import SORTED_SIM_RATE
 
 
 @pytest.mark.unit
@@ -118,7 +119,8 @@ def em_fit_with_unreachable_states():
     n_time = 4000
     time, position = time[:n_time], position[:n_time]
     detector = NonLocalSortedSpikesDetector(
-        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0])
+        sampling_frequency=SORTED_SIM_RATE,
+        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0]),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # max_iter=1 never converges
@@ -174,3 +176,99 @@ class TestContinuousICUpdate:
                 1.0,
                 rtol=1e-5,
             )
+
+
+@pytest.fixture(scope="module")
+def short_recording():
+    _, position, spike_times, time, _, _, _, _ = make_simulated_data(
+        seed=42, n_neurons=5
+    )
+    n_time = 2000
+    time, position = time[:n_time], position[:n_time]
+    return time, position, [times[times <= time[-1]] for times in spike_times]
+
+
+def _scaled(scale=1.0, shift=0.0, extra_bins=0):
+    """Initial-condition class whose spatial output is changed as given."""
+
+    class CustomInitialConditions(UniformInitialConditions):
+        def make_initial_conditions(self, observation_model, environments):
+            values = super().make_initial_conditions(observation_model, environments)
+            if values.size == 1:
+                return values
+            values = scale * values
+            values[np.argmax(values)] += shift
+            return np.concatenate([values, np.zeros(extra_bins)])
+
+    return CustomInitialConditions()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("initial_conditions", "got"),
+    [
+        (_scaled(scale=2.0), "sums to 2 over its"),
+        (_scaled(shift=-1.0), "minimum entry"),
+        (_scaled(shift=np.nan), "non-finite entries"),
+        (_scaled(extra_bins=3), "shape"),
+    ],
+)
+def test_fit_names_the_state_of_an_invalid_initial_condition(
+    short_recording, initial_conditions, got
+):
+    """A custom initial condition is checked per state, at fit.
+
+    It used to surface at predict as an error on the joint
+    ``initial_distribution`` that named neither the state nor the class.
+    """
+    time, position, spike_times = short_recording
+    detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0]),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions(),
+            UniformInitialConditions(),
+            initial_conditions,
+            UniformInitialConditions(),
+        ],
+    )
+    with pytest.raises(ValidationError) as caught:
+        detector.fit(time, position, spike_times)
+    message = str(caught.value)
+    assert "'Non-Local Continuous'" in message, message
+    assert "CustomInitialConditions" in message, message
+    assert got in message, message
+    assert "Hint:" in message, message
+
+
+@pytest.mark.integration
+def test_fit_accepts_any_initial_mass_for_a_zero_weight_state(short_recording):
+    """A state with zero discrete initial probability adds nothing to the
+    joint initial distribution, so its values need not sum to 1."""
+    time, position, spike_times = short_recording
+    detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([1.0, 0.0, 0.0, 0.0]),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions(),
+            UniformInitialConditions(),
+            _scaled(scale=0.0),
+            UniformInitialConditions(),
+        ],
+    )
+    detector.fit(time, position, spike_times)
+    np.testing.assert_allclose(detector.initial_conditions_.sum(), 1.0, rtol=1e-6)
+
+
+@pytest.mark.integration
+def test_fit_checks_entries_of_a_zero_weight_state(short_recording):
+    time, position, spike_times = short_recording
+    detector = NonLocalSortedSpikesDetector(
+        discrete_initial_conditions=np.array([1.0, 0.0, 0.0, 0.0]),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions(),
+            UniformInitialConditions(),
+            _scaled(shift=-1.0),
+            UniformInitialConditions(),
+        ],
+    )
+    with pytest.raises(ValidationError, match="minimum entry"):
+        detector.fit(time, position, spike_times)

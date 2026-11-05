@@ -33,12 +33,17 @@ from non_local_detector import initial_conditions as ic
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _SORTED_SPIKES_ALGORITHMS,
+)
 from non_local_detector.models.base import (
     ClusterlessDetector,
     SortedSpikesDetector,
     _ModelUnpickler,
 )
 from non_local_detector.observation_models import ObservationModel
+from tests.models._helpers import type_violations
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
 # Fitted before rates were recorded in Hz: refused at decode.
@@ -579,6 +584,20 @@ def test_detector_saved_by_recent_main_decodes_as_it_did(version, artifact, inpu
     # The golden-regression tolerances (test_golden_regression): float32
     # posteriors decoded on another platform or XLA build differ by a few ulp.
     np.testing.assert_allclose(posterior, reference, rtol=1e-6, atol=2e-6)
+
+
+@pytest.mark.parametrize(
+    ("version", "artifact"), [(v, a) for v, a in MODELS if v not in LEGACY_VERSIONS]
+)
+def test_detector_saved_by_recent_main_has_the_declared_value_types(version, artifact):
+    """Loading gives each encoding-model value the type its algorithm now
+    declares, whatever type the saving version stored."""
+    model = _load_model(version, artifact)
+    for encoding_model in model.encoding_model_.values():
+        record = {**_SORTED_SPIKES_ALGORITHMS, **_CLUSTERLESS_ALGORITHMS}[
+            encoding_model["algorithm"]
+        ]
+        assert type_violations(encoding_model, record.encoding_model_type) == []
 
 
 def test_row_with_the_removed_kde_log_algorithm_rebuilds_but_does_not_fit(inputs):

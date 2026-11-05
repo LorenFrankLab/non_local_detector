@@ -17,7 +17,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryDiagonal,
     InitialDiscreteTransition,
 )
-from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.models import SortedSpikesDecoder
 from non_local_detector.observation_models import ObservationModel
 
@@ -153,6 +153,24 @@ class TestValidateProbabilityDistributions:
                 two_state_environment, discrete_initial_conditions=initial_conditions
             )
 
+    def test_list_initial_conditions_fit_like_an_array(self):
+        """A list is validated and fitted as the equal array (it raised AttributeError)."""
+        time = np.arange(100) * 0.002
+        position = (50 + 8 * np.sin(time * 40))[:, None]
+        spike_times = [np.array([0.021, 0.067, 0.121, 0.167])]
+        initial_conditions = {}
+        for value in ([1.0], np.array([1.0])):
+            decoder = SortedSpikesDecoder(
+                discrete_initial_conditions=value,
+                sorted_spikes_algorithm="sorted_spikes_kde",
+                sorted_spikes_algorithm_params={"disable_progress_bar": True},
+            )
+            decoder.fit(time, position, spike_times)
+            initial_conditions[type(value).__name__] = decoder.initial_conditions_
+        np.testing.assert_array_equal(
+            initial_conditions["list"], initial_conditions["ndarray"]
+        )
+
     def test_valid_probability_distribution_passes(self, two_state_environment):
         """Test that valid probability distribution passes."""
         # Arrange & Act: Create decoder with valid probabilities
@@ -226,6 +244,57 @@ class TestValidateNumericalParameters:
         assert decoder.discrete_transition_regularization == 1e-5
         assert decoder.sampling_frequency == 500.0
         assert decoder.no_spike_rate == 1e-10
+
+
+@pytest.mark.unit
+class TestValidatePriorWeight:
+    """``discrete_transition_prior_weight`` is checked by the constructor.
+
+    The EM M-step rejected bad values only at ``estimate_parameters``, and
+    accepted NaN and infinity.
+    """
+
+    @pytest.mark.parametrize(
+        "prior_weight",
+        [
+            -0.5,
+            float("nan"),
+            float("inf"),
+            np.array([0.5, -0.1]),
+            np.array([0.5, np.nan]),
+            np.array([0.5, 0.5, 0.5]),
+            np.ones((2, 2)),
+            "high",
+        ],
+        ids=[
+            "negative",
+            "nan",
+            "inf",
+            "negative-row",
+            "nan-row",
+            "wrong-length",
+            "matrix",
+            "string",
+        ],
+    )
+    def test_invalid_prior_weight_raises(self, two_state_environment, prior_weight):
+        with pytest.raises(ValidationError, match="discrete_transition_prior_weight"):
+            _two_state_decoder(
+                two_state_environment, discrete_transition_prior_weight=prior_weight
+            )
+
+    @pytest.mark.parametrize(
+        "prior_weight",
+        [0.0, 0.5, np.array(0.5), np.array([0.5]), [0.5, 0.0], np.array([0.0, 2.0])],
+        ids=["zero", "scalar", "0-d", "length-one", "list", "per-row"],
+    )
+    def test_valid_prior_weight_is_stored_as_given(
+        self, two_state_environment, prior_weight
+    ):
+        decoder = _two_state_decoder(
+            two_state_environment, discrete_transition_prior_weight=prior_weight
+        )
+        assert decoder.discrete_transition_prior_weight is prior_weight
 
 
 @pytest.mark.unit
@@ -382,67 +451,22 @@ class TestValidateDiscreteTransitionType:
 
 
 @pytest.mark.unit
-class TestPositionDimensionalityWarning:
-    """Test that 1D position without track_graph triggers a warning."""
+@pytest.mark.parametrize(
+    "position",
+    [np.linspace(0, 100, 50), np.linspace(0, 100, 50)[:, np.newaxis]],
+    ids=["1-D", "column"],
+)
+def test_1d_position_without_track_graph_fits_without_warning(position):
+    """1-D position without a track graph is a 1-D open field, fitted
+    silently; the Environment docstring explains when to pass a track graph."""
+    from non_local_detector.environment import Environment
 
-    def _fit_and_collect_warnings(self, decoder, position):
-        """Call _fit and return the 1-D-position warnings it emitted.
-
-        The fit must complete, so a negative case cannot pass by raising
-        before the warning check is reached.
-        """
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            decoder._fit(position=position)
-        return [
-            x for x in w if "1D" in str(x.message) and "track_graph" in str(x.message)
-        ]
-
-    def test_1d_position_no_track_graph_warns(self):
-        """1D position without track_graph should warn the user."""
-        from non_local_detector.environment import Environment
-
-        env = Environment(
-            place_bin_size=5.0,
-            position_range=((0.0, 100.0),),
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_1d = np.linspace(0, 100, 50)
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_1d)
-        assert len(position_warnings) == 1
-        assert position_warnings[0].category is DataQualityWarning
-
-    def test_2d_position_no_warning(self):
-        """2D position should not trigger the warning."""
-        from non_local_detector.environment import Environment
-
-        env = Environment(
-            place_bin_size=5.0,
-            position_range=((0.0, 100.0), (0.0, 100.0)),
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_2d = np.column_stack(
-            [np.linspace(0, 100, 50), np.linspace(0, 100, 50)]
-        )
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_2d)
-        assert len(position_warnings) == 0
-
-    def test_1d_column_position_no_track_graph_warns(self):
-        """1D column position (n, 1) without track_graph should warn."""
-        from non_local_detector.environment import Environment
-
-        env = Environment(
-            place_bin_size=5.0,
-            position_range=((0.0, 100.0),),
-        )
-        decoder = SortedSpikesDecoder(environments=[env])
-        position_col = np.linspace(0, 100, 50)[:, np.newaxis]
-
-        position_warnings = self._fit_and_collect_warnings(decoder, position_col)
-        assert len(position_warnings) == 1
-        assert position_warnings[0].category is DataQualityWarning
+    decoder = SortedSpikesDecoder(
+        environments=[Environment(place_bin_size=5.0, position_range=((0.0, 100.0),))]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        decoder._fit(position=position)
 
 
 if __name__ == "__main__":

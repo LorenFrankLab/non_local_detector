@@ -29,6 +29,7 @@ from numpy.typing import ArrayLike, DTypeLike, NDArray
 from non_local_detector.core import (
     TransitionOperator,
     TransitionProducts,
+    _check_operator_rows,
     _check_shape,
     _CovariateTransition,
     _degenerate_and_nan_masks_device,
@@ -488,9 +489,11 @@ def checkpointed_forward_backward(
         (``forward`` and ``backward``); ``transition_statistics`` needs a
         :class:`~non_local_detector.core.TransitionOperator`, which adds
         ``pair_products`` and ``backward_and_pairs`` (inherited only by
-        subclassing ``TransitionOperator``). Its products are not checked
-        against the probability contract below; ``discrete_transition_matrix``
-        still is.
+        subclassing ``TransitionOperator``). Its rows are checked through
+        their sums ``backward(1)``, as ``transition_matrix``'s rows are: at
+        most 1. With ``discrete_transition_matrix``, each bin's row is
+        checked per discrete state, as ``continuous_transition_matrix``'s
+        is, from the product with each weight whose column ``k`` is one.
     discrete_transition_matrix : array_like, shape (n_time, n_states, n_states), optional
         Per-row discrete state transition weights for the covariate path,
         combined with ``continuous_transition_matrix``: nonnegative, each row
@@ -560,8 +563,9 @@ def checkpointed_forward_backward(
         If an argument is invalid, such as a non-positive ``chunk_size``, an
         unrecognized output, an input that breaks the shape, dtype or
         probability contract of the dense drivers (float64 requires JAX's
-        64-bit mode), or a likelihood callback that returns the wrong shape or
-        changes between passes.
+        64-bit mode), a ``transition_operator`` whose row sums break it or
+        that cannot be applied to ``n_bins`` state bins, or a likelihood
+        callback that returns the wrong shape or changes between passes.
     TypeError
         If ``transition_operator`` is not a registered JAX pytree implementing
         :class:`~non_local_detector.core.TransitionProducts`, or, with
@@ -772,6 +776,9 @@ def checkpointed_forward_backward(
         # Transfer array leaves once; each jitted chunk call would otherwise
         # convert host leaves again.
         transition_operator = jax.device_put(transition_operator)
+        _check_operator_rows(
+            transition_operator, n_bins, dtype, n_states if covariate else None
+        )
     dims = {
         name: ("time", "state_bins" if name in _SPATIAL else "states")
         for name in outputs

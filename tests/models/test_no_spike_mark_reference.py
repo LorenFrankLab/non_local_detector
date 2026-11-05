@@ -17,7 +17,7 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
 )
@@ -31,6 +31,7 @@ from non_local_detector.likelihoods.mark_reference import (
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.time_edges import time_edges_from_centers
+from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 N_TRAIN = 8_000
 N_TEST = 400
@@ -66,6 +67,7 @@ def fitted_detector(run_data):
     Shared by tests that only read it or work on a pickled copy.
     """
     return NonLocalClusterlessDetector(
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
         clusterless_algorithm_params={"disable_progress_bar": True},
     ).fit(
         run_data["train_time"],
@@ -86,6 +88,7 @@ def _log_likelihood(run_data, algorithm, scale, offset):
     scale = np.asarray(scale, dtype=float)
     transform = [m * scale + offset for m in run_data["train_marks"]]
     detector = NonLocalClusterlessDetector(
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
         clusterless_algorithm=algorithm,
         clusterless_algorithm_params={
             "position_std": 6.0,
@@ -154,6 +157,7 @@ def test_outlier_spike_favors_no_spike_by_rate_ratio(run_data, algorithm):
         else {"position_std": 6.0, "waveform_std": 4.0 * spread}
     )
     detector = NonLocalClusterlessDetector(
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
         clusterless_algorithm=algorithm,
         clusterless_algorithm_params={**params, "disable_progress_bar": True},
     ).fit(
@@ -309,6 +313,7 @@ def test_electrode_without_training_marks_adds_no_reference_term():
 @pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
 def test_encoding_refit_keeps_training_reference(run_data):
     detector = NonLocalClusterlessDetector(
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
         clusterless_algorithm_params={
             "position_std": 6.0,
             "waveform_std": 24.0,
@@ -357,7 +362,7 @@ def test_encoding_refit_keeps_training_reference(run_data):
 def test_saved_model_without_mark_reference_must_be_refit(run_data, fitted_detector):
     legacy = pickle.loads(pickle.dumps(fitted_detector))
     del legacy.mark_reference_
-    with pytest.raises(ValidationError, match="mark reference"):
+    with pytest.raises(NotFittedError, match="mark reference"):
         legacy.predict(
             run_data["test_spikes"],
             run_data["test_marks"],

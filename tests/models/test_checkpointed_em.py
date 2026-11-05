@@ -20,6 +20,8 @@ pytestmark = [
 ]
 
 N_BINS = 300
+# Decode bins are 20 ms wide.
+RATE = 50.0
 
 
 def _recording(family):
@@ -35,7 +37,11 @@ def _recording(family):
         rate = 40 * np.exp(-np.sum((position - center) ** 2, axis=1) / 4)
         spike_times.append(np.sort(position_time[rng.poisson(rate / 50) > 0]))
     environment = Environment(place_bin_size=2, position_range=((0, 10), (0, 10)))
-    kwargs = {"environments": environment, "infer_track_interior": False}
+    kwargs = {
+        "environments": environment,
+        "infer_track_interior": False,
+        "sampling_frequency": RATE,
+    }
     if family == "sorted":
         model = NonLocalSortedSpikesDetector(**kwargs)
         data = {"spike_times": spike_times}
@@ -227,7 +233,8 @@ def test_single_state_covariate_em(transition_representation):
     decoder = SortedSpikesDecoder(
         discrete_transition_type=DiscreteNonStationaryDiagonal(
             np.ones(1), formula="1 + speed"
-        )
+        ),
+        sampling_frequency=RATE,
     )
     time = np.linspace(0.0, 2.0, 101)
     results = decoder.estimate_parameters(
@@ -347,7 +354,9 @@ def _track_recording():
         edge_order=[(0, 1), (1, 2)],
         edge_spacing=0.0,
     )
-    model = NonLocalSortedSpikesDetector(environments=environment)
+    model = NonLocalSortedSpikesDetector(
+        environments=environment, sampling_frequency=RATE
+    )
     return model, {
         "spike_times": spike_times,
         "position_time": position_time,
@@ -366,13 +375,16 @@ def test_checkpointed_em_other_models(case):
         model, data = _recording("sorted")
         if case == "no_local_state":
             model = ContFragSortedSpikesClassifier(
-                environments=model.environments, infer_track_interior=False
+                environments=model.environments,
+                infer_track_interior=False,
+                sampling_frequency=RATE,
             )
         else:
             model = NonLocalSortedSpikesDetector(
                 environments=model.environments,
                 infer_track_interior=False,
                 frozen_discrete_transition_rows=[1],
+                sampling_frequency=RATE,
             )
         return model, data
 
@@ -625,7 +637,8 @@ def test_auto_em_keeps_structured_em_when_the_full_dense_matrix_is_over_budget()
     )
     spike_times = [np.sort(position_time[rng.uniform(size=301) < 0.2])]
     model = NonLocalSortedSpikesDetector(
-        environments=Environment(place_bin_size=2, position_range=((0, 200), (0, 200)))
+        environments=Environment(place_bin_size=2, position_range=((0, 200), (0, 200))),
+        sampling_frequency=RATE,
     )
     results = model.estimate_parameters(
         position_time=position_time,

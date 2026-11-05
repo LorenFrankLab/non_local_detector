@@ -9,6 +9,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.simulate import clusterless_simulation, sorted_spikes_simulation
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -29,6 +30,10 @@ CLUSTERLESS_CLASSES = (
     nld.ClusterlessDecoder,
 )
 N_DECODE = 300
+# The recordings' sample rates, which the detectors decode at (one bin per
+# position sample).
+SORTED_RATE = sorted_spikes_simulation.SAMPLING_FREQUENCY
+CLUSTERLESS_RATE = clusterless_simulation.SAMPLING_FREQUENCY
 
 
 @pytest.fixture(scope="session")
@@ -61,8 +66,12 @@ def algorithm_params(algorithm):
 
 
 def make_detector(cls, algorithm, **kwargs):
-    """An unfitted ``cls`` with ``algorithm`` (sorted or clusterless)."""
-    key = "clusterless" if algorithm.startswith("clusterless") else "sorted_spikes"
+    """An unfitted ``cls`` with ``algorithm``, at its recording's sample rate."""
+    is_clusterless = algorithm.startswith("clusterless")
+    key = "clusterless" if is_clusterless else "sorted_spikes"
+    kwargs.setdefault(
+        "sampling_frequency", CLUSTERLESS_RATE if is_clusterless else SORTED_RATE
+    )
     kwargs[f"{key}_algorithm"] = algorithm
     kwargs[f"{key}_algorithm_params"] = algorithm_params(algorithm)
     return cls(**kwargs)

@@ -57,9 +57,15 @@ def decoder_with_results() -> dict[str, Any]:
         for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
     ]
 
+    # Test edges: 50 time bins for decoding. The detector's sampling_frequency
+    # is the rate of these (wide) bins.
+    test_position_time = sim.position_time[n_encode:]
+    test_edges = np.linspace(test_position_time[0], test_position_time[-1], 51)
+
     # Fit decoder on training data
     decoder = ClusterlessDecoder(
         environments=sim.environment,
+        sampling_frequency=1.0 / (test_edges[1] - test_edges[0]),
         clusterless_algorithm="clusterless_kde",
         clusterless_algorithm_params={
             "position_std": POSITION_STD,
@@ -76,15 +82,11 @@ def decoder_with_results() -> dict[str, Any]:
     )
 
     # Test data
-    test_position_time = sim.position_time[n_encode:]
     test_spike_times = [st[st > encode_position_time[-1]] for st in sim.spike_times]
     test_spike_waveform_features = [
         swf[st > encode_position_time[-1]]
         for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
     ]
-
-    # Create test edges (50 time bins for decoding)
-    test_edges = np.linspace(test_position_time[0], test_position_time[-1], 51)
 
     # Predict on test data
     results = decoder.predict(

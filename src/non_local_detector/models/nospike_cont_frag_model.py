@@ -93,8 +93,10 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         ``["No-Spike", "Continuous", "Fragmented"]``.
     sampling_frequency : float, optional
         Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
-        time range; ``predict`` and ``estimate_parameters`` use the
-        ``time_edges`` they are given. Transition probabilities are per decode
+        time range. The ``time_edges`` given to ``predict``,
+        ``estimate_parameters``, ``most_likely_sequence`` and
+        ``compute_log_likelihood`` must be ``1 / sampling_frequency`` wide, or
+        they raise ``ValidationError``. Transition probabilities are per decode
         bin. By default 500.0.
     no_spike_rate : float, optional
         Firing rate in Hz of each neuron in a No-Spike state, by default
@@ -247,8 +249,10 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         ``["No-Spike", "Continuous", "Fragmented"]``.
     sampling_frequency : float, optional
         Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
-        time range; ``predict`` and ``estimate_parameters`` use the
-        ``time_edges`` they are given. Transition probabilities are per decode
+        time range. The ``time_edges`` given to ``predict``,
+        ``estimate_parameters``, ``most_likely_sequence`` and
+        ``compute_log_likelihood`` must be ``1 / sampling_frequency`` wide, or
+        they raise ``ValidationError``. Transition probabilities are per decode
         bin. By default 500.0.
     no_spike_rate : float, optional
         Firing rate in Hz of each electrode in a No-Spike state, by default

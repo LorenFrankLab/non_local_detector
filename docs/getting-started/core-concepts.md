@@ -38,6 +38,12 @@ An `Environment` discretizes space into position bins.
   the order NetworkX lists the edges (`graph.edges`), as
   `track_linearization.make_track_graph` does: that function assumes it.
 
+1-D position with no track graph is decoded as a 1-D open field: the model
+moves between neighboring bins of that line and knows nothing of the track's
+topology. For a linear track or a maze, pass the raw 2-D `(x, y)` position with
+a `track_graph`, `edge_order` and `edge_spacing` instead of position you
+linearized yourself; with a track graph, 1-D position raises `ValidationError`.
+
 Pass environments to a model with `environments=[Environment(...)]`. Models
 with more than one environment, such as
 `MultiEnvironmentSortedSpikesClassifier`, decode which environment the
@@ -134,7 +140,8 @@ Decoding takes bin **edges**, `time_edges` with shape `(n_bins + 1,)`, and
 returns one row per bin. Build them with `detector.calculate_time_edges([start, stop])`
 (bins of `1 / sampling_frequency` seconds) or with
 `time_edges_from_centers(position_time)` (one bin per position sample). Detector
-bins must be uniform. See [Time bins and rates](../time_grid_migration.md) for
+bins must be uniform and `1 / sampling_frequency` wide, so a detector decoding
+one bin per position sample is constructed with the position sampling rate. See [Time bins and rates](../time_grid_migration.md) for
 the details.
 
 ## Fit, estimate and predict

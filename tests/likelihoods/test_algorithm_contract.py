@@ -16,14 +16,17 @@ import subprocess
 import sys
 import typing
 from dataclasses import replace
+from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from non_local_detector import Environment, time_edges_from_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
+    _ARRAY_ENCODING_KEYS,
     _CLUSTERLESS_ALGORITHMS,
     _CLUSTERLESS_PREDICT_KEYWORDS,
     _ENCODING_MODEL_KEYS,
@@ -51,7 +54,8 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
-from tests.models._helpers import ALGORITHMS, _decoder
+from non_local_detector.model_format import read_model_summary
+from tests.models._helpers import ALGORITHMS, _decoder, type_violations
 
 pytestmark = pytest.mark.unit
 
@@ -215,6 +219,38 @@ def test_registered_algorithm_meets_the_detector_contract(
         assert likelihood.shape == shape
 
 
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_predict_takes_no_position_when_not_local(monkeypatch, recording, algorithm):
+    """A detector that reads no position passes predict None for both position
+    arguments; the non-local likelihood needs neither, and the local one asks
+    for them by name."""
+    registry, _ = _registry(algorithm)
+    record = registry[algorithm]
+    decoder, spike_data = _fit(algorithm, recording)
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return record.predict(*args, **kwargs)
+
+    monkeypatch.setitem(registry, algorithm, replace(record, predict=spy))
+    time, *_ = recording
+    edges = time_edges_from_centers(time[_DECODE_SAMPLES])
+    decoder.predict(*spike_data, time_edges=edges, return_outputs="log_likelihood")
+
+    ((args, kwargs),) = calls
+    assert args[:2] == (None, None)
+    assert kwargs["is_local"] is False
+    with pytest.raises(ValidationError, match="position_time and position are None"):
+        record.predict(*args, **{**kwargs, "is_local": True})
+
+
 def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
     """A fit whose keys break each rule is caught, one message per rule."""
 
@@ -272,6 +308,126 @@ def test_contract_check_reports_a_renamed_key(monkeypatch, recording):
         "optional predict parameters not supplied: ['interior_log_place_fields']",
         "keys predict does not accept: ['interior_log_place_field']",
     ]
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_encoding_model_values_have_their_declared_types(
+    tmp_path, recording, algorithm
+):
+    """Each value has its declared type, as fitted and as loaded from a pickle
+    or a saved model."""
+    record = _registry(algorithm)[0][algorithm]
+    decoder, _ = _fit(algorithm, recording)
+    decoder.save_model(tmp_path / "model.nld")
+    for detector in (
+        decoder,
+        pickle.loads(pickle.dumps(decoder)),
+        type(decoder).load_model(tmp_path / "model.nld"),
+    ):
+        (encoding_model,) = detector.encoding_model_.values()
+        assert type_violations(encoding_model, record.encoding_model_type) == []
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.filterwarnings(
+    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:GLM Poisson regression may not have converged:UserWarning"
+)
+def test_values_saved_with_their_old_types_load_unified(tmp_path, recording, algorithm):
+    """Models saved before the shared keys held NumPy arrays (Python floats in
+    a list, or a JAX array) load with them as arrays of the same dtype and
+    values, and decode as the new fit does."""
+    decoder, spike_data = _fit(algorithm, recording)
+    time, position, *_ = recording
+    edges = time_edges_from_centers(time[_DECODE_SAMPLES])
+
+    def log_likelihood(detector):
+        return detector.predict(
+            *spike_data,
+            time_edges=edges,
+            position_time=time,
+            position=position,
+            return_outputs="log_likelihood",
+        ).log_likelihood.values
+
+    expected = log_likelihood(decoder)
+    (key,) = decoder.encoding_model_
+    fitted = decoder.encoding_model_[key]
+    shared = [name for name in _ARRAY_ENCODING_KEYS if name in fitted]
+    old = dict(fitted)
+    for name in shared:
+        value = fitted[name]
+        old[name] = value.tolist() if value.dtype == np.float64 else jnp.asarray(value)
+    decoder.encoding_model_ = {key: old}
+    decoder.save_model(tmp_path / "model.nld")
+    for loaded in (
+        pickle.loads(pickle.dumps(decoder)),
+        type(decoder).load_model(tmp_path / "model.nld"),
+    ):
+        (model,) = loaded.encoding_model_.values()
+        for name in shared:
+            assert type(model[name]) is np.ndarray, name
+            assert model[name].dtype == fitted[name].dtype, name
+            np.testing.assert_array_equal(model[name], fitted[name])
+        np.testing.assert_array_equal(log_likelihood(loaded), expected)
+    (summary,) = read_model_summary(tmp_path / "model.nld")["encoding_models"]
+    for name in shared:
+        if name in summary:  # the summary omits large arrays
+            assert type(summary[name]) is np.ndarray, name
+            np.testing.assert_array_equal(summary[name], fitted[name])
+
+
+def test_type_check_reports_a_wrong_value():
+    """A value of another type than declared is reported, element types too."""
+
+    class Model(typing.TypedDict):
+        rates: np.ndarray
+        counts: list[int]
+        scale: float | None
+
+    model = {"rates": [1.0], "counts": [1, 2.5], "scale": 3}
+    assert type_violations(model, Model) == [
+        "rates: declared <class 'numpy.ndarray'>, got list",
+        "counts: declared list[int], got list",
+    ]
+
+
+# Keys several algorithms store whose values mean different things, so each
+# algorithm declares its own type.
+_PER_ALGORITHM_KEY_TYPES = {
+    # Each algorithm's own fitted density model.
+    "gpi_models",
+    "occupancy_model",
+    # The fit's bandwidth parameters, whose accepted forms differ: the KDE
+    # stores position_std as a per-dimension vector, diffusion as a scalar
+    # (it rejects per-dimension values).
+    "position_std",
+    "waveform_std",
+}
+
+
+def test_shared_keys_have_one_declared_type():
+    """A key several algorithms store is declared with the same type in each."""
+    declared: dict[str, dict[str, object]] = {}
+    for algorithm in ALGORITHMS:
+        record = _registry(algorithm)[0][algorithm]
+        hints = typing.get_type_hints(record.encoding_model_type)
+        for key, annotation in hints.items():
+            declared.setdefault(key, {})[algorithm] = annotation
+    differing = {
+        key: by_algorithm
+        for key, by_algorithm in declared.items()
+        if len(set(map(str, by_algorithm.values()))) > 1
+    }
+    assert set(differing) == _PER_ALGORITHM_KEY_TYPES, differing
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
@@ -478,6 +634,64 @@ def test_clusterless_record_requires_a_mark_scale():
         )
 
 
+def mark_scale_default_mismatches(record: ClusterlessLikelihoodAlgorithm) -> list[str]:
+    """Each ``mark_reference_scale`` default that differs from its fit's.
+
+    A detector whose params leave the mark bandwidth unset calls the scale
+    without it, while the fit uses its own default, so the two must agree or
+    the mark reference is built for a kernel the fit does not use.
+    """
+    fit_parameters = inspect.signature(record.fit).parameters
+    mismatches = []
+    for name, parameter in inspect.signature(
+        record.mark_reference_scale
+    ).parameters.items():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            continue
+        if name not in fit_parameters:
+            mismatches.append(f"{name}: not a fit parameter")
+        elif not np.array_equal(parameter.default, fit_parameters[name].default):
+            mismatches.append(
+                f"{name}: scale default {parameter.default!r}, "
+                f"fit default {fit_parameters[name].default!r}"
+            )
+    return mismatches
+
+
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+def test_mark_reference_scale_defaults_match_the_fit(algorithm):
+    """With no params, the mark reference uses the fit's own mark bandwidth."""
+    record = _CLUSTERLESS_ALGORITHMS[algorithm]
+    assert mark_scale_default_mismatches(record) == []
+    fit_defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(record.fit).parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+    }
+    np.testing.assert_array_equal(
+        record.mark_reference_scale(), record.mark_reference_scale(**fit_defaults)
+    )
+
+
+def test_mark_scale_check_reports_a_changed_default():
+    """A scale default that drifted from the fit's, or that names no fit
+    parameter, is caught."""
+
+    def drifted(waveform_std=12.0, **_fit_params):
+        return waveform_std
+
+    def misnamed(mark_std=24.0, **_fit_params):
+        return mark_std
+
+    record = _CLUSTERLESS_ALGORITHMS["clusterless_kde"]
+    assert mark_scale_default_mismatches(
+        replace(record, mark_reference_scale=drifted)
+    ) == ["waveform_std: scale default 12.0, fit default 24.0"]
+    assert mark_scale_default_mismatches(
+        replace(record, mark_reference_scale=misnamed)
+    ) == ["mark_std: not a fit parameter"]
+
+
 @pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
 def test_model_checking_intensity_names_a_class(algorithm):
     """A record's model-checking intensity names a class model checking has."""
@@ -486,6 +700,18 @@ def test_model_checking_intensity_names_a_class(algorithm):
     name = _CLUSTERLESS_ALGORITHMS[algorithm].electrode_intensity
     if name is not None:
         assert isinstance(getattr(_clusterless_models, name), type)
+
+
+@pytest.mark.parametrize(
+    "document", ["README.md", "docs/getting-started/core-concepts.md"]
+)
+def test_user_docs_list_every_algorithm(document):
+    """The hand-written algorithm lists name every registered algorithm."""
+    path = Path(__file__).parents[2] / document
+    if not path.is_file():
+        pytest.skip(f"{document} is not part of this installation")
+    text = path.read_text()
+    assert [name for name in ALGORITHMS if f"`{name}`" not in text] == []
 
 
 def test_likelihoods_do_not_import_model_checking():

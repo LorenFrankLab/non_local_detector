@@ -46,7 +46,7 @@ def test_summary_holds_the_grid_place_fields_and_transitions(sorted_model):
     assert (model["environment_name"], model["encoding_group"]) == ("", 0)
     assert model["algorithm"] == "sorted_spikes_kde"
     np.testing.assert_array_equal(model["place_fields"], expected["place_fields"])
-    assert model["mean_rates"] == expected["mean_rates"]
+    np.testing.assert_array_equal(model["mean_rates"], expected["mean_rates"])
     assert "occupancy_model" not in model
     np.testing.assert_array_equal(
         summary["discrete_state_transitions"], detector.discrete_state_transitions_
@@ -77,7 +77,9 @@ def test_summary_does_not_read_clusterless_spike_samples(
 
     (model,) = summary["encoding_models"]
     assert "encoding_spike_waveform_features" not in model
-    assert model["mean_rates"] == detector.encoding_model_[("", 0)]["mean_rates"]
+    np.testing.assert_array_equal(
+        model["mean_rates"], detector.encoding_model_[("", 0)]["mean_rates"]
+    )
     with pytest.raises(DataError, match="missing"):
         nld.NonLocalClusterlessDetector.load_model(trimmed)
 

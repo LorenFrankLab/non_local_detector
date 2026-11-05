@@ -20,6 +20,7 @@ from non_local_detector import (
 )
 from non_local_detector.likelihoods.diffusion import check_smoothing_bandwidth
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.models._helpers import SORTED_SIM_RATE
 
 pytestmark = pytest.mark.unit
 
@@ -168,22 +169,27 @@ def _caught(match, call):
 
 def test_zero_exposure_is_data_quality(recording):
     n = len(recording["position_time"])
-    detector = NonLocalSortedSpikesDetector()
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     call = lambda: detector.fit(  # noqa: E731
         **recording, is_training=np.zeros(n, dtype=bool)
     )
     assert _caught("zero training exposure", call) == {DataQualityWarning}
 
 
-def test_one_dimensional_position_is_data_quality(recording):
-    detector = NonLocalSortedSpikesDetector()
-    call = lambda: detector.fit(**recording)  # noqa: E731
-    assert _caught("appears to be 1D", call) == {DataQualityWarning}
+def test_spikes_outside_the_recording_is_data_quality(recording):
+    # Spike times on the Unix-epoch clock, position from 0.
+    on_epoch = {
+        **recording,
+        "spike_times": [t + 1.6e9 for t in recording["spike_times"]],
+    }
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
+    call = lambda: detector.fit(**on_epoch)  # noqa: E731
+    assert _caught("None of the", call) == {DataQualityWarning}
 
 
 def test_em_not_converged_is_numerical(recording):
     edges = time_edges_from_centers(recording["position_time"])
-    detector = NonLocalSortedSpikesDetector()
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     call = lambda: detector.estimate_parameters(  # noqa: E731
         **recording, time_edges=edges, max_iter=1
     )
@@ -198,7 +204,9 @@ def test_small_bandwidth_is_parameter():
 
 
 def test_deprecated_output_flag_is_compatibility(recording):
-    detector = NonLocalSortedSpikesDetector().fit(**recording)
+    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE).fit(
+        **recording
+    )
     edges = time_edges_from_centers(recording["position_time"])
     call = lambda: detector.predict(  # noqa: E731
         spike_times=recording["spike_times"],

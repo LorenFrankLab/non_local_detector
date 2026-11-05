@@ -683,7 +683,10 @@ def test_decoder_decodes_a_simulated_run():
     sim = make_simulated_run_data(n_runs=3)
     time, position = sim.position_time, sim.position
     train = np.arange(len(time)) < int(0.7 * len(time))
-    decoder = ClusterlessDecoder(clusterless_algorithm="clusterless_mark_glm").fit(
+    decoder = ClusterlessDecoder(
+        clusterless_algorithm="clusterless_mark_glm",
+        sampling_frequency=1000.0,  # make_simulated_run_data rate
+    ).fit(
         time, position, sim.spike_times, sim.spike_waveform_features, is_training=train
     )
     results = decoder.predict(
@@ -728,7 +731,10 @@ def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
     sim = make_simulated_run_data(
         n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=3, seed=42
     )
-    detector = NonLocalClusterlessDetector(clusterless_algorithm="clusterless_mark_glm")
+    detector = NonLocalClusterlessDetector(
+        clusterless_algorithm="clusterless_mark_glm",
+        sampling_frequency=1000.0,  # make_simulated_run_data rate
+    )
     results = detector.estimate_parameters(
         position_time=sim.position_time,
         position=sim.position,

@@ -153,7 +153,10 @@ Unix times) is rejected.
   (`time=position_time`) migrates to
   `time_edges=time_edges_from_centers(position_time)`, which keeps the same
   row count and nominal coordinates; a spike between samples now belongs to the nearest
-  sample's bin rather than the preceding one.
+  sample's bin rather than the preceding one. Construct the detector with the
+  samples' rate (`sampling_frequency=`, 500 Hz by default) as well.
+- Detector bins must be `1 / sampling_frequency` wide (within the uniformity
+  tolerance); edges at another width raise `ValidationError`.
 - After `estimate_parameters`, the learned transitions are tied to that bin
   width (`transition_time_bin_width_`); decoding at a different width raises.
 - Movement transitions remain per step: `RandomWalk.movement_var` is the

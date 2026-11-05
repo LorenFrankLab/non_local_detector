@@ -96,6 +96,7 @@ def test_encoding_update_skips_models_without_local_observations(monkeypatch):
         state_names=["Local"],
         environments=Environment(position_range=[(0, 10)], place_bin_size=2),
         infer_track_interior=False,
+        sampling_frequency=50.0,  # the decode edges below are 20 ms wide
     )
     weights = []
     original_refit_encoding = model._refit_encoding_model

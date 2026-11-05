@@ -1303,6 +1303,51 @@ def test_custom_transition_opts_into_a_structured_block():
 
 
 @pytest.mark.unit
+def test_custom_structured_block_rows_are_checked_before_inference():
+    """A custom structured block's rows meet the dense probability contract.
+
+    The builder checks only its shape; the checkpointed driver then rejects
+    rows summing above 1 before evaluating any likelihood, as it does for a
+    dense matrix.
+    """
+    from non_local_detector.checkpointed_inference import (
+        checkpointed_forward_backward,
+    )
+    from non_local_detector.transition_operators import DenseBlock
+
+    class Doubling:
+        environment_name = ""
+
+        def make_state_transition(self, environments, context=None):
+            return 2 * np.eye(len(environments[0].place_bin_centers_))
+
+        def structured_block(self, environments):
+            return DenseBlock(self.make_state_transition(environments))
+
+        def dense_block_shape(self, environments):
+            n_bins = len(environments[0].place_bin_centers_)
+            return (n_bins, n_bins)
+
+        def graph_distance_environment(self, environments):
+            return None
+
+    env = environment((3, 4), holes=False)
+    operator = build_transition_operator([[Doubling()]], [env], (12,))
+    calls = []
+    with pytest.raises(
+        ValidationError, match="transition_operator rows must be probability"
+    ):
+        checkpointed_forward_backward(
+            np.arange(3) * 0.002,
+            np.full(12, 1 / 12),
+            lambda edges, **kw: calls.append(1),
+            transition_operator=operator.bind_discrete(np.ones((1, 1))).fused(),
+            state_ind=np.zeros(12, dtype=int),
+        )
+    assert calls == []
+
+
+@pytest.mark.unit
 def test_subclass_overriding_make_state_transition_falls_back_to_dense():
     """A RandomWalk subclass with its own make_state_transition does not
     inherit the Gaussian structured block."""

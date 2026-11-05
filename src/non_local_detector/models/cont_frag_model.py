@@ -10,6 +10,7 @@ import numpy as np
 import xarray as xr
 
 from non_local_detector._position_dims import get_position_dims
+from non_local_detector.exceptions import DataError
 from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
@@ -46,7 +47,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
 
     Raises
     ------
-    ValueError
+    DataError
         If no position dimension is present (``unstacked.sum([])`` would
         otherwise silently return the full per-bin array).
     """
@@ -58,7 +59,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
             f"acausal_posterior unstacked to dims {tuple(unstacked.dims)}. "
             "Expected a dim named 'position' or ending in '_position'."
         )
-        raise ValueError(msg)
+        raise DataError(msg)
     return cast("xr.DataArray", unstacked.sum(position_dims))
 
 
@@ -156,8 +157,10 @@ class ContFragSortedSpikesClassifier(_ContFragResultsMixin, SortedSpikesDetector
         Names of the states, by default ``["Continuous", "Fragmented"]``.
     sampling_frequency : float, optional
         Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
-        time range; ``predict`` and ``estimate_parameters`` use the
-        ``time_edges`` they are given. Transition probabilities are per decode
+        time range. The ``time_edges`` given to ``predict``,
+        ``estimate_parameters``, ``most_likely_sequence`` and
+        ``compute_log_likelihood`` must be ``1 / sampling_frequency`` wide, or
+        they raise ``ValidationError``. Transition probabilities are per decode
         bin. By default 500.0.
     no_spike_rate : float, optional
         Firing rate in Hz of each neuron in a No-Spike state, by default
@@ -305,8 +308,10 @@ class ContFragClusterlessClassifier(_ContFragResultsMixin, ClusterlessDetector):
         Names of the states, by default ``["Continuous", "Fragmented"]``.
     sampling_frequency : float, optional
         Rate in Hz of the decode bins that ``calculate_time_edges`` builds from a
-        time range; ``predict`` and ``estimate_parameters`` use the
-        ``time_edges`` they are given. Transition probabilities are per decode
+        time range. The ``time_edges`` given to ``predict``,
+        ``estimate_parameters``, ``most_likely_sequence`` and
+        ``compute_log_likelihood`` must be ``1 / sampling_frequency`` wide, or
+        they raise ``ValidationError``. Transition probabilities are per decode
         bin. By default 500.0.
     no_spike_rate : float, optional
         Firing rate in Hz of each electrode in a No-Spike state, by default

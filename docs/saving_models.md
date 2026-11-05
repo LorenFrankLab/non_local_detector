@@ -15,10 +15,14 @@ from non_local_detector import SortedSpikesDecoder, time_edges_from_centers
 from non_local_detector.model_format import read_model_summary
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
-_, position, spike_times, time, *_ = make_simulated_data(n_neurons=5)
+_, position, spike_times, time, _, sampling_frequency, *_ = make_simulated_data(
+    n_neurons=5
+)
 time, position = time[:3000], position[:3000]
 spike_times = [spikes[spikes <= time[-1]] for spikes in spike_times]
-decoder = SortedSpikesDecoder().fit(time, position, spike_times)
+decoder = SortedSpikesDecoder(sampling_frequency=sampling_frequency).fit(
+    time, position, spike_times
+)
 
 decoder.save_model("decoder.nld")
 loaded = SortedSpikesDecoder.load_model("decoder.nld")

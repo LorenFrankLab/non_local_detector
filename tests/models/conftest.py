@@ -59,6 +59,8 @@ def checkpoint_recording():
                 place_bin_size=2, position_range=((0, 10), (0, 10))
             ),
             "infer_track_interior": False,
+            # The decode edges below are 20 ms wide.
+            "sampling_frequency": 50.0,
         }
         if family == "sorted":
             model = NonLocalSortedSpikesDetector(**kwargs)

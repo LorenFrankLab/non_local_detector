@@ -26,7 +26,12 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
-from tests.models._helpers import _assert_unchanged, _snapshot
+from tests.models._helpers import (
+    CLUSTERLESS_SIM_RATE,
+    SORTED_SIM_RATE,
+    _assert_unchanged,
+    _snapshot,
+)
 
 # These tests cap max_iter for speed, so EM stops before convergence.
 pytestmark = pytest.mark.filterwarnings(
@@ -73,7 +78,13 @@ def fitted(family_data):
     snapshot already includes them.
     """
     detector_cls, fit_args, _ = family_data
-    detector = detector_cls()
+    # Every decode in this module has one bin per position sample.
+    rate = (
+        SORTED_SIM_RATE
+        if detector_cls is NonLocalSortedSpikesDetector
+        else CLUSTERLESS_SIM_RATE
+    )
+    detector = detector_cls(sampling_frequency=rate)
     detector.estimate_parameters(
         **fit_args,
         time_edges=time_edges_from_centers(fit_args["position_time"]),

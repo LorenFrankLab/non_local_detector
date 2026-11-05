@@ -19,7 +19,7 @@ from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.model_format import _registry, register_type, registered_types
 from non_local_detector.model_format._builtins import builtin_types
 from tests.model_format._compare import assert_same_fitted_state
-from tests.model_format.conftest import algorithm_params, decode
+from tests.model_format.conftest import SORTED_RATE, algorithm_params, decode
 
 pytestmark = pytest.mark.integration
 
@@ -65,6 +65,7 @@ def _fit(cls, transition, sorted_recording):
     detector = cls(
         continuous_transition_types=[[transition]],
         sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
     )
     return detector.fit(time, position, spike_times)
 

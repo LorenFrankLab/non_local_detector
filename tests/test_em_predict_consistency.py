@@ -18,6 +18,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 
 @pytest.mark.slow
@@ -41,7 +42,7 @@ class TestEstimateParametersPredictConsistency:
             seed=42,
         )
 
-        decoder = ClusterlessDecoder()
+        decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
         est_results = decoder.estimate_parameters(
             position_time=sim.position_time,
             position=sim.position,
@@ -127,7 +128,7 @@ class TestEstimationKeepsNoInputData:
                 if any(value is array for value in stored)
             ]
 
-        detector = NonLocalClusterlessDetector()
+        detector = NonLocalClusterlessDetector(sampling_frequency=CLUSTERLESS_SIM_RATE)
         original_refit = detector._refit_encoding_model
         refit_data = []
         held_during_refit = []
@@ -197,7 +198,8 @@ def _fit_cont_frag(sim, estimate_initial_conditions, max_iter):
     """Fit a two-state classifier whose user-specified discrete initial
     conditions are ``USER_DISCRETE_INITIAL_CONDITIONS``."""
     classifier = ContFragClusterlessClassifier(
-        discrete_initial_conditions=USER_DISCRETE_INITIAL_CONDITIONS.copy()
+        discrete_initial_conditions=USER_DISCRETE_INITIAL_CONDITIONS.copy(),
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # EM stops at max_iter

@@ -26,7 +26,7 @@ It provides:
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.model_format._codec import Decoder
 from non_local_detector.model_format._container import (
     FORMAT_VERSION,
@@ -157,6 +157,11 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
             }
             for entry in state["encoding_models"]
         ]
+        # Files saved before the shared keys' values were NumPy arrays.
+        from non_local_detector.likelihoods import _unify_stored_encoding_values
+
+        for model in summary["encoding_models"]:
+            _unify_stored_encoding_values(model)
         summary["discrete_state_transitions"] = (
             decoder.decode(state["discrete_state_transitions"])
             if "discrete_state_transitions" in state
@@ -188,7 +193,7 @@ def _refuse_undecodable(detector: "_DetectorBase", path: str | Path) -> None:
         )
     try:
         detector._validate_time_contract()
-    except ValidationError as error:
+    except (NotFittedError, ValidationError) as error:
         msg = f"Cannot convert {path}: the model cannot decode ({error.args[0]})"
         raise ValidationError(
             msg,

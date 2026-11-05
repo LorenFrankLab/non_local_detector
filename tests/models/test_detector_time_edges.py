@@ -22,6 +22,8 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import DataError, ValidationError
 from tests.models._helpers import (
+    CLUSTERLESS_SIM_RATE,
+    SORTED_SIM_RATE,
     _assert_unchanged,
     _snapshot,
 )
@@ -58,15 +60,33 @@ def family(request, sorted_sim, clusterless_sim):
     )
 
 
+_SIM_RATE = {
+    NonLocalSortedSpikesDetector: SORTED_SIM_RATE,
+    NonLocalClusterlessDetector: CLUSTERLESS_SIM_RATE,
+}
+
+
+def _detector(detector_cls, factor=1):
+    """A detector decoding bins ``factor`` samples wide (see ``_coarse_edges``)."""
+    return detector_cls(sampling_frequency=_SIM_RATE[detector_cls] / factor)
+
+
 @pytest.fixture(scope="module")
 def fitted(family):
-    """Default detector fitted once per family; tests must not mutate it.
+    """Default detector fitted once per family, decoding ``_coarse_edges``.
 
     Decoding only records diagnostics on the detector, so read-only tests
     share it; tests that patch or may change the detector use a deepcopy.
     """
     detector_cls, _, fit_args, _ = family
-    return detector_cls().fit(**fit_args)
+    return _detector(detector_cls, factor=4).fit(**fit_args)
+
+
+@pytest.fixture(scope="module")
+def fitted_per_sample(family):
+    """Like ``fitted``, but decoding one bin per position sample."""
+    detector_cls, _, fit_args, _ = family
+    return _detector(detector_cls).fit(**fit_args)
 
 
 def _decode_args(family, time_edges, **kwargs):
@@ -115,9 +135,11 @@ def test_most_likely_sequence_returns_one_row_per_bin(family, fitted):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_sample_centered_edges_keep_one_row_per_position_sample(family, fitted):
+def test_sample_centered_edges_keep_one_row_per_position_sample(
+    family, fitted_per_sample
+):
     """``time_edges_from_centers`` reproduces the one-row-per-sample grid."""
-    detector = fitted
+    detector = fitted_per_sample
     position_time = family[1][:300]
     results = detector.predict(
         **_decode_args(family, time_edges_from_centers(position_time))
@@ -280,11 +302,13 @@ def test_missing_bins_include_a_nan_read_at_the_closed_final_edge():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("family", ["clusterless"], indirect=True)
-def test_spike_with_nan_position_in_a_finite_center_bin_is_missing(family, fitted):
+def test_spike_with_nan_position_in_a_finite_center_bin_is_missing(
+    family, fitted_per_sample
+):
     """A decoding spike at ``t[k] + 0.75 dt`` with ``position[k]`` NaN reads a
     NaN position although its bin's center ``t[k + 1]`` reads a finite one.
     The bin must be missing, or the local likelihood turns the posterior NaN."""
-    detector = fitted
+    detector = fitted_per_sample
     position_time = family[1][:300]
     position = family[2]["position"].astype(float)[:300].copy()
     position = position if position.ndim > 1 else position[:, None]
@@ -348,7 +372,7 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
     detector_cls, position_time, fit_args, _ = family
     dt = np.median(np.diff(position_time))
     edges = position_time[0] + 0.5 * dt + np.arange(position_time.size + 1) * dt
-    detector = detector_cls()
+    detector = _detector(detector_cls)
     recorded = {"probabilities": [], "weights": []}
     original_predict = detector._predict
     original_refit_encoding = detector._refit_encoding_model
@@ -390,7 +414,7 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
 def test_learned_transitions_require_the_same_bin_width(family):
     detector_cls, position_time, fit_args, _ = family
-    detector = detector_cls()
+    detector = _detector(detector_cls, factor=2)
     edges = _coarse_edges(position_time, factor=2)
     detector.estimate_parameters(**fit_args, time_edges=edges, max_iter=1)
     width = float(np.mean(np.diff(edges)))
@@ -398,13 +422,16 @@ def test_learned_transitions_require_the_same_bin_width(family):
 
     detector.predict(**_decode_args(family, edges))
     wider = _coarse_edges(position_time, factor=4)
-    with pytest.raises(ValidationError, match="bin width"):
+    with pytest.raises(ValidationError, match="learned transitions"):
         detector.predict(**_decode_args(family, wider))
-    with pytest.raises(ValidationError, match="bin width"):
+    with pytest.raises(ValidationError, match="learned transitions"):
         detector.most_likely_sequence(**_decode_args(family, wider))
 
     # A plain fit replaces the learned transitions and the recorded width.
+    # The learned width is a separate check from the detector's sampling
+    # frequency, which must now match the wider edges.
     detector.fit(**fit_args)
+    detector.sampling_frequency = _SIM_RATE[detector_cls] / 4
     assert detector.transition_time_bin_width_ is None
     detector.predict(**_decode_args(family, wider))
 
@@ -527,7 +554,7 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     """Position samples the decode grid does not cover carry no posterior."""
     detector_cls, position_time, fit_args, _ = family
     edges = _coarse_edges(position_time, factor=4, n_bins=300)
-    detector = detector_cls()
+    detector = _detector(detector_cls, factor=4)
     weights = []
     original = detector._refit_encoding_model
 
@@ -556,12 +583,13 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
 @pytest.mark.parametrize("family", ["sorted"], indirect=True)
 def test_width_is_recorded_only_when_transitions_are_learned(family):
     detector_cls, position_time, fit_args, _ = family
-    detector = detector_cls()
+    detector = _detector(detector_cls, factor=2)
     edges = _coarse_edges(position_time, factor=2)
     detector.estimate_parameters(
         **fit_args, time_edges=edges, max_iter=1, estimate_discrete_transition=False
     )
     assert detector.transition_time_bin_width_ is None
+    detector.sampling_frequency = _SIM_RATE[detector_cls] / 4
     detector.predict(**_decode_args(family, _coarse_edges(position_time, factor=4)))
 
 
@@ -668,7 +696,7 @@ def test_estimate_parameters_decodes_user_missing_bins_as_missing(family):
     edges = _coarse_edges(position_time)
     is_missing = np.zeros(200, bool)
     is_missing[[0, 57, 58, 199]] = True
-    results = detector_cls().estimate_parameters(
+    results = _detector(detector_cls, factor=4).estimate_parameters(
         **fit_args,
         time_edges=edges,
         is_missing=is_missing,
@@ -679,7 +707,7 @@ def test_estimate_parameters_decodes_user_missing_bins_as_missing(family):
         np.all(results.log_likelihood.values == 0.0, axis=1), is_missing
     )
     with pytest.raises(ValidationError, match="is_missing"):
-        detector_cls().estimate_parameters(
+        _detector(detector_cls, factor=4).estimate_parameters(
             **fit_args, time_edges=edges, is_missing=np.zeros(201, bool), max_iter=1
         )
 
@@ -693,7 +721,7 @@ def test_unix_epoch_origin_matches_origin_zero(family):
     edges = _coarse_edges(position_time)
     results = []
     for offset in (0.0, shift):
-        detector = detector_cls()
+        detector = _detector(detector_cls, factor=4)
         shifted_fit = {
             **fit_args,
             "position_time": fit_args["position_time"] + offset,

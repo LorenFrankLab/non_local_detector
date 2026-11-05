@@ -16,7 +16,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import NotFittedError, ValidationError
 from non_local_detector.models.base import (
     _normalize_return_outputs,
     _validate_inference_arguments,
@@ -266,7 +266,7 @@ def test_base_time_contract_check_fails_closed():
     """A subclass that does not override the hook still gets the encoding check."""
     from non_local_detector.models.base import _DetectorBase
 
-    with pytest.raises(ValidationError, match="not fitted"):
+    with pytest.raises(NotFittedError, match="not fitted"):
         _DetectorBase._validate_time_contract(_decoder())
     time, position, spike_times = _recording()
     detector = _decoder().fit(time, position, spike_times)
@@ -397,3 +397,74 @@ def test_estimate_parameters_accepts_list_inputs():
         time.tolist(), position.tolist(), spike_times, **options
     )
     np.testing.assert_array_equal(actual.acausal_posterior, expected.acausal_posterior)
+
+
+N_BINS = len(EDGES) - 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "method",
+    [
+        "predict",
+        "most_likely_sequence",
+        "compute_log_likelihood",
+        "estimate_parameters",
+    ],
+)
+@pytest.mark.parametrize(
+    "is_missing",
+    [
+        np.full(N_BINS, 0.5),  # read as True by a bool cast
+        np.full(N_BINS, 2),
+        np.full(N_BINS, np.nan),
+        np.zeros(N_BINS),  # floats are not a mask
+        np.array([True]),  # would broadcast to every bin
+    ],
+    ids=["half", "integer_two", "nan", "float", "length_one"],
+)
+def test_malformed_is_missing_is_rejected(fitted_local, method, is_missing):
+    """``is_missing`` is checked like ``is_training``: a bool cast read 0.5,
+    2 and NaN as True."""
+    detector, time, position = fitted_local
+    _, _, spike_times = _recording()
+    arguments = {"time_edges": EDGES, "is_missing": is_missing}
+    if method == "estimate_parameters":
+        detector = detector.copy()
+        call = (time, position, spike_times)
+        arguments["max_iter"] = 1
+    else:
+        call = (spike_times,)
+        arguments.update(position=position, position_time=time)
+    if method == "compute_log_likelihood":
+        call = (time, position, spike_times)
+        del arguments["position"], arguments["position_time"]
+    with pytest.raises(ValidationError, match="is_missing"):
+        getattr(detector, method)(*call, **arguments)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["predict", "compute_log_likelihood"])
+def test_zero_one_integer_is_missing_matches_boolean(fitted_local, method):
+    detector, time, position = fitted_local
+    _, _, spike_times = _recording()
+    mask = np.arange(N_BINS) % 4 == 0
+    if method == "predict":
+
+        def decode(is_missing):
+            return detector.predict(
+                spike_times,
+                time_edges=EDGES,
+                position=position,
+                position_time=time,
+                is_missing=is_missing,
+            ).acausal_posterior
+
+    else:
+
+        def decode(is_missing):
+            return detector.compute_log_likelihood(
+                time, position, spike_times, time_edges=EDGES, is_missing=is_missing
+            )
+
+    np.testing.assert_array_equal(decode(mask.astype(np.int8)), decode(mask))

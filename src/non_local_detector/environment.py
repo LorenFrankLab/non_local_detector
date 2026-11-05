@@ -539,6 +539,12 @@ class Environment:
     rebuilds an unfitted environment with the same configuration. Environments
     pickled by earlier releases, which stored the fitted attributes
     themselves, unpickle into the same form.
+
+    Without a ``track_graph``, 1-D position is a 1-D open field. For a linear
+    track or a maze, pass the raw 2-D ``(x, y)`` position with ``track_graph``,
+    ``edge_order`` and ``edge_spacing``, which linearizes it along the track's
+    topology, rather than position linearized beforehand; the detectors reject
+    1-D position for an environment with a track graph.
     """
 
     environment_name: str = ""

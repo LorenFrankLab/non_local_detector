@@ -107,7 +107,7 @@ def test_detector_fit_leaves_transitions_and_initial_conditions_rebuildable(
         _assert_configuration_only(obj)
 
 
-def _spatial_decoder():
+def _spatial_decoder(sampling_frequency=500.0):
     transitions = [
         [RandomWalk(use_manifold_distance=True), Identity(), Uniform()],
         [EmpiricalMovement(), RandomWalkDirection1(), Uniform(environment2_name="")],
@@ -123,6 +123,7 @@ def _spatial_decoder():
         discrete_transition_stickiness=0.0,
         state_names=["a", "b", "c"],
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
+        sampling_frequency=sampling_frequency,
     )
 
 
@@ -136,8 +137,10 @@ def test_spatial_transitions_gain_no_attributes_in_a_fit(data):
 def test_pickles_from_earlier_releases_drop_stored_environments(data):
     """Unpickling drops the environments earlier releases stored on transitions."""
     time, position, spike_times, _ = data
-    decoder = _spatial_decoder().fit(time, position, spike_times)
     time_edges = np.linspace(time[0], time[-1], 101)
+    decoder = _spatial_decoder(sampling_frequency=1.0 / np.diff(time_edges)[0]).fit(
+        time, position, spike_times
+    )
     expected = decoder.predict(spike_times, time_edges=time_edges).acausal_posterior
 
     # The state earlier releases pickled: make_state_transition stored the

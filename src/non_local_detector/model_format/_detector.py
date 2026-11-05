@@ -36,6 +36,7 @@ checked again whenever a design is built from it, or an inert
 every copy of it are for inspection only.
 """
 
+import inspect
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -58,6 +59,8 @@ from non_local_detector.continuous_state_transitions import (
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
+    DataError,
+    NonLocalDetectorError,
     NotFittedError,
     ParameterWarning,
     ValidationError,
@@ -851,6 +854,16 @@ def _rebuild_continuous(
         detector._transition_representation_ = "dense"
 
 
+# The fitted state every saved fitted detector holds (see ``detector_documents``).
+_REQUIRED_STATE = (
+    "environments",
+    "encoding_models",
+    "stored_transition_blocks",
+    "fingerprints",
+)
+_CORRUPT_HINT = "The file is corrupt or was edited."
+
+
 def detector_from_stored(
     stored: StoredModel, *, trust_formulas: bool = False
 ) -> "_DetectorBase":
@@ -868,17 +881,75 @@ def detector_from_stored(
     ------
     ValidationError
         If the file names a type that is not registered.
+    DataError
+        If the file is corrupt or was edited: a configuration key the
+        detector does not take, missing fitted state, or a malformed entry.
+        Built-in ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError``
+        from reading the file become this, chained to the original; package
+        errors pass through unchanged.
     """
+    manifest = stored.manifest
+    if "detector_type" not in manifest:
+        msg = "The saved model's manifest has no 'detector_type'"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    try:
+        return _build_detector(stored, trust_formulas=trust_formulas)
+    except NonLocalDetectorError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        msg = f"Cannot rebuild the saved model ({type(error).__name__}: {error})"
+        raise DataError(msg, hint=_CORRUPT_HINT) from error
+
+
+def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
+    """Raise ``DataError`` unless ``fingerprints`` has the saved structure."""
+    ok = (
+        isinstance(fingerprints, dict)
+        and isinstance(fingerprints.get("environments"), list)
+        and len(fingerprints["environments"]) == n_environments
+        and isinstance(fingerprints.get("continuous_transitions"), list)
+    )
+    if not ok:
+        msg = "The saved model's fingerprints are malformed"
+        raise DataError(
+            msg,
+            expected=f"environments (one per environment, {n_environments}) "
+            "and continuous_transitions lists",
+            hint=_CORRUPT_HINT,
+        )
+
+
+def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorBase":
     manifest = stored.manifest
     spec = spec_for_name(manifest["detector_type"], manifest.get("detector_type_owner"))
     params = Decoder(stored.read_array).decode(stored.config)
+    accepted = inspect.signature(spec.cls).parameters
+    unknown = sorted(set(params) - set(accepted))
+    if unknown and not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
+        msg = f"The saved model's configuration has keys {unknown} that {spec.cls.__name__} does not take"
+        raise DataError(
+            msg,
+            hint=(
+                "The file may have been written by a different version of "
+                f"non_local_detector (this is {_package_version()}, the file's is "
+                f"{manifest.get('package_version', 'unknown')}) and need a migration, "
+                "or was edited."
+            ),
+        )
     detector = cast("_DetectorBase", spec.cls(**params))
     state = stored.state
+    if "fitted" not in state:
+        msg = "The saved model's state has no 'fitted' entry"
+        raise DataError(msg, hint=_CORRUPT_HINT)
     if not state["fitted"]:
         if not trust_formulas:
             _mark_file_formula(detector, None)
         return detector
 
+    missing = [name for name in _REQUIRED_STATE if name not in state]
+    if missing:
+        msg = f"The saved model is marked fitted but its state has no {missing}"
+        raise DataError(msg, hint=_CORRUPT_HINT)
     decoder = Decoder(stored.read_array)
     environments = tuple(
         _environment_from_state(entry, decoder) for entry in state["environments"]
@@ -892,6 +963,11 @@ def detector_from_stored(
         ): decoder.decode(entry["model"])
         for entry in state["encoding_models"]
     }
+    # Files saved before the shared keys' values were NumPy arrays.
+    from non_local_detector.likelihoods import _unify_stored_encoding_values
+
+    for model in detector.encoding_model_.values():
+        _unify_stored_encoding_values(model)
     values = {
         name: decoder.decode(node)
         for name, node in state.items()
@@ -900,6 +976,7 @@ def detector_from_stored(
     for name, attribute in _STORED:
         if name in values:
             setattr(detector, attribute, values[name])
+    _check_fingerprints(values["fingerprints"], len(environments))
     detector._initialize_state_index()
     _rebuild_discrete(detector, values, trust_formulas=trust_formulas)
     blocks = {

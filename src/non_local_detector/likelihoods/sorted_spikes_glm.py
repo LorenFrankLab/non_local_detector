@@ -63,7 +63,7 @@ interpolation.
 """
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property, partial
 from typing import Any, cast
@@ -88,12 +88,15 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     SpikeTimeOrder,
+    as_array,
+    as_arrays,
     blocked_nonlocal_poisson_log_likelihood,
     concatenate_row_blocks,
     environment_grid_fingerprint,
     get_position_at_time,
     poisson_row_log_likelihood,
     prepare_decode_rows,
+    require_position,
     snap_off_track_positions,
     spike_counts_matrix,
     validate_encoding_contract,
@@ -1475,11 +1478,11 @@ class SortedSpikesGLMEncodingModel(SortedSpikesEncodingModel):
 
 
 def fit_sorted_spikes_glm_encoding_model(
-    position_time: jax.Array | np.ndarray,
-    position: jax.Array | np.ndarray,
-    spike_times: list[jax.Array],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
     environment: Environment,
-    weights: np.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float | None = None,
@@ -1501,18 +1504,18 @@ def fit_sorted_spikes_glm_encoding_model(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Time of each position sample, in seconds.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[jax.Array]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each neuron.
     environment : Environment
         The fitted spatial environment. The extent of its place-bin edges
         (``place_bin_edges_``) sets the spline's boundaries and knots, and its
         interior bins (``is_track_interior_flat_``) are where the place fields
         are evaluated.
-    weights : np.ndarray, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
     emission_knot_spacing : float, optional
@@ -1573,6 +1576,8 @@ def fit_sorted_spikes_glm_encoding_model(
         encoding_exposure_seconds : float
             Weighted encoding occupancy time in seconds.
     """
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -1643,9 +1648,9 @@ def fit_sorted_spikes_glm_encoding_model(
 
 @requires_time_edges
 def predict_sorted_spikes_glm_log_likelihood(
-    position_time: jax.Array,
-    position: jax.Array,
-    spike_times: list[np.ndarray],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
     *,
     environment: Environment,
     coefficients: jax.Array,
@@ -1672,11 +1677,13 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     Parameters
     ----------
-    position_time : jax.Array, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Timestamps corresponding to the position data.
-    position : jax.Array, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position data of the animal.
-    spike_times : list[np.ndarray]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         List where each element is an array of spike times for a single neuron.
     environment : Environment
         The spatial environment object containing track geometry information.
@@ -1741,6 +1748,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    spike_times = as_arrays(spike_times)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -1755,6 +1763,9 @@ def predict_sorted_spikes_glm_log_likelihood(
         # The natural spline extrapolates log-rate linearly past its boundary
         # knots (the track-graph basis reads the nearest edge end); off-track
         # positions read the nearest interior bin instead.
+        position_time, position = require_position(
+            position_time, position, "local sorted-spikes GLM likelihood"
+        )
         position = position if position.ndim > 1 else position[:, np.newaxis]
         interpolated_position = snap_off_track_positions(
             get_position_at_time(position_time, position, row_time, environment),

@@ -133,8 +133,11 @@ from non_local_detector.likelihoods.common.spike_rows import (
     sum_spikes_into_rows,
 )
 from non_local_detector.likelihoods.common.validation import (
+    as_array,
+    as_arrays,
     as_std_array,
     environment_grid_fingerprint,
+    require_position,
     validate_bandwidth,
     validate_encoding_contract,
     validate_finite,
@@ -241,6 +244,8 @@ __all__ = [
     "_traced_block_log_kde",
     "_traced_blocks",
     "_true_kde_log_density",
+    "as_array",
+    "as_arrays",
     "as_std_array",
     "block_kde",
     "block_log_kde",
@@ -283,6 +288,7 @@ __all__ = [
     "prepare_kde_local_inputs",
     "prepared_kde_log_density",
     "repair_flagged",
+    "require_position",
     "requires_time_edges",
     "resolve_row_slice",
     "select_decode_marks",
