@@ -1366,7 +1366,8 @@ class _DetectorBase(
             names = [env.environment_name for env in self.environments]
             missing = [name for name in names if not np.any(environment_labels == name)]
             if missing:
-                labels = [str(label) for label in np.unique(environment_labels)]
+                # str first: unlabeled samples (None, NaN) do not sort with names.
+                labels = sorted({str(label) for label in environment_labels})
                 unmatched = [label for label in labels if label not in names]
                 msg = (
                     f"No position sample is labeled with environment(s) {missing} "

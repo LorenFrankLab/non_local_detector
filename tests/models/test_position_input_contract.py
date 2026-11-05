@@ -96,6 +96,19 @@ def test_environment_labels_matching_no_environment_are_named(family):
     assert "'track'" in str(info.value)
 
 
+def test_unlabeled_samples_do_not_break_the_label_error():
+    """Untracked samples left unlabeled (None) beside a misspelt name still
+    give the error naming the labels, not a TypeError from sorting them."""
+    detector = NonLocalSortedSpikesDetector(
+        environments=Environment(environment_name="track", place_bin_size=2)
+    )
+    labels = np.array(["trak"] * TIME.size, dtype=object)
+    labels[:5] = None
+    with pytest.raises(ValidationError, match="environment_labels") as info:
+        detector.fit(TIME, POSITION, **SPIKE_DATA["sorted"], environment_labels=labels)
+    assert "'trak'" in str(info.value)
+
+
 # The fitted grid spans (0, 10) x (0, 10) in 2-unit bins.
 def _shifted(offset, n_shifted=TIME.size):
     position = POSITION.copy()
