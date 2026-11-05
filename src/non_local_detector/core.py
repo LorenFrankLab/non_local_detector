@@ -26,6 +26,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.typing import DTypeLike
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.exceptions import ValidationError
 
@@ -111,7 +112,7 @@ def _condition_on_primal(
     # matters on backends that preserve them.)
     joint_shift = jnp.maximum(
         joint_shift,
-        jnp.log(jnp.finfo(probs.dtype).tiny),  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
+        jnp.log(finfo(probs.dtype).tiny),
     )
 
     # The first shift excludes unreachable maxima; the second rescales tiny
@@ -238,8 +239,8 @@ def _condition_on_jvp(
     # is never repaired here. A strict ``where`` rather than ``jnp.minimum``:
     # at an exact tie ``minimum`` splits its derivative between operands and
     # would halve second derivatives of a derivative that sits on the bound.
-    finfo = jnp.finfo(probs.dtype)  # type: ignore[no-untyped-call]  # jax.numpy.finfo is untyped
-    max_exponent = jnp.nextafter(jnp.log(finfo.max), jnp.asarray(0.0, probs.dtype))
+    limits = finfo(probs.dtype)
+    max_exponent = jnp.nextafter(jnp.log(limits.max), jnp.asarray(0.0, probs.dtype))
     exponent = jnp.where(exponent > max_exponent, max_exponent, exponent)
     weight_dot = jnp.exp(exponent) * probs_dot + posterior * ll_dot
     log_norm_dot = weight_dot.sum()

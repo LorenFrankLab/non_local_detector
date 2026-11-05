@@ -647,15 +647,15 @@ def fit_clusterless_mark_glm_encoding_model(
     rate_coefficients: list[np.ndarray | jax.Array | None] = []
     log_rate_maps: list[np.ndarray | None] = []
     first = 0
-    for mixture in mark_mixtures:  # type: ignore[assignment]  # name reused; elements may be None
-        if mixture is None:
-            rate_coefficients.append(None)  # type: ignore[unreachable]  # follows from the name reuse above
+    for fitted in mark_mixtures:
+        if fitted is None:
+            rate_coefficients.append(None)
             log_rate_maps.append(None)
             continue
-        maps = slice(first, first + mixture.n_components)
+        maps = slice(first, first + fitted.n_components)
         rate_coefficients.append(coefficients[maps])
         log_rate_maps.append(np.log(interior_rates[:, maps]))
-        first += mixture.n_components
+        first += fitted.n_components
     summed_ground_process_intensity = jnp.asarray(
         interior_rates.sum(axis=1)
         if interior_rates.size

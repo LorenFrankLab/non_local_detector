@@ -12,6 +12,7 @@ import numpy as np
 from jax.nn import logsumexp
 from numpy.typing import NDArray
 
+from non_local_detector._jax_typing import finfo, optimization_barrier
 from non_local_detector._validation import validate_weights
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common.numerics import LOG_EPS
@@ -66,7 +67,7 @@ def log_gaussian_pdf(x: jax.Array, mean: jax.Array, sigma: jax.Array) -> jax.Arr
     divisor = sigma
     if x.size == 1 or mean.size == 1:
         shape = jnp.broadcast_shapes(x.shape, mean.shape, jnp.shape(sigma))
-        divisor = jax.lax.optimization_barrier(jnp.broadcast_to(sigma, shape))  # type: ignore[no-untyped-call]  # untyped in JAX
+        divisor = optimization_barrier(jnp.broadcast_to(sigma, shape))
     return -0.5 * ((x - mean) / divisor) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
@@ -454,13 +455,13 @@ def _relative_weights(
     # without changing ordinary-weight arithmetic; the barrier prevents
     # cancellation of this protective scale during compiler reassociation.
     positive_weights, weight_scale = jax.lax.cond(
-        weight_scale > 1.0 / jnp.finfo(positive_weights.dtype).tiny,  # type: ignore[no-untyped-call]  # untyped in JAX
-        lambda pair: jax.lax.optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),  # type: ignore[no-untyped-call]  # untyped in JAX
+        weight_scale > 1.0 / finfo(positive_weights.dtype).tiny,
+        lambda pair: optimization_barrier((pair[0] * 0.25, pair[1] * 0.25)),
         lambda pair: pair,
         (positive_weights, weight_scale),
     )
     relative_weights = positive_weights / weight_scale
-    representable = relative_weights >= jnp.finfo(relative_weights.dtype).tiny  # type: ignore[no-untyped-call]  # untyped in JAX
+    representable = relative_weights >= finfo(relative_weights.dtype).tiny
     log_weights = jnp.where(
         representable,
         jnp.log(jnp.where(representable, relative_weights, 1.0)),
@@ -1178,9 +1179,7 @@ def _scaled_kde_log_density(
             -jnp.inf,
         )
         lost = (
-            samples.shape[0]
-            * jnp.finfo(scaled.dtype).tiny  # type: ignore[no-untyped-call]  # untyped in JAX
-            / (4 * jnp.finfo(scaled.dtype).eps)  # type: ignore[no-untyped-call]  # untyped in JAX
+            samples.shape[0] * finfo(scaled.dtype).tiny / (4 * finfo(scaled.dtype).eps)
         )
         needs_log_space = scaled < lost
         return values, needs_log_space

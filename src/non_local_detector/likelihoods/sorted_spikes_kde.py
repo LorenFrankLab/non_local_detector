@@ -57,6 +57,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from tqdm.autonotebook import tqdm
 
+from non_local_detector._jax_typing import optimization_barrier
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
     EncodingSupport,
@@ -240,7 +241,7 @@ def _local_kde_log_likelihood(
 
         def neuron_term(leaf: tuple[jax.Array, ...]) -> jax.Array:
             neuron_samples, neuron_weights, std, mean_rate, count = leaf
-            raw_marginal = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+            raw_marginal = optimization_barrier(
                 traced_block_kde(
                     points,
                     neuron_samples,
@@ -250,7 +251,7 @@ def _local_kde_log_likelihood(
                 )
             )
             marginal = jnp.where(jnp.isnan(raw_marginal), 0.0, raw_marginal)
-            rate = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+            rate = optimization_barrier(
                 mean_rate
                 * jnp.where(
                     occupancy > 0.0,
@@ -283,14 +284,12 @@ def _local_kde_log_likelihood(
                     jnp.nan,
                     rate,
                 )
-            rate = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-                jnp.clip(rate, min=RATE_EPS_HZ, max=None)
-            )
-            expected = jax.lax.optimization_barrier(rate * durations)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-            event = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+            rate = optimization_barrier(jnp.clip(rate, min=RATE_EPS_HZ, max=None))
+            expected = optimization_barrier(rate * durations)
+            event = optimization_barrier(
                 jax.scipy.special.xlogy(count.astype(expected.dtype), expected)
             )
-            return jax.lax.optimization_barrier(event - expected)  # type: ignore[no-untyped-call,no-any-return]  # jax.lax.optimization_barrier is untyped
+            return optimization_barrier(event - expected)
 
         return jax.lax.map(  # type: ignore[no-any-return]  # jax.lax.map output is a pytree
             neuron_term,
@@ -307,7 +306,7 @@ def _local_kde_log_likelihood(
     )[order]
 
     def add(total: jax.Array, term: jax.Array) -> tuple[jax.Array, None]:
-        return jax.lax.optimization_barrier(total + term), None  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+        return optimization_barrier(total + term), None
 
     return jax.lax.scan(add, jnp.zeros((points.shape[0],)), terms)[0]
 

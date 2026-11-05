@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 from tqdm.autonotebook import tqdm
 
+from non_local_detector._jax_typing import optimization_barrier
 from non_local_detector.likelihoods.common.spike_rows import (
     SpikeTimeOrder,
     get_spikecount_per_time_bin,
@@ -204,12 +205,12 @@ def _poisson_nonlocal_log_likelihood(
                 likelihood: jax.Array, neuron: tuple[jax.Array, jax.Array]
             ) -> tuple[jax.Array, None]:
                 neuron_counts, neuron_rates = neuron
-                product = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # untyped in JAX
+                product = optimization_barrier(
                     neuron_rates[None, :] * block_durations[:, None]
                 )
                 # Floating counts give integer inputs a zero tangent instead of
                 # float0, so rate and duration derivatives pass through.
-                contribution = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # untyped in JAX
+                contribution = optimization_barrier(
                     jax.scipy.special.xlogy(
                         neuron_counts.astype(jnp.result_type(neuron_counts, product))[
                             :, None
@@ -217,7 +218,7 @@ def _poisson_nonlocal_log_likelihood(
                         product,
                     )
                 )
-                return jax.lax.optimization_barrier(likelihood + contribution), None  # type: ignore[no-untyped-call]  # untyped in JAX
+                return optimization_barrier(likelihood + contribution), None
 
             likelihood, _ = jax.lax.scan(
                 add_neuron,
@@ -277,10 +278,8 @@ def poisson_row_log_likelihood(counts: Any, expected_counts: Any) -> jax.Array:
     def add_unit(total: jax.Array, inputs: tuple[Any, Any]) -> tuple[jax.Array, None]:
         count, expected = inputs
         safe_expected = jnp.where(count == 0, 1.0, expected)
-        event = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
-            jax.scipy.special.xlogy(count, safe_expected)
-        )
-        term = jax.lax.optimization_barrier(event - expected)  # type: ignore[no-untyped-call]  # jax.lax.optimization_barrier is untyped
+        event = optimization_barrier(jax.scipy.special.xlogy(count, safe_expected))
+        term = optimization_barrier(event - expected)
         return total + term, None
 
     return jax.lax.scan(
