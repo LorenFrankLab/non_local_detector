@@ -21,7 +21,7 @@ module.
 import abc
 import copy
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from logging import getLogger
@@ -819,10 +819,14 @@ class _DetectorBase(
         stays the list or tuple given, ``state_names=None`` becomes generated
         names) and validation are exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
-        attributes, including the fitted environments in ``environments_``,
-        are not touched. Changing ``environments``, ``state_names``,
-        ``observation_models`` or any other parameter a fit depends on after
-        fitting therefore requires refitting.
+        attributes, including the fitted environments in ``environments_``
+        and the state bins in ``state_space_``, are not touched, and decoding
+        reads them: a change to ``environments``, ``state_names``,
+        ``observation_models``, ``continuous_transition_types``,
+        ``local_position_std`` or any other parameter a fit depends on takes
+        effect at the next fit. ``save_model`` refuses a detector whose
+        ``state_names``, ``observation_models``, ``continuous_transition_types``
+        or ``local_position_std`` changed after fitting.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -913,7 +917,9 @@ class _DetectorBase(
         """
         return 0.0
 
-    def _decode_reads_position(self) -> bool:
+    def _decode_reads_position(
+        self, observation_models: Sequence[ObservationModel]
+    ) -> bool:
         """Whether the decode likelihood reads the animal's position.
 
         Local observation models and a positive ``non_local_position_penalty``
@@ -921,12 +927,19 @@ class _DetectorBase(
         only shapes Local states). Fitting and EM encoding refits always use
         position for the encoding support, whatever this returns.
 
+        Parameters
+        ----------
+        observation_models : sequence of ObservationModel
+            The decoded states' observation models: the fit's
+            (``state_space_.observation_models``), or the parameters' before
+            EM's internal fit.
+
         Returns
         -------
         reads_position : bool
         """
         return bool(
-            any(obs.is_local for obs in self.observation_models)
+            any(obs.is_local for obs in observation_models)
             or self._non_local_position_penalty() > 0
         )
 
@@ -1019,10 +1032,11 @@ class _DetectorBase(
         position_time: jax.Array | np.ndarray,
         position: jax.Array | np.ndarray,
         environment: "Environment",
+        local_position_std: float,
     ) -> jax.Array:
         """Compute log position kernel for the local state.
 
-        Dispatches to one of two paths based on ``self.local_position_std``:
+        Dispatches to one of two paths based on ``local_position_std``:
 
         - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
           ``-inf`` elsewhere (one-hot).
@@ -1060,6 +1074,9 @@ class _DetectorBase(
             Position samples.
         environment : Environment
             The spatial environment.
+        local_position_std : float
+            Width of the kernel, the fit's ``local_position_std``: 0 for the
+            delta kernel.
 
         Returns
         -------
@@ -1068,8 +1085,6 @@ class _DetectorBase(
             time step (not 1).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
-
-        assert self.local_position_std is not None  # narrowing for type checker
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
@@ -1090,7 +1105,7 @@ class _DetectorBase(
         # gap-bin assignments to the nearest interior bin, so the only
         # remaining case needing uniform fallback is a truly NaN animal
         # position (tracking dropout).
-        if self.local_position_std == 0:
+        if local_position_std == 0:
             interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
             # Replace NaN animal positions with 0 before get_bin_ind (it
             # has no NaN guard); nan_mask below masks those rows.
@@ -1116,7 +1131,7 @@ class _DetectorBase(
         # avoids inf/NaN propagation through the arithmetic ops below.
         reachable = jnp.isfinite(sq_dist)
         log_kernel = jnp.where(
-            reachable, -0.5 * sq_dist / (self.local_position_std**2), -jnp.inf
+            reachable, -0.5 * sq_dist / (local_position_std**2), -jnp.inf
         )
         # Normalize to sum to n_bins (not 1) per time step. This compensates
         # for the 1/n_bins uniform continuous IC of the multi-bin local state
@@ -1705,7 +1720,7 @@ class _DetectorBase(
         is_clusterless = isinstance(self, ClusterlessDetector)
         active_keys = {
             (obs.environment_name, obs.encoding_group)
-            for obs in self.observation_models
+            for obs in self.state_space_.observation_models
             if not obs.is_no_spike
         }
         # Each encoding model unpacks into its own algorithm's predict, which
@@ -1969,7 +1984,9 @@ class _DetectorBase(
         context : _DecodeContext
         """
         position_time, position, *spike_data = log_likelihood_args
-        has_no_spike = any(obs.is_no_spike for obs in self.observation_models)
+        has_no_spike = any(
+            obs.is_no_spike for obs in self.state_space_.observation_models
+        )
         return _DecodeContext(
             time_edges=time_edges,
             time_grid=_uniform_time_grid(time_edges),
@@ -1979,7 +1996,9 @@ class _DetectorBase(
                 time_edges,
                 position_time,
                 position,
-                reads_position=self._decode_reads_position(),
+                reads_position=self._decode_reads_position(
+                    self.state_space_.observation_models
+                ),
                 warn_outside_tracking=warn_outside_tracking,
             ),
             spike_time_order=_SpikeTimeOrder(),
@@ -2096,12 +2115,13 @@ class _DetectorBase(
 
         likelihood_func = self._likelihood_predict_function()
         execution_settings = self._likelihood_execution_settings()
+        state_space = self.state_space_
 
         # Interior state bins per state. state_ind_ is built state by state, so
         # each state's bins are one contiguous block of columns.
         n_state_columns = np.bincount(
             self.state_ind_[self.is_track_interior_state_bins_],
-            minlength=len(self.observation_models),
+            minlength=state_space.n_states,
         )
 
         # Use dict for O(1) lookup instead of list
@@ -2109,10 +2129,10 @@ class _DetectorBase(
 
         # Compute all likelihoods first (stays in JAX/GPU if available)
         likelihood_results: dict[int, Any] = {}
-        for state_id, obs in enumerate(self.observation_models):
+        for state_id, obs in enumerate(state_space.observation_models):
             # Multi-bin local computes full spatial likelihood (is_local=False)
             # then adds position kernel afterward
-            effective_is_local = obs.is_local and self.local_position_std is None
+            effective_is_local = state_space.likelihood_is_local(state_id)
 
             likelihood_name = (
                 obs.environment_name,
@@ -2175,7 +2195,7 @@ class _DetectorBase(
         env_penalties: dict[str, jax.Array] = {}
         env_kernels: dict[str, jax.Array] = {}
         blocks: list[jax.Array] = []
-        for state_id, obs in enumerate(self.observation_models):
+        for state_id, obs in enumerate(state_space.observation_models):
             result = likelihood_results[state_id]
             if isinstance(result, int):
                 # Reuse the likelihood computed for an earlier state
@@ -2197,7 +2217,7 @@ class _DetectorBase(
                 block = (block + jnp.asarray(env_penalties[env_name])).astype(
                     jnp.float32
                 )
-            if self.local_position_std is not None and obs.is_local:
+            if state_space.local_position_std is not None and obs.is_local:
                 env_name = obs.environment_name
                 if env_name not in env_kernels:
                     env = self._get_environment_by_name(env_name)
@@ -2206,6 +2226,7 @@ class _DetectorBase(
                         cast("np.ndarray", position_time),
                         cast("np.ndarray", position),
                         env,
+                        state_space.local_position_std,
                     )
                 block = (block + jnp.asarray(env_kernels[env_name])).astype(jnp.float32)
             blocks.append(block)
@@ -2334,7 +2355,9 @@ class _DetectorBase(
             is_missing,
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
+            reads_position=self._decode_reads_position(
+                self.state_space_.observation_models
+            ),
             warn_outside_tracking=True,
         )
 
@@ -2498,7 +2521,7 @@ class _DetectorBase(
             is_missing,
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
+            reads_position=self._decode_reads_position(self.observation_models),
             warn_outside_tracking=True,
         )
         # Before the internal fit, so a refused estimate leaves the model as is.
@@ -2597,7 +2620,9 @@ class _DetectorBase(
             is_missing,
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
+            reads_position=self._decode_reads_position(
+                self.state_space_.observation_models
+            ),
             warn_outside_tracking=True,
         )
         return self._run_viterbi(

@@ -21,9 +21,6 @@ import xarray as xr
 
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.exceptions import ConfigurationError
-from non_local_detector.models._state_space import (
-    has_place_bins as _has_place_bins,
-)
 from non_local_detector.result_store import pad_state_bins
 
 try:
@@ -33,37 +30,12 @@ except ImportError:
 
 if TYPE_CHECKING:
     from non_local_detector.models.base import _DetectorBase
-    from non_local_detector.observation_models import ObservationModel
 
 # Rows of the full posterior are filled and scattered in blocks of about this
 # many bytes. On a 2 cm 2-D grid (20,178 state bins, 3,298 interior; 177,330
 # rows, 14.3 GB) filling with NaN and then scattering the whole array took
 # 8.9 s; 1 MiB blocks took 3.8 s, 4-16 MiB 4.4 s and 64 MiB 5.7 s.
 _MASKED_POSTERIOR_BLOCK_BYTES = 2**20
-
-
-def has_place_bins(detector: "_DetectorBase", observation: "ObservationModel") -> bool:
-    """Whether a state's bins are its environment's place bins.
-
-    No-Spike, and Local without a position kernel (``local_position_std`` is
-    None), have a single state bin with no position instead.
-
-    Parameters
-    ----------
-    detector : _DetectorBase
-        Detector whose ``local_position_std`` decides whether a Local state
-        has a position kernel over place bins.
-    observation : ObservationModel
-        The state's observation model, one of
-        ``detector.observation_models``.
-
-    Returns
-    -------
-    bool
-        True if the state has one bin per place bin of its environment,
-        False if it has a single bin without a position.
-    """
-    return _has_place_bins(observation, detector.local_position_std)
 
 
 def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
@@ -78,7 +50,7 @@ def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
     -------
     positions : list of np.ndarray, each shape (n_bins, n_position_dims)
         One NaN row for a state without place bins (see
-        :func:`has_place_bins`), otherwise its environment's place bin
+        ``StateSpace.has_place_bins``), otherwise its environment's place bin
         centers.
 
     Raises
@@ -87,9 +59,10 @@ def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
         If a state's environment has no place bin centers.
     """
     n_position_dims = detector.environments_[0].place_bin_centers_.shape[1]
+    state_space = detector.state_space_
     positions: list[np.ndarray] = []
-    for obs in detector.observation_models:
-        if not has_place_bins(detector, obs):
+    for state, obs in enumerate(state_space.observation_models):
+        if not state_space.has_place_bins(state):
             positions.append(np.full((1, n_position_dims), np.nan))
             continue
         environment = detector._get_environment_by_name(obs.environment_name)
@@ -262,8 +235,9 @@ def convert_results_to_xarray(
     is_track_interior = detector.is_track_interior_state_bins_
 
     # Extract environment and encoding group names in single pass
-    environment_names = [obs.environment_name for obs in detector.observation_models]
-    encoding_group_names = [obs.encoding_group for obs in detector.observation_models]
+    observation_models = detector.state_space_.observation_models
+    environment_names = [obs.environment_name for obs in observation_models]
+    encoding_group_names = [obs.encoding_group for obs in observation_models]
 
     # Get position dimensionality
     if not getattr(detector, "environments_", ()):
@@ -275,7 +249,7 @@ def convert_results_to_xarray(
     position = np.concatenate(state_bin_positions(detector), axis=0)
     n_position_dims = position.shape[1]
 
-    states = np.asarray(detector.state_names)
+    states = np.asarray(detector.state_space_.state_names)
 
     # Generate position dimension names (canonical convention)
     position_names = get_position_dim_names(n_position_dims)
@@ -401,8 +375,11 @@ def convert_seq_to_df(
     position_blocks = state_bin_positions(detector)
     environment_names_blocks: list[Any] = []
     encoding_group_names_blocks: list[Any] = []
-    for obs, block in zip(detector.observation_models, position_blocks, strict=True):
-        placed = has_place_bins(detector, obs)
+    state_space = detector.state_space_
+    for state, (obs, block) in enumerate(
+        zip(state_space.observation_models, position_blocks, strict=True)
+    ):
+        placed = state_space.has_place_bins(state)
         environment_names_blocks.append(
             [obs.environment_name if placed else None] * len(block)
         )
@@ -414,7 +391,7 @@ def convert_seq_to_df(
     environment_names = np.concatenate(environment_names_blocks, axis=0)
     encoding_group_names = np.concatenate(encoding_group_names_blocks, axis=0)
 
-    states = np.asarray(detector.state_names)
+    states = np.asarray(detector.state_space_.state_names)
     position_names = get_position_dim_names(position.shape[1])
     state_bins = pd.DataFrame(
         {

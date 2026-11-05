@@ -258,7 +258,7 @@ class _CheckpointedPredictionMixin:
             self._decode_likelihood_callback(edges, log_likelihood_args),
             log_likelihood_args=log_likelihood_args,
             state_ind=self.state_ind_[interior],
-            n_states=len(self.state_names),
+            n_states=self.state_space_.n_states,
             is_missing=is_missing,
             chunk_size=chunk_size,
             output_mode="spatial" if output_names & _SPATIAL else "compact",
@@ -397,15 +397,15 @@ class _CheckpointedPredictionMixin:
         outputs = _driver_outputs(requested_outputs, spatial=output_mode == "spatial")
         position = np.concatenate(state_bin_positions(self))
         metadata: dict[str, Any] = {
-            "state_names": list(self.state_names),
+            "state_names": list(self.state_space_.state_names),
             "environment_names": [
-                obs.environment_name for obs in self.observation_models
+                obs.environment_name for obs in self.state_space_.observation_models
             ],
             "encoding_groups": [
                 obs.encoding_group.item()
                 if isinstance(obs.encoding_group, np.generic)
                 else obs.encoding_group
-                for obs in self.observation_models
+                for obs in self.state_space_.observation_models
             ],
             "position": position.tolist(),
             "position_names": get_position_dim_names(position.shape[1]),
@@ -428,7 +428,7 @@ class _CheckpointedPredictionMixin:
             likelihood,
             log_likelihood_args=log_likelihood_args,
             state_ind=states,
-            n_states=len(self.state_names),
+            n_states=self.state_space_.n_states,
             is_missing=is_missing,
             chunk_size=chunk_size,
             output_mode=output_mode,

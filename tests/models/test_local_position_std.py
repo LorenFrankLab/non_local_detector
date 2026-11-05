@@ -343,6 +343,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
 
         # exp(log_kernel) should sum to n_interior_bins per time step
@@ -370,6 +371,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
 
         # Find the bin center closest to 50
@@ -397,6 +399,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            det_wide.local_position_std,
         )
 
         # Narrow kernel
@@ -407,6 +410,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env_n,
+            det_narrow.local_position_std,
         )
 
         # Narrow kernel should have higher peak (more concentrated)
@@ -429,6 +433,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
 
         n_interior = int(env.is_track_interior_.sum())
@@ -451,6 +456,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
 
         # Should not contain NaN
@@ -500,6 +506,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
 
         log_kernel_np = np.asarray(log_kernel)
@@ -545,6 +552,7 @@ class TestComputeLocalPositionKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         lk = np.asarray(log_kernel)
 
@@ -609,6 +617,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         log_kernel_np = np.asarray(log_kernel)
 
@@ -638,6 +647,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         log_kernel_np = np.asarray(log_kernel)
 
@@ -664,6 +674,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         log_kernel_np = np.asarray(log_kernel)
 
@@ -687,6 +698,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         log_kernel_np = np.asarray(log_kernel)
 
@@ -723,6 +735,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         lk = np.asarray(log_kernel)
 
@@ -769,6 +782,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         lk = np.asarray(log_kernel)
 
@@ -815,6 +829,7 @@ class TestDeltaKernel:
             jnp.array(position_time),
             jnp.array(animal_position),
             env,
+            detector.local_position_std,
         )
         log_kernel_np = np.asarray(log_kernel)
 

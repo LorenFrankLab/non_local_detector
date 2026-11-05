@@ -441,7 +441,7 @@ def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]
     """Return the continuous blocks built from fit data, by (from_state, to_state)."""
     state_ind = np.asarray(detector.state_ind_)
     blocks = {}
-    for source, row in enumerate(detector.continuous_transition_types):
+    for source, row in enumerate(detector.state_space_.continuous_transition_types):
         for target, transition in enumerate(row):
             spec = spec_for_object(transition)
             if spec is None or not spec.block_needs_fit_data:
@@ -613,6 +613,20 @@ def _fitted_attributes(
     return set(vars(detector)) - set(constructed) - _NOT_SAVED
 
 
+def _same_parameter(value: Any, fitted: Any) -> bool:
+    """Whether a parameter equals the value the fit recorded, item by item."""
+    if value is fitted:
+        return True
+    if isinstance(value, tuple) and isinstance(fitted, tuple):
+        return len(value) == len(fitted) and all(
+            _same_parameter(a, b) for a, b in zip(value, fitted, strict=True)
+        )
+    try:
+        return bool(np.all(value == fitted))
+    except (TypeError, ValueError):
+        return False
+
+
 def detector_documents(
     detector: "_DetectorBase", writer: ArrayWriter
 ) -> tuple[dict[str, Any], JSON, dict[str, Any]]:
@@ -622,8 +636,9 @@ def detector_documents(
     ------
     ValidationError
         If the detector or an object it holds is of an unregistered type, it
-        holds an attribute the format does not know, or it is a loaded
-        detector whose rebuilt structures no longer match.
+        holds an attribute the format does not know, it is a loaded
+        detector whose rebuilt structures no longer match, or a parameter its
+        ``state_space_`` records changed after it was fitted.
     NotFittedError
         If it is partly fitted.
     """
@@ -648,6 +663,22 @@ def detector_documents(
     if missing:
         msg = f"Cannot save a partly fitted detector (it has no {missing})"
         raise NotFittedError(msg, hint="Call fit(...) before save_model.")
+    # The file holds the current parameters, and loading rebuilds the state
+    # space from them.
+    changed = [
+        name
+        for name, value in layout_parameters(detector).items()
+        if not _same_parameter(value, getattr(detector.state_space_, name))
+    ]
+    if changed:
+        msg = (
+            f"Cannot save the detector: its {changed} changed after it was "
+            "fitted, so they no longer describe the fit"
+        )
+        raise ValidationError(
+            msg,
+            hint="Set them back with set_params, or refit before save_model.",
+        )
     check = vars(detector).get("_rebuild_check_")
     if check is not None:
         check.verify(detector)

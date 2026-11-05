@@ -334,9 +334,11 @@ class _PersistenceMixin:
         ValidationError
             If the detector, or an object its parameters hold (a custom
             transition, for example), is of a type that is not registered for
-            saving (see ``non_local_detector.model_format.register_type``), or
+            saving (see ``non_local_detector.model_format.register_type``),
             it is a loaded detector whose rebuilt structures no longer match
-            the saved ones.
+            the saved ones, or its ``state_names``, ``observation_models``,
+            ``continuous_transition_types`` or ``local_position_std`` changed
+            after it was fitted (``set_params``).
         NotFittedError
             If the detector is only partly fitted.
         """
