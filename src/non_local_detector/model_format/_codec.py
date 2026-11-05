@@ -10,6 +10,8 @@ JSON object:
     that were different objects share the member but not the object.
 ``{"$fill": value, "dtype": str, "shape": [...], "ref": n, "jax": bool}``
     A floating array whose every element is 1 (sample weights, by default).
+    No member holds it, so the archive's member-size checks do not bound
+    its size.
 ``{"$ragged": {"data": node, "offsets": node}, "ref": n, "jax": bool}``
     A list of arrays with one dtype and trailing shape (one per neuron or
     electrode), concatenated along the first axis; item ``i`` is
@@ -494,7 +496,16 @@ class Decoder:
             raise DataError(msg, hint=hint) from error
 
     def _as(self, array: np.ndarray, *, is_jax: bool) -> Any:
-        return jnp.asarray(array) if is_jax else array
+        """``array`` as the JAX array it was saved as, or as is.
+
+        A 64-bit array saved from JAX with ``JAX_ENABLE_X64`` stays a NumPy
+        array when x64 is off: JAX would narrow it to 32 bits, losing
+        precision (and wrapping large integers), while NumPy keeps the
+        stored values, which JAX code accepts as input.
+        """
+        if not is_jax or jax.dtypes.canonicalize_dtype(array.dtype) != array.dtype:
+            return array
+        return jnp.asarray(array)
 
     def _array(self, node: JSON) -> Any:
         ref = node["ref"]

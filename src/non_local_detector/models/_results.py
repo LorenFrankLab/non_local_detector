@@ -97,20 +97,38 @@ def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
     return positions
 
 
+def unify_marginal_log_likelihoods(attrs: dict[str, Any]) -> None:
+    """Hold results' marginal log likelihoods in their one form, in place.
+
+    ``marginal_log_likelihoods`` becomes a one-dimensional float64 array. A
+    checkpointed store records the final decode's under the singular
+    ``marginal_log_likelihood`` (EM's stores the per-E-step list as well),
+    and results saved by earlier versions held a decode's as a scalar, beside
+    that singular alias for checkpointed results; the alias is removed.
+
+    Parameters
+    ----------
+    attrs : dict
+        The results' attributes.
+    """
+    final = attrs.pop("marginal_log_likelihood", None)
+    values = attrs.get("marginal_log_likelihoods", final)
+    if values is not None:
+        attrs["marginal_log_likelihoods"] = np.atleast_1d(
+            np.asarray(values, dtype=np.float64)
+        )
+
+
 def label_checkpointed_result(
     dataset: xr.Dataset, metadata: dict[str, Any]
 ) -> xr.Dataset:
     """Attach native labels and a bounded lazy padded view to a stored result."""
     attrs = dataset.attrs
+    unify_marginal_log_likelihoods(attrs)
     # The JSON metadata of a store EM wrote holds its traces as lists.
-    for attr_name in (
-        "marginal_log_likelihoods",
-        "em_objectives",
-        "em_previous_objectives",
-    ):
+    for attr_name in ("em_objectives", "em_previous_objectives"):
         if attr_name in attrs:
-            attrs[attr_name] = np.asarray(attrs[attr_name], dtype=float)
-    attrs.setdefault("marginal_log_likelihoods", attrs["marginal_log_likelihood"])
+            attrs[attr_name] = np.asarray(attrs[attr_name], dtype=np.float64)
     if "time_bin_end_inclusive" not in dataset.coords:
         dataset = dataset.assign_coords(
             time_bin_end_inclusive=(
@@ -217,7 +235,8 @@ def convert_results_to_xarray(
     acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
         Acausal state probabilities.
     marginal_log_likelihoods : list of float or float
-        Marginal log likelihoods for each iteration.
+        Marginal log likelihoods for each iteration, or the one of a
+        decode; stored as a one-dimensional float64 array.
     log_likelihood : np.ndarray, optional, shape (n_time, n_state_bins)
         Log likelihoods, by default None.
     causal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
@@ -294,7 +313,9 @@ def convert_results_to_xarray(
     )
 
     attrs = {
-        "marginal_log_likelihoods": np.asarray(marginal_log_likelihoods),
+        "marginal_log_likelihoods": np.atleast_1d(
+            np.asarray(marginal_log_likelihoods, dtype=np.float64)
+        ),
         "time_bin_convention": "left_closed_right_open_final_closed",
         "non_local_detector_version": _PACKAGE_VERSION,
         "time_units": "seconds",

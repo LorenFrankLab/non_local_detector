@@ -14,23 +14,27 @@ import json
 import pickle
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import jax
 import numpy as np
 import xarray as xr
 
-import non_local_detector  # resolves load_model's return annotation
+import non_local_detector  # resolves load_model's TypeVar bound
 from non_local_detector._formula_grammar import UntrustedFormula
 from non_local_detector.discrete_state_transitions import (
     _row_smoothness,
     _smoothness_matrix,
 )
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _record_legacy_encoding_algorithm,
     _unify_stored_encoding_values,
 )
-from non_local_detector.models._results import label_checkpointed_result
+from non_local_detector.models._results import (
+    label_checkpointed_result,
+    unify_marginal_log_likelihoods,
+)
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 
 if TYPE_CHECKING:
@@ -38,8 +42,47 @@ if TYPE_CHECKING:
     from non_local_detector.models.base import _DetectorBase
 
 
+# The detector class ``load_model`` is called on, and returns an instance of.
+_Detector = TypeVar("_Detector", bound="non_local_detector.models.base._DetectorBase")
+
 # Dataset attribute in which ``save_results`` records integer dtypes.
 _INTEGER_DTYPES_ATTR = "non_local_detector_integer_dtypes"
+# Dataset attribute in which ``save_results`` records the other attributes'
+# types (see ``_attribute_type``).
+_ATTRIBUTE_TYPES_ATTR = "non_local_detector_attribute_types"
+
+
+def _attribute_type(value: object) -> str | None:
+    """Return the type ``load_results`` gives a results attribute back.
+
+    netCDF holds no booleans (``save_results`` stores them as integers),
+    reads integers and floats back as NumPy scalars and a one-element array
+    as a scalar. None for a value whose type is not recorded: a string, or
+    an array of strings or bytes, which netCDF4 reads back as a list of
+    strings. The names are those of the Result layout guide's attribute
+    types.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return "bool"
+    if type(value) is int:
+        return "int"
+    if type(value) is float:
+        return "float"
+    if isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype.kind in "biuf":
+        return f"{value.dtype.name} array"
+    return None
+
+
+def _restore_attribute(value: Any, attribute_type: str) -> Any:
+    """Return an attribute as read from netCDF with its recorded type."""
+    if attribute_type == "bool":
+        return bool(value)
+    if attribute_type == "int":
+        return int(value)
+    if attribute_type == "float":
+        return float(value)
+    dtype = attribute_type.removesuffix(" array")
+    return np.atleast_1d(np.asarray(value, dtype=dtype))
 
 
 # Constructor parameters added in 2026-04, with the value that reproduces how
@@ -162,6 +205,46 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
             _unify_stored_encoding_values(entry)
 
 
+def _refuse_lazy_variables_beyond_budget(results: xr.Dataset) -> None:
+    """Raise if a variable read lazily from a result store cannot be saved.
+
+    A checkpointed result (one with ``_native_metadata``) reads its spatial
+    variables from its result store at most ``max_read_bytes`` at a time,
+    and netCDF writes each variable whole. Results read lazily from a netCDF
+    file have no such limit.
+
+    Raises
+    ------
+    ValidationError
+        Naming each such variable.
+    """
+    metadata = results.attrs.get("_native_metadata")
+    if not metadata:
+        return
+    budget = int(metadata["max_read_bytes"])
+    # xarray has no public way to ask whether a variable is in memory without
+    # reading it; a test checks that this private property still answers
+    # (and an xarray without it leaves the error to the read itself).
+    too_large = {
+        str(name): variable.nbytes
+        for name, variable in results.variables.items()
+        if not getattr(variable, "_in_memory", True) and variable.nbytes > budget
+    }
+    if too_large:
+        msg = (
+            f"Cannot save the results: {too_large} (bytes) are read lazily "
+            f"from their checkpointed result store, at most max_read_bytes="
+            f"{budget} at a time"
+        )
+        raise ValidationError(
+            msg,
+            hint="Keep the result store directory, which load_results reopens, "
+            "or save a selection (results.isel(time=...)) of at most "
+            "max_read_bytes, or reopen the store with load_results(path, "
+            "max_read_bytes=...) large enough to hold each variable in memory.",
+        )
+
+
 class _PersistenceMixin:
     """Saving and loading methods of ``_DetectorBase``."""
 
@@ -199,14 +282,20 @@ class _PersistenceMixin:
 
         save_detector(cast("_DetectorBase", self), filename)
 
-    @staticmethod
-    def load_model(
+    @classmethod
+    def load_model(  # type: ignore[misc]
+        cls: "type[_Detector]",
         filename: str | Path = "model.nld",
         *,
         trust_formulas: bool = False,
-    ) -> "non_local_detector.models.base._DetectorBase":
+    ) -> "_Detector":
         """
         Load a detector saved with ``save_model``, or pickled by earlier releases.
+
+        The file must hold an instance of the class this is called on or of a
+        subclass: ``SortedSpikesDetector.load_model`` loads any sorted-spikes
+        detector, ``NonLocalSortedSpikesDetector.load_model`` only that
+        detector or a subclass of it.
 
         The format is detected from the file's first bytes, not its suffix.
         A file in the saved-model format is read without running code from
@@ -260,27 +349,39 @@ class _PersistenceMixin:
 
         Returns
         -------
-        _DetectorBase
-            Loaded detector instance
+        detector
+            The loaded detector, an instance of the class this is called on.
 
         Raises
         ------
         ValidationError
             If the file names a type not registered in this session (import
-            the package that registers it first), or was written in a newer
-            format version.
+            the package that registers it first), was written in a newer
+            format version, or holds an object that is not an instance of the
+            class this is called on.
         DataError
-            If an array of the file does not match its checksum (a corrupt or
-            edited file).
+            If the file is corrupt or was edited (an array that does not
+            match its checksum, a malformed or missing entry), or holds a
+            name this version does not read.
         """
         from non_local_detector.model_format._container import is_saved_model_format
 
+        loaded: object
         if is_saved_model_format(filename):
             from non_local_detector.model_format._detector import load_detector
 
-            return load_detector(filename, trust_formulas=trust_formulas)
-        with Path(filename).open("rb") as f:
-            return cast("_DetectorBase", _ModelUnpickler(f).load())
+            loaded = load_detector(filename, trust_formulas=trust_formulas)
+        else:
+            with Path(filename).open("rb") as f:
+                loaded = _ModelUnpickler(f).load()
+        if not isinstance(loaded, cls):
+            msg = f"{filename} holds a {type(loaded).__qualname__}, not a {cls.__qualname__}"
+            raise ValidationError(
+                msg,
+                hint=f"Load it with {type(loaded).__qualname__}.load_model, or "
+                "the load_model of a class it derives from.",
+            )
+        return loaded
 
     @staticmethod
     def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
@@ -290,9 +391,14 @@ class _PersistenceMixin:
         ``state_bins`` is a MultiIndex, which netCDF does not support, so it
         is converted before saving. Boolean attributes are stored as integers
         and the internal ``_native_metadata`` attribute is dropped. The dtype
-        of each integer variable and coordinate is recorded so that
-        ``load_results`` restores it: netCDF3, written when neither netCDF4
-        nor h5netcdf is installed, stores int64 as int32.
+        of each integer variable and coordinate, and the type of each
+        boolean, integer, float and numeric-array attribute, are recorded so
+        that ``load_results`` restores them: netCDF3, written when neither netCDF4 nor h5netcdf is
+        installed, stores int64 as int32, and netCDF reads a boolean attribute
+        back as an integer and a one-element array as a scalar.
+
+        The file is written beside ``filename`` and replaces it once
+        complete, so a failed save leaves an existing file unchanged.
 
         Parameters
         ----------
@@ -300,7 +406,15 @@ class _PersistenceMixin:
             Decoding results.
         filename : str, optional
             Name to save, by default "results.nc".
+
+        Raises
+        ------
+        ValidationError
+            If a variable of a checkpointed result, read lazily from its
+            result store, is larger than the store's ``max_read_bytes``, so
+            it cannot be read in one piece to be written.
         """
+        _refuse_lazy_variables_beyond_budget(results)
         export = (
             results.reset_index("state_bins")
             if "state_bins" in results.indexes
@@ -308,9 +422,17 @@ class _PersistenceMixin:
         )
         export.attrs = {
             name: int(value) if isinstance(value, (bool, np.bool_)) else value
-            for name, value in export.attrs.items()
+            for name, value in results.attrs.items()
             if name != "_native_metadata"
         }
+        export.attrs[_ATTRIBUTE_TYPES_ATTR] = json.dumps(
+            {
+                str(name): attribute_type
+                for name, value in results.attrs.items()
+                if name != "_native_metadata"
+                and (attribute_type := _attribute_type(value)) is not None
+            }
+        )
         export.attrs[_INTEGER_DTYPES_ATTR] = json.dumps(
             {
                 str(name): variable.dtype.name
@@ -318,7 +440,13 @@ class _PersistenceMixin:
                 if variable.dtype.kind in "iu"
             }
         )
-        export.to_netcdf(filename)
+        path = Path(filename)
+        partial = path.with_name(path.name + ".partial")
+        try:
+            export.to_netcdf(partial)
+            partial.replace(path)
+        finally:
+            partial.unlink(missing_ok=True)
 
     @staticmethod
     def load_results(
@@ -330,9 +458,10 @@ class _PersistenceMixin:
         Load results saved by ``save_results`` or a checkpointed result_path.
 
         A netCDF file is read lazily and gets its ``state_bins`` MultiIndex
-        back and its integer variables and coordinates the dtypes they were
-        saved with; closing the returned dataset closes the file. A directory
-        is opened as a checkpointed result store with lazy arrays.
+        back, its integer variables and coordinates the dtypes they were
+        saved with and its attributes their types; closing the returned
+        dataset closes the file. A directory is opened as a checkpointed
+        result store with lazy arrays.
 
         Parameters
         ----------
@@ -355,10 +484,17 @@ class _PersistenceMixin:
             metadata = results.attrs.get("_native_metadata")
             if metadata:
                 metadata = {**metadata, "max_read_bytes": max_read_bytes}
+                results.attrs["_native_metadata"] = metadata
                 return label_checkpointed_result(results, metadata)
             return results
         opened = xr.open_dataset(filename)
         results = opened
+        attribute_types = json.loads(results.attrs.pop(_ATTRIBUTE_TYPES_ATTR, "{}"))
+        for name, attribute_type in attribute_types.items():
+            if name in results.attrs:
+                results.attrs[name] = _restore_attribute(
+                    results.attrs[name], attribute_type
+                )
         if _INTEGER_DTYPES_ATTR in results.attrs:
             integer_dtypes = json.loads(results.attrs.pop(_INTEGER_DTYPES_ATTR))
         else:
@@ -382,6 +518,7 @@ class _PersistenceMixin:
                 if name in results.data_vars
             }
         )
+        unify_marginal_log_likelihoods(results.attrs)
         if "state_bins" in results.dims:
             if "state_ind" in results.dims:
                 # Earlier versions saved state_ind on a dimension of its own.
@@ -397,7 +534,15 @@ class _PersistenceMixin:
                 if name not in {"state_bins", "state_ind"}
                 and coordinate.dims == ("state_bins",)
             ]
-            results = results.set_index(state_bins=coord_names)
+            # netCDF reads string levels back as fixed-width strings; the
+            # MultiIndex the results were built with (pandas) holds objects.
+            results = results.assign_coords(
+                {
+                    name: results[name].astype(object)
+                    for name in coord_names
+                    if results[name].dtype.kind == "U"
+                }
+            ).set_index(state_bins=coord_names)
         # The transformations above drop the file's close handle; closing the
         # returned results (or leaving a ``with`` block) must close the file.
         results.set_close(opened.close)

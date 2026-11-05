@@ -47,7 +47,8 @@ track interior inference (`get_track_interior`), graph construction
 (`make_nD_track_graph_from_environment`, `get_track_grid`), distance calculation,
 and visualization (`plot_grid`). `Environment.get_params` returns an
 environment's configuration, from which `Environment(**params)` rebuilds it
-unfitted; `save_environment` and `load_environment` pickle a fitted one.
+unfitted; `save_environment` pickles a fitted one, and
+`load_environment(filename, allow_pickle=True)` unpickles it.
 """
 
 import contextlib
@@ -1593,21 +1594,49 @@ class Environment:
             pickle.dump(self, file_handle)
 
     @classmethod
-    def load_environment(cls, filename: str = "environment.pkl") -> "Environment":
-        """Load a pickled environment object from a file.
+    def load_environment(
+        cls, filename: str = "environment.pkl", *, allow_pickle: bool = False
+    ) -> "Environment":
+        """Load an environment pickled by ``save_environment``.
+
+        Unpickling can execute arbitrary code from the file, so it is refused
+        unless ``allow_pickle`` is True. Pass it only for a file you trust,
+        such as one you saved yourself.
 
         Parameters
         ----------
         filename : str, optional
             File name to load the environment from, by default "environment.pkl".
+        allow_pickle : bool, optional
+            Unpickle the file, by default False.
 
         Returns
         -------
         Environment
             The loaded environment object.
+
+        Raises
+        ------
+        ValidationError
+            If ``allow_pickle`` is False, or the file holds something other
+            than an environment.
         """
+        if not allow_pickle:
+            msg = (
+                f"load_environment would unpickle {filename}, which can run "
+                "arbitrary code from the file"
+            )
+            raise ValidationError(
+                msg,
+                hint="Pass allow_pickle=True if you trust the file, for "
+                "example because you saved it yourself.",
+            )
         with Path(filename).open("rb") as f:
-            return cast("Environment", pickle.load(f))
+            loaded = pickle.load(f)
+        if not isinstance(loaded, cls):
+            msg = f"{filename} holds a {type(loaded).__qualname__}, not an environment"
+            raise ValidationError(msg)
+        return loaded
 
     def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
         """Find the indices of the bins to which each value in input array belongs.

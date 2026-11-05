@@ -36,12 +36,13 @@ checked again whenever a design is built from it, or an inert
 every copy of it are for inspection only.
 """
 
+import contextlib
 import inspect
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import numpy as np
 
@@ -779,13 +780,15 @@ def _rebuild_discrete(
     )
 
     covariate_data = detector._discrete_transition_covariate_data_
+    # Marked whatever the file stores beside it: a formula the file stores
+    # without covariates is evaluated by the next fit.
+    if not trust_formulas:
+        _mark_file_formula(detector, covariate_data)
     if covariate_data is None:
         detector.discrete_transition_design_matrix_ = None
         detector.discrete_transition_smoothness_matrix_ = None
         detector.discrete_state_transitions_ = stored["discrete_state_transitions"]
         return
-    if not trust_formulas:
-        _mark_file_formula(detector, covariate_data)
     if isinstance(
         getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
     ):
@@ -854,14 +857,205 @@ def _rebuild_continuous(
         detector._transition_representation_ = "dense"
 
 
-# The fitted state every saved fitted detector holds (see ``detector_documents``).
-_REQUIRED_STATE = (
+# The schema of the documents ``detector_documents`` writes. A reader refuses
+# a name it does not know, which a newer or different version wrote, so a
+# name added to them is a new format version (see ``MIGRATIONS``).
+_MANIFEST_NAMES = frozenset(
+    {
+        "format",
+        "format_version",
+        "package_version",
+        "detector_type",
+        "detector_type_owner",
+        "arrays",
+    }
+)
+# state.json of an unfitted detector holds only "fitted". A fitted one holds
+# these, every ``_STORED`` name but ``_OPTIONAL_STORED``,
+# "discrete_state_transitions" if it stores no covariates (then the
+# transitions are stored, not rebuilt) and "mark_reference" if it is
+# clusterless.
+_FITTED_STATE = (
+    "fitted",
     "environments",
     "encoding_models",
     "stored_transition_blocks",
     "fingerprints",
 )
+# Stored names a fitted detector may lack: EM's records, which only
+# ``estimate_parameters`` sets, and a clusterless detector's mark reference.
+_OPTIONAL_STORED = frozenset(
+    {
+        "discrete_initial_conditions",
+        "mark_reference",
+        "converged",
+        "n_iter",
+        "em_monotonicity_violations",
+        "degenerate_timesteps",
+        "log_likelihood",
+    }
+)
+# The fields of each entry of these lists of state.json; an environment holds
+# "place_bin_edges" with a track graph and the distance options without.
+_ENTRY_FIELDS = {
+    "environments": frozenset(
+        {
+            "config",
+            "place_bin_centers",
+            "is_track_interior",
+            "edges",
+            "place_bin_edges",
+            "infer_track_interior",
+            "all_pairs_distances",
+            "max_dense_distance_bytes",
+        }
+    ),
+    "encoding_models": frozenset({"environment_name", "encoding_group", "model"}),
+    "stored_transition_blocks": frozenset({"from_state", "to_state", "block"}),
+}
+_FINGERPRINT_FIELDS = frozenset(
+    {"environments", "continuous_transitions", "discrete_transition_design"}
+)
 _CORRUPT_HINT = "The file is corrupt or was edited."
+
+
+def _refuse_unread_names(
+    where: str, names: Sequence[str], manifest: Mapping[str, Any]
+) -> NoReturn:
+    """Raise ``DataError`` for names of a saved model this version does not read."""
+    msg = f"The saved model's {where} has {list(names)}, which this non_local_detector does not read"
+    raise DataError(
+        msg,
+        hint=(
+            "The file was written by a newer or different version of "
+            f"non_local_detector (this is {_package_version()}, the file's is "
+            f"{manifest.get('package_version', 'unknown')}), or was edited. "
+            "Read it with the version that wrote it."
+        ),
+    )
+
+
+def check_documents(stored: StoredModel) -> None:
+    """Raise ``DataError`` unless a saved model's documents follow the schema.
+
+    The manifest and state.json must hold only the names this version reads
+    (``_MANIFEST_NAMES``, ``_FITTED_STATE``, ``_STORED``, ``_ENTRY_FIELDS``,
+    ``_FINGERPRINT_FIELDS``), and state.json every name a model of its kind
+    always has. The values are checked as they are decoded.
+
+    Parameters
+    ----------
+    stored : StoredModel
+        The open saved model, migrated to ``FORMAT_VERSION``.
+
+    Raises
+    ------
+    DataError
+        If a document holds a name this version does not read, or lacks one
+        it needs.
+    """
+    manifest, config = stored.manifest, stored.config
+    state: Any = stored.state  # parsed JSON: a file may hold any value
+    unread = sorted(set(manifest) - _MANIFEST_NAMES)
+    if unread:
+        _refuse_unread_names("manifest.json", unread, manifest)
+    if "detector_type" not in manifest:
+        msg = "The saved model's manifest has no 'detector_type'"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    if not isinstance(state, dict) or "fitted" not in state:
+        msg = "The saved model's state has no 'fitted' entry"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    if not state["fitted"]:
+        required = allowed = {"fitted"}
+    else:
+        required = {*_FITTED_STATE} | {
+            name for name, _ in _STORED if name not in _OPTIONAL_STORED
+        }
+        if state.get("discrete_transition_covariate_data") is None:
+            required.add("discrete_state_transitions")
+        if isinstance(config, dict) and "clusterless_algorithm" in config:
+            required.add("mark_reference")
+        allowed = required | _OPTIONAL_STORED | {"discrete_state_transitions"}
+    unread = sorted(set(state) - allowed)
+    if unread:
+        _refuse_unread_names("state.json", unread, manifest)
+    missing = sorted(required - set(state))
+    if missing:
+        msg = f"The saved model is marked fitted but its state has no {missing}"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+    for name, fields in _ENTRY_FIELDS.items():
+        for entry in state.get(name, []):
+            unread = sorted(set(entry) - fields) if isinstance(entry, dict) else []
+            if unread:
+                _refuse_unread_names(f"state.json {name} entry", unread, manifest)
+    fingerprints = state.get("fingerprints")
+    if isinstance(fingerprints, dict):
+        unread = sorted(set(fingerprints) - _FINGERPRINT_FIELDS)
+        if unread:
+            _refuse_unread_names("state.json fingerprints", unread, manifest)
+    for entry in state.get("encoding_models", []):
+        _check_encoding_model(entry["model"], manifest)
+
+
+def _check_encoding_model(model: Any, manifest: Mapping[str, Any]) -> None:
+    """Raise ``DataError`` unless a stored encoding model has its type's keys.
+
+    The keys are those of the ``encoding_model_type`` of the registered
+    algorithm the model names.
+    """
+    from non_local_detector.likelihoods import (
+        _CLUSTERLESS_ALGORITHMS,
+        _SORTED_SPIKES_ALGORITHMS,
+        LikelihoodAlgorithm,
+    )
+
+    registry: dict[str, LikelihoodAlgorithm[Any, Any]] = {
+        **_SORTED_SPIKES_ALGORITHMS,
+        **_CLUSTERLESS_ALGORITHMS,
+    }
+    algorithm = model.get("algorithm") if isinstance(model, dict) else None
+    if algorithm not in registry:
+        msg = f"The saved model has an encoding model of algorithm {algorithm!r}, which is not registered"
+        raise DataError(
+            msg,
+            expected=f"one of {sorted(registry)}",
+            hint="The file was written by a newer or different version of "
+            "non_local_detector, or was edited.",
+        )
+    # A TypedDict, which mypy types as a plain type.
+    model_type: Any = registry[algorithm].encoding_model_type
+    unread = sorted(
+        set(model) - model_type.__required_keys__ - model_type.__optional_keys__
+    )
+    if unread:
+        _refuse_unread_names(f"{algorithm} encoding model", unread, manifest)
+    missing = sorted(model_type.__required_keys__ - set(model))
+    if missing:
+        msg = f"The saved {algorithm} encoding model has no {missing}"
+        raise DataError(msg, hint=_CORRUPT_HINT)
+
+
+@contextlib.contextmanager
+def data_errors(action: str) -> Iterator[None]:
+    """Raise the built-in errors of reading a saved model as ``DataError``.
+
+    ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError`` from a
+    missing or malformed entry, and ``RecursionError`` from one nested too
+    deeply to decode, become ``DataError``, chained to the original; package
+    errors pass through unchanged.
+
+    Parameters
+    ----------
+    action : str
+        What failed, for the message: "rebuild" or "read".
+    """
+    try:
+        yield
+    except NonLocalDetectorError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, RecursionError) as error:
+        msg = f"Cannot {action} the saved model ({type(error).__name__}: {error})"
+        raise DataError(msg, hint=_CORRUPT_HINT) from error
 
 
 def detector_from_stored(
@@ -883,22 +1077,14 @@ def detector_from_stored(
         If the file names a type that is not registered.
     DataError
         If the file is corrupt or was edited: a configuration key the
-        detector does not take, missing fitted state, or a malformed entry.
-        Built-in ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError``
-        from reading the file become this, chained to the original; package
-        errors pass through unchanged.
+        detector does not take, a document name this version does not read
+        (``check_documents``), missing fitted state, or a malformed entry.
+        Built-in errors from reading the file become this (``data_errors``),
+        chained to the original; package errors pass through unchanged.
     """
-    manifest = stored.manifest
-    if "detector_type" not in manifest:
-        msg = "The saved model's manifest has no 'detector_type'"
-        raise DataError(msg, hint=_CORRUPT_HINT)
-    try:
+    with data_errors("rebuild"):
+        check_documents(stored)
         return _build_detector(stored, trust_formulas=trust_formulas)
-    except NonLocalDetectorError:
-        raise
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        msg = f"Cannot rebuild the saved model ({type(error).__name__}: {error})"
-        raise DataError(msg, hint=_CORRUPT_HINT) from error
 
 
 def _check_fingerprints(fingerprints: Any, n_environments: int) -> None:
@@ -926,30 +1112,16 @@ def _build_detector(stored: StoredModel, *, trust_formulas: bool) -> "_DetectorB
     accepted = inspect.signature(spec.cls).parameters
     unknown = sorted(set(params) - set(accepted))
     if unknown and not any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
-        msg = f"The saved model's configuration has keys {unknown} that {spec.cls.__name__} does not take"
-        raise DataError(
-            msg,
-            hint=(
-                "The file may have been written by a different version of "
-                f"non_local_detector (this is {_package_version()}, the file's is "
-                f"{manifest.get('package_version', 'unknown')}) and need a migration, "
-                "or was edited."
-            ),
+        _refuse_unread_names(
+            f"configuration ({spec.cls.__name__} parameters)", unknown, manifest
         )
     detector = cast("_DetectorBase", spec.cls(**params))
     state = stored.state
-    if "fitted" not in state:
-        msg = "The saved model's state has no 'fitted' entry"
-        raise DataError(msg, hint=_CORRUPT_HINT)
     if not state["fitted"]:
         if not trust_formulas:
             _mark_file_formula(detector, None)
         return detector
 
-    missing = [name for name in _REQUIRED_STATE if name not in state]
-    if missing:
-        msg = f"The saved model is marked fitted but its state has no {missing}"
-        raise DataError(msg, hint=_CORRUPT_HINT)
     decoder = Decoder(stored.read_array)
     environments = tuple(
         _environment_from_state(entry, decoder) for entry in state["environments"]

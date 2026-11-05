@@ -4,6 +4,9 @@ Missing state, unknown configuration keys, dangling references and malformed
 nodes are caught at the load boundary and chained to the original error.
 """
 
+import json
+import re
+
 import numpy as np
 import pytest
 
@@ -12,7 +15,7 @@ from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.model_format import _registry, register_type
 from non_local_detector.model_format._codec import Decoder
 from tests.model_format.conftest import algorithm_params
-from tests.model_format.test_refusals import _edit_json
+from tests.model_format.test_refusals import _edit_json, _rewrite
 
 pytestmark = pytest.mark.integration
 
@@ -84,7 +87,7 @@ def test_a_registered_types_own_constructor_error_is_chained(sorted_recording):
     )
     try:
         node = {"$type": "testlab.Strict", "state": {"weight": 1, "extra": 2}}
-        with pytest.raises(DataError, match="testlab.Strict") as info:
+        with pytest.raises(DataError, match=re.escape("testlab.Strict")) as info:
             Decoder(lambda member: np.zeros(1)).decode(node)
         assert isinstance(info.value.__cause__, TypeError)
         assert "extra" in str(info.value)
@@ -167,3 +170,29 @@ def test_a_user_from_state_reading_a_missing_key_names_the_type():
     finally:
         _registry._BY_NAME.pop("testlab.Keyed", None)
         _registry._BY_CLASS.pop(Keyed, None)
+
+
+def _nested_tuples(depth):
+    return json.loads('{"$tuple": [' * depth + "]}" * depth)
+
+
+@pytest.mark.parametrize(
+    ("document", "transform"),
+    [
+        # Too deep for the JSON parser.
+        ("state.json", lambda data: b"[" * 100_000 + b"]" * 100_000),
+        # Parsed, but too deep to decode.
+        (
+            "config.json",
+            lambda data: json.dumps(
+                {**json.loads(data), "place_bin_size": _nested_tuples(900)}
+            ).encode(),
+        ),
+    ],
+    ids=["parse", "decode"],
+)
+def test_deeply_nested_documents_are_data_errors(saved, document, transform):
+    _rewrite(saved, document, transform)
+
+    with pytest.raises(DataError, match=r"not valid JSON|RecursionError"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)

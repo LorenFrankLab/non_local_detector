@@ -88,9 +88,12 @@ def inputs():
 
 
 def _load_model(version, artifact):
-    return SortedSpikesDetector.load_model(
-        COMPAT_DATA / version / f"{artifact}_model.pkl"
-    )
+    """Load a stored model as Spyglass does, with its family's detector class."""
+    return _family(artifact).load_model(COMPAT_DATA / version / f"{artifact}_model.pkl")
+
+
+def _family(artifact):
+    return ClusterlessDetector if "clusterless" in artifact else SortedSpikesDetector
 
 
 def _load_results(version, artifact):
@@ -277,7 +280,7 @@ def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     path = tmp_path / "environment.pkl"
     path.write_bytes(pickle.dumps(_LegacyEnvironmentPickle(state)))
 
-    environment = Environment.load_environment(str(path))
+    environment = Environment.load_environment(str(path), allow_pickle=True)
 
     assert environment._is_fitted
     assert "place_bin_centers_" not in vars(environment)

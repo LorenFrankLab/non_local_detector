@@ -315,6 +315,14 @@ def _validate_read_budget(max_read_bytes: object) -> int:
     return int(max_read_bytes)
 
 
+def _member(path: Path, name: object) -> Path:
+    """Return the store file ``name`` names, which must be a plain file name."""
+    if not isinstance(name, str) or name in {"", ".", ".."} or Path(name).name != name:
+        msg = f"Result manifest names {name!r}, not a file name in its directory"
+        raise ValueError(msg)
+    return path / name
+
+
 def _validate_variable_chunks(path: Path, spec: dict[str, Any]) -> None:
     """Check complete row coverage and mapped file headers without reading data."""
     shape, dims = tuple(spec["shape"]), tuple(spec["dims"])
@@ -338,8 +346,9 @@ def _validate_variable_chunks(path: Path, spec: dict[str, Any]) -> None:
         ):
             msg = "Incomplete or overlapping result chunk row coverage"
             raise ValueError(msg)
+        member = _member(path, chunk["file"])
         try:
-            array = np.load(path / chunk["file"], mmap_mode="r", allow_pickle=False)
+            array = np.load(member, mmap_mode="r", allow_pickle=False)
         except (OSError, ValueError) as exc:
             msg = "Result chunk file is missing or invalid"
             raise ValueError(msg) from exc
@@ -385,7 +394,8 @@ def open_result_store(
     Raises
     ------
     ValueError
-        If the store is incomplete or uses an unsupported format version.
+        If the store is incomplete, uses an unsupported format version, or
+        its manifest names a file outside its directory.
     """
     max_read_bytes = _validate_read_budget(max_read_bytes)
     path = Path(path)
@@ -403,7 +413,10 @@ def open_result_store(
         for name, spec in manifest["variables"].items()
     }
     coordinates = {
-        name: (tuple(spec["dims"]), np.load(path / spec["file"], allow_pickle=False))
+        name: (
+            tuple(spec["dims"]),
+            np.load(_member(path, spec["file"]), allow_pickle=False),
+        )
         for name, spec in manifest["coordinates"].items()
     }
     return xr.Dataset(variables, coords=coordinates, attrs=manifest["attrs"])

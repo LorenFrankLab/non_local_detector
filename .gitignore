@@ -160,6 +160,7 @@ _version.py
 # Exception: artifacts written by earlier versions, for compatibility tests
 !tests/compat_data/*.pkl
 !tests/compat_data/*/*.pkl
+!tests/compat_data/*/*.npz
 *.png
 
 # Git worktrees

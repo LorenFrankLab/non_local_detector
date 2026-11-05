@@ -35,6 +35,7 @@ from non_local_detector.model_format._container import (
     is_saved_model_format,
     open_model,
 )
+from non_local_detector.model_format._detector import check_documents, data_errors
 from non_local_detector.model_format._registry import register_type, registered_types
 
 if TYPE_CHECKING:
@@ -117,58 +118,66 @@ def read_model_summary(path: str | Path) -> dict[str, Any]:
     ------
     ValidationError
         If the file is a pickle; read it with ``load_model``.
+    DataError
+        If the file is corrupt or was edited, or holds a name this version
+        does not read (written by a newer or different version).
     """
     if not is_saved_model_format(path):
         msg = f"{path} is not in the saved-model format (it is probably a pickle)"
         raise ValidationError(msg, hint="Read it with load_model.")
-    with open_model(path) as stored:
-        decoder = Decoder(stored.read_array, plain=True)
-        state = stored.state
-        summary: dict[str, Any] = {
-            "detector_type": stored.manifest["detector_type"],
-            "format_version": stored.manifest["format_version"],
-            "package_version": stored.manifest.get("package_version"),
-            "config": decoder.decode(stored.config),
-            "fitted": state["fitted"],
-        }
-        if not state["fitted"]:
-            return summary
-        decoder = Decoder(stored.read_array, plain=True)
-        environments = []
-        for entry in state["environments"]:
-            environment = {
-                "environment_name": entry["config"]["state"]["environment_name"],
-                "place_bin_centers": decoder.decode(entry["place_bin_centers"]),
-                "is_track_interior": decoder.decode(entry["is_track_interior"]),
-            }
-            if "edges" in entry:
-                environment["edges"] = [decoder.decode(edge) for edge in entry["edges"]]
-            environments.append(environment)
-        summary["environments"] = environments
-        summary["encoding_models"] = [
-            {
-                "environment_name": entry["environment_name"],
-                "encoding_group": decoder.decode(entry["encoding_group"]),
-                **{
-                    key: decoder.decode(value)
-                    for key, value in entry["model"].items()
-                    if _is_small(value)
-                },
-            }
-            for entry in state["encoding_models"]
-        ]
-        # Files saved before the shared keys' values were NumPy arrays.
-        from non_local_detector.likelihoods import _unify_stored_encoding_values
+    with open_model(path) as stored, data_errors("read"):
+        check_documents(stored)
+        return _summary(stored)
 
-        for model in summary["encoding_models"]:
-            _unify_stored_encoding_values(model)
-        summary["discrete_state_transitions"] = (
-            decoder.decode(state["discrete_state_transitions"])
-            if "discrete_state_transitions" in state
-            else None
-        )
-        summary["initial_conditions"] = decoder.decode(state["initial_conditions"])
+
+def _summary(stored: StoredModel) -> dict[str, Any]:
+    """Return the summary ``read_model_summary`` returns, of checked documents."""
+    decoder = Decoder(stored.read_array, plain=True)
+    state = stored.state
+    summary: dict[str, Any] = {
+        "detector_type": stored.manifest["detector_type"],
+        "format_version": stored.manifest["format_version"],
+        "package_version": stored.manifest.get("package_version"),
+        "config": decoder.decode(stored.config),
+        "fitted": state["fitted"],
+    }
+    if not state["fitted"]:
         return summary
+    decoder = Decoder(stored.read_array, plain=True)
+    environments = []
+    for entry in state["environments"]:
+        environment = {
+            "environment_name": decoder.decode(entry["config"])["environment_name"],
+            "place_bin_centers": decoder.decode(entry["place_bin_centers"]),
+            "is_track_interior": decoder.decode(entry["is_track_interior"]),
+            "edges": [decoder.decode(edge) for edge in entry["edges"]],
+        }
+        environments.append(environment)
+    summary["environments"] = environments
+    summary["encoding_models"] = [
+        {
+            "environment_name": entry["environment_name"],
+            "encoding_group": decoder.decode(entry["encoding_group"]),
+            **{
+                key: decoder.decode(value)
+                for key, value in entry["model"].items()
+                if _is_small(value)
+            },
+        }
+        for entry in state["encoding_models"]
+    ]
+    # Files saved before the shared keys' values were NumPy arrays.
+    from non_local_detector.likelihoods import _unify_stored_encoding_values
+
+    for model in summary["encoding_models"]:
+        _unify_stored_encoding_values(model)
+    summary["discrete_state_transitions"] = (
+        decoder.decode(state["discrete_state_transitions"])
+        if "discrete_state_transitions" in state
+        else None
+    )
+    summary["initial_conditions"] = decoder.decode(state["initial_conditions"])
+    return summary
 
 
 def _refuse_undecodable(detector: "_DetectorBase", path: str | Path) -> None:

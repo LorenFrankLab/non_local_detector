@@ -64,7 +64,7 @@ Run all of the checks, the same ones CI runs, with:
 uv run pre-commit run --all-files
 ```
 
-or individually: `uv run ruff check src/`, `uv run ruff format src/`, `uv run mypy`.
+or individually: `uv run ruff check src/ tests/`, `uv run ruff format src/ tests/`, `uv run mypy`.
 
 ## Numerical changes
 
@@ -89,6 +89,7 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 - `tests/likelihoods/test_algorithm_contract.py` checks every registered algorithm against these rules. Add the new name to its `_CHANGED_FIT_PARAMETER` (a fit parameter that is not an execution setting, which prediction must ignore until the next fit; the test raises `KeyError` without it) and, if it has execution settings beyond `disable_progress_bar`, to `_CHANGED_SETTINGS` and `_INVALID_SETTINGS`.
 - The detector-level tests fit every registered algorithm through `tests/models/_helpers.py`'s `_decoder` on small fixtures; add parameters there if the defaults do not fit them (as the sorted GLM's knot spacing and the clusterless GMM's component counts do).
 - List each new class that its encoding model holds (a fitted density model, a basis) in `model_format/_builtins.py` with its fields, or `save_model` refuses the fitted detector (see "Saved-model format").
+- Add the encoding model's keys to `_STORED_KEYS` in `tests/model_format/test_encoding_model_format.py`: they are stored in saved models, and `load_model` refuses an encoding model whose keys differ from its type's. Changing a registered algorithm's keys needs a format version (see "Saved-model format").
 - Add the algorithm to the user-facing lists, the likelihood models in `README.md` ("Architecture") and the likelihood table in `docs/getting-started/core-concepts.md`; the contract tests check that both name every registered algorithm.
 
 ## Saved-model format
@@ -96,10 +97,10 @@ A likelihood algorithm is a fit and a predict function registered in `_SORTED_SP
 `save_model` writes the format of `non_local_detector.model_format`, and every later release must read the files earlier ones wrote. The stored names are the format: the file names of the detector's fitted state (`_STORED` in `model_format/_detector.py`), the fields each saved class stores (`model_format/_builtins.py`) and the fixed `nld.` type names listed there.
 
 - Renaming or removing a stored name, or changing what a stored value means, needs a `FORMAT_VERSION` bump and an entry in `MIGRATIONS` that rewrites the stored documents and arrays of the previous version.
-- Adding an optional field needs no bump if the reader supplies its default when a file lacks it: give it in the type's `"defaults"` option in `model_format/_builtins.py` (or `state.get(name, default)` in a detector-state reader). A field missing without a default raises `DataError`.
+- Reading is strict: a name or field the reader does not know raises `DataError` (the schema is in `model_format/_detector.py`: `_MANIFEST_NAMES`, `_FITTED_STATE`, `_STORED`, `_OPTIONAL_STORED`, `_ENTRY_FIELDS`; each type's fields in `model_format/_builtins.py`). So adding any stored name or field (a detector constructor parameter included, since `config.json` stores them) also bumps `FORMAT_VERSION`, so that earlier releases ask for an upgrade instead; `tests/model_format/test_format_names.py` pins each version's names and fails until the new version's are added. The reader supplies the new field's value for older files: give it in the type's `"defaults"` option in `model_format/_builtins.py`, or add it in the `MIGRATIONS` entry. A field missing without a default raises `DataError`.
 - Loading rebuilds environment grids, continuous transitions and covariate designs and requires them to match the saved fingerprints to a relative 1e-6. A change to that rebuilding code larger than 1e-6 relative locks out every saved model: it needs a format migration, or a changelog note that such models must be refit.
 - A new class that a detector's parameters or fitted state can hold must be listed in `model_format/_builtins.py` with its fields, or `save_model` refuses it. `tests/model_format` checks the listed fields against each dataclass.
-- Version 1 freezes at the first release that ships the format. Until then its schema may change without a migration. When it freezes, add one small golden file per detector family and format version to `tests/compat_data/`, with a test that loads and decodes each, as for the legacy pickles there.
+- Every format version has one small file per detector family in `tests/compat_data/format_v<N>/` (written by `tests/compat_data/generate_saved_model_files.py`), which `tests/model_format/test_frozen_files.py` loads and decodes against the decode saved with it. Never regenerate them; a new format version adds its own directory and test cases.
 
 ## Changelog
 

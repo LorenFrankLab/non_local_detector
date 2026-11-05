@@ -83,25 +83,30 @@ store at `result_path`; one read larger than `max_read_bytes` raises an error.
 
 ## Attributes
 
-| Attribute | Present in | Meaning |
-| --- | --- | --- |
-| `marginal_log_likelihoods` | All | Array of marginal log likelihoods: one for `predict`, one per E-step for `estimate_parameters` |
-| `time_bin_convention` | All | `"left_closed_right_open_final_closed"` |
-| `time_units` | All | `"seconds"` |
-| `non_local_detector_version` | All | Version that made the result |
-| `em_transition_representation` | `estimate_parameters` | `"dense"` or `"structured"` EM |
-| `em_objectives`, `em_previous_objectives` | `estimate_parameters` | The objectives EM's convergence checks compare (see `estimate_parameters`) |
-| `em_n_chunks` | Dense EM | Chunks of the dense E-step |
-| `em_chunk_size`, `em_replay_cache_bytes` | Structured EM | Checkpoint chunk rows and replay cache of the E-step |
-| `marginal_log_likelihood` | Checkpointed | Marginal log likelihood of the final decode |
-| `inference_mode`, `output_mode` | Checkpointed | `"checkpointed"`; `"compact"` or `"spatial"` |
-| `conditioning`, `whole_recording_conditioning` | Checkpointed | Selected rows are conditioned on the whole recording |
-| `recording_rows`, `n_recording_bins` | Checkpointed | Bins in the full decode grid |
-| `transition_representation` | Checkpointed | Transition representation the decode used |
-| `dtype`, `state_probability_dtype`, `evidence_accumulation`, `evidence_dtype` | Checkpointed | Precision of the outputs and of the log-evidence sum |
-| `n_degenerate`, `n_nan`, `degenerate_row_mask_hex`, `nan_row_mask_hex`, `diagnostic_row_mask_encoding`, `diagnostics_are_global` | Checkpointed | Rows whose filter was degenerate or NaN, as counts and bit masks over the full decode grid |
-| `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes`, `global_gradients_supported` | Checkpointed | Run diagnostics |
-| `_native_metadata` | Checkpointed | Internal labels for reopening the store; `save_results` drops it |
+| Attribute | Type | Present in | Meaning |
+| --- | --- | --- | --- |
+| `marginal_log_likelihoods` | float64 array | All | Marginal log likelihoods, one-dimensional: one for `predict`, one per E-step for `estimate_parameters` (the last is the final decode's) |
+| `time_bin_convention` | str | All | `"left_closed_right_open_final_closed"` |
+| `time_units` | str | All | `"seconds"` |
+| `non_local_detector_version` | str | All | Version that made the result |
+| `em_transition_representation` | str | `estimate_parameters` | `"dense"` or `"structured"` EM |
+| `em_objectives`, `em_previous_objectives` | float64 array | `estimate_parameters` | The objectives EM's convergence checks compare (see `estimate_parameters`) |
+| `em_n_chunks` | int | Dense EM | Chunks of the dense E-step |
+| `em_chunk_size`, `em_replay_cache_bytes` | int | Structured EM | Checkpoint chunk rows and replay cache of the E-step |
+| `inference_mode`, `output_mode` | str | Checkpointed | `"checkpointed"`; `"compact"` or `"spatial"` |
+| `conditioning` | str | Checkpointed | Selected rows are conditioned on the whole recording |
+| `whole_recording_conditioning` | bool | Checkpointed | True: selected rows are conditioned on the whole recording |
+| `recording_rows`, `n_recording_bins` | int | Checkpointed | Bins in the full decode grid |
+| `transition_representation` | str | Checkpointed | Transition representation the decode used |
+| `dtype`, `state_probability_dtype`, `evidence_accumulation`, `evidence_dtype` | str | Checkpointed | Precision of the outputs and of the log-evidence sum |
+| `n_degenerate`, `n_nan` | int | Checkpointed | Rows whose filter was degenerate or NaN, over the full decode grid |
+| `degenerate_row_mask_hex`, `nan_row_mask_hex`, `diagnostic_row_mask_encoding` | str | Checkpointed | Those rows as bit masks over the full decode grid |
+| `diagnostics_are_global` | bool | Checkpointed | True: the diagnostics cover the full decode grid |
+| `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes` | int | Checkpointed | Run diagnostics |
+| `global_gradients_supported` | bool | Checkpointed | Run diagnostic |
+| `_native_metadata` | dict | Checkpointed | Internal labels for reopening the store; `save_results` drops it |
+
+Arrays are NumPy arrays and the other types are Python's.
 
 `estimate_parameters` with a `result_path` returns a checkpointed result, with
 both the EM and the checkpointed attributes.
@@ -113,15 +118,32 @@ MultiIndex: it stores the `state_bins` levels as plain coordinates, booleans
 in attributes as integers, and drops `_native_metadata`. It records the dtype
 of every integer variable and coordinate in the file's
 `non_local_detector_integer_dtypes` attribute, because netCDF3 (written when
-neither netCDF4 nor h5netcdf is installed) stores int64 as int32.
+neither netCDF4 nor h5netcdf is installed) stores int64 as int32, and the
+type of every boolean, integer, float and numeric-array attribute in its
+`non_local_detector_attribute_types` attribute, because netCDF reads a
+boolean back as an integer, an integer or float as a NumPy scalar and a
+one-element array as a scalar. An array attribute of strings or bytes comes
+back as netCDF4 reads it, a list of strings (netCDF3 cannot store one).
 `load_results("results.nc")` rebuilds the `state_bins` MultiIndex, keeping
-`state_ind` as an integer coordinate along it, and gives the integer
-variables and coordinates (`state_ind`, `encoding_groups`, checkpointed
-`source_row`) their recorded dtypes, unless a variable was changed to a
-non-integer dtype after saving; strings come back as object arrays, as xarray
-reads them. The netCDF data are read lazily, and closing the returned dataset
+`state_ind` as an integer coordinate along it, gives the integer variables and
+coordinates (`state_ind`, `encoding_groups`, checkpointed `source_row`) their
+recorded dtypes, unless a variable was changed to a non-integer dtype after
+saving, and gives the attributes their recorded types (the types in the table
+above). The MultiIndex's `state` level holds objects, as in the results
+saved; other string coordinates come back as xarray reads them (fixed-width
+strings from netCDF4). Files saved by earlier versions, which did not record
+attribute types, keep the attributes netCDF reads, except that
+`marginal_log_likelihoods` is made one-dimensional. The netCDF data are read lazily, and closing the returned dataset
 (or leaving a `with` block) closes the file. `load_results(result_path)`
 reopens a checkpointed store with lazy arrays.
+
+`save_results` writes the file beside its destination and replaces the
+destination once complete, so a failed save leaves an existing file
+unchanged. netCDF writes each variable whole, so saving a checkpointed
+result whose lazily read variable is larger than its `max_read_bytes` is
+refused before anything is written: keep the store directory, which
+`load_results` reopens, save a selection, or reopen the store with a larger
+`max_read_bytes`.
 
 ## Most likely sequence
 

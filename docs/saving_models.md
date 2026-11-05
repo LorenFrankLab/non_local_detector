@@ -39,7 +39,10 @@ print(summary["detector_type"], place_fields.shape)
 
 `.nld` is the conventional suffix. `load_model` recognizes the format from
 the file's first bytes, not its name, and still reads the pickles that
-earlier releases wrote (below).
+earlier releases wrote (below). It returns an instance of the class it is
+called on, or of a subclass: `SortedSpikesDetector.load_model` (from
+`non_local_detector.models.base`) loads any sorted-spikes detector, and a
+file holding another class raises `ValidationError`.
 
 ## What a file holds
 
@@ -75,6 +78,10 @@ stored instead, since the training positions are not.
 
 A covariate transition's covariates are stored only as numeric or string
 arrays (a categorical as its codes and categories).
+
+A JAX array loads as a JAX array of its stored dtype. One that is 64-bit,
+saved with `JAX_ENABLE_X64` set, loads as a NumPy array when x64 is off,
+since JAX would round it to 32 bits.
 
 Rebuilding repeats the fit's arithmetic, so on the same machine a reloaded
 model decodes exactly as the original. A newer NumPy, patsy or
@@ -112,7 +119,9 @@ at most 32 calls.
 By default, loading never runs code from a `.nld` file. A crafted file can
 still make loading or decoding slow or memory-hungry, for example with a
 formula whose spline terms interact into a very large design, which these
-limits do not prevent. Load files from untrusted sources with care.
+limits do not prevent, or with an array of ones, which a file stores as its
+dtype and shape alone (`$fill`), so the archive's checks on each member's
+size do not bound it. Load files from untrusted sources with care.
 
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design
@@ -224,8 +233,17 @@ the details.
 
 ## Versions
 
-`format_version` (currently 1) changes when stored names or meanings change.
-A newer release reads every older version through migrations of the stored
-data, run before anything is built. A file written in a newer format version
-than the installed release reads is refused, naming the version to upgrade
-to.
+`format_version` (currently 1) changes when stored names or meanings change,
+including when a name or field is added. A newer release reads every older
+version through migrations of the stored data, run before anything is built.
+A file written in a newer format version than the installed release reads is
+refused, naming the version to upgrade to.
+
+Reading is strict. A file holding a name the installed release does not
+read (an entry of `manifest.json` or `state.json`, a field of an entry, or,
+for `load_model`, which builds them, a field of a stored object) raises
+`DataError` naming it and the package versions: a newer or different version wrote it, and reading on without it
+could build a different model. A fitted file missing a name its kind of
+model always has raises `DataError` as well, as does an encoding model whose
+keys are not exactly those its likelihood algorithm stores, or that names an
+algorithm the installed release does not register.
