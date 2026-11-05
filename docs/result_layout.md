@@ -49,7 +49,9 @@ results until the next fit.
 States without a position (No-Spike, and Local unless `local_position_std` is
 set) have one bin each, with NaN position. Unstacking `state_bins` puts that
 bin at the last position; `non_local_detector.analysis.get_spatial_posterior`
-leaves those states out.
+leaves those states out, and `get_position_posterior` also sums over the states
+that remain. `maximum_a_posteriori_estimate` and `get_map_speed` accept any of
+these layouts.
 
 `state_ind` is a plain (non-index) coordinate along `state_bins`, so
 `results.acausal_posterior.unstack("state_bins")` keeps it as a float

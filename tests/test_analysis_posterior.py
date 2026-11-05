@@ -5,7 +5,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.analysis.posterior import (
+    get_position_posterior,
     get_spatial_posterior,
     maximum_a_posteriori_estimate,
     sample_posterior,
@@ -369,6 +371,101 @@ class TestMapFromRawAcausalPosterior:
         assert result.shape == (2, len(position_dims))
         assert np.all(np.isfinite(result[0]))
         assert np.all(np.isnan(result[1]))
+
+
+@pytest.mark.unit
+class TestGetPositionPosterior:
+    """One path from any posterior layout to position alone."""
+
+    @pytest.mark.parametrize(
+        "position_dims",
+        [["position"], ["x_position", "y_position"]],
+        ids=["1-D", "2-D"],
+    )
+    def test_every_layout_gives_the_same_posterior(self, position_dims):
+        raw = _make_acausal_posterior(position_dims)
+        spatial = get_spatial_posterior(raw)
+        summed = spatial.sum("state")
+
+        for layout in (raw, spatial, summed):
+            xr.testing.assert_identical(get_position_posterior(layout), summed)
+
+    def test_position_less_states_are_left_out(self):
+        raw = _make_acausal_posterior(["position"], n_time=1)
+        local_mass = raw.values[0, 0]
+
+        total = get_position_posterior(raw).sum("position").item()
+
+        np.testing.assert_allclose(total, 1 - local_mass)
+
+    def test_layout_without_position_is_refused(self):
+        posterior = xr.DataArray(np.ones((2, 3)), dims=["time", "states"])
+        with pytest.raises(ValueError, match="position"):
+            get_position_posterior(posterior)
+
+
+def _one_hot_posterior(n_time, peak, grids, position_dims):
+    """``(n_time, *grid)`` one-hot at the bin indices ``peak``."""
+    values = np.zeros((n_time, *(len(grid) for grid in grids)))
+    values[(slice(None), *peak)] = 1.0
+    return xr.DataArray(
+        values,
+        dims=["time", *position_dims],
+        coords=dict(zip(position_dims, grids, strict=True)),
+    )
+
+
+@pytest.mark.unit
+class TestMapInAnyNumberOfDimensions:
+    @pytest.mark.parametrize(
+        "n_position_dims", [2, 3, 7], ids=["2-D", "3-D", "numbered dims"]
+    )
+    def test_map_reads_each_coordinate(self, n_position_dims):
+        position_dims = get_position_dim_names(n_position_dims)
+        grids = [10.0 * (dim + 1) * np.arange(2.0) for dim in range(n_position_dims)]
+        peak = (1, *([0] * (n_position_dims - 1)))
+        posterior = _one_hot_posterior(2, peak, grids, position_dims)
+
+        result = maximum_a_posteriori_estimate(posterior)
+
+        expected = [
+            grid[bin_index] for grid, bin_index in zip(grids, peak, strict=True)
+        ]
+        np.testing.assert_array_equal(result, np.tile(expected, (2, 1)))
+
+    def test_raw_3d_posterior(self):
+        position_dims = ["x_position", "y_position", "z_position"]
+        grids = [np.arange(3.0), 10.0 * np.arange(2.0), 100.0 * np.arange(2.0)]
+        grid = np.stack([g.ravel() for g in np.meshgrid(*grids, indexing="ij")], axis=1)
+        index = pd.MultiIndex.from_tuples(
+            [("Local", np.nan, np.nan, np.nan), *(("NL", *row) for row in grid)],
+            names=["state", *position_dims],
+        )
+        values = np.full((1, len(grid) + 1), 0.01)
+        values[0, 0] = 0.9
+        values[0, 1 + 9] = 0.05
+        posterior = xr.DataArray(
+            values,
+            dims=["time", "state_bins"],
+            coords={"time": [0.0], "state_bins": index},
+        )
+
+        np.testing.assert_array_equal(
+            maximum_a_posteriori_estimate(posterior), grid[[9]]
+        )
+
+    def test_columns_follow_the_position_names_not_the_array_order(self):
+        """``(n_time, y, x)`` still reports x in the first column."""
+        posterior = _one_hot_posterior(
+            1,
+            (1, 2),
+            [np.arange(2.0), 10.0 * np.arange(3.0)],
+            ["y_position", "x_position"],
+        )
+
+        np.testing.assert_array_equal(
+            maximum_a_posteriori_estimate(posterior), [[20.0, 1.0]]
+        )
 
 
 @pytest.mark.unit

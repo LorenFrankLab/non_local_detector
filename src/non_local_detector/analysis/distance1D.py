@@ -8,6 +8,7 @@ import networkx as nx
 import numpy as np
 import xarray as xr
 
+from non_local_detector.analysis.posterior import get_position_posterior
 from non_local_detector.environment import (
     _segment_index_of_edge_id,
     find_environment_by_name,
@@ -38,7 +39,8 @@ def _get_MAP_estimate_2d_position_edges(
     Parameters
     ----------
     posterior : xr.DataArray, shape (n_time, n_position_bins)
-        Decoded posterior probability distribution over position bins.
+        Decoded posterior probability distribution over position bins, or a
+        raw ``results.acausal_posterior`` with a ``state_bins`` dimension.
     track_graph : nx.Graph
         The environment's ``track_graph``, whose edges carry ``edge_id``.
     decoder : _DetectorBase
@@ -67,7 +69,10 @@ def _get_MAP_estimate_2d_position_edges(
 
     # Get 2D position on track from decoder MAP estimate
     map_position_ind = (
-        posterior.where(env.is_track_interior_).argmax("position", skipna=True).values
+        get_position_posterior(posterior)
+        .where(env.is_track_interior_)
+        .argmax("position", skipna=True)
+        .values
     )
     try:
         place_bin_center_2D_position = env.place_bin_center_2D_position_  # type: ignore[attr-defined]  # legacy attribute; AttributeError fallback below
@@ -346,7 +351,8 @@ def get_trajectory_data(
     Parameters
     ----------
     posterior : xarray.DataArray, shape (n_time, n_position_bins)
-        Decoded probability of position.
+        Decoded probability of position, or a raw
+        ``results.acausal_posterior`` with a ``state_bins`` dimension.
     track_graph : networkx.Graph
         The environment's ``track_graph``; the decoded position's edge is
         found by its ``edge_id``.
@@ -497,7 +503,9 @@ def get_map_speed(
     Parameters
     ----------
     posterior : xr.DataArray or np.ndarray, shape (n_time, n_position_bins)
-        Decoded posterior probability of position.
+        Decoded posterior probability of position. A DataArray may also be a
+        raw ``results.acausal_posterior`` with a ``state_bins`` dimension; see
+        :func:`~non_local_detector.analysis.get_position_posterior`.
     track_graph_with_bin_centers_edges : nx.Graph
         Track graph with bin centers as nodes and edges.
     place_bin_center_ind_to_node : np.ndarray, shape (n_position_bins,)
@@ -514,6 +522,8 @@ def get_map_speed(
         Speed of the most likely decoded position.
     """
     dt = 1 / sampling_frequency
+    if isinstance(posterior, xr.DataArray):
+        posterior = get_position_posterior(posterior)
     posterior = np.asarray(posterior)
     map_position_ind = np.nanargmax(posterior, axis=1)
     node_ids = place_bin_center_ind_to_node[map_position_ind]

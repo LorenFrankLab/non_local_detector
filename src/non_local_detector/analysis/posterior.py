@@ -7,9 +7,14 @@ import numpy as np
 import xarray as xr
 from scipy.stats import rv_histogram
 
-from non_local_detector._position_dims import _is_position_dim
+from non_local_detector._position_dims import (
+    _is_position_dim,
+    get_position_dim_names,
+    get_position_dims,
+)
 
 __all__ = [
+    "get_position_posterior",
     "get_spatial_posterior",
     "maximum_a_posteriori_estimate",
     "sample_posterior",
@@ -95,39 +100,67 @@ def get_spatial_posterior(
     )
 
 
+def get_position_posterior(posterior: xr.DataArray) -> xr.DataArray:
+    """Reduce a posterior to position alone, whatever its layout.
+
+    Parameters
+    ----------
+    posterior : xr.DataArray
+        A raw ``results.acausal_posterior`` with a ``state_bins`` dimension,
+        the per-state grids of :func:`get_spatial_posterior`, or a posterior
+        that already has only position dimensions.
+
+    Returns
+    -------
+    position_posterior : xr.DataArray, shape (n_time, *n_position_bins)
+        Summed over the states with a position, with the position-less states
+        (Local, No-Spike) left out, so it sums to 1 over position only when
+        those states have no mass. Off-track bins are 0.
+
+    Raises
+    ------
+    ValueError
+        If ``posterior`` has neither a ``state_bins`` nor a position dimension,
+        or ``get_spatial_posterior`` cannot read its ``state_bins``.
+    """
+    if "state_bins" in posterior.dims:
+        posterior = get_spatial_posterior(posterior)
+    if "state" in posterior.dims:
+        posterior = posterior.sum("state")
+    if not get_position_dims(posterior):
+        msg = f"posterior has no position dimension; got dims {posterior.dims}."
+        raise ValueError(msg)
+    return posterior
+
+
 def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
     """Find the most likely position from the posterior distribution.
 
     Computes the maximum a posteriori (MAP) estimate by finding the position
-    bin with the highest probability at each time point. Handles both 1D
-    and 2D position representations. NaN bins (for example off-track bins)
-    are ignored.
+    bin with the highest probability at each time point, in any number of
+    position dimensions. NaN bins (for example off-track bins) are ignored.
 
     Parameters
     ----------
-    posterior : xr.DataArray, shape (n_time, n_position_bins) or (n_time, n_x_bins, n_y_bins)
+    posterior : xr.DataArray, shape (n_time, *n_position_bins)
         Posterior probability distribution over position bins. For 1D tracks,
         dimensions are (time, position). For 2D environments, dimensions are
-        (time, x_position, y_position). A raw ``results.acausal_posterior``
-        with a ``state_bins`` dimension is also accepted: it is passed through
-        :func:`get_spatial_posterior` and summed over ``state``, so
+        (time, x_position, y_position), and so on. A raw
+        ``results.acausal_posterior`` with a ``state_bins`` dimension is also
+        accepted: it is passed through :func:`get_position_posterior`, so
         position-less states (Local, No-Spike) are ignored.
 
     Returns
     -------
-    map_estimate : np.ndarray, shape (n_time, n_spatial_dims)
-        Most likely position coordinates at each time point. For 1D tracks,
-        shape is (n_time, 1). For 2D environments, shape is (n_time, 2).
-        Time points with no probability on any position bin (zero or
-        non-finite total, e.g. all mass in Local or No-Spike, or every bin
-        NaN) are NaN rather than the first bin.
+    map_estimate : np.ndarray, shape (n_time, n_position_dims)
+        Most likely position coordinates at each time point, with columns in
+        the order of the position names (x, y, z, ...). Time points with no
+        probability on any position bin (zero or non-finite total, e.g. all
+        mass in Local or No-Spike, or every bin NaN) are NaN rather than the
+        first bin.
     """
-    if "state_bins" in posterior.dims:
-        posterior = get_spatial_posterior(posterior).sum("state")
-    if "x_position" in posterior.dims and "y_position" in posterior.dims:
-        position_dims = ["x_position", "y_position"]
-    else:
-        position_dims = ["position"]
+    posterior = get_position_posterior(posterior)
+    position_dims = get_position_dim_names(len(get_position_dims(posterior)))
     probability = posterior.transpose(..., *position_dims).to_numpy()
     probability = probability.reshape(probability.shape[0], -1)
     bin_coordinates = np.stack(

@@ -64,7 +64,7 @@ if sortingview_available():
     import sortingview.views.franklab as vvf
     import xarray as xr
 
-    from non_local_detector.analysis.posterior import get_spatial_posterior
+    from non_local_detector.analysis.posterior import get_position_posterior
     from non_local_detector.environment import Environment, get_grid, get_track_interior
     from non_local_detector.exceptions import ValidationError
     from non_local_detector.visualization.static import get_multiunit_firing_rate
@@ -612,7 +612,7 @@ if sortingview_available():
             env.is_track_interior_.ravel()
         ]
         if posterior is None:
-            posterior = get_spatial_posterior(results.acausal_posterior).sum("state")
+            posterior = get_position_posterior(results.acausal_posterior)
         place_bin_size = (
             posterior.x_position.values[1] - posterior.x_position.values[0],
             posterior.y_position.values[1] - posterior.y_position.values[0],
