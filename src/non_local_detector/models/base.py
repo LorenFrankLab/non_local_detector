@@ -39,13 +39,7 @@ from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
 from non_local_detector._warnings import user_stacklevel
-from non_local_detector.continuous_state_transitions import (
-    TransitionContext,
-    _check_block_environments,
-    _check_continuous_transition,
-    _make_transition_block,
-    _multi_bin_local_transition,
-)
+from non_local_detector.continuous_state_transitions import TransitionContext
 from non_local_detector.core import (
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
@@ -70,7 +64,6 @@ from non_local_detector.exceptions import (
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
-from non_local_detector.initial_conditions import _check_state_initial_conditions
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -142,7 +135,11 @@ from non_local_detector.models._plotting import _PlottingMixin
 from non_local_detector.models._results import (
     convert_results_to_xarray,
     convert_seq_to_df,
-    has_place_bins,
+)
+from non_local_detector.models._state_space import (
+    continuous_state_transitions,
+    initial_conditions,
+    state_layout,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
@@ -153,10 +150,7 @@ from non_local_detector.time_edges import (
     calculate_time_edges,
     requires_time_edges,
 )
-from non_local_detector.transition_operators import (
-    DEFAULT_MAX_DENSE_BYTES,
-    _one_bin_block,
-)
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -1332,51 +1326,34 @@ class _DetectorBase(
     def _initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.
 
-        Determines the total number of bins across all discrete states (spatial
-        bins for continuous states, 1 for discrete states like 'Local' or
-        'No-Spike') and creates mappings between these combined bins and the
-        original discrete states. Also identifies which combined bins correspond
-        to the track interior.
+        See ``state_layout``.
 
         Attributes
         ----------
         n_discrete_states_ : int
             Total number of discrete states defined in the model.
-        state_ind_ : np.ndarray, shape (n_total_bins,)
+        state_ind_ : np.ndarray, shape (n_state_bins,)
             Index mapping each combined bin to its corresponding discrete state index.
         n_state_bins_ : int
-            Total number of bins across all states (sum of spatial bins for
-            continuous states and 1 for discrete states). Referred to as
-            `n_total_bins` in the shape description here for clarity.
+            Total number of bins across all states.
         bin_sizes_ : np.ndarray, shape (n_discrete_states_,)
-             Number of bins associated with each discrete state (e.g., number
-             of place bins for spatial states, 1 for non-spatial states).
-        is_track_interior_state_bins_ : np.ndarray, shape (n_total_bins,)
-             Boolean array indicating if a combined state bin corresponds to the
-             track interior. For non-spatial states, this is typically True.
+            Number of bins associated with each discrete state.
+        is_track_interior_state_bins_ : np.ndarray, shape (n_state_bins,)
+            Whether each combined state bin is on the track interior.
         """
         self.n_discrete_states_ = len(self.state_names)
-        bin_sizes = []
-        state_ind = []
-        is_track_interior = []
-        for ind, obs in enumerate(self.observation_models):
-            if not has_place_bins(self, obs):
-                bin_sizes.append(1)
-                state_ind.append(np.full(1, ind, dtype=int))
-                is_track_interior.append(np.ones(1, dtype=bool))
-            else:
-                environment = self._get_environment_by_name(obs.environment_name)
-                bin_sizes.append(environment.place_bin_centers_.shape[0])
-                state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
-                is_track_interior.append(environment.is_track_interior_flat_)
-
-        self.state_ind_ = np.concatenate(state_ind)
+        state_ind, bin_sizes, is_track_interior = state_layout(
+            self.observation_models, self.environments_, self.local_position_std
+        )
+        self.state_ind_ = state_ind
         self.n_state_bins_ = len(self.state_ind_)
-        self.bin_sizes_ = np.array(bin_sizes)
-        self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
+        self.bin_sizes_ = bin_sizes
+        self.is_track_interior_state_bins_ = is_track_interior
 
     def _initialize_initial_conditions(self) -> None:
         """Construct the initial probability for the state and each spatial bin.
+
+        See ``initial_conditions``.
 
         Attributes
         ----------
@@ -1385,37 +1362,17 @@ class _DetectorBase(
         initial_conditions_ : np.ndarray, shape (n_state_bins,)
             Overall initial probability distribution across all state bins.
         """
-        logger.info("Fitting initial conditions...")
-        from dataclasses import replace
-
-        ic_parts = []
-        for state, (obs, cont_ic) in enumerate(
-            zip(
-                self.observation_models,
-                self.continuous_initial_conditions_types,
-                strict=False,
+        self.continuous_initial_conditions_, self.initial_conditions_ = (
+            initial_conditions(
+                observation_models=self.observation_models,
+                continuous_initial_conditions_types=self.continuous_initial_conditions_types,
+                environments=self.environments_,
+                local_position_std=self.local_position_std,
+                state_names=self.state_names,
+                discrete_initial_conditions=self.discrete_initial_conditions,
+                state_ind=self.state_ind_,
+                is_track_interior=self.is_track_interior_state_bins_,
             )
-        ):
-            # Multi-bin local uses full spatial initial conditions
-            effective_obs = obs
-            if obs.is_local and self.local_position_std is not None:
-                effective_obs = replace(obs, is_local=False)
-            ic_parts.append(
-                cont_ic.make_initial_conditions(effective_obs, self.environments_)
-            )
-            _check_state_initial_conditions(
-                ic_parts[-1],
-                state_name=self.state_names[state],
-                initial_conditions=cont_ic,
-                is_interior=self.is_track_interior_state_bins_[
-                    self.state_ind_ == state
-                ],
-                discrete_weight=self.discrete_initial_conditions[state],
-            )
-        self.continuous_initial_conditions_ = np.concatenate(ic_parts)
-        self.initial_conditions_ = (
-            self.continuous_initial_conditions_
-            * self.discrete_initial_conditions[self.state_ind_]
         )
 
     def _initialize_continuous_state_transition(
@@ -1431,6 +1388,8 @@ class _DetectorBase(
     ) -> None:
         """
         Construct the transition matrices for the continuous states.
+
+        See ``continuous_state_transitions``.
 
         Parameters
         ----------
@@ -1461,86 +1420,26 @@ class _DetectorBase(
         continuous_transition_types : ContinuousTransitions
             Stores the continuous transition types used.
         """
-        logger.info("Fitting continuous state transition...")
-
         self.continuous_transition_types = continuous_transition_types
-
-        _validate_transition_arguments(
-            transition_representation, max_dense_transition_bytes
+        self.__dict__.pop("_continuous_transition_operator_", None)
+        transitions, operator = continuous_state_transitions(
+            continuous_transition_types,
+            self.environments_,
+            self.observation_models,
+            self.local_position_std,
+            self.state_ind_,
+            self.bin_sizes_,
+            context=TransitionContext(
+                position, is_training, encoding_group_labels, environment_labels
+            ),
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
         self._transition_representation_ = transition_representation
         self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
-        self.__dict__.pop("_continuous_transition_operator_", None)
-        context = TransitionContext(
-            position, is_training, encoding_group_labels, environment_labels
-        )
-        if transition_representation != "dense":
-            from non_local_detector.transition_operators import (
-                LazyDenseTransition,
-                build_transition_operator,
-            )
-
-            operator = build_transition_operator(
-                self.continuous_transition_types,
-                self.environments_,
-                self.bin_sizes_,  # type: ignore[arg-type]  # typed Sequence[int] in transition_operators; an ndarray works
-                observation_models=self.observation_models,
-                local_position_std=self.local_position_std,
-                allow_dense_fallback=transition_representation == "auto",
-                max_dense_bytes=int(max_dense_transition_bytes),
-                context=context,
-            )
+        if operator is not None:
             self._continuous_transition_operator_ = operator
-            self.continuous_state_transitions_ = LazyDenseTransition(
-                operator, max_bytes=int(max_dense_transition_bytes)
-            )
-            return
-
-        n_total_bins = len(self.state_ind_)
-        self.continuous_state_transitions_ = np.zeros((n_total_bins, n_total_bins))
-
-        for from_state, row in enumerate(self.continuous_transition_types):
-            for to_state, transition in enumerate(row):
-                _check_continuous_transition(transition)
-                inds = np.ix_(
-                    self.state_ind_ == from_state, self.state_ind_ == to_state
-                )
-
-                transition = _multi_bin_local_transition(
-                    transition,
-                    self.observation_models[from_state],
-                    self.observation_models[to_state],
-                    self.local_position_std,
-                )
-
-                n_row_bins = int(np.max(inds[0].shape))
-                n_col_bins = int(np.max(inds[1].shape))
-
-                # Blocks between a one-bin and a spatial state follow the
-                # structured operator's rule, so both representations agree.
-                _check_block_environments(
-                    transition,
-                    self.environments_,
-                    self.observation_models[from_state].environment_name,
-                    self.observation_models[to_state].environment_name,
-                    n_row_bins,
-                    n_col_bins,
-                )
-                one_bin_block = _one_bin_block(
-                    transition, self.environments_, n_row_bins, n_col_bins
-                )
-                if one_bin_block is not None:
-                    self.continuous_state_transitions_[inds] = one_bin_block.entries(
-                        np.arange(n_row_bins)[:, np.newaxis],
-                        np.arange(n_col_bins)[np.newaxis],
-                    )
-                else:
-                    self.continuous_state_transitions_[inds] = _make_transition_block(
-                        transition,
-                        self.environments_,
-                        context,
-                        (n_row_bins, n_col_bins),
-                    )
+        self.continuous_state_transitions_ = transitions
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.

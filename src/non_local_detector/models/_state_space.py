@@ -1,0 +1,305 @@
+"""The fitted state bins of a detector and the continuous transition between them.
+
+A detector's discrete states each own a block of state bins: one bin per
+place bin of its environment, or a single bin without a position (No-Spike,
+and Local without a position kernel). ``state_layout`` assigns the bins,
+``initial_conditions`` builds the initial distribution over them, and
+``continuous_state_transitions`` the transition between them, as a dense
+matrix or a structured operator.
+"""
+
+from collections.abc import Sequence
+from dataclasses import replace
+from logging import getLogger
+from typing import Any
+
+import numpy as np
+
+from non_local_detector.continuous_state_transitions import (
+    TransitionContext,
+    _check_block_environments,
+    _check_continuous_transition,
+    _make_transition_block,
+    _multi_bin_local_transition,
+)
+from non_local_detector.environment import Environment, find_environment_by_name
+from non_local_detector.initial_conditions import _check_state_initial_conditions
+from non_local_detector.models._input_validation import _validate_transition_arguments
+from non_local_detector.observation_models import ObservationModel
+from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
+    _one_bin_block,
+)
+from non_local_detector.types import TransitionRepresentation
+
+logger = getLogger(__name__)
+
+
+def has_place_bins(
+    observation: ObservationModel, local_position_std: float | None
+) -> bool:
+    """Whether a state's bins are its environment's place bins.
+
+    No-Spike, and Local without a position kernel (``local_position_std`` is
+    None), have a single state bin with no position instead.
+
+    Parameters
+    ----------
+    observation : ObservationModel
+        The state's observation model.
+    local_position_std : float or None
+        The detector's ``local_position_std``, which decides whether a Local
+        state has a position kernel over place bins.
+
+    Returns
+    -------
+    bool
+        True if the state has one bin per place bin of its environment,
+        False if it has a single bin without a position.
+    """
+    return not (
+        observation.is_no_spike or (observation.is_local and local_position_std is None)
+    )
+
+
+def state_layout(
+    observation_models: Sequence[ObservationModel],
+    environments: Sequence[Environment],
+    local_position_std: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Assign each discrete state its bins.
+
+    A state with place bins (see ``has_place_bins``) gets one bin per place
+    bin of its environment; any other state gets one bin. The bins are
+    numbered state by state, so each state's bins are one contiguous block.
+
+    Parameters
+    ----------
+    observation_models : sequence of ObservationModel, length n_states
+        Observation model of each discrete state.
+    environments : sequence of Environment
+        The fitted environments, looked up by the observation models'
+        ``environment_name``.
+    local_position_std : float or None
+        Whether Local states have a position kernel (not None) over place
+        bins.
+
+    Returns
+    -------
+    state_ind : np.ndarray of int, shape (n_state_bins,)
+        Discrete state of each state bin.
+    bin_sizes : np.ndarray of int, shape (n_states,)
+        Number of bins of each discrete state.
+    is_track_interior : np.ndarray of bool, shape (n_state_bins,)
+        Whether each state bin is on the track interior; True for a state
+        without place bins.
+    """
+    bin_sizes = []
+    state_ind = []
+    is_track_interior = []
+    for ind, obs in enumerate(observation_models):
+        if not has_place_bins(obs, local_position_std):
+            bin_sizes.append(1)
+            state_ind.append(np.full(1, ind, dtype=int))
+            is_track_interior.append(np.ones(1, dtype=bool))
+        else:
+            environment = find_environment_by_name(environments, obs.environment_name)
+            bin_sizes.append(environment.place_bin_centers_.shape[0])
+            state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
+            is_track_interior.append(environment.is_track_interior_flat_)
+
+    return (
+        np.concatenate(state_ind),
+        np.array(bin_sizes),
+        np.concatenate(is_track_interior),
+    )
+
+
+def initial_conditions(
+    *,
+    observation_models: Sequence[ObservationModel],
+    continuous_initial_conditions_types: Sequence[Any],
+    environments: Sequence[Environment],
+    local_position_std: float | None,
+    state_names: Sequence[str],
+    discrete_initial_conditions: np.ndarray,
+    state_ind: np.ndarray,
+    is_track_interior: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Construct the initial probability of each state bin.
+
+    Parameters
+    ----------
+    observation_models : sequence of ObservationModel, length n_states
+        Observation model of each discrete state.
+    continuous_initial_conditions_types : sequence, length n_states
+        Initial-condition type of each discrete state.
+    environments : sequence of Environment
+        The fitted environments.
+    local_position_std : float or None
+        Whether Local states have a position kernel; a multi-bin Local state
+        starts spread over its place bins.
+    state_names : sequence of str, length n_states
+        Names of the discrete states, for error messages.
+    discrete_initial_conditions : np.ndarray, shape (n_states,)
+        Initial probability of each discrete state.
+    state_ind : np.ndarray of int, shape (n_state_bins,)
+        Discrete state of each state bin, from ``state_layout``.
+    is_track_interior : np.ndarray of bool, shape (n_state_bins,)
+        Whether each state bin is on the track interior, from
+        ``state_layout``.
+
+    Returns
+    -------
+    continuous_initial_conditions : np.ndarray, shape (n_state_bins,)
+        Initial probability distribution over the bins within each state.
+    initial_conditions : np.ndarray, shape (n_state_bins,)
+        Overall initial probability distribution across all state bins.
+    """
+    logger.info("Fitting initial conditions...")
+
+    ic_parts = []
+    for state, (obs, cont_ic) in enumerate(
+        zip(
+            observation_models,
+            continuous_initial_conditions_types,
+            strict=False,
+        )
+    ):
+        # Multi-bin local uses full spatial initial conditions
+        effective_obs = obs
+        if obs.is_local and local_position_std is not None:
+            effective_obs = replace(obs, is_local=False)
+        ic_parts.append(cont_ic.make_initial_conditions(effective_obs, environments))
+        _check_state_initial_conditions(
+            ic_parts[-1],
+            state_name=state_names[state],
+            initial_conditions=cont_ic,
+            is_interior=is_track_interior[state_ind == state],
+            discrete_weight=discrete_initial_conditions[state],
+        )
+    continuous_initial_conditions = np.concatenate(ic_parts)
+    return (
+        continuous_initial_conditions,
+        continuous_initial_conditions * discrete_initial_conditions[state_ind],
+    )
+
+
+def continuous_state_transitions(
+    continuous_transition_types: Sequence[Sequence[Any]],
+    environments: Sequence[Environment],
+    observation_models: Sequence[ObservationModel],
+    local_position_std: float | None,
+    state_ind: np.ndarray,
+    bin_sizes: np.ndarray,
+    *,
+    context: TransitionContext,
+    transition_representation: TransitionRepresentation = "dense",
+    max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+) -> tuple[Any, Any]:
+    """Construct the transition between the state bins of the continuous states.
+
+    Parameters
+    ----------
+    continuous_transition_types : sequence of sequences, shape (n_states, n_states)
+        Transition model of each pair of discrete states.
+    environments : sequence of Environment
+        The fitted environments.
+    observation_models : sequence of ObservationModel, length n_states
+        Observation model of each discrete state.
+    local_position_std : float or None
+        Whether Local states have a position kernel over place bins.
+    state_ind : np.ndarray of int, shape (n_state_bins,)
+        Discrete state of each state bin, from ``state_layout``.
+    bin_sizes : np.ndarray of int, shape (n_states,)
+        Number of bins of each discrete state, from ``state_layout``.
+    context : TransitionContext
+        Fit data the transitions may read.
+    transition_representation : {"dense", "structured", "auto"}, optional
+        By default "dense", which builds the full matrix. "structured"
+        requires exact supported state-block operators; "auto" permits
+        budgeted dense fallback blocks.
+    max_dense_transition_bytes : int, optional
+        Byte limit for retained fallback blocks, temporary dense graph
+        distances, and explicit reads of the lazy view, by default
+        256 MiB. Does not limit "dense".
+
+    Returns
+    -------
+    continuous_state_transitions : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
+        Probability of transitioning between bins, assuming a transition
+        between the corresponding discrete states occurs. A budgeted lazy
+        view of the operator unless transition_representation="dense".
+    transition_operator : BlockTransitionOperator or None
+        The structured operator; None for "dense".
+    """
+    logger.info("Fitting continuous state transition...")
+
+    _validate_transition_arguments(
+        transition_representation, max_dense_transition_bytes
+    )
+    if transition_representation != "dense":
+        from non_local_detector.transition_operators import (
+            LazyDenseTransition,
+            build_transition_operator,
+        )
+
+        operator = build_transition_operator(
+            continuous_transition_types,
+            environments,
+            bin_sizes,  # type: ignore[arg-type]  # typed Sequence[int] in transition_operators; an ndarray works
+            observation_models=observation_models,
+            local_position_std=local_position_std,
+            allow_dense_fallback=transition_representation == "auto",
+            max_dense_bytes=int(max_dense_transition_bytes),
+            context=context,
+        )
+        return (
+            LazyDenseTransition(operator, max_bytes=int(max_dense_transition_bytes)),
+            operator,
+        )
+
+    n_total_bins = len(state_ind)
+    transitions = np.zeros((n_total_bins, n_total_bins))
+
+    for from_state, row in enumerate(continuous_transition_types):
+        for to_state, transition in enumerate(row):
+            _check_continuous_transition(transition)
+            inds = np.ix_(state_ind == from_state, state_ind == to_state)
+
+            transition = _multi_bin_local_transition(
+                transition,
+                observation_models[from_state],
+                observation_models[to_state],
+                local_position_std,
+            )
+
+            n_row_bins = int(np.max(inds[0].shape))
+            n_col_bins = int(np.max(inds[1].shape))
+
+            # Blocks between a one-bin and a spatial state follow the
+            # structured operator's rule, so both representations agree.
+            _check_block_environments(
+                transition,
+                environments,
+                observation_models[from_state].environment_name,
+                observation_models[to_state].environment_name,
+                n_row_bins,
+                n_col_bins,
+            )
+            one_bin_block = _one_bin_block(
+                transition, environments, n_row_bins, n_col_bins
+            )
+            if one_bin_block is not None:
+                transitions[inds] = one_bin_block.entries(
+                    np.arange(n_row_bins)[:, np.newaxis],
+                    np.arange(n_col_bins)[np.newaxis],
+                )
+            else:
+                transitions[inds] = _make_transition_block(
+                    transition,
+                    environments,
+                    context,
+                    (n_row_bins, n_col_bins),
+                )
+    return transitions, None

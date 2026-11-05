@@ -21,6 +21,9 @@ import xarray as xr
 
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.exceptions import ConfigurationError
+from non_local_detector.models._state_space import (
+    has_place_bins as _has_place_bins,
+)
 from non_local_detector.result_store import pad_state_bins
 
 try:
@@ -60,10 +63,7 @@ def has_place_bins(detector: "_DetectorBase", observation: "ObservationModel") -
         True if the state has one bin per place bin of its environment,
         False if it has a single bin without a position.
     """
-    return not (
-        observation.is_no_spike
-        or (observation.is_local and detector.local_position_std is None)
-    )
+    return _has_place_bins(observation, detector.local_position_std)
 
 
 def state_bin_positions(detector: "_DetectorBase") -> list[np.ndarray]:
