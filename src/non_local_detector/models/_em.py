@@ -1529,7 +1529,7 @@ class _EMMixin:
                 # Surfaced via warnings.warn(NumericalWarning) to match the
                 # other EM/GMM/GLM fit-quality diagnostics (decode-time
                 # degenerate-timestep warnings use logger.warning instead;
-                # see core._warn_degenerate_and_nan_timesteps).
+                # see core._report_degenerate_and_nan_timesteps).
                 warnings.warn(
                     f"EM iteration {state.n_iter}: penalized log-likelihood "
                     f"decreased from {state.previous_objectives[-1]:.6f} to "

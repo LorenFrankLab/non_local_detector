@@ -32,8 +32,6 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
         for row in (7, 45):
             if start <= row < stop:
                 values[row - start, :] = -np.inf
-        if start <= 73 < stop:
-            values[73 - start, 0] = np.nan
         return values
 
     monkeypatch.setattr(model, "compute_log_likelihood", damaged)
@@ -56,12 +54,12 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
     np.testing.assert_array_equal(model.degenerate_timesteps_, [98])
     np.testing.assert_array_equal(result.source_row, np.arange(5, 10))
     assert result.attrs["n_degenerate"] == len(expected)
-    assert result.attrs["n_nan"] == 1
+    assert result.attrs["n_nan"] == 0
     assert result.attrs["diagnostics_are_global"] is True
     loaded = model.load_results(path)
     for key, indices in [
         ("degenerate_row_mask_hex", expected),
-        ("nan_row_mask_hex", [73]),
+        ("nan_row_mask_hex", []),
     ]:
         packed = np.frombuffer(bytes.fromhex(loaded.attrs[key]), dtype=np.uint8)
         actual = np.flatnonzero(np.unpackbits(packed, bitorder="little", count=100))

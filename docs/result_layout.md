@@ -104,7 +104,7 @@ store at `result_path`; one read larger than `max_read_bytes` raises an error.
 | `recording_rows`, `n_recording_bins` | int | Checkpointed | Bins in the full decode grid |
 | `transition_representation` | str | Checkpointed | Transition representation the decode used |
 | `dtype`, `state_probability_dtype`, `evidence_accumulation`, `evidence_dtype` | str | Checkpointed | Precision of the outputs and of the log-evidence sum |
-| `n_degenerate`, `n_nan` | int | Checkpointed | Rows whose filter was degenerate or NaN, over the full decode grid |
+| `n_degenerate`, `n_nan` | int | Checkpointed | Rows whose filter was degenerate or NaN, over the full decode grid. A NaN or `+inf` log likelihood now raises `DataError`, so `n_nan` is nonzero only in results saved by earlier versions |
 | `degenerate_row_mask_hex`, `nan_row_mask_hex`, `diagnostic_row_mask_encoding` | str | Checkpointed | Those rows as bit masks over the full decode grid |
 | `diagnostics_are_global` | bool | Checkpointed | True: the diagnostics cover the full decode grid |
 | `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes` | int | Checkpointed | Run diagnostics |

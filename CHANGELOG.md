@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fixed:** a likelihood algorithm whose `predict` returns the wrong shape raises `ValidationError` naming the algorithm and the state. Before, a shape that broadcast to the state's block, such as one column for every bin, spread that value over the bins silently.
 - **Fixed:** the matrix a custom discrete transition's `make_state_transition` returns is checked at fit, at every time step of a covariate-dependent one: a NaN or infinite value raises `DataError`, and a negative value or a row that does not sum to 1 (within the shared tolerance of 1e-4) raises `ValidationError`. Before, those decoded without an error, and the posterior was not a probability.
+- **Changed:** a NaN or `+inf` log likelihood raises `DataError` once the pass has counted its bins, on every path (`filter`, `viterbi`, the chunked and checkpointed drivers, and so `predict` and `estimate_parameters`), instead of a log message and a NaN posterior. `estimate_parameters` restores the detector, and a `result_path` is left unwritten. Bins marked missing are replaced before the check, an all-`-inf` bin is still only logged, and a pass under `jax.jit` cannot raise. `n_nan` in checkpointed results is now always 0.
 
 ### Transition estimates and HMM inputs that gave wrong results silently
 

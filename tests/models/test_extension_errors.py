@@ -22,7 +22,7 @@ from non_local_detector.discrete_state_transitions import (
 )
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
-from tests.models._helpers import SORTED_SIM_RATE
+from tests.models._helpers import SORTED_SIM_RATE, _assert_unchanged, _snapshot
 
 pytestmark = pytest.mark.unit
 
@@ -48,6 +48,11 @@ def _decode_kwargs(sorted_sim, n_time=40):
         "position": position,
         "position_time": time,
     }
+
+
+def _poison(result, value, row=0, column=0):
+    """``result`` with one entry replaced by ``value``."""
+    return jnp.asarray(result).at[row, column].set(value)
 
 
 def _patch_predict(monkeypatch, predict):
@@ -107,6 +112,64 @@ def test_builtin_blocks_pass_the_shape_check(sorted_sim, local_position_std, n_c
     )
     results = detector.predict(**_decode_kwargs(sorted_sim), n_chunks=n_chunks)
     assert np.all(np.isfinite(results.acausal_state_probabilities.values))
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf], ids=["nan", "posinf"])
+@pytest.mark.parametrize(
+    "decode",
+    [
+        pytest.param({}, id="dense"),
+        pytest.param({"n_chunks": 2}, id="chunked"),
+        pytest.param(
+            {"inference_mode": "checkpointed", "output_mode": "compact"},
+            id="checkpointed",
+        ),
+    ],
+)
+def test_undefined_likelihood_raises_on_every_decoding_path(
+    monkeypatch, sorted_sim, value, decode
+):
+    time, position, spike_times = sorted_sim
+    detector = _detector().fit(time, position, spike_times)
+    _patch_predict(monkeypatch, lambda result, k: _poison(result, value))
+
+    with pytest.raises(DataError, match="NaN or \\+inf"):
+        detector.predict(**_decode_kwargs(sorted_sim), **decode)
+
+
+@pytest.mark.parametrize(
+    "fit_options",
+    [
+        pytest.param({}, id="dense"),
+        pytest.param({"transition_representation": "structured"}, id="structured"),
+    ],
+)
+def test_undefined_likelihood_during_em_restores_the_detector(
+    monkeypatch, sorted_sim, fit_options
+):
+    """The error inside EM leaves the fitted detector as it was."""
+    time, position, spike_times = sorted_sim
+    detector = _detector().fit(time, position, spike_times)
+    snapshot = _snapshot(detector)
+    posterior = detector.predict(**_decode_kwargs(sorted_sim)).acausal_posterior.values
+    _patch_predict(monkeypatch, lambda result, k: _poison(result, np.nan))
+
+    with pytest.raises(DataError, match="NaN or \\+inf"):
+        detector.estimate_parameters(
+            time,
+            position,
+            spike_times,
+            time_edges=time_edges_from_centers(time[:40]),
+            max_iter=2,
+            **fit_options,
+        )
+
+    monkeypatch.undo()
+    _assert_unchanged(detector, snapshot)
+    np.testing.assert_array_equal(
+        detector.predict(**_decode_kwargs(sorted_sim)).acausal_posterior.values,
+        posterior,
+    )
 
 
 class _ToyDiscreteTransition:

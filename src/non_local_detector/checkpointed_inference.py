@@ -36,11 +36,11 @@ from non_local_detector.core import (
     _degenerate_and_nan_masks_device,
     _filter_scan,
     _float64_evidence,
+    _report_degenerate_and_nan_timesteps,
     _require_row_slice_aware,
     _smoother_scan,
     _StationaryTransition,
     _validate_hmm_inputs,
-    _warn_degenerate_and_nan_timesteps,
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.result_store import (
@@ -266,8 +266,8 @@ class CheckpointedResult:
         Log marginal likelihood of the whole recording.
     diagnostics : dict
         Whole-recording diagnostics, such as counts and indices of degenerate
-        and NaN rows (a row with a ``NaN`` or ``+inf`` log likelihood) and the
-        number of likelihood evaluations.
+        rows and the number of likelihood evaluations. A row with a ``NaN`` or
+        ``+inf`` log likelihood raises ``DataError``, so its counts are zero.
     result_path : Path or None
         Directory of the disk result store, or None for an in-memory result.
     first_smoothed : np.ndarray or None
@@ -1142,7 +1142,7 @@ def checkpointed_forward_backward(
                 pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)
-        _warn_degenerate_and_nan_timesteps(
+        _report_degenerate_and_nan_timesteps(
             diagnostics["n_degenerate"],
             diagnostics["n_nan"],
             n_time,
