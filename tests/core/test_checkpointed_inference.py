@@ -235,7 +235,9 @@ def test_compact_selected_rows_keep_whole_recording_context(tmp_path, covariate)
     assert result.dataset.sizes["time"] == len(selected)
 
 
-@pytest.mark.parametrize("kind", ["missing", "impossible", "nan", "support_mismatch"])
+@pytest.mark.parametrize(
+    "kind", ["missing", "impossible", "nan", "posinf", "support_mismatch"]
+)
 def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     missing = np.zeros(len(ll), bool)
@@ -245,6 +247,8 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
         ll[4] = -np.inf
     elif kind == "nan":
         ll[4, 1] = np.nan
+    elif kind == "posinf":
+        ll[4, 1] = np.inf
     else:
         kwargs["transition_matrix"] = np.eye(4, dtype=np.float32)
         initial = np.array([1, 0, 0, 0], dtype=np.float32)
@@ -277,8 +281,9 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
     np.testing.assert_array_equal(result.dataset.is_missing, missing)
     if kind == "impossible":
         assert result.diagnostics["n_degenerate"] == 1
-    if kind == "nan":
+    if kind in ("nan", "posinf"):
         assert result.diagnostics["n_nan"] == 1
+        np.testing.assert_array_equal(result.diagnostics["nan_indices"], [4])
 
 
 @pytest.mark.parametrize(
@@ -549,11 +554,12 @@ def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype, re
     expected = np.where(missing[:, None], dtype(0), values)
     np.testing.assert_array_equal(np.asarray(prepared), expected)
     # Degenerate: every state -inf (row 1; the +inf row 4 is not). NaN: any
-    # NaN that a missing row did not replace (row 6; row 2 is missing).
+    # NaN or +inf that a missing row did not replace (rows 4 and 6; row 2 is
+    # missing).
     expected_degenerate = np.all(expected == -np.inf, axis=1)
-    expected_nan = np.isnan(expected).any(axis=1)
+    expected_nan = (np.isnan(expected) | (expected == np.inf)).any(axis=1)
     np.testing.assert_array_equal(expected_degenerate, np.arange(7) == 1)
-    np.testing.assert_array_equal(expected_nan, np.arange(7) == 6)
+    np.testing.assert_array_equal(expected_nan, np.isin(np.arange(7), [4, 6]))
     np.testing.assert_array_equal(np.asarray(degenerate), expected_degenerate)
     np.testing.assert_array_equal(np.asarray(nan), expected_nan)
     assert np.asarray(checksum).dtype == np.uint32

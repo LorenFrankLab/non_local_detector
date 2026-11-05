@@ -268,9 +268,10 @@ def _degenerate_and_nan_masks(
         ``max(axis=-1) == -inf`` rather than ``~isfinite`` so NaN steps are
         excluded (NaN propagates to the max, and ``NaN == -inf`` is False).
     nan_mask : np.ndarray of bool
-        True where any state is ``NaN`` — a likelihood-computation bug, distinct
-        from impossible data. ``_condition_on`` lets the NaN reach the posterior
-        so it stays visible.
+        True where any state is ``NaN`` or ``+inf`` — a likelihood-computation
+        bug, distinct from impossible data. ``_condition_on`` lets the NaN reach
+        the posterior so it stays visible; a ``+inf`` becomes one there
+        (``inf - inf`` when the step is normalized by its maximum).
     """
     degenerate_mask, nan_mask = jax.device_get(
         _degenerate_and_nan_masks_device(jnp.asarray(log_likelihoods))
@@ -285,7 +286,7 @@ def _degenerate_and_nan_masks_device(
     """Device-side masks of ``_degenerate_and_nan_masks`` in one fused pass."""
     return (
         log_likelihoods.max(axis=-1) == -jnp.inf,
-        jnp.any(jnp.isnan(log_likelihoods), axis=-1),
+        jnp.any(jnp.isnan(log_likelihoods) | (log_likelihoods == jnp.inf), axis=-1),
     )
 
 
@@ -297,7 +298,7 @@ def _accumulate_chunk_degeneracy(
 
     Returns the *global* indices of the chunk's all-``-inf`` steps
     (``time_inds`` maps chunk positions to global time indices) and the
-    chunk's number of NaN steps.
+    chunk's number of NaN steps (any state ``NaN`` or ``+inf``).
     """
     degenerate_mask, nan_mask = _degenerate_and_nan_masks(log_likelihood_chunk)
     return np.asarray(time_inds)[degenerate_mask], int(nan_mask.sum())
@@ -340,7 +341,8 @@ def _warn_degenerate_and_nan_timesteps(
     Parameters
     ----------
     n_degenerate, n_nan, n_total : int
-        Counts of all-``-inf`` steps, NaN steps, and total steps.
+        Counts of all-``-inf`` steps, NaN steps (any state ``NaN`` or
+        ``+inf``), and total steps.
     marginal_log_likelihood : float, optional
         The marginal log-likelihood, for filtering paths only. When it is
         ``-inf`` yet no step was all-``-inf`` (``n_degenerate == 0``), a zero
@@ -365,7 +367,8 @@ def _warn_degenerate_and_nan_timesteps(
         )
     if n_nan > 0:
         logger.warning(
-            "HMM %s encountered %d/%d time step(s) with NaN log-likelihoods; %s. "
+            "HMM %s encountered %d/%d time step(s) with NaN or +inf "
+            "log-likelihoods; %s. "
             "This indicates a bug in the likelihood computation (e.g. a "
             "non-converged or degenerate encoding model), not impossible data. "
             "Check the log-likelihood inputs.",
@@ -405,7 +408,7 @@ def _warn_if_degenerate_timesteps(
     marginal_log_likelihood: ArrayLike | None = None,
     context: str = "filter",
 ) -> None:
-    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN.
+    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN or ``+inf``.
 
     Parameters
     ----------
@@ -1232,12 +1235,13 @@ def filter(
     inputs before the transformation.
 
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A ``NaN`` at a
-    timestep is left to propagate (it signals a likelihood-computation bug, not
-    impossible data): because the filter carries state forward, a single NaN
-    contaminates the posterior at that step and every step after it. A
-    host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
-    steps is emitted when any are found.
+    falls back to the predicted distribution at that step. A ``NaN`` or
+    ``+inf`` at a timestep is left to propagate as NaN (it signals a
+    likelihood-computation bug, not impossible data): because the filter
+    carries state forward, a single NaN contaminates the posterior at that step
+    and every step after it. A host-side ``logger.warning`` summarizing the
+    count of degenerate and/or NaN (or ``+inf``) steps is emitted when any are
+    found.
 
     ``_condition_on`` also falls back (and marks the step ``-inf`` in the
     marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
@@ -1282,9 +1286,10 @@ def _smoother_impl(
     initial : jax.Array, optional
         Initial state distribution, by default None
     ind : jax.Array, optional
-        Time indices, by default None
+        Row indices of the recording; by default ``arange(n_rows)``.
     n_time : int, optional
-        Number of time points, by default None
+        Rows in the whole recording; by default the length of
+        ``filtered_probs``.
 
     Returns
     -------
@@ -1294,7 +1299,8 @@ def _smoother_impl(
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
-        ind = jnp.arange(n_time)
+        # From the static shape: ``n_time`` is traced under jit.
+        ind = jnp.arange(filtered_probs.shape[0])
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
@@ -1331,9 +1337,13 @@ def smoother(
     filtered_probs : jax.Array, shape (n_time, n_states)
         Filtered state probabilities.
     initial : jax.Array, shape (n_states,), optional
-        Smoothed row after the last row; by default the last filtered row.
-    ind : jax.Array, shape (n_time,), optional
-        Row indices of the recording; by default ``arange(n_time)``.
+        Smoothed row after the last row, up to scale (the smoothed rows are
+        normalized): nonnegative, finite, with a positive sum. By default
+        the last filtered row. Unused when the last row is the recording's
+        last (``ind[-1] == n_time - 1``).
+    ind : jax.Array of int, shape (n_time,), optional
+        Row indices of the recording, in ``[0, n_time)``; by default
+        ``arange(n_time)``, the recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -1346,9 +1356,10 @@ def smoother(
     Raises
     ------
     ValidationError
-        If ``transition_matrix`` and ``filtered_probs`` are concrete and the
-        matrix does not have shape (n_states, n_states) or breaks the
-        probability contract above.
+        If the inputs are concrete and ``filtered_probs`` is not
+        (n_time, n_states), ``initial`` or ``ind`` does not match it or
+        breaks its contract above, or the matrix does not have shape
+        (n_states, n_states) or breaks the probability contract above.
 
     Notes
     -----
@@ -1357,11 +1368,10 @@ def smoother(
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
     """
-    if not _is_traced(transition_matrix, filtered_probs):
+    if not _is_traced(transition_matrix, filtered_probs, initial, ind):
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind, n_time)
         _check_hmm_arrays(
-            n_time=np.shape(filtered_probs)[0],
-            n_bins=np.shape(filtered_probs)[-1],
-            transition_matrix=transition_matrix,
+            n_time=n_rows, n_bins=n_bins, transition_matrix=transition_matrix
         )
     return cast(
         jax.Array,
@@ -1739,11 +1749,58 @@ def _operator_row_sums(
     )
 
 
+@functools.partial(jax.jit, static_argnames=("pairs",))
+def _operator_adjoint_terms(
+    operator: TransitionProducts,
+    left: jax.Array,
+    right: jax.Array,
+    weight: jax.Array | None,
+    *,
+    pairs: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array | None]:
+    """Both sides of ``left @ T @ right`` and, optionally, its state-pair terms.
+
+    Parameters
+    ----------
+    operator : TransitionProducts
+        Transition operator; a :class:`TransitionOperator` with ``pairs``.
+    left, right : jax.Array, shape (n_state_bins,)
+        Probe vectors.
+    weight : jax.Array, shape (n_states, n_states), or None
+        Per-row discrete weight, None for a stationary operator.
+    pairs : bool
+        Also return ``operator.pair_products(left, right, weight)``.
+
+    Returns
+    -------
+    through_backward : jax.Array, shape ()
+        ``left @ backward(right)``.
+    through_forward : jax.Array, shape ()
+        ``forward(left) @ right``.
+    pair_terms : jax.Array, shape (n_states, n_states), or None
+    """
+    precision = jax.lax.Precision.HIGHEST
+    through_backward = jnp.dot(
+        left, operator.backward(right, weight), precision=precision
+    )
+    through_forward = jnp.dot(
+        operator.forward(left, weight), right, precision=precision
+    )
+    pair_terms = (
+        cast(TransitionOperator, operator).pair_products(left, right, weight)
+        if pairs
+        else None
+    )
+    return through_backward, through_forward, pair_terms
+
+
 def _check_operator_rows(
     operator: TransitionProducts,
     n_bins: int,
     dtype: DTypeLike,
     n_states: int | None = None,
+    *,
+    pair_states: int | None = None,
 ) -> None:
     """Raise unless no row of ``operator``'s transition creates mass.
 
@@ -1759,6 +1816,14 @@ def _check_operator_rows(
     0.1 s for a 7,202-bin structured operator, against seconds for the
     checkpointed passes over 10,000 rows.
 
+    The products must also apply one transition: for one fixed pair of
+    random nonnegative vectors ``u``, ``v`` (and, with weights, one random
+    row-stochastic weight), ``u @ backward(v)`` and ``forward(u) @ v`` must
+    agree, and so must the sum of ``pair_products(u, v)`` with
+    ``pair_states``, to a relative ``PROBABILITY_SUM_TOLERANCE``. With
+    nonnegative terms there is no cancellation, so float32 rounding stays
+    far below it (about 1e-6 for 2,000 dense bins).
+
     Parameters
     ----------
     operator : TransitionProducts
@@ -1770,6 +1835,10 @@ def _check_operator_rows(
     n_states : int, optional
         Number of discrete states of the per-row weights; None for a
         stationary operator.
+    pair_states : int, optional, keyword-only
+        Number of discrete states of the transition statistics, when they
+        are requested; ``pair_products`` must then return
+        ``(pair_states, pair_states)``.
 
     Raises
     ------
@@ -1777,7 +1846,10 @@ def _check_operator_rows(
         If applying the operator to an all-ones vector raises ``TypeError``
         or ``ValueError``, or the row sums do not have one entry per state
         bin, are not finite, are negative, or exceed 1 (per target state
-        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``.
+        with weights) beyond ``PROBABILITY_SUM_TOLERANCE``; or if
+        ``forward``, ``backward`` and ``pair_products`` disagree on the
+        probes, ``pair_products`` has another shape, or applying them to the
+        probes raises ``TypeError`` or ``ValueError``.
     """
     name = "transition_operator"
     weight = (
@@ -1842,6 +1914,71 @@ def _check_operator_rows(
             "detector's operator holds its continuous transitions' blocks, "
             "such as a custom transition's structured_block.",
         )
+    _check_operator_adjoint(operator, n_bins, dtype, n_states, pair_states)
+
+
+def _check_operator_adjoint(
+    operator: TransitionProducts,
+    n_bins: int,
+    dtype: DTypeLike,
+    n_states: int | None,
+    pair_states: int | None,
+) -> None:
+    """Raise unless the operator's products apply one transition.
+
+    See :func:`_check_operator_rows`, which calls it after the row sums pass.
+    """
+    rng = np.random.default_rng(0)
+    left, right = rng.random((2, n_bins)).astype(dtype)
+    weight = None
+    if n_states is not None:
+        weight = rng.random((n_states, n_states)).astype(dtype)
+        weight /= weight.sum(axis=1, keepdims=True)
+    pairs = pair_states is not None
+    try:
+        through_backward, through_forward, pair_terms = jax.device_get(
+            _operator_adjoint_terms(operator, left, right, weight, pairs=pairs)
+        )
+    except (TypeError, ValueError) as error:
+        products = "forward, backward" + (" and pair_products" if pairs else "")
+        msg = "transition_operator could not be applied to probe vectors"
+        raise ValidationError(
+            msg,
+            expected=f"{products} of two ({n_bins},) vectors"
+            + ("" if weight is None else f" with a ({n_states}, {n_states}) weight"),
+            got=f"{type(error).__name__}: {error}",
+            hint="forward must act on the same state bins as backward; "
+            "transition statistics also need pair_products, with the discrete "
+            "state of each bin.",
+        ) from error
+    if pairs and np.shape(pair_terms) != (pair_states, pair_states):
+        msg = "transition_operator.pair_products has the wrong shape"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({pair_states}, {pair_states}), one term per "
+            "pair of discrete states",
+            got=f"shape {np.shape(pair_terms)}",
+            hint="The operator's discrete states must be those of state_ind "
+            "and discrete_transition_matrix.",
+        )
+    reference = float(through_backward)
+    sides = {"forward(u) @ v": float(through_forward)}
+    if pairs:
+        sides["pair_products(u, v).sum()"] = float(np.sum(pair_terms, dtype=np.float64))
+    for side, value in sides.items():
+        scale = max(abs(reference), abs(value))
+        if not abs(value - reference) <= PROBABILITY_SUM_TOLERANCE * scale:
+            msg = "transition_operator's products do not apply one transition"
+            raise ValidationError(
+                msg,
+                expected=f"u @ backward(v) = {side} for nonnegative u and v, "
+                f"to a relative {PROBABILITY_SUM_TOLERANCE:g}",
+                got=f"u @ backward(v) = {reference:.8g}, {side} = {value:.8g}",
+                hint="forward must be the transpose product of backward "
+                "(probabilities @ T and T @ values with the same T and "
+                "weight), and pair_products must split probabilities @ T * "
+                "values by discrete state pair.",
+            )
 
 
 def _validate_hmm_inputs(
@@ -2055,6 +2192,89 @@ def _check_hmm_arrays(
                 np.asarray(continuous_transition_matrix), state_ind, n_states
             )
     return cast(int, n_states)
+
+
+def _check_smoother_rows(
+    filtered_probs: Any, initial: Any, ind: Any, n_time: Any
+) -> tuple[int, int]:
+    """Check the rows a public smoother pass is given and return their shape.
+
+    Parameters
+    ----------
+    filtered_probs : array_like, shape (n_rows, n_state_bins)
+        Filtered distribution of each row.
+    initial : array_like, shape (n_state_bins,), or None
+        Smoothed row after the last row, up to scale: nonnegative and finite
+        with a positive sum (the smoothed rows are normalized).
+    ind : array_like of int, shape (n_rows,), or None
+        Recording row index of each row, in ``[0, n_time)``.
+    n_time : int or None
+        Rows in the whole recording; None for ``n_rows``. A traced value is
+        not checked against ``ind``.
+
+    Returns
+    -------
+    n_rows, n_state_bins : int
+
+    Raises
+    ------
+    ValidationError
+        If ``filtered_probs`` is not a nonempty 2-D array, or ``initial`` or
+        ``ind`` breaks the contract above.
+    """
+    shape = np.shape(filtered_probs)
+    if len(shape) != 2 or 0 in shape:
+        msg = "filtered_probs must have one row of state bins per time bin"
+        raise ValidationError(
+            msg,
+            expected="shape (n_time, n_state_bins) with both at least 1",
+            got=f"shape {shape}",
+            hint="Pass the filtered rows a filter pass returns, such as "
+            "filter(...)[1][0].",
+        )
+    n_rows, n_bins = shape
+    shape_hint = (
+        f"filtered_probs sets n_time = {n_rows} rows and n_state_bins = {n_bins}."
+    )
+    if initial is not None:
+        _check_shape("initial", initial, (n_bins,), shape_hint)
+        values = np.asarray(initial)
+        total = values.sum(dtype=np.float64)
+        got = _bad_entries(values, total, lambda where: f"state bin {where[0]}")
+        if got is None and not total > 0:
+            got = f"sums to {total:.6g}"
+        if got is not None:
+            msg = "initial must be nonnegative weights over state bins"
+            raise ValidationError(
+                msg,
+                expected="nonnegative, finite entries with a positive sum (the "
+                "smoothed rows are normalized, so the scale does not matter)",
+                got=got,
+                hint="Pass the smoothed row after the last row, such as the "
+                "first row of the next chunk's smoother output.",
+            )
+    if ind is not None:
+        _check_shape("ind", ind, (n_rows,), shape_hint)
+        rows = np.asarray(ind)
+        n_recording = n_rows if n_time is None else n_time
+        got = None
+        if rows.dtype.kind not in "iu":
+            got = f"dtype {rows.dtype}"
+        elif rows.min() < 0:
+            got = f"minimum {rows.min()}"
+        elif not _is_traced(n_recording) and rows.max() >= n_recording:
+            got = f"maximum {rows.max()} with n_time = {n_recording}"
+        if got is not None:
+            msg = "ind must hold recording row indices"
+            raise ValidationError(
+                msg,
+                expected=f"integers in [0, n_time), n_time = {n_recording}",
+                got=got,
+                hint="Pass the integer row of the whole recording for each "
+                "row of filtered_probs, e.g. np.arange(start, stop), and the "
+                "recording's length as n_time.",
+            )
+    return n_rows, n_bins
 
 
 def _store_chunk_rows(
@@ -2867,12 +3087,13 @@ def filter_covariate_dependent(
     inputs before the transformation.
 
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A ``NaN`` at a
-    timestep is left to propagate (it signals a likelihood-computation bug, not
-    impossible data): because the filter carries state forward, a single NaN
-    contaminates the posterior at that step and every step after it. A
-    host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
-    steps is emitted when any are found.
+    falls back to the predicted distribution at that step. A ``NaN`` or
+    ``+inf`` at a timestep is left to propagate as NaN (it signals a
+    likelihood-computation bug, not impossible data): because the filter
+    carries state forward, a single NaN contaminates the posterior at that step
+    and every step after it. A host-side ``logger.warning`` summarizing the
+    count of degenerate and/or NaN (or ``+inf``) steps is emitted when any are
+    found.
 
     ``_condition_on`` also falls back (and marks the step ``-inf`` in the
     marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
@@ -2948,7 +3169,8 @@ def _smoother_covariate_dependent_impl(
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
-        ind = jnp.arange(n_time)
+        # From the static shape: ``n_time`` is traced under jit.
+        ind = jnp.arange(filtered_probs.shape[0])
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
@@ -2996,9 +3218,13 @@ def smoother_covariate_dependent(
     filtered_probs : jax.Array, shape (n_rows, n_state_bins)
         Filtered distribution of each time bin.
     initial : jax.Array, shape (n_state_bins,), optional
-        Smoothed row after the last row; by default the last filtered row.
-    ind : jax.Array, shape (n_rows,), optional
-        Row indices of the recording; by default ``arange(n_rows)``.
+        Smoothed row after the last row, up to scale (the smoothed rows are
+        normalized): nonnegative, finite, with a positive sum. By default
+        the last filtered row. Unused when the last row is the recording's
+        last (``ind[-1] == n_time - 1``).
+    ind : jax.Array of int, shape (n_rows,), optional
+        Row indices of the recording, in ``[0, n_time)``; by default
+        ``arange(n_rows)``, the recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -3012,7 +3238,7 @@ def smoother_covariate_dependent(
     ------
     ValidationError
         If the inputs are concrete and their shapes disagree or they break
-        the probability contract above.
+        the contracts above.
 
     Notes
     -----
@@ -3026,10 +3252,13 @@ def smoother_covariate_dependent(
         continuous_transition_matrix,
         state_ind,
         filtered_probs,
+        initial,
+        ind,
     ):
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind, n_time)
         _check_hmm_arrays(
-            n_time=np.shape(filtered_probs)[0],
-            n_bins=np.shape(filtered_probs)[-1],
+            n_time=n_rows,
+            n_bins=n_bins,
             state_ind=state_ind,
             discrete_transition_matrix=discrete_transition_matrix,
             continuous_transition_matrix=continuous_transition_matrix,
