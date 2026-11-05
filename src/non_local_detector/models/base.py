@@ -911,9 +911,10 @@ class _DetectorBase(
 
         The merged parameters (current values updated with ``params``) are
         passed through the model's own constructor, so defaults resolution,
-        normalization (``environments`` and ``observation_models`` become
-        tuples, ``state_names=None`` becomes generated names) and validation are
-        exactly those of ``__init__``. The new values are applied only if the
+        normalization (``environments`` becomes a tuple, ``observation_models``
+        a tuple when given as None or one ``ObservationModel`` and otherwise
+        stays the list or tuple given, ``state_names=None`` becomes generated
+        names) and validation are exactly those of ``__init__``. The new values are applied only if the
         constructor accepts them; on error the detector is unchanged. Fitted
         attributes, including the fitted environments in ``environments_``,
         are not touched. Changing ``environments``, ``state_names``,
@@ -1259,7 +1260,7 @@ class _DetectorBase(
         observation_models: Observations,
         continuous_transition_types: ContinuousTransitions,
         environments: tuple[Environment, ...],
-    ) -> tuple[ObservationModel, ...]:
+    ) -> list[ObservationModel] | tuple[ObservationModel, ...]:
         """
         Initialize observation models.
 
@@ -1274,8 +1275,11 @@ class _DetectorBase(
 
         Returns
         -------
-        tuple[ObservationModel, ...]
-            Initialized observation models as a tuple.
+        list or tuple of ObservationModel
+            One observation model per state: a list or tuple is returned as
+            given, so the parameter round-trips through ``get_params`` and
+            scikit-learn's ``clone``; None or a single ``ObservationModel``
+            gives a tuple.
         """
         normalized: Any = observation_models
         if normalized is None:
@@ -1284,7 +1288,7 @@ class _DetectorBase(
             normalized = (ObservationModel(env_name),) * n_states
         elif isinstance(normalized, ObservationModel):
             normalized = (normalized,) * len(continuous_transition_types)
-        return cast("tuple[ObservationModel, ...]", normalized)
+        return cast("list[ObservationModel] | tuple[ObservationModel, ...]", normalized)
 
     def _initialize_state_names(
         self, state_names: StateNames, discrete_initial_conditions: np.ndarray
