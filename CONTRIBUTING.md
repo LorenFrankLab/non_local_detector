@@ -109,7 +109,7 @@ A continuous transition, a discrete transition or an initial-condition class is 
 - A discrete transition's `make_state_transition(covariate_data)` returns an `InitialDiscreteTransition` whose shape and coefficients match `is_stationary` and `n_states`; an initial-condition class returns one value per place bin of the state's environment (shape `(1,)` for a state without place bins), nonnegative and summing to 1 over the interior bins.
 - List each new class in `model_format/_builtins.py` with its fields, or `save_model` refuses a detector that holds it (see "Saved-model format").
 
-`tests/transitions/test_transition_contract.py` finds every class in those three modules and checks it against these rules on a 1-D grid, a 2-D grid with holes and a track graph. Add configurations of a new class to its `CONTINUOUS_CONFIGURATIONS`, `DISCRETE_CONFIGURATIONS` or `INITIAL_CONDITION_CONFIGURATIONS` (the test raises `KeyError` without them).
+`tests/transitions/test_transition_contract.py` finds every class in those three modules and checks it against these rules on a 1-D grid, a 2-D grid with holes and a track graph, so adding a class needs no test edit: the test checks the instance its default constructor builds. A class whose constructor needs arguments is skipped until it has an entry in the test's `CONTINUOUS_CONFIGURATIONS`, `DISCRETE_CONFIGURATIONS` or `INITIAL_CONDITION_CONFIGURATIONS`, which can also add settings worth checking beyond the defaults.
 
 ## Saved-model format
 

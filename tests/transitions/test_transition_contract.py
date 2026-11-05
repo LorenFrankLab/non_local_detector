@@ -1,10 +1,13 @@
 """Every transition and initial-condition class keeps the interface contract.
 
 The classes are found by scanning their modules, so a new implementer is
-checked without editing this file: it fails with ``KeyError`` until it is
-given configurations in ``CONTINUOUS_CONFIGURATIONS``,
-``DISCRETE_CONFIGURATIONS`` or ``INITIAL_CONDITION_CONFIGURATIONS``. The
-rules are listed in CONTRIBUTING.md ("Adding a transition").
+checked without editing this file: a class without an entry in
+``CONTINUOUS_CONFIGURATIONS``, ``DISCRETE_CONFIGURATIONS`` or
+``INITIAL_CONDITION_CONFIGURATIONS`` is checked as built by its default
+constructor, and skipped only if that constructor needs arguments. The
+entries add configurations that need arguments or are worth checking
+beyond the defaults. The rules are listed in CONTRIBUTING.md ("Adding a
+transition").
 """
 
 import inspect
@@ -47,15 +50,13 @@ DISCRETE = _implementers(discrete, "make_state_transition")
 INITIAL_CONDITIONS = _implementers(initial_conditions, "make_initial_conditions")
 SAVED_TYPES = {entry[1] for entry in builtin_types()}
 
-# Instances checked per class; each entry also names the environment layouts
-# it applies to (None: all of them).
+# Instances checked per class, in place of the default-constructed one; each
+# entry also names the environment layouts it applies to (None: all of them).
 CONTINUOUS_CONFIGURATIONS = {
-    continuous.Discrete: [(continuous.Discrete(), None)],
     continuous.EmpiricalMovement: [
         (continuous.EmpiricalMovement(), None),
         (continuous.EmpiricalMovement(speedup=3, is_time_reversed=True), None),
     ],
-    continuous.Identity: [(continuous.Identity(), None)],
     continuous.RandomWalk: [
         (continuous.RandomWalk(), None),
         (continuous.RandomWalk(movement_var=4.0, use_manifold_distance=True), None),
@@ -67,9 +68,6 @@ CONTINUOUS_CONFIGURATIONS = {
             ("1-D", "2-D with holes"),
         ),
     ],
-    continuous.RandomWalkDirection1: [(continuous.RandomWalkDirection1(), None)],
-    continuous.RandomWalkDirection2: [(continuous.RandomWalkDirection2(), None)],
-    continuous.Uniform: [(continuous.Uniform(), None)],
 }
 
 DISCRETE_CONFIGURATIONS = {
@@ -91,11 +89,34 @@ DISCRETE_CONFIGURATIONS = {
     ],
 }
 
-INITIAL_CONDITION_CONFIGURATIONS = {
-    initial_conditions.UniformInitialConditions: [
-        initial_conditions.UniformInitialConditions()
-    ],
-}
+INITIAL_CONDITION_CONFIGURATIONS: dict[type, list] = {}
+
+
+def _needs_arguments(cls):
+    """Whether ``cls()`` lacks a value for a required constructor argument."""
+    return any(
+        parameter.default is inspect.Parameter.empty
+        and parameter.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for parameter in inspect.signature(cls).parameters.values()
+    )
+
+
+def _configurations(table, cls, default):
+    """The instances of ``cls`` to check: its entry, else its default instance.
+
+    ``default`` wraps ``cls()`` as an entry of ``table``. A class without an
+    entry whose constructor needs arguments is skipped.
+    """
+    if cls in table:
+        return table[cls]
+    if _needs_arguments(cls):
+        pytest.skip(
+            f"{cls.__name__}() needs arguments; an entry for it in "
+            "this module's configuration tables would let the contract test "
+            "check it"
+        )
+    return [default(cls())]
 
 
 def _track_graph():
@@ -155,10 +176,21 @@ def _assert_rebuilds(obj):
 
 
 def test_every_implementer_is_found():
-    """The scan finds the package's classes, so an empty scan cannot pass."""
+    """The scan finds the package's classes, and checks every one of them.
+
+    An empty scan cannot pass, and no package class is skipped for want of
+    a configuration.
+    """
     assert continuous.RandomWalk in CONTINUOUS
     assert discrete.DiscreteStationaryDiagonal in DISCRETE
     assert initial_conditions.UniformInitialConditions in INITIAL_CONDITIONS
+    for classes, table in (
+        (CONTINUOUS, CONTINUOUS_CONFIGURATIONS),
+        (DISCRETE, DISCRETE_CONFIGURATIONS),
+        (INITIAL_CONDITIONS, INITIAL_CONDITION_CONFIGURATIONS),
+    ):
+        for cls in classes:
+            assert cls in table or not _needs_arguments(cls), cls.__name__
 
 
 @pytest.mark.parametrize("cls", CONTINUOUS, ids=lambda cls: cls.__name__)
@@ -168,7 +200,9 @@ def test_continuous_transition_contract(cls, layout, layouts):
     environment, position = layouts[layout]
     environments = [environment]
     context = continuous.TransitionContext(position=position)
-    for transition, applies_to in CONTINUOUS_CONFIGURATIONS[cls]:
+    for transition, applies_to in _configurations(
+        CONTINUOUS_CONFIGURATIONS, cls, lambda instance: (instance, None)
+    ):
         if applies_to is not None and layout not in applies_to:
             continue
         assert isinstance(transition, continuous.ContinuousTransition)
@@ -195,7 +229,9 @@ def test_continuous_transition_contract(cls, layout, layouts):
 
 @pytest.mark.parametrize("cls", CONTINUOUS, ids=lambda cls: cls.__name__)
 def test_continuous_transition_is_its_configuration(cls):
-    for transition, _ in CONTINUOUS_CONFIGURATIONS[cls]:
+    for transition, _ in _configurations(
+        CONTINUOUS_CONFIGURATIONS, cls, lambda instance: (instance, None)
+    ):
         _assert_rebuilds(transition)
     assert cls in SAVED_TYPES, f"list {cls.__name__} in model_format/_builtins.py"
 
@@ -205,7 +241,9 @@ def test_discrete_transition_contract(cls):
     """``make_state_transition`` returns valid rows of the declared shape."""
     n_time = 50
     covariates = {"speed": np.linspace(0, 20, n_time)}
-    for transition in DISCRETE_CONFIGURATIONS[cls]:
+    for transition in _configurations(
+        DISCRETE_CONFIGURATIONS, cls, lambda instance: instance
+    ):
         assert isinstance(transition, discrete.DiscreteTransition)
         initial = transition.make_state_transition(covariates)
         discrete._check_initial_discrete_transition(initial, transition)
@@ -237,7 +275,9 @@ def test_initial_conditions_contract(cls, layout, layouts):
     spatial = ObservationModel()
     local = ObservationModel(is_local=True)
     no_spike = ObservationModel(is_no_spike=True)
-    for conditions in INITIAL_CONDITION_CONFIGURATIONS[cls]:
+    for conditions in _configurations(
+        INITIAL_CONDITION_CONFIGURATIONS, cls, lambda instance: instance
+    ):
         assert isinstance(conditions, initial_conditions.ContinuousInitialCondition)
         for observation, is_interior in (
             (spatial, environment.is_track_interior_flat_),
