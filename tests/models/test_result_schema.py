@@ -300,6 +300,28 @@ def test_files_with_a_state_ind_dimension_load_with_the_current_layout(
     xr.testing.assert_equal(restored, dense)
 
 
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_files_with_a_scalar_marginal_log_likelihood_load_one_dimensional(
+    fitted, dense, tmp_path, checkpointed
+):
+    """Earlier versions saved a decode's marginal log likelihood as a scalar,
+    and checkpointed results also under the singular name."""
+    marginal = float(dense.attrs["marginal_log_likelihoods"][0])
+    legacy = dense.reset_index("state_bins")
+    legacy.attrs["marginal_log_likelihoods"] = np.float64(marginal)
+    if checkpointed:
+        legacy.attrs["marginal_log_likelihood"] = marginal
+    filename = tmp_path / "legacy.nc"
+    legacy.to_netcdf(filename)
+
+    with fitted.load_results(filename) as restored:
+        attrs = restored.attrs
+
+    assert "marginal_log_likelihood" not in attrs
+    assert _is_float64_array(attrs["marginal_log_likelihoods"])
+    np.testing.assert_array_equal(attrs["marginal_log_likelihoods"], [marginal])
+
+
 def test_time_bin_width_is_each_bins_duration(result):
     np.testing.assert_array_equal(
         result.time_bin_width, result.time_bin_end - result.time_bin_start
@@ -385,6 +407,36 @@ def _documented_attrs(*present_in):
     }
 
 
+def _is_float64_array(value):
+    return (
+        isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype == np.float64
+    )
+
+
+# Each documented attribute type, as a check of a value.
+_ATTR_TYPES = {
+    "float64 array": _is_float64_array,
+    "str": lambda value: type(value) is str,
+    "int": lambda value: type(value) is int,
+    "bool": lambda value: type(value) is bool,
+    "dict": lambda value: type(value) is dict,
+}
+
+
+def _attr_type_mismatches(attrs):
+    """The attributes whose value is not of their documented type."""
+    types = {
+        name: row["Type"]
+        for row in _doc_table("Attributes")
+        for name in _names(row["Attribute"])
+    }
+    return {
+        name: (types[name], type(value).__name__, np.shape(value))
+        for name, value in attrs.items()
+        if not _ATTR_TYPES[types[name]](value)
+    }
+
+
 def _actual(result):
     return (
         {name: c.dims for name, c in result.coords.items()},
@@ -404,6 +456,7 @@ def test_docs_tables_match_dense_results(fitted, option):
         _documented_variables(option, False, single_state),
     )
     assert set(result.attrs) == _documented_attrs("All")
+    assert _attr_type_mismatches(result.attrs) == {}
 
 
 @pytest.mark.parametrize("option", [None, "filter", "predictive"])
@@ -421,6 +474,7 @@ def test_docs_tables_match_compact_results(fitted, option):
         _documented_variables(option, True, single_state),
     )
     assert set(result.attrs) == _documented_attrs("All", "Checkpointed")
+    assert _attr_type_mismatches(result.attrs) == {}
 
 
 def test_docs_tables_match_checkpointed_spatial_results(fitted, checkpointed):
@@ -430,6 +484,7 @@ def test_docs_tables_match_checkpointed_spatial_results(fitted, checkpointed):
         _documented_variables("all", False, single_state),
     )
     assert set(checkpointed.attrs) == _documented_attrs("All", "Checkpointed")
+    assert _attr_type_mismatches(checkpointed.attrs) == {}
 
 
 @pytest.mark.filterwarnings("ignore:EM did not converge")
@@ -460,3 +515,6 @@ def test_docs_tables_match_em_results(
     assert set(result.attrs) == _documented_attrs(
         "All", "`estimate_parameters`", *present_in
     )
+    assert _attr_type_mismatches(result.attrs) == {}
+    # One per E-step: the iteration and the final decode.
+    assert result.attrs["marginal_log_likelihoods"].shape == (2,)

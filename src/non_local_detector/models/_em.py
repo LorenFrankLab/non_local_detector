@@ -1704,7 +1704,7 @@ class _EMMixin:
             return _EMFinalEStep(
                 _PosteriorOutputs(
                     marginal_log_likelihood=float(
-                        stored.attrs["marginal_log_likelihood"]
+                        stored.attrs["marginal_log_likelihoods"][-1]
                     ),
                     degenerate_indices=degenerate_indices,
                 ),

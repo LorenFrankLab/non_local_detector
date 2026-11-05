@@ -294,7 +294,7 @@ def summarize(decoder, results):
         ),
         "median decoding error (cm)": np.median(decoding_error),
         "mean decoding error (cm)": np.mean(decoding_error),
-        "marginal log-likelihood": results.attrs["marginal_log_likelihoods"],
+        "marginal log-likelihood": results.attrs["marginal_log_likelihoods"][-1],
     }
 
 
@@ -507,7 +507,7 @@ for movement_var, (decoder, results, _) in dynamics_fits.items():
                 posterior_array[has_spikes], likelihood[has_spikes]
             )
         ),
-        "marginal log-likelihood": results.attrs["marginal_log_likelihoods"],
+        "marginal log-likelihood": results.attrs["marginal_log_likelihoods"][-1],
     }
 print(pd.DataFrame(rows).astype(float).round(3).to_string())
 

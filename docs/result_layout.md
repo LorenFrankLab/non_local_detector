@@ -83,25 +83,30 @@ store at `result_path`; one read larger than `max_read_bytes` raises an error.
 
 ## Attributes
 
-| Attribute | Present in | Meaning |
-| --- | --- | --- |
-| `marginal_log_likelihoods` | All | Array of marginal log likelihoods: one for `predict`, one per E-step for `estimate_parameters` |
-| `time_bin_convention` | All | `"left_closed_right_open_final_closed"` |
-| `time_units` | All | `"seconds"` |
-| `non_local_detector_version` | All | Version that made the result |
-| `em_transition_representation` | `estimate_parameters` | `"dense"` or `"structured"` EM |
-| `em_objectives`, `em_previous_objectives` | `estimate_parameters` | The objectives EM's convergence checks compare (see `estimate_parameters`) |
-| `em_n_chunks` | Dense EM | Chunks of the dense E-step |
-| `em_chunk_size`, `em_replay_cache_bytes` | Structured EM | Checkpoint chunk rows and replay cache of the E-step |
-| `marginal_log_likelihood` | Checkpointed | Marginal log likelihood of the final decode |
-| `inference_mode`, `output_mode` | Checkpointed | `"checkpointed"`; `"compact"` or `"spatial"` |
-| `conditioning`, `whole_recording_conditioning` | Checkpointed | Selected rows are conditioned on the whole recording |
-| `recording_rows`, `n_recording_bins` | Checkpointed | Bins in the full decode grid |
-| `transition_representation` | Checkpointed | Transition representation the decode used |
-| `dtype`, `state_probability_dtype`, `evidence_accumulation`, `evidence_dtype` | Checkpointed | Precision of the outputs and of the log-evidence sum |
-| `n_degenerate`, `n_nan`, `degenerate_row_mask_hex`, `nan_row_mask_hex`, `diagnostic_row_mask_encoding`, `diagnostics_are_global` | Checkpointed | Rows whose filter was degenerate or NaN, as counts and bit masks over the full decode grid |
-| `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes`, `global_gradients_supported` | Checkpointed | Run diagnostics |
-| `_native_metadata` | Checkpointed | Internal labels for reopening the store; `save_results` drops it |
+| Attribute | Type | Present in | Meaning |
+| --- | --- | --- | --- |
+| `marginal_log_likelihoods` | float64 array | All | Marginal log likelihoods, one-dimensional: one for `predict`, one per E-step for `estimate_parameters` (the last is the final decode's) |
+| `time_bin_convention` | str | All | `"left_closed_right_open_final_closed"` |
+| `time_units` | str | All | `"seconds"` |
+| `non_local_detector_version` | str | All | Version that made the result |
+| `em_transition_representation` | str | `estimate_parameters` | `"dense"` or `"structured"` EM |
+| `em_objectives`, `em_previous_objectives` | float64 array | `estimate_parameters` | The objectives EM's convergence checks compare (see `estimate_parameters`) |
+| `em_n_chunks` | int | Dense EM | Chunks of the dense E-step |
+| `em_chunk_size`, `em_replay_cache_bytes` | int | Structured EM | Checkpoint chunk rows and replay cache of the E-step |
+| `inference_mode`, `output_mode` | str | Checkpointed | `"checkpointed"`; `"compact"` or `"spatial"` |
+| `conditioning` | str | Checkpointed | Selected rows are conditioned on the whole recording |
+| `whole_recording_conditioning` | bool | Checkpointed | True: selected rows are conditioned on the whole recording |
+| `recording_rows`, `n_recording_bins` | int | Checkpointed | Bins in the full decode grid |
+| `transition_representation` | str | Checkpointed | Transition representation the decode used |
+| `dtype`, `state_probability_dtype`, `evidence_accumulation`, `evidence_dtype` | str | Checkpointed | Precision of the outputs and of the log-evidence sum |
+| `n_degenerate`, `n_nan` | int | Checkpointed | Rows whose filter was degenerate or NaN, over the full decode grid |
+| `degenerate_row_mask_hex`, `nan_row_mask_hex`, `diagnostic_row_mask_encoding` | str | Checkpointed | Those rows as bit masks over the full decode grid |
+| `diagnostics_are_global` | bool | Checkpointed | True: the diagnostics cover the full decode grid |
+| `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes` | int | Checkpointed | Run diagnostics |
+| `global_gradients_supported` | bool | Checkpointed | Run diagnostic |
+| `_native_metadata` | dict | Checkpointed | Internal labels for reopening the store; `save_results` drops it |
+
+Arrays are NumPy arrays and the other types are Python's.
 
 `estimate_parameters` with a `result_path` returns a checkpointed result, with
 both the EM and the checkpointed attributes.

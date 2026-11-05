@@ -31,7 +31,10 @@ from non_local_detector.likelihoods import (
     _record_legacy_encoding_algorithm,
     _unify_stored_encoding_values,
 )
-from non_local_detector.models._results import label_checkpointed_result
+from non_local_detector.models._results import (
+    label_checkpointed_result,
+    unify_marginal_log_likelihoods,
+)
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 
 if TYPE_CHECKING:
@@ -404,6 +407,7 @@ class _PersistenceMixin:
                 if name in results.data_vars
             }
         )
+        unify_marginal_log_likelihoods(results.attrs)
         if "state_bins" in results.dims:
             if "state_ind" in results.dims:
                 # Earlier versions saved state_ind on a dimension of its own.
