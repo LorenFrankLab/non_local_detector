@@ -75,7 +75,7 @@ class StateSpace:
         holds no fitted grid; the fitted environments are the detector's
         ``environments_``.
     state_ind : np.ndarray of int, shape (n_state_bins,)
-        Discrete state of each state bin.
+        Discrete state of each state bin. Read-only, as the other arrays.
     bin_sizes : np.ndarray of int, shape (n_states,)
         Number of bins of each discrete state.
     is_track_interior : np.ndarray of bool, shape (n_state_bins,)
@@ -105,6 +105,25 @@ class StateSpace:
     transition_operator: "BlockTransitionOperator | None"
     transition_representation: TransitionRepresentation
     max_dense_transition_bytes: int
+
+    def __post_init__(self) -> None:
+        """Make the arrays read-only: decoding reads them."""
+        self._set_arrays_read_only()
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore a copy or a pickle, whose arrays come back writable."""
+        self.__dict__.update(state)
+        self._set_arrays_read_only()
+
+    def _set_arrays_read_only(self) -> None:
+        for array in (
+            self.state_ind,
+            self.bin_sizes,
+            self.is_track_interior,
+            self.continuous_transitions,
+        ):
+            if isinstance(array, np.ndarray):
+                array.setflags(write=False)
 
     @property
     def n_states(self) -> int:
