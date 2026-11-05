@@ -1070,9 +1070,8 @@ def detector_from_stored(
     ValidationError
         If the file names a type that is not registered.
     DataError
-        If the file is corrupt or was edited: a configuration key the
-        detector needs, missing fitted state (``check_documents``), or a
-        malformed entry.
+        If the file is corrupt or was edited: missing fitted state
+        (``check_documents``) or a malformed entry.
         Built-in errors from reading the file become this (``data_errors``),
         chained to the original; package errors pass through unchanged.
     """

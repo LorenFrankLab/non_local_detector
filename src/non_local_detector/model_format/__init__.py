@@ -171,18 +171,20 @@ def _summary(stored: StoredModel) -> dict[str, Any]:
         }
         environments.append(environment)
     summary["environments"] = environments
-    summary["encoding_models"] = [
-        {
-            "environment_name": entry["environment_name"],
-            "encoding_group": decoder.decode(entry["encoding_group"]),
-            **{
-                key: decoder.decode(value)
-                for key, value in entry["model"].items()
-                if _is_small(value) and key in encoding_model_keys(entry["model"])
-            },
-        }
-        for entry in state["encoding_models"]
-    ]
+    summary["encoding_models"] = []
+    for entry in state["encoding_models"]:
+        keys = encoding_model_keys(entry["model"])
+        summary["encoding_models"].append(
+            {
+                "environment_name": entry["environment_name"],
+                "encoding_group": decoder.decode(entry["encoding_group"]),
+                **{
+                    key: decoder.decode(value)
+                    for key, value in entry["model"].items()
+                    if key in keys and _is_small(value)
+                },
+            }
+        )
     # Files saved before the shared keys' values were NumPy arrays.
     from non_local_detector.likelihoods import _unify_stored_encoding_values
 
