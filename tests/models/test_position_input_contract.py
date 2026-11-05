@@ -217,3 +217,39 @@ def test_position_a_decoder_ignores_is_not_checked(method):
         **SPIKE_DATA["sorted"],
     }
     _decode(detector, method, arguments)
+
+
+# One EM iteration is enough to run both fits; convergence is not checked.
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+def test_estimation_falling_back_to_dense_warns_once(monkeypatch):
+    """When EM's "auto" fit cannot build structured transitions and refits
+    dense, the off-grid warning of the abandoned fit is not repeated."""
+    from non_local_detector.transition_operators import UnsupportedTransitionError
+
+    detector = NonLocalSortedSpikesDetector(
+        environments=Environment(place_bin_size=2, position_range=((0, 10), (0, 10))),
+        infer_track_interior=False,
+        sampling_frequency=30.0,
+    )
+    build = detector._initialize_continuous_state_transition
+
+    def dense_only(*args, transition_representation="dense", **kwargs):
+        if transition_representation != "dense":
+            msg = "no structured form"
+            raise UnsupportedTransitionError(msg)
+        return build(
+            *args, transition_representation=transition_representation, **kwargs
+        )
+
+    monkeypatch.setattr(detector, "_initialize_continuous_state_transition", dense_only)
+    with pytest.warns(DataQualityWarning, match="outside the fitted grid") as record:
+        detector.estimate_parameters(
+            TIME,
+            _shifted(20.0),
+            **SPIKE_DATA["sorted"],
+            time_edges=np.linspace(TIME[0], TIME[-1], 61),
+            transition_representation="auto",
+            max_iter=1,
+        )
+    off_grid = [w for w in record if "outside the fitted grid" in str(w.message)]
+    assert len(off_grid) == 1

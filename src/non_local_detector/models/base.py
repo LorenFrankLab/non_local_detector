@@ -1891,14 +1891,6 @@ class _DetectorBase(
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
-        # Each grid is fitted on its environment's samples.
-        for environment in self.environments_:
-            _warn_if_off_grid(
-                position
-                if environment_labels is None
-                else position[environment_labels == environment.environment_name],
-                [environment],
-            )
         self._initialize_state_index()
         self._initialize_initial_conditions()
         self._initialize_discrete_state_transition(
@@ -1916,6 +1908,15 @@ class _DetectorBase(
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
         )
+        # Each grid is fitted on its environment's samples. Warned once the
+        # fit succeeds, so an EM fit that falls back to dense warns once.
+        for environment in self.environments_:
+            _warn_if_off_grid(
+                position
+                if environment_labels is None
+                else position[environment_labels == environment.environment_name],
+                [environment],
+            )
 
         return self
 
