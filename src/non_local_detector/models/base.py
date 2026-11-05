@@ -3643,7 +3643,9 @@ class ClusterlessDetector(_DetectorBase):
             bin centers.
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
-            decode bin, by default None.
+            decode bin, by default None. This concerns the E-steps only: it
+            does not exclude encoding data, in the initial fit or the encoding
+            refits. Leave samples out of those with ``is_training``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4506,7 +4508,9 @@ class SortedSpikesDetector(_DetectorBase):
             bin centers.
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
-            decode bin, by default None.
+            decode bin, by default None. This concerns the E-steps only: it
+            does not exclude encoding data, in the initial fit or the encoding
+            refits. Leave samples out of those with ``is_training``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
