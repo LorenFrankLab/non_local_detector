@@ -66,7 +66,6 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
-    CompatibilityWarning,
     ConfigurationError,
     DataQualityWarning,
     NotFittedError,
@@ -168,7 +167,6 @@ from non_local_detector.types import (
     InferenceMode,
     Observations,
     OutputMode,
-    OutputName,
     ReturnOutputs,
     StateNames,
     Stickiness,
@@ -2392,8 +2390,6 @@ class _DetectorBase(
         max_read_bytes: int,
         replay_cache_bytes: int | None,
         return_outputs: ReturnOutputs,
-        save_log_likelihood_to_results: bool | None,
-        save_causal_posterior_to_results: bool | None,
     ) -> xr.Dataset:
         """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
         decode = _DecodeInputs.from_arguments(
@@ -2416,36 +2412,6 @@ class _DetectorBase(
             reads_position=self._decode_reads_position(),
             warn_outside_tracking=True,
         )
-
-        # Handle deprecated boolean flags
-        if (
-            save_log_likelihood_to_results is not None
-            or save_causal_posterior_to_results is not None
-        ):
-            warnings.warn(
-                "save_log_likelihood_to_results and save_causal_posterior_to_results "
-                "are deprecated. Use return_outputs parameter instead.",
-                CompatibilityWarning,
-                stacklevel=user_stacklevel(),
-            )
-
-            # Convert old flags to new format
-            outputs_from_flags: set[OutputName] = set()
-            if save_log_likelihood_to_results:
-                outputs_from_flags.add("log_likelihood")
-            if save_causal_posterior_to_results:
-                outputs_from_flags.add("filter")
-
-            if return_outputs is not None:
-                msg = (
-                    "Cannot specify both return_outputs and deprecated "
-                    "save_*_to_results flags. Use return_outputs only."
-                )
-                raise ConfigurationError(
-                    msg,
-                    hint="Drop the save_*_to_results flags and pass return_outputs.",
-                )
-            return_outputs = outputs_from_flags or None
 
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
@@ -2561,7 +2527,6 @@ class _DetectorBase(
         store_log_likelihood: bool,
         n_chunks: int,
         return_outputs: ReturnOutputs,
-        save_log_likelihood_to_results: bool | None,
         min_encoding_local_mass: float,
         min_encoding_local_ess: float,
         encoding_update_damping: float,
@@ -2588,7 +2553,6 @@ class _DetectorBase(
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
         )
@@ -2665,8 +2629,7 @@ class _DetectorBase(
                 store_log_likelihood=store_log_likelihood,
                 n_chunks=n_chunks,
                 return_outputs=return_outputs,
-                save_log_likelihood_to_results=save_log_likelihood_to_results,
-                min_encoding_local_mass=min_encoding_local_mass,
+                    min_encoding_local_mass=min_encoding_local_mass,
                 min_encoding_local_ess=min_encoding_local_ess,
                 chunk_size=chunk_size,
                 result_path=result_path,
@@ -3852,8 +3815,6 @@ class ClusterlessDetector(_DetectorBase):
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         replay_cache_bytes: int | None = None,
         return_outputs: ReturnOutputs = None,
-        save_log_likelihood_to_results: bool | None = None,
-        save_causal_posterior_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -3917,12 +3878,6 @@ class ClusterlessDetector(_DetectorBase):
             hold (n_time, n_state_bins) arrays, which can be very large (~400 GB
             for 1M timepoints × 100k spatial bins). Use checkpointed compact mode
             to bound spatial memory.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead.
-            Whether to save the log likelihood to the results, by default None.
-        save_causal_posterior_to_results : bool, optional
-            DEPRECATED. Use return_outputs='filter' instead.
-            Whether to save the causal (filtered) posterior to the results, by default None.
 
         inference_mode : {"dense", "checkpointed"}, optional
             By default "dense", the in-memory driver. "checkpointed" stores
@@ -4032,8 +3987,6 @@ class ClusterlessDetector(_DetectorBase):
             max_read_bytes=max_read_bytes,
             replay_cache_bytes=replay_cache_bytes,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
-            save_causal_posterior_to_results=save_causal_posterior_to_results,
         )
 
     @requires_time_edges
@@ -4059,7 +4012,6 @@ class ClusterlessDetector(_DetectorBase):
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
         return_outputs: ReturnOutputs = None,
-        save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
@@ -4139,8 +4091,6 @@ class ClusterlessDetector(_DetectorBase):
         return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
         min_encoding_local_mass : float, optional
             Minimum sum of local state weights to update encoding model. By default 1.0.
         min_encoding_local_ess : float, optional
@@ -4241,7 +4191,6 @@ class ClusterlessDetector(_DetectorBase):
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
             encoding_update_damping=encoding_update_damping,
@@ -4796,8 +4745,6 @@ class SortedSpikesDetector(_DetectorBase):
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         replay_cache_bytes: int | None = None,
         return_outputs: ReturnOutputs = None,
-        save_log_likelihood_to_results: bool | None = None,
-        save_causal_posterior_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -4832,10 +4779,6 @@ class SortedSpikesDetector(_DetectorBase):
         return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See ClusterlessDetector.predict
             for full documentation. By default None.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
-        save_causal_posterior_to_results : bool, optional
-            DEPRECATED. Use return_outputs='filter' instead. By default None.
 
         inference_mode : {"dense", "checkpointed"}, optional
             By default "dense", the in-memory driver. "checkpointed" stores
@@ -4895,8 +4838,6 @@ class SortedSpikesDetector(_DetectorBase):
             max_read_bytes=max_read_bytes,
             replay_cache_bytes=replay_cache_bytes,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
-            save_causal_posterior_to_results=save_causal_posterior_to_results,
         )
 
     @requires_time_edges
@@ -4921,7 +4862,6 @@ class SortedSpikesDetector(_DetectorBase):
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
         return_outputs: ReturnOutputs = None,
-        save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
@@ -5001,8 +4941,6 @@ class SortedSpikesDetector(_DetectorBase):
         return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
         min_encoding_local_mass : float, optional
             Minimum sum of local state weights to update encoding model. By default 1.0.
         min_encoding_local_ess : float, optional
@@ -5103,7 +5041,6 @@ class SortedSpikesDetector(_DetectorBase):
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
             encoding_update_damping=encoding_update_damping,

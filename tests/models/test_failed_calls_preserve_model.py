@@ -120,10 +120,6 @@ def _refit_changes_state(fit_args):
         ({"min_encoding_local_mass": -1.0}, ValueError),
         ({"min_encoding_local_ess": -1.0}, ValueError),
         ({"return_outputs": "not_an_output"}, ValueError),
-        (
-            {"save_log_likelihood_to_results": True, "return_outputs": "filter"},
-            ValueError,
-        ),
         ({"n_chunks": "more_than_time"}, ValueError),
         ({"time_edges": "decreasing"}, DataError),
         ({"time_edges": "repeated"}, DataError),
@@ -134,7 +130,6 @@ def _refit_changes_state(fit_args):
         "negative-mass",
         "negative-ess",
         "unknown-output",
-        "deprecated-flag-conflict",
         "too-many-chunks",
         "decreasing-edges",
         "repeated-edges",

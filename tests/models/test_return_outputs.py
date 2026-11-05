@@ -4,7 +4,6 @@ Tests the new string-based interface for controlling which outputs are returned
 from predict() methods, as well as backward compatibility with the old boolean flags.
 """
 
-import warnings
 
 import numpy as np
 import pytest
@@ -284,97 +283,18 @@ class TestReturnOutputsParameter:
             )
 
 
-@pytest.mark.integration
-class TestBackwardCompatibility:
-    """Test backward compatibility with old boolean flags.
-
-    These run a full HMM predict to verify that deprecated flags still
-    affect the results dict, so they're integration-scale.
-    """
-
-    def test_save_log_likelihood_to_results_still_works(self, simple_fitted_detector):
-        """Test that old save_log_likelihood_to_results flag still works with warning."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            results = detector.predict(
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                position=position,
-                position_time=time,
-                save_log_likelihood_to_results=True,
-            )
-
-            # Should have issued one deprecation warning
-            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecations) == 1
-            assert "deprecated" in str(deprecations[0].message).lower()
-
-        # Should have log_likelihood in results
-        assert "log_likelihood" in results
-
-    def test_save_causal_posterior_to_results_still_works(self, simple_fitted_detector):
-        """Test that old save_causal_posterior_to_results flag still works with warning."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            results = detector.predict(
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                position=position,
-                position_time=time,
-                save_causal_posterior_to_results=True,
-            )
-
-            # Should have issued one deprecation warning
-            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecations) == 1
-
-        # Should have causal posterior in results
-        assert "causal_posterior" in results
-        assert "causal_state_probabilities" in results
-
-    def test_both_old_flags_work_together(self, simple_fitted_detector):
-        """Test that both old flags work together."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            results = detector.predict(
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                position=position,
-                position_time=time,
-                save_log_likelihood_to_results=True,
-                save_causal_posterior_to_results=True,
-            )
-
-            # Should have issued one deprecation warning
-            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecations) == 1
-
-        # Should have both outputs
-        assert "log_likelihood" in results
-        assert "causal_posterior" in results
-
-    def test_cannot_mix_old_and_new_interface(self, simple_fitted_detector):
-        """Test that mixing old flags and new parameter raises error."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        with (
-            pytest.warns(DeprecationWarning, match="save_log_likelihood_to_results"),
-            pytest.raises(ValueError, match="Cannot specify both"),
-        ):
-            detector.predict(
-                spike_times=spike_times,
-                time_edges=time_edges_from_centers(time),
-                position=position,
-                position_time=time,
-                return_outputs="filter",
-                save_log_likelihood_to_results=True,
-            )
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "flag", ["save_log_likelihood_to_results", "save_causal_posterior_to_results"]
+)
+def test_removed_output_flags_are_rejected(simple_fitted_detector, flag):
+    """The boolean output flags are gone; return_outputs selects the outputs."""
+    detector, spike_times, time, position = simple_fitted_detector
+    with pytest.raises(TypeError, match=flag):
+        detector.predict(
+            spike_times=spike_times,
+            time_edges=time_edges_from_centers(time),
+            position=position,
+            position_time=time,
+            **{flag: True},
+        )

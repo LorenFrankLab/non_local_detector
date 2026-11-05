@@ -12,6 +12,7 @@ import non_local_detector
 from non_local_detector import (
     CompatibilityWarning,
     DataQualityWarning,
+    Environment,
     NonLocalDetectorWarning,
     NonLocalSortedSpikesDetector,
     NumericalWarning,
@@ -203,19 +204,9 @@ def test_small_bandwidth_is_parameter():
     assert _caught("characteristic bin spacing", call) == {ParameterWarning}
 
 
-def test_deprecated_output_flag_is_compatibility(recording):
-    detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE).fit(
-        **recording
-    )
-    edges = time_edges_from_centers(recording["position_time"])
-    call = lambda: detector.predict(  # noqa: E731
-        spike_times=recording["spike_times"],
-        time_edges=edges,
-        position=recording["position"],
-        position_time=recording["position_time"],
-        save_log_likelihood_to_results=True,
-    )
-    assert _caught("deprecated", call) == {CompatibilityWarning}
+def test_legacy_environment_row_is_compatibility():
+    call = lambda: Environment(place_bin_size=3.0, place_bin_centers_=None)  # noqa: E731
+    assert _caught("unset fitted attributes", call) == {CompatibilityWarning}
 
 
 def test_package_base_class_filters_select_package_warnings():

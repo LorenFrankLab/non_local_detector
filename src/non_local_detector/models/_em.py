@@ -41,8 +41,6 @@ from non_local_detector.discrete_state_transitions import (
     _transition_log_prior,
 )
 from non_local_detector.exceptions import (
-    CompatibilityWarning,
-    ConfigurationError,
     DataError,
     NumericalWarning,
     ParameterWarning,
@@ -341,7 +339,6 @@ def _validate_estimation_arguments(
     n_chunks: int,
     return_outputs: ReturnOutputs,
     *,
-    save_log_likelihood_to_results: bool | None,
     min_encoding_local_mass: float,
     min_encoding_local_ess: float,
 ) -> tuple[np.ndarray, float]:
@@ -357,10 +354,7 @@ def _validate_estimation_arguments(
     n_chunks : int
         Number of chunks the bins are split into; at most ``n_bins``.
     return_outputs : str, collection of str, or None, optional
-        Requested outputs; cannot be combined with
-        ``save_log_likelihood_to_results``.
-    save_log_likelihood_to_results : bool, optional
-        Deprecated flag to store the log likelihood in the results.
+        Requested outputs.
     min_encoding_local_mass : float
         Minimum local mass for an encoding update; must be >= 0.
     min_encoding_local_ess : float
@@ -380,8 +374,6 @@ def _validate_estimation_arguments(
     ValidationError
         If ``n_chunks`` exceeds the number of bins, ``return_outputs`` is
         invalid, or an encoding-update threshold is negative.
-    ConfigurationError
-        If ``return_outputs`` conflicts with ``save_log_likelihood_to_results``.
     """
     time_edges, time_bin_width = uniform_time_edges(time_edges)
     n_bins = len(time_edges) - 1
@@ -395,15 +387,6 @@ def _validate_estimation_arguments(
             expected=f"n_chunks <= {n_bins}",
             got=str(n_chunks),
             hint="Lower n_chunks or pass more time bins.",
-        )
-    if save_log_likelihood_to_results and return_outputs is not None:
-        msg = (
-            "Cannot specify both return_outputs and deprecated "
-            "save_log_likelihood_to_results flag. "
-            "Use return_outputs only."
-        )
-        raise ConfigurationError(
-            msg, hint="Drop save_log_likelihood_to_results and pass return_outputs."
         )
     _normalize_return_outputs(return_outputs)
     if min_encoding_local_mass < 0:
@@ -774,7 +757,6 @@ class _EMMixin:
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
         return_outputs: ReturnOutputs = None,
-        save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         chunk_size: int | None = None,
@@ -849,9 +831,6 @@ class _EMMixin:
             A name adds the same outputs alone or in a list or set.
 
             By default None (only smoother posterior and state probabilities).
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead.
-            Whether to save the log likelihood to the results, by default None.
         min_encoding_local_mass : float, optional
             Minimum sum of local state weights required to update the encoding
             model. If the total mass is below this threshold, the encoding
@@ -931,7 +910,6 @@ class _EMMixin:
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
             chunk_size=chunk_size,
@@ -1015,7 +993,6 @@ class _EMMixin:
         store_log_likelihood: bool,
         n_chunks: int,
         return_outputs: ReturnOutputs,
-        save_log_likelihood_to_results: bool | None,
         min_encoding_local_mass: float,
         min_encoding_local_ess: float,
         chunk_size: int | None,
@@ -1036,7 +1013,6 @@ class _EMMixin:
             time_edges,
             n_chunks,
             return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
         )
@@ -1100,17 +1076,6 @@ class _EMMixin:
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
-
-        # Handle deprecated boolean flag
-        if save_log_likelihood_to_results is not None:
-            warnings.warn(
-                "save_log_likelihood_to_results is deprecated. "
-                "Use return_outputs='log_likelihood' instead.",
-                CompatibilityWarning,
-                stacklevel=user_stacklevel(),
-            )
-            if save_log_likelihood_to_results:
-                return_outputs = "log_likelihood"
 
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)

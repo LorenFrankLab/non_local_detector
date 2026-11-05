@@ -113,7 +113,6 @@ def _estimation_arguments(**overrides):
         "time_edges": np.arange(11) * 0.002,
         "n_chunks": 1,
         "return_outputs": None,
-        "save_log_likelihood_to_results": None,
         "min_encoding_local_mass": 0.0,
         "min_encoding_local_ess": 0.0,
     }
@@ -127,12 +126,8 @@ def _estimation_arguments(**overrides):
         ({"n_chunks": 11}, ValidationError),
         ({"min_encoding_local_mass": -1.0}, ValidationError),
         ({"min_encoding_local_ess": -1.0}, ValidationError),
-        (
-            {"save_log_likelihood_to_results": True, "return_outputs": ["filter"]},
-            ConfigurationError,
-        ),
     ],
-    ids=["n_chunks", "local_mass", "local_ess", "deprecated_flag_conflict"],
+    ids=["n_chunks", "local_mass", "local_ess"],
 )
 def test_estimation_argument_errors_are_categorized(overrides, category):
     time_edges = _estimation_arguments()["time_edges"]
