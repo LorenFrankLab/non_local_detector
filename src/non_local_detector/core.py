@@ -1337,10 +1337,13 @@ def smoother(
     filtered_probs : jax.Array, shape (n_time, n_states)
         Filtered state probabilities.
     initial : jax.Array, shape (n_states,), optional
-        Smoothed row after the last row; by default the last filtered row.
-    ind : jax.Array, shape (n_time,), optional
-        Row indices of the recording; by default ``arange(n_time)``, the
-        recording's first rows.
+        Smoothed row after the last row, up to scale (the smoothed rows are
+        normalized): nonnegative, finite, with a positive sum. By default
+        the last filtered row. Unused when the last row is the recording's
+        last (``ind[-1] == n_time - 1``).
+    ind : jax.Array of int, shape (n_time,), optional
+        Row indices of the recording, in ``[0, n_time)``; by default
+        ``arange(n_time)``, the recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -1354,10 +1357,9 @@ def smoother(
     ------
     ValidationError
         If the inputs are concrete and ``filtered_probs`` is not
-        (n_time, n_states), ``initial`` or ``ind`` does not match it,
-        ``initial`` has a negative or non-finite entry or sums above 1, or
-        the matrix does not have shape (n_states, n_states) or breaks the
-        probability contract above.
+        (n_time, n_states), ``initial`` or ``ind`` does not match it or
+        breaks its contract above, or the matrix does not have shape
+        (n_states, n_states) or breaks the probability contract above.
 
     Notes
     -----
@@ -1367,7 +1369,7 @@ def smoother(
     inputs before the transformation.
     """
     if not _is_traced(transition_matrix, filtered_probs, initial, ind):
-        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind)
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind, n_time)
         _check_hmm_arrays(
             n_time=n_rows, n_bins=n_bins, transition_matrix=transition_matrix
         )
@@ -2193,7 +2195,7 @@ def _check_hmm_arrays(
 
 
 def _check_smoother_rows(
-    filtered_probs: Any, initial: Any, ind: Any
+    filtered_probs: Any, initial: Any, ind: Any, n_time: Any
 ) -> tuple[int, int]:
     """Check the rows a public smoother pass is given and return their shape.
 
@@ -2202,10 +2204,13 @@ def _check_smoother_rows(
     filtered_probs : array_like, shape (n_rows, n_state_bins)
         Filtered distribution of each row.
     initial : array_like, shape (n_state_bins,), or None
-        Smoothed row after the last row: nonnegative and finite, summing to
-        at most 1 (its scale does not change the result).
-    ind : array_like, shape (n_rows,), or None
-        Recording row index of each row.
+        Smoothed row after the last row, up to scale: nonnegative and finite
+        with a positive sum (the smoothed rows are normalized).
+    ind : array_like of int, shape (n_rows,), or None
+        Recording row index of each row, in ``[0, n_time)``.
+    n_time : int or None
+        Rows in the whole recording; None for ``n_rows``. A traced value is
+        not checked against ``ind``.
 
     Returns
     -------
@@ -2233,9 +2238,42 @@ def _check_smoother_rows(
     )
     if initial is not None:
         _check_shape("initial", initial, (n_bins,), shape_hint)
-        _check_distribution("initial", np.asarray(initial), allow_mass_loss=True)
+        values = np.asarray(initial)
+        total = values.sum(dtype=np.float64)
+        got = _bad_entries(values, total, lambda where: f"state bin {where[0]}")
+        if got is None and not total > 0:
+            got = f"sums to {total:.6g}"
+        if got is not None:
+            msg = "initial must be nonnegative weights over state bins"
+            raise ValidationError(
+                msg,
+                expected="nonnegative, finite entries with a positive sum (the "
+                "smoothed rows are normalized, so the scale does not matter)",
+                got=got,
+                hint="Pass the smoothed row after the last row, such as the "
+                "first row of the next chunk's smoother output.",
+            )
     if ind is not None:
         _check_shape("ind", ind, (n_rows,), shape_hint)
+        rows = np.asarray(ind)
+        n_recording = n_rows if n_time is None else n_time
+        got = None
+        if rows.dtype.kind not in "iu":
+            got = f"dtype {rows.dtype}"
+        elif rows.min() < 0:
+            got = f"minimum {rows.min()}"
+        elif not _is_traced(n_recording) and rows.max() >= n_recording:
+            got = f"maximum {rows.max()} with n_time = {n_recording}"
+        if got is not None:
+            msg = "ind must hold recording row indices"
+            raise ValidationError(
+                msg,
+                expected=f"integers in [0, n_time), n_time = {n_recording}",
+                got=got,
+                hint="Pass the integer row of the whole recording for each "
+                "row of filtered_probs, e.g. np.arange(start, stop), and the "
+                "recording's length as n_time.",
+            )
     return n_rows, n_bins
 
 
@@ -3180,10 +3218,13 @@ def smoother_covariate_dependent(
     filtered_probs : jax.Array, shape (n_rows, n_state_bins)
         Filtered distribution of each time bin.
     initial : jax.Array, shape (n_state_bins,), optional
-        Smoothed row after the last row; by default the last filtered row.
-    ind : jax.Array, shape (n_rows,), optional
-        Row indices of the recording; by default ``arange(n_rows)``, the
-        recording's first rows.
+        Smoothed row after the last row, up to scale (the smoothed rows are
+        normalized): nonnegative, finite, with a positive sum. By default
+        the last filtered row. Unused when the last row is the recording's
+        last (``ind[-1] == n_time - 1``).
+    ind : jax.Array of int, shape (n_rows,), optional
+        Row indices of the recording, in ``[0, n_time)``; by default
+        ``arange(n_rows)``, the recording's first rows.
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
@@ -3196,9 +3237,8 @@ def smoother_covariate_dependent(
     Raises
     ------
     ValidationError
-        If the inputs are concrete and their shapes disagree, ``initial``
-        has a negative or non-finite entry or sums above 1, or they break the
-        probability contract above.
+        If the inputs are concrete and their shapes disagree or they break
+        the contracts above.
 
     Notes
     -----
@@ -3215,7 +3255,7 @@ def smoother_covariate_dependent(
         initial,
         ind,
     ):
-        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind)
+        n_rows, n_bins = _check_smoother_rows(filtered_probs, initial, ind, n_time)
         _check_hmm_arrays(
             n_time=n_rows,
             n_bins=n_bins,

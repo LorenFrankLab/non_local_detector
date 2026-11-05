@@ -778,14 +778,43 @@ def test_public_smoothers_default_rows_with_n_time(name):
         ),
         (
             {"initial": np.array([0.6, 0.5, -0.1])},
-            ("initial must be a probability distribution", "minimum entry -0.1"),
+            ("initial must be nonnegative weights", "minimum entry -0.1"),
+        ),
+        (
+            {"initial": np.array([0.5, np.inf, 0.5])},
+            ("initial must be nonnegative weights", "non-finite entries"),
+        ),
+        (
+            {"initial": np.zeros(N_BINS)},
+            ("initial must be nonnegative weights", "sums to 0"),
         ),
         (
             {"ind": np.arange(N_TIME - 1)},
             ("ind has the wrong shape", f"Expected: shape ({N_TIME},)"),
         ),
+        (
+            {"ind": np.arange(N_TIME, dtype=float)},
+            ("ind must hold recording row indices", "dtype float64"),
+        ),
+        (
+            {"ind": np.arange(N_TIME) + 1},
+            ("ind must hold recording row indices", f"maximum {N_TIME}"),
+        ),
+        (
+            {"ind": np.arange(N_TIME) - 1},
+            ("ind must hold recording row indices", "minimum -1"),
+        ),
     ],
-    ids=["initial_shape", "initial_negative", "ind_length"],
+    ids=[
+        "initial_shape",
+        "initial_negative",
+        "initial_infinite",
+        "initial_zero",
+        "ind_length",
+        "ind_float",
+        "ind_past_n_time",
+        "ind_negative",
+    ],
 )
 def test_public_smoothers_check_initial_and_ind(name, keywords, pieces):
     with pytest.raises(ValidationError) as caught:
@@ -804,3 +833,24 @@ def test_public_smoothers_reject_filtered_probs_that_are_not_rows(name):
         f"Got: shape (1, {N_TIME}, {N_BINS})",
         filtered_probs=_filtered()[None],
     )
+
+
+@pytest.mark.parametrize("name", SMOOTHERS)
+def test_public_smoothers_accept_initial_of_any_positive_scale(name):
+    """The smoothed rows are normalized, so ``initial`` is a weight vector.
+
+    With rows before the recording's end (``n_time`` beyond them) the
+    smoother starts from ``initial``; doubling it changes nothing.
+    """
+    keywords = {"ind": np.arange(N_TIME), "n_time": N_TIME + 3}
+    np.testing.assert_allclose(
+        _smooth(name, initial=np.full(N_BINS, 2.0), **keywords),
+        _smooth(name, initial=np.full(N_BINS, 1 / N_BINS), **keywords),
+        rtol=1e-6,
+    )
+
+
+@pytest.mark.parametrize("name", SMOOTHERS)
+def test_public_smoothers_accept_rows_within_a_longer_recording(name):
+    """``ind`` values below a given ``n_time`` pass the range check."""
+    _smooth(name, ind=np.arange(N_TIME) + 3, n_time=N_TIME + 3)
