@@ -833,23 +833,29 @@ class TestExpandedDiscreteTransitionCounts:
         if case == "support_mismatch":
             log_likelihoods[4, state_ind == 2] = -np.inf
 
-        result = chunked_filter_smoother_covariate_dependent(
-            time_edges=np.arange(n_time + 1.0),
-            state_ind=state_ind,
-            initial_distribution=np.full(n_bins, 1 / n_bins),
-            discrete_transition_matrix=discrete_transition,
-            continuous_transition_matrix=continuous_transition,
-            log_likelihood_func=None,
-            log_likelihood_args=(),
-            log_likelihoods=log_likelihoods,
-            n_chunks=n_chunks,
-            transition_responses=True,
-        )
+        def smooth(**kwargs):
+            return chunked_filter_smoother_covariate_dependent(
+                time_edges=np.arange(n_time + 1.0),
+                state_ind=state_ind,
+                initial_distribution=np.full(n_bins, 1 / n_bins),
+                discrete_transition_matrix=discrete_transition,
+                continuous_transition_matrix=continuous_transition,
+                log_likelihood_func=None,
+                log_likelihood_args=(),
+                log_likelihoods=log_likelihoods,
+                n_chunks=n_chunks,
+                **kwargs,
+            )
+
+        result = smooth(transition_responses=True)
+        # Asking for responses does not keep the predictive posterior.
+        assert result.predictive_posterior is None
+        predictive_posterior = smooth().predictive_posterior
         # Each case reaches the structure it is named for.
         if case == "impossible_rows":
             np.testing.assert_array_equal(result.degenerate_indices, [3, 4])
         elif case in ("zero_discrete_rows", "support_mismatch"):
-            assert np.all(result.predictive_posterior[4][state_ind != 2] == 0)
+            assert np.all(predictive_posterior[4][state_ind != 2] == 0)
             np.testing.assert_array_equal(result.transition_responses[3, :, :2], 0)
         if case == "support_mismatch":
             assert np.isneginf(result.marginal_log_likelihood)
@@ -859,7 +865,7 @@ class TestExpandedDiscreteTransitionCounts:
         )
         expected = expanded_responses(
             np.asarray(result.causal_posterior, np.float64),
-            np.asarray(result.predictive_posterior, np.float64),
+            np.asarray(predictive_posterior, np.float64),
             np.asarray(result.acausal_posterior, np.float64),
             full_transition,
             state_ind,

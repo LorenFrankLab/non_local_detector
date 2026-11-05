@@ -2395,9 +2395,11 @@ class FilterSmootherResult(NamedTuple):
         were neither given, cached nor accumulated.
     causal_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
         Filtered state probabilities. A JAX array with ``host_outputs=False``.
-    predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
+    predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins), or None
         One-step-ahead predicted state probabilities over state bins. A JAX
-        array with ``host_outputs=False``.
+        array with ``host_outputs=False``; None when
+        :func:`chunked_filter_smoother_covariate_dependent` was asked for
+        ``transition_responses``, which do not read it.
     degenerate_indices : np.ndarray of int, shape (n_degenerate,)
         Increasing time indices whose log likelihoods are ``-inf`` in every
         state bin. Found during the forward pass, so they are available even
@@ -2415,7 +2417,7 @@ class FilterSmootherResult(NamedTuple):
     predictive_state_probabilities: np.ndarray
     log_likelihoods: np.ndarray | None
     causal_posterior: np.ndarray | jax.Array
-    predictive_posterior: np.ndarray | jax.Array
+    predictive_posterior: np.ndarray | jax.Array | None
     degenerate_indices: np.ndarray
     transition_responses: np.ndarray | None = None
 
@@ -2436,6 +2438,7 @@ def _chunked_filter_smoother(
     dtype: DTypeLike,
     accumulate_log_likelihoods: bool,
     host_outputs: bool,
+    keep_predictive_posterior: bool = True,
 ) -> FilterSmootherResult:
     """Chunked forward-backward shared by the stationary and covariate drivers.
 
@@ -2490,6 +2493,10 @@ def _chunked_filter_smoother(
     host_outputs : bool
         If True, return the posteriors as NumPy arrays; otherwise keep them on
         the device as JAX arrays.
+    keep_predictive_posterior : bool, optional
+        If False, drop each chunk's predictive posterior after its state
+        probabilities and return ``predictive_posterior`` None, so it is not
+        held through the backward pass. By default True.
 
     The returns are those of :func:`chunked_filter_smoother`.
     """
@@ -2630,10 +2637,12 @@ def _chunked_filter_smoother(
         causal_state_probabilities.append(
             _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
         )
-        predictive_posterior.append(predicted_probs_chunk)
+        if keep_predictive_posterior:
+            predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
             _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
+        del predicted_probs_chunk
 
         chunk_increments.append(increments)
 
@@ -2655,7 +2664,9 @@ def _chunked_filter_smoother(
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
-    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
+    predictive_posterior_jax = (
+        jnp.concatenate(predictive_posterior) if keep_predictive_posterior else None
+    )
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
     # Release the per-chunk copies so they don't coexist with the concatenations
     del causal_posterior, predictive_posterior
@@ -2707,7 +2718,9 @@ def _chunked_filter_smoother(
         # Keep as original (may be None or NumPy)
         log_likelihoods=log_likelihoods,
         causal_posterior=spatial(causal_posterior_jax),
-        predictive_posterior=spatial(predictive_posterior_jax),
+        predictive_posterior=None
+        if predictive_posterior_jax is None
+        else spatial(predictive_posterior_jax),
         degenerate_indices=degenerate_time_indices,
         transition_responses=transition_responses,
     )
@@ -3457,8 +3470,8 @@ def chunked_filter_smoother_covariate_dependent(
         If True, the smoother also returns the expected discrete transitions
         between consecutive rows, the responses of the covariate M-step, as
         ``transition_responses``. They are computed in the smoother's scan
-        from the filtered rows, so no posterior is read again. By default
-        False.
+        from the filtered rows, so no posterior is read again, and
+        ``predictive_posterior`` is None. By default False.
 
     Returns
     -------
@@ -3554,6 +3567,7 @@ def chunked_filter_smoother_covariate_dependent(
         dtype=dtype,
         accumulate_log_likelihoods=accumulate_log_likelihoods,
         host_outputs=host_outputs,
+        keep_predictive_posterior=not transition_responses,
     )
 
 
