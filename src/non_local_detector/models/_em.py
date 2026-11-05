@@ -120,9 +120,10 @@ _AUTO_DENSE_TRANSITION_BYTES = 16 * 2**20
 _DENSE_EM_WORKING_ARRAYS = 8
 
 
-# With a prior that changes each E-step (data-adaptive pseudo-counts, REML
-# smoothness), EM also requires the last M-step to move every transition
-# probability by less than this. It is a probability, so it is separate from
+# EM that estimates the discrete transitions also requires the last M-step to
+# move every transition probability by less than this: a rarely occupied state
+# barely changes the objective, so a flat objective does not show that the
+# transitions have settled. It is a probability, so it is separate from
 # ``tolerance`` (nats per time bin).
 _TRANSITION_CHANGE_TOLERANCE = 1e-4
 
@@ -432,8 +433,6 @@ class _EMSettings:
         counts (``discrete_transition_prior_weight > 0``, stationary).
     prior_set_in_m_step : bool
         Whether REML sets the transition prior in each M-step.
-    prior_changes : bool
-        Either of the two above: the prior changes with each E-step.
     smoothness_setting : float or str
         ``discrete_transition_type.smoothness``.
     prior : tuple
@@ -477,7 +476,6 @@ class _EMSettings:
     transition_statistics: TransitionStatistics | None
     prior_tracks_counts: bool
     prior_set_in_m_step: bool
-    prior_changes: bool
     smoothness_setting: float | str
     prior: tuple[Any, Any, Any, Any]
     frozen_rows: np.ndarray | None
@@ -511,13 +509,12 @@ class _EMState:
         prior; there is none before the first M-step.
     n_iter : int
     converged, objective_converged, is_increasing : bool
-        The last check's outcome: converged (objective and, when the prior
-        changes, transitions), objective within tolerance, and not decreasing.
+        The last check's outcome: converged (objective and, when they are
+        estimated, transitions), objective within tolerance, and not decreasing.
     objective_change : float
         The last check's change in the objective.
     transition_change : float
-        The last M-step's largest transition-probability change, tracked
-        when the prior changes with each E-step.
+        The last M-step's largest transition-probability change.
     run_log_likelihoods : np.ndarray, shape (n_time, n_interior_state_bins), or None
         A likelihood computed in this run that the next E-step can reuse.
     transition_statistics : np.ndarray or None
@@ -805,10 +802,9 @@ class _EMMixin:
             bin, by default 1e-5. EM stops when the penalized log-likelihood
             (marginal log-likelihood plus the discrete-transition log prior)
             rises by less than ``tolerance`` times the number of time bins in
-            one iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` or REML smoothness the
-            last M-step must also change every transition probability by less
-            than 1e-4.
+            one iteration, without decreasing. When EM estimates the discrete
+            transitions, the last M-step must also change every transition
+            probability by less than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -1119,7 +1115,6 @@ class _EMMixin:
             and covariate_transitions
             and isinstance(self.discrete_transition_type.smoothness, str)
         )
-        prior_changes = prior_tracks_counts or prior_set_in_m_step
         interior_state_ind: np.ndarray | None = None
         interior_continuous_transition: np.ndarray | None = None
         if transition_statistics == "counts" and not checkpointed:
@@ -1166,7 +1161,6 @@ class _EMMixin:
             transition_statistics=transition_statistics,
             prior_tracks_counts=prior_tracks_counts,
             prior_set_in_m_step=prior_set_in_m_step,
-            prior_changes=prior_changes,
             smoothness_setting=self.discrete_transition_type.smoothness,
             prior=prior,
             frozen_rows=frozen_rows,
@@ -1406,12 +1400,11 @@ class _EMMixin:
             if state.n_iter == 0 or settings.prior_tracks_counts
             else state.next_log_prior
         )
-        if settings.prior_changes:
-            coefficients_before = self.discrete_transition_coefficients_
-            # Covariate transitions are compared from their
-            # coefficients, without copying (n_time, n_states, n_states).
-            if not settings.covariate_transitions:
-                transitions_before = np.array(self.discrete_state_transitions_)
+        coefficients_before = self.discrete_transition_coefficients_
+        # Covariate transitions are compared from their coefficients, without
+        # copying (n_time, n_states, n_states).
+        if not settings.covariate_transitions:
+            transitions_before = np.array(self.discrete_state_transitions_)
         m_step = _discrete_transition_from_statistics(
             statistics,
             self.discrete_transition_coefficients_,
@@ -1445,7 +1438,7 @@ class _EMMixin:
                 self._frozen_discrete_transition_rows_mask_
             ] = self._frozen_discrete_transition_rows_baseline_
         log_prior_after = self._em_transition_log_prior(settings, statistics)
-        if settings.prior_changes and settings.covariate_transitions:
+        if settings.covariate_transitions:
             # Covariate transitions have a design matrix and coefficients.
             assert self.discrete_transition_design_matrix_ is not None
             assert coefficients_before is not None
@@ -1455,7 +1448,7 @@ class _EMMixin:
                 coefficients_before,
                 self.discrete_transition_coefficients_,
             )
-        elif settings.prior_changes:
+        else:
             moved = self.discrete_state_transitions_ - transitions_before
             state.transition_change = float(np.max(np.abs(moved)))
         return log_prior_before, log_prior_after
@@ -1527,11 +1520,8 @@ class _EMMixin:
                 settings.tolerance,
                 n_time_bins=settings.n_observed_bins,
             )
-            # A data-adaptive prior (or REML smoothness) changes with
-            # every E-step, so a flat objective alone does not mean the
-            # transitions have settled.
             state.converged = state.objective_converged and (
-                not settings.prior_changes
+                not settings.estimate_discrete_transition
                 or state.transition_change < _TRANSITION_CHANGE_TOLERANCE
             )
 
@@ -1562,7 +1552,7 @@ class _EMMixin:
                 state.objective_change,
                 (
                     f", transition change: {state.transition_change}"
-                    if settings.prior_changes
+                    if settings.estimate_discrete_transition
                     else ""
                 ),
             )
@@ -1621,8 +1611,7 @@ class _EMMixin:
         elif state.objective_converged:
             advice = (
                 "The penalized log-likelihood changed by less than "
-                "tolerance, but with discrete_transition_prior_weight > 0 "
-                "or REML smoothness the last M-step must also move every "
+                "tolerance, but the last M-step must also move every "
                 "transition probability by less than "
                 f"{_TRANSITION_CHANGE_TOLERANCE:g}, and it "
                 f"moved one by {state.transition_change:.3e}; consider "

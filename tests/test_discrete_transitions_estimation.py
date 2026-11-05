@@ -1257,6 +1257,52 @@ class TestRemlInsideEM:
             )
 
 
+class TestConvergenceNeedsSettledTransitions:
+    """A flat objective does not show that the transitions stopped moving."""
+
+    @staticmethod
+    def _stationary_detector():
+        rng = np.random.default_rng(3)
+        initial_conditions, transition, blocks = _expanded_hmm_parameters()
+        states, bins = _simulate_expanded_hmm(
+            rng, initial_conditions, transition, blocks, 600
+        )
+        return _FixedLikelihoodDetector(
+            _log_likelihoods_from_expanded_states(
+                states, bins, 3, 2, off_target_log_likelihood=-2.0
+            ),
+            discrete_initial_conditions=initial_conditions,
+            discrete_transition=np.full((3, 3), 1.0 / 3.0),
+            continuous_transition_blocks=blocks,
+        )
+
+    def test_a_stationary_fit_needs_more_than_a_flat_objective(self):
+        detector = self._stationary_detector()
+        detector._fit(position=np.array([[0.25], [1.25]]))
+        # An infinite tolerance is met by any increase, so only the
+        # transitions can keep EM running.
+        _estimate_transitions(detector, max_iter=200, tolerance=np.inf)
+
+        assert detector.converged_
+        assert detector.n_iter_ > 2
+
+    def test_a_fit_that_keeps_its_transitions_stops_on_the_objective(self):
+        detector = self._stationary_detector()
+        detector._fit(position=np.array([[0.25], [1.25]]))
+        n_time = detector._fixed_log_likelihoods.shape[0]
+        detector._run_em(
+            time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
+            estimate_initial_conditions=True,
+            estimate_discrete_transition=False,
+            estimate_encoding_model=False,
+            max_iter=50,
+            tolerance=np.inf,
+        )
+
+        assert detector.converged_
+        assert detector.n_iter_ == 2
+
+
 class TestTransitionIntervals:
     def test_stationary_transitions_have_no_intervals(self):
         initial_conditions, discrete_transition, blocks = _expanded_hmm_parameters()

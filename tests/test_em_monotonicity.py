@@ -518,19 +518,13 @@ class TestEMConvergenceSurfacing:
         assert "is -inf" in max_iter_messages[0]
         assert "relaxing tolerance" not in max_iter_messages[0]
 
-    @pytest.mark.parametrize(
-        ("prior_weight", "expected_n_iter"),
-        # A fixed prior stops at the first check that passes; a data-adaptive
-        # prior keeps going while the transitions still move.
-        [(0.0, 2), (0.5, 4)],
-    )
-    def test_adaptive_prior_also_requires_settled_transitions(
-        self, monkeypatch, sorted_sim, prior_weight, expected_n_iter
+    @pytest.mark.parametrize("prior_weight", [0.0, 0.5])
+    def test_convergence_requires_settled_transitions(
+        self, monkeypatch, sorted_sim, prior_weight
     ):
-        """With ``discrete_transition_prior_weight > 0`` the prior changes
-        with each E-step, so a flat objective is not enough: every
-        transition probability must also have moved by less than
-        ``tolerance`` in the last M-step."""
+        """A flat objective is not enough, whatever the prior: every
+        transition probability must also have moved by less than 1e-4 in
+        the last M-step."""
         from non_local_detector.models import _em as em_module
 
         # Every objective check passes, so only the transition change can
@@ -553,16 +547,13 @@ class TestEMConvergenceSurfacing:
                 estimate_encoding_model=False,
             )
 
-        assert detector.n_iter_ == expected_n_iter
-        assert detector.converged_ is (prior_weight == 0.0)
+        assert detector.n_iter_ == 4
+        assert detector.converged_ is False
         max_iter_messages = [
             str(w.message) for w in caught if "did not converge" in str(w.message)
         ]
-        if prior_weight > 0:
-            (message,) = max_iter_messages
-            assert "must also move every transition probability" in message
-        else:
-            assert max_iter_messages == []
+        (message,) = max_iter_messages
+        assert "must also move every transition probability" in message
 
     @pytest.mark.parametrize("transition_representation", ["dense", "structured"])
     def test_zero_iterations_returns_posterior(self, sim, transition_representation):

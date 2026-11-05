@@ -4075,10 +4075,9 @@ class ClusterlessDetector(_DetectorBase):
             bin, by default 1e-5. EM stops when the penalized log-likelihood
             (marginal log-likelihood plus the discrete-transition log prior)
             rises by less than ``tolerance`` times the number of time bins in
-            one iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` or REML smoothness the
-            last M-step must also change every transition probability by less
-            than 1e-4.
+            one iteration, without decreasing. When EM estimates the discrete
+            transitions, the last M-step must also change every transition
+            probability by less than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
