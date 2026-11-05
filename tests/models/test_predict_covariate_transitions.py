@@ -7,6 +7,8 @@ Verifies:
    covariates, and fitting them requires training covariates
 """
 
+import pickle
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -190,25 +192,47 @@ def test_most_likely_sequence_uses_its_covariates(checkpoint_recording, family):
     )
     assert len(still) == len(moving) == n_decode
     assert np.any(still["state"].to_numpy() != moving["state"].to_numpy())
-    path = model._run_viterbi
-    calls = []
 
-    def recording_viterbi(*args, **kwargs):
-        calls.append(kwargs["discrete_state_transitions"])
-        return path(*args, **kwargs)
 
-    model._run_viterbi = recording_viterbi
-    model.most_likely_sequence(
-        **predict, discrete_transition_covariate_data={"speed": np.zeros(n_decode)}
+def _restored(model, route, tmp_path):
+    if route == "saved model":
+        path = tmp_path / "model.nld"
+        model.save_model(path)
+        return type(model).load_model(path)
+    return pickle.loads(pickle.dumps(model))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("route", ["saved model", "pickle"])
+@pytest.mark.parametrize("method", ["predict", "most_likely_sequence"])
+def test_a_restored_model_still_requires_covariates(
+    checkpoint_recording, route, method, tmp_path
+):
+    """A restored model stores the training covariates; decoding must not
+    fall back on them."""
+    model, _, predict = _covariate_model(checkpoint_recording, "sorted")
+    restored = _restored(model, route, tmp_path)
+
+    with pytest.raises(ValidationError, match="discrete_transition_covariate_data"):
+        getattr(restored, method)(**predict)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("route", ["saved model", "pickle"])
+def test_a_restored_model_finds_the_same_sequence(
+    checkpoint_recording, route, tmp_path
+):
+    model, _, predict = _covariate_model(checkpoint_recording, "sorted")
+    covariates = {"speed": np.full(len(predict["time_edges"]) - 1, 3.0)}
+
+    actual = _restored(model, route, tmp_path).most_likely_sequence(
+        **predict, discrete_transition_covariate_data=covariates
     )
-    np.testing.assert_allclose(
-        calls[0],
-        predict_discrete_state_transitions(
-            model.discrete_transition_design_matrix_,
-            model.discrete_transition_coefficients_,
-            {"speed": np.zeros(n_decode)},
-        ),
+
+    expected = model.most_likely_sequence(
+        **predict, discrete_transition_covariate_data=covariates
     )
+    pd.testing.assert_frame_equal(actual, expected)
 
 
 @pytest.mark.unit
@@ -258,16 +282,15 @@ def test_estimating_with_covariates_off_the_decode_grid_raises(
 ):
     """EM's covariates have one row per decode bin; another count raises before
     the internal fit and leaves the detector as it was."""
-    model, fit, predict = checkpoint_recording("sorted")
-    model.discrete_transition_type = DiscreteNonStationaryDiagonal(
-        np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
-    )
+    model, _, predict = _covariate_model(checkpoint_recording, "sorted")
+    fit = {key: value for key, value in predict.items() if key != "time_edges"}
     n_decode = len(predict["time_edges"]) - 1
 
     def unexpected_fit(*args, **kwargs):
         pytest.fail("covariate rows must be checked before the internal fit")
 
     monkeypatch.setattr(model, "fit", unexpected_fit)
+    before = dict(vars(model))
     with pytest.raises(ValidationError, match="one per decode bin"):
         model.estimate_parameters(
             **fit,
@@ -277,4 +300,5 @@ def test_estimating_with_covariates_off_the_decode_grid_raises(
             ),
             max_iter=1,
         )
-    assert not hasattr(model, "discrete_state_transitions_")
+    assert vars(model).keys() == before.keys()
+    assert all(vars(model)[name] is value for name, value in before.items())
