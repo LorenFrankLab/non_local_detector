@@ -56,3 +56,37 @@ def test_methods_returning_self_keep_the_callers_type(cls, method):
     not as the family base class."""
     hints = typing.get_type_hints(getattr(cls, method))
     assert hints["return"] is hints["self"]
+
+
+def _public_methods(cls):
+    return {
+        name
+        for name, member in inspect.getmembers(cls)
+        if not name.startswith("_") and inspect.isroutine(member)
+    }
+
+
+_PUBLIC_METHODS = sorted(
+    _public_methods(SortedSpikesDetector) | _public_methods(ClusterlessDetector)
+)
+
+
+@pytest.mark.parametrize("method", _PUBLIC_METHODS)
+def test_family_methods_have_the_same_signature(method):
+    """Apart from the waveform features, a clusterless method takes the same
+    arguments, in the same order and with the same defaults, as its
+    sorted-spikes counterpart."""
+    sorted_signature = inspect.signature(getattr(SortedSpikesDetector, method))
+    clusterless_signature = inspect.signature(getattr(ClusterlessDetector, method))
+    clusterless_parameters = [
+        parameter
+        for parameter in clusterless_signature.parameters.values()
+        if parameter.name != "spike_waveform_features"
+    ]
+    assert [
+        (parameter.name, parameter.kind, parameter.default)
+        for parameter in sorted_signature.parameters.values()
+    ] == [
+        (parameter.name, parameter.kind, parameter.default)
+        for parameter in clusterless_parameters
+    ]

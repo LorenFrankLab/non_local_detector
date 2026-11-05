@@ -3407,8 +3407,9 @@ class ClusterlessDetector(_DetectorBase):
         spike_times : list of np.ndarray, len (n_electrodes,)
             One 1-D array of spike times per electrode, in seconds; NaN or
             infinite times raise ``DataError``.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -3601,8 +3602,9 @@ class ClusterlessDetector(_DetectorBase):
         spike_times : list of np.ndarray, len (n_electrodes,)
             One 1-D array of spike times per electrode, in seconds; NaN or
             infinite times raise ``DataError``.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -3739,6 +3741,36 @@ class ClusterlessDetector(_DetectorBase):
         """
         Compute the log likelihood for the given data.
 
+        Parameters
+        ----------
+        position_time : array_like, shape (n_time_position,), or None
+            Time points for position data.
+        position : array_like, shape (n_time_position, n_position_dims), or None
+            Position data.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        is_missing : array_like of bool, shape (n_rows,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            requested decode bin, by default None.
+        row_slice : slice | None, optional
+            Contiguous range of rows of the full-time likelihood to compute, by
+            default None (all rows). ``time_edges`` stay the FULL decoding edges,
+            so a decoding spike is owned by its global row no matter how the
+            rows were chunked, and the result equals the full-time likelihood
+            sliced by ``row_slice``.
+        time_edges : array_like, shape (n_bins + 1,)
+            Uniform decode bin edges. Results have one row per bin, at the
+            bin centers.
+
+        Returns
+        -------
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
+            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
+
         Notes
         -----
         When ``local_position_std`` is set, the per-bin value returned
@@ -3768,35 +3800,6 @@ class ClusterlessDetector(_DetectorBase):
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
         — they include the kernel and mass-balance terms.
-
-        Parameters
-        ----------
-        time_edges : array_like, shape (n_bins + 1,)
-            Uniform decode bin edges. Results have one row per bin, at the
-            bin centers.
-        position_time : array_like, shape (n_time_position,), or None
-            Time points for position data.
-        position : array_like, shape (n_time_position, n_position_dims), or None
-            Position data.
-        spike_times : list of np.ndarray, len (n_electrodes,)
-            One 1-D array of spike times per electrode, in seconds; NaN or
-            infinite times raise ``DataError``.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        is_missing : array_like of bool, shape (n_rows,), optional
-            True (or 1) for the bins to decode as missing, one entry per
-            requested decode bin, by default None.
-        row_slice : slice | None, optional
-            Contiguous range of rows of the full-time likelihood to compute, by
-            default None (all rows). ``time_edges`` stay the FULL decoding edges,
-            so a decoding spike is owned by its global row no matter how the
-            rows were chunked, and the result equals the full-time likelihood
-            sliced by ``row_slice``.
-
-        Returns
-        -------
-        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
-            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         return self._compute_spike_log_likelihood(
             position_time,
@@ -3838,8 +3841,9 @@ class ClusterlessDetector(_DetectorBase):
         spike_times : list of np.ndarray, len (n_electrodes,)
             One 1-D array of spike times per electrode, in seconds; NaN or
             infinite times raise ``DataError``.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
@@ -3862,37 +3866,6 @@ class ClusterlessDetector(_DetectorBase):
             chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
-        return_outputs : str, collection of str, or None, optional
-            Controls which optional outputs are returned.
-
-            Options:
-            - None: smoother only (default, minimal memory)
-            - 'filter': filtered (causal) posterior and state probabilities
-            - 'predictive': one-step-ahead (predictive) state probabilities
-            - 'predictive_posterior': one-step-ahead posterior over state bins
-            - 'log_likelihood': per-timepoint log likelihoods
-            - 'all': all outputs above
-            - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
-
-            A name adds the same outputs alone or in a list or set; ask for
-            both predictive outputs with ['predictive', 'predictive_posterior'].
-            acausal_state_probabilities and marginal_log_likelihood are always
-            included; acausal_posterior is included except in checkpointed
-            compact output. Compact output holds state probabilities only, so
-            'log_likelihood' and 'predictive_posterior' (and 'all') require
-            output_mode='spatial'.
-
-            When to use each output:
-            - 'filter': Online/causal decoding, debugging forward pass
-            - 'predictive': Model evaluation, predictive checks of the states
-            - 'predictive_posterior': Predictive checks over position
-            - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
-
-            Memory warning: 'log_likelihood', 'filter' and 'predictive_posterior'
-            hold (n_time, n_state_bins) arrays, which can be very large (~400 GB
-            for 1M timepoints × 100k spatial bins). Use checkpointed compact mode
-            to bound spatial memory.
-
         inference_mode : {"dense", "checkpointed"}, optional
             By default "dense", the in-memory driver. "checkpointed" stores
             boundary messages on disk and replays chunks for exact smoothing;
@@ -3927,6 +3900,36 @@ class ClusterlessDetector(_DetectorBase):
             them. Chunks beyond the budget are recomputed. By default None,
             which uses 16 GiB or half the available host memory, whichever is
             smaller.
+        return_outputs : str, collection of str, or None, optional
+            Controls which optional outputs are returned.
+
+            Options:
+            - None: smoother only (default, minimal memory)
+            - 'filter': filtered (causal) posterior and state probabilities
+            - 'predictive': one-step-ahead (predictive) state probabilities
+            - 'predictive_posterior': one-step-ahead posterior over state bins
+            - 'log_likelihood': per-timepoint log likelihoods
+            - 'all': all outputs above
+            - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
+
+            A name adds the same outputs alone or in a list or set; ask for
+            both predictive outputs with ['predictive', 'predictive_posterior'].
+            acausal_state_probabilities and marginal_log_likelihood are always
+            included; acausal_posterior is included except in checkpointed
+            compact output. Compact output holds state probabilities only, so
+            'log_likelihood' and 'predictive_posterior' (and 'all') require
+            output_mode='spatial'.
+
+            When to use each output:
+            - 'filter': Online/causal decoding, debugging forward pass
+            - 'predictive': Model evaluation, predictive checks of the states
+            - 'predictive_posterior': Predictive checks over position
+            - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
+
+            Memory warning: 'log_likelihood', 'filter' and 'predictive_posterior'
+            hold (n_time, n_state_bins) arrays, which can be very large (~400 GB
+            for 1M timepoints × 100k spatial bins). Use checkpointed compact mode
+            to bound spatial memory.
 
         Returns
         -------
@@ -3958,14 +3961,19 @@ class ClusterlessDetector(_DetectorBase):
         --------
         Get only smoother (default, minimal memory):
 
-        >>> results = model.predict(spike_times, time_edges=time_edges)
+        >>> results = model.predict(
+        ...     spike_times, spike_waveform_features, time_edges=time_edges
+        ... )
         >>> results.acausal_posterior.shape
         (10000, 50000)
 
         Include filtered posterior for online decoding:
 
         >>> results = model.predict(
-        ...     spike_times, time_edges=time_edges, return_outputs='filter'
+        ...     spike_times,
+        ...     spike_waveform_features,
+        ...     time_edges=time_edges,
+        ...     return_outputs='filter',
         ... )
         >>> results.causal_posterior.shape
         (10000, 50000)
@@ -3973,14 +3981,19 @@ class ClusterlessDetector(_DetectorBase):
         Get multiple outputs for analysis:
 
         >>> results = model.predict(
-        ...     spike_times, time_edges=time_edges,
-        ...     return_outputs=['filter', 'predictive']
+        ...     spike_times,
+        ...     spike_waveform_features,
+        ...     time_edges=time_edges,
+        ...     return_outputs=['filter', 'predictive'],
         ... )
 
         Get everything for debugging:
 
         >>> results = model.predict(
-        ...     spike_times, time_edges=time_edges, return_outputs='all'
+        ...     spike_times,
+        ...     spike_waveform_features,
+        ...     time_edges=time_edges,
+        ...     return_outputs='all',
         ... )
         """
         return self._predict_spikes(
@@ -4049,8 +4062,9 @@ class ClusterlessDetector(_DetectorBase):
         spike_times : list of np.ndarray, len (n_electrodes,)
             One 1-D array of spike times per electrode, in seconds; NaN or
             infinite times raise ``DataError``.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
@@ -4233,18 +4247,19 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : array_like, shape (n_time_position,), optional
-            Time points for position data.
-        position : array_like, shape (n_time_position, n_position_dims), optional
-            Position data.
         spike_times : list of np.ndarray, len (n_electrodes,)
             One 1-D array of spike times per electrode, in seconds; NaN or
             infinite times raise ``DataError``.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
+        position : array_like, shape (n_time_position, n_position_dims), optional
+            Position data.
+        position_time : array_like, shape (n_time_position,), optional
+            Time points for position data.
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
@@ -4672,6 +4687,33 @@ class SortedSpikesDetector(_DetectorBase):
         """
         Compute the log likelihood for the given data.
 
+        Parameters
+        ----------
+        position_time : array_like, shape (n_time_position,), or None
+            Time points for position data.
+        position : array_like, shape (n_time_position, n_position_dims), or None
+            Position data.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        is_missing : array_like of bool, shape (n_rows,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            requested decode bin, by default None.
+        row_slice : slice | None, optional
+            Contiguous range of rows of the full-time likelihood to compute, by
+            default None (all rows). ``time_edges`` stay the FULL decoding edges,
+            so a decoding spike is owned by its global row no matter how the
+            rows were chunked, and the result equals the full-time likelihood
+            sliced by ``row_slice``.
+        time_edges : array_like, shape (n_bins + 1,)
+            Uniform decode bin edges. Results have one row per bin, at the
+            bin centers.
+
+        Returns
+        -------
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
+            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
+
         Notes
         -----
         When ``local_position_std`` is set, the per-bin value returned
@@ -4701,33 +4743,6 @@ class SortedSpikesDetector(_DetectorBase):
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
         — they include the kernel and mass-balance terms.
-
-        Parameters
-        ----------
-        time_edges : array_like, shape (n_bins + 1,)
-            Uniform decode bin edges. Results have one row per bin, at the
-            bin centers.
-        position_time : array_like, shape (n_time_position,), or None
-            Time points for position data.
-        position : array_like, shape (n_time_position, n_position_dims), or None
-            Position data.
-        spike_times : list of np.ndarray, len (n_neurons,)
-            One 1-D array of spike times per neuron, in seconds; NaN or
-            infinite times raise ``DataError``.
-        is_missing : array_like of bool, shape (n_rows,), optional
-            True (or 1) for the bins to decode as missing, one entry per
-            requested decode bin, by default None.
-        row_slice : slice | None, optional
-            Contiguous range of rows of the full-time likelihood to compute, by
-            default None (all rows). ``time_edges`` stay the FULL decoding edges,
-            so a decoding spike is owned by its global row no matter how the
-            rows were chunked, and the result equals the full-time likelihood
-            sliced by ``row_slice``.
-
-        Returns
-        -------
-        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
-            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         return self._compute_spike_log_likelihood(
             position_time,
@@ -4790,10 +4805,6 @@ class SortedSpikesDetector(_DetectorBase):
             chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1.
-        return_outputs : str, collection of str, or None, optional
-            Controls which optional outputs are returned. See ClusterlessDetector.predict
-            for full documentation. By default None.
-
         inference_mode : {"dense", "checkpointed"}, optional
             By default "dense", the in-memory driver. "checkpointed" stores
             boundary messages on disk and replays chunks for exact smoothing;
@@ -4828,6 +4839,9 @@ class SortedSpikesDetector(_DetectorBase):
             them. Chunks beyond the budget are recomputed. By default None,
             which uses 16 GiB or half the available host memory, whichever is
             smaller.
+        return_outputs : str, collection of str, or None, optional
+            Controls which optional outputs are returned. See ClusterlessDetector.predict
+            for full documentation. By default None.
 
         Returns
         -------
@@ -4893,10 +4907,10 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
-            Time of each position sample.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data, by default None.
+        position_time : array_like, shape (n_time_position,)
+            Time points for position data.
+        position : array_like, shape (n_time_position, n_position_dims)
+            Position data.
         spike_times : list of np.ndarray, len (n_neurons,)
             One 1-D array of spike times per neuron, in seconds; NaN or
             infinite times raise ``DataError``.
@@ -5019,8 +5033,8 @@ class SortedSpikesDetector(_DetectorBase):
 
         Returns
         -------
-        xr.Dataset
-            Results of the decoding
+        results : xr.Dataset
+            Results of the decoding.
 
         Notes
         -----
@@ -5082,16 +5096,16 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : array_like, shape (n_time_position,), optional
-            Time of each position sample.
-        position : array_like, shape (n_time_position, n_position_dims), optional
-            Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
             One 1-D array of spike times per neuron, in seconds; NaN or
             infinite times raise ``DataError``.
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
+        position : array_like, shape (n_time_position, n_position_dims), optional
+            Position data, by default None.
+        position_time : array_like, shape (n_time_position,), optional
+            Time of each position sample.
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
