@@ -595,7 +595,9 @@ class TransitionOperator(TransitionProducts, Protocol):
         )
 
 
-def _state_one_hot(state_ind: ConcreteArray, n_states: int, dtype: Any) -> jax.Array:
+def _state_one_hot(
+    state_ind: ConcreteArray, n_states: int, dtype: DTypeLike
+) -> jax.Array:
     """One-hot discrete-state membership of each state bin.
 
     Parameters
