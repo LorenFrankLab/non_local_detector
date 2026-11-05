@@ -8,6 +8,7 @@ Verifies:
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from non_local_detector.discrete_state_transitions import (
@@ -225,19 +226,29 @@ def test_fitting_covariate_transitions_without_covariates_raises(
 
 
 @pytest.mark.unit
-def test_estimating_with_covariates_off_the_decode_grid_raises(checkpoint_recording):
+@pytest.mark.parametrize("container", [dict, pd.DataFrame])
+def test_estimating_with_covariates_off_the_decode_grid_raises(
+    checkpoint_recording, container, monkeypatch
+):
     """EM's covariates have one row per decode bin; another count raises before
-    EM starts and leaves the detector as it was."""
+    the internal fit and leaves the detector as it was."""
     model, fit, predict = checkpoint_recording("sorted")
     model.discrete_transition_type = DiscreteNonStationaryDiagonal(
         np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
     )
     n_decode = len(predict["time_edges"]) - 1
+
+    def unexpected_fit(*args, **kwargs):
+        pytest.fail("covariate rows must be checked before the internal fit")
+
+    monkeypatch.setattr(model, "fit", unexpected_fit)
     with pytest.raises(ValidationError, match="one per decode bin"):
         model.estimate_parameters(
             **fit,
             time_edges=predict["time_edges"],
-            discrete_transition_covariate_data={"speed": np.zeros(n_decode - 1)},
+            discrete_transition_covariate_data=container(
+                {"speed": np.zeros(n_decode - 1)}
+            ),
             max_iter=1,
         )
     assert not hasattr(model, "discrete_state_transitions_")

@@ -1110,14 +1110,16 @@ def _warn_if_off_grid(
 
 
 def _validate_covariate_time_length(
-    predicted_transitions: np.ndarray, time: np.ndarray
+    covariate_rows: np.ndarray, time: np.ndarray
 ) -> None:
-    """Validate that covariate-derived transitions match decode time length.
+    """Validate that covariates have one row per decode bin.
 
     Parameters
     ----------
-    predicted_transitions : np.ndarray, shape (n_covariate_time, n_states, n_states)
-        Covariate-derived discrete transition matrices, one per time step.
+    covariate_rows : np.ndarray, shape (n_covariate_time, ...)
+        One row per covariate time step: the covariate-derived discrete
+        transition matrices, shape (n_covariate_time, n_states, n_states), or
+        one covariate.
     time : np.ndarray, shape (n_bins,)
         Decode bin centers.
 
@@ -1126,7 +1128,7 @@ def _validate_covariate_time_length(
     ValidationError
         If the number of covariate time steps does not match decode time.
     """
-    n_covariate_time = predicted_transitions.shape[0]
+    n_covariate_time = covariate_rows.shape[0]
     n_decode_time = len(time)
     if n_covariate_time != n_decode_time:
         msg = (
