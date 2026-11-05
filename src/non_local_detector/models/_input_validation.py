@@ -292,6 +292,48 @@ def _sample_labels(
     return labels
 
 
+def _require_labeled_environments(
+    environment_labels: np.ndarray, names: Sequence[str]
+) -> None:
+    """Raise unless ``environment_labels`` label a sample with every environment.
+
+    Parameters
+    ----------
+    environment_labels : np.ndarray, shape (n_time_position,)
+        Label of each position sample.
+    names : sequence of str
+        The ``environment_name`` of each environment.
+
+    Raises
+    ------
+    ValidationError
+        If an environment labels no sample.
+    """
+    missing = [name for name in names if not np.any(environment_labels == name)]
+    if not missing:
+        return
+    # str first: unlabeled samples (None, NaN) do not sort with names.
+    labels = sorted({str(label) for label in environment_labels})
+    unmatched = [label for label in labels if label not in names]
+    msg = (
+        f"No position sample is labeled with environment(s) {missing} "
+        "in environment_labels, so their place grids cannot be fitted"
+    )
+    raise ValidationError(
+        msg,
+        expected=f"labels naming the environments {names}",
+        got=f"labels {labels[:10]}"
+        + (f" (of {len(labels)})" if len(labels) > 10 else ""),
+        hint=(
+            f"The labels {unmatched[:10]} match no environment_name. "
+            if unmatched
+            else ""
+        )
+        + "Label each position sample with the environment_name of "
+        "the environment it was recorded in.",
+    )
+
+
 def _validate_spike_structure(
     spike_times: Sequence[Any],
     spike_waveform_features: Sequence[Any] | None,
