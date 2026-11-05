@@ -14,6 +14,7 @@ from non_local_detector import (
     ContFragSortedSpikesClassifier,
     Environment,
     NonLocalSortedSpikesDetector,
+    ObservationModel,
     time_edges_from_centers,
 )
 from non_local_detector.continuous_state_transitions import _make_transition_block
@@ -295,3 +296,24 @@ def test_block_between_one_bin_states_has_no_bins_to_check():
 
     _, _, environment = _gapped_recording()
     assert _make_transition_block(OneBin(), [environment], None, (1, 1)).shape == (1, 1)
+
+
+def test_encoding_groups_may_mix_strings_and_integers(sorted_sim):
+    """Each group is fit once, in the order the states name them."""
+    time, position, spike_times = sorted_sim
+    n_time = len(time)
+    labels = np.array([0] * (n_time // 2) + ["A"] * (n_time - n_time // 2), object)
+    detector = ContFragSortedSpikesClassifier(
+        sorted_spikes_algorithm=_ALGORITHM,
+        sorted_spikes_algorithm_params=_FIT_PARAMS,
+        environments=Environment(place_bin_size=10.0),
+        sampling_frequency=SORTED_SIM_RATE,
+        observation_models=[
+            ObservationModel(encoding_group=0),
+            ObservationModel(encoding_group="A"),
+        ],
+    ).fit(time, position, spike_times, encoding_group_labels=labels)
+
+    assert list(detector.encoding_model_) == [("", 0), ("", "A")]
+    results = detector.predict(**_decode_kwargs(sorted_sim))
+    assert np.all(np.isfinite(results.acausal_state_probabilities.values))

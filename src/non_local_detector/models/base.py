@@ -2966,21 +2966,19 @@ class _DetectorBase(
         encoding_model: dict[tuple[Any, ...], Any] = {}
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
-        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
-        # ``ObservationModel`` equality now distinguishes those flags,
-        # ``np.unique`` can return several entries that map to the same
-        # ``likelihood_name`` — fit each key once to avoid redundant work.
-        fitted_likelihood_names: set[tuple[Any, ...]] = set()
-        for obs in np.unique(cast("Any", self.observation_models)):
-            likelihood_name = (obs.environment_name, obs.encoding_group)
-            if likelihood_name in fitted_likelihood_names:
-                continue
-            fitted_likelihood_names.add(likelihood_name)
+        # ``is_local`` / ``is_no_spike`` do not affect the fit, so each key is
+        # fit once. The keys are not sorted: an encoding group may be a string
+        # or an integer, and those do not compare.
+        likelihood_names = dict.fromkeys(
+            (obs.environment_name, obs.encoding_group)
+            for obs in self.observation_models
+        )
+        for likelihood_name in likelihood_names:
+            environment_name, encoding_group = likelihood_name
+            environment = self._get_environment_by_name(environment_name)
 
-            environment = self._get_environment_by_name(obs.environment_name)
-
-            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
+            is_encoding = np.isin(encoding_group_labels, encoding_group)
+            is_environment = environment_labels == environment_name
             is_group = is_training & is_encoding & is_environment
             # The mask is this model's exposure: a sample outside the selection
             # must contribute no occupancy, because only in-group spikes are
