@@ -155,7 +155,8 @@ _REBUILT = frozenset(
 )
 # Not part of a model: the pending rebuild check of a loaded detector.
 _NOT_SAVED = frozenset({"_rebuild_check_"})
-# Every fitted detector has these.
+# What writing a fitted detector reads; ``_required_state_names`` gives what the
+# file must hold.
 _REQUIRED = ("environments_", "encoding_model_", "state_space_")
 
 # A rebuilt structure (continuous transition blocks, environment grids and
@@ -760,6 +761,14 @@ def detector_documents(
     state["fingerprints"] = encoder.encode(
         _structure_fingerprints(detector, blocks), "fingerprints"
     )
+    missing = sorted(_required_state_names(state, config) - set(state))
+    if missing:
+        msg = f"Cannot save a partly fitted detector (it has no {missing})"
+        raise NotFittedError(
+            msg,
+            hint="load_model would refuse the file. Refit the detector; one "
+            "pickled by an earlier release lacks what the format stores.",
+        )
     return _manifest(spec, writer), config, state
 
 
@@ -881,10 +890,13 @@ def _rebuild_discrete(
     initial = detector.discrete_transition_type.make_state_transition(covariate_data)
     design = initial.design_matrix
     coefficients = detector.discrete_transition_coefficients_
-    # A covariate-dependent transition has a design and coefficients.
-    assert design is not None
-    assert coefficients is not None
-    assert initial.coefficients is not None
+    if design is None or coefficients is None or initial.coefficients is None:
+        msg = (
+            "The saved model stores transition covariates, but its "
+            "discrete_transition_type builds no design from them or it stores "
+            "no coefficients"
+        )
+        raise DataError(msg, hint=_CORRUPT_HINT)
     detector.discrete_transition_design_matrix_ = design
     detector.discrete_transition_smoothness_matrix_ = _smoothness_matrix(
         design.design_info
@@ -1027,6 +1039,32 @@ _FINGERPRINT_FIELDS = frozenset(
 _CORRUPT_HINT = "The file is corrupt or was edited."
 
 
+def _required_state_names(state: Any, config: Any) -> set[str]:
+    """Return the names state.json of a fitted model must hold.
+
+    Parameters
+    ----------
+    state : dict
+        The state document.
+    config : dict
+        The config document.
+
+    Returns
+    -------
+    names : set of str
+        ``_FITTED_STATE``, every ``_STORED`` name but ``_OPTIONAL_STORED``,
+        and the names its kind of model adds (see ``_FITTED_STATE``).
+    """
+    required = {*_FITTED_STATE} | {
+        name for name, _ in _STORED if name not in _OPTIONAL_STORED
+    }
+    if state.get("discrete_transition_covariate_data") is None:
+        required.add("discrete_state_transitions")
+    if isinstance(config, dict) and "clusterless_algorithm" in config:
+        required.add("mark_reference")
+    return required
+
+
 def check_documents(stored: StoredModel) -> None:
     """Raise ``DataError`` unless a saved model's documents hold what it needs.
 
@@ -1059,13 +1097,7 @@ def check_documents(stored: StoredModel) -> None:
     if not state["fitted"]:
         required = allowed = {"fitted"}
     else:
-        required = {*_FITTED_STATE} | {
-            name for name, _ in _STORED if name not in _OPTIONAL_STORED
-        }
-        if state.get("discrete_transition_covariate_data") is None:
-            required.add("discrete_state_transitions")
-        if isinstance(config, dict) and "clusterless_algorithm" in config:
-            required.add("mark_reference")
+        required = _required_state_names(state, config)
         allowed = required | _OPTIONAL_STORED | {"discrete_state_transitions"}
     ignore_unread_names("state.json", set(state) - allowed)
     missing = sorted(required - set(state))

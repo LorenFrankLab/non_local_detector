@@ -197,6 +197,16 @@ def test_a_partly_fitted_detector_is_not_saved(fitted, tmp_path):
         fitted.save_model(tmp_path / "model.nld")
 
 
+def test_a_detector_without_a_stored_name_is_not_saved(fitted, tmp_path):
+    """Every name ``load_model`` requires is required at save."""
+    path = tmp_path / "model.nld"
+    del fitted.transition_time_bin_width_
+
+    with pytest.raises(NotFittedError, match="transition_time_bin_width"):
+        fitted.save_model(path)
+    assert not path.exists()
+
+
 def test_an_attribute_the_format_does_not_hold_is_refused(fitted, tmp_path):
     fitted.my_extra_result_ = np.ones(3)
 
@@ -383,3 +393,34 @@ def test_an_all_zero_rebuilt_block_is_refused(saved, sorted_recording, monkeypat
         ValidationError, match="continuous transition from state 2 to 2"
     ):
         decode(loaded, time, position, {"spike_times": spike_times})
+
+
+def test_stored_covariates_without_a_covariate_transition_are_refused(
+    sorted_recording, tmp_path
+):
+    """Covariates need a transition that builds a design from them."""
+    time, position, spike_times = sorted_recording
+    detector = nld.NonLocalSortedSpikesDetector(
+        discrete_transition_type=nld.DiscreteNonStationaryDiagonal(
+            diagonal_values=np.full(4, 0.98), formula="1 + speed"
+        ),
+        sampling_frequency=SORTED_RATE,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+    ).fit(
+        time,
+        position,
+        spike_times,
+        discrete_transition_covariate_data={"speed": np.linspace(0.0, 5.0, len(time))},
+    )
+    path = tmp_path / "model.nld"
+    detector.save_model(path)
+
+    def make_stationary(config):
+        node = config["discrete_transition_type"]
+        node["$type"] = "nld.DiscreteStationaryDiagonal"
+        del node["state"]["formula"], node["state"]["smoothness"]
+
+    _edit_json(path, "config.json", make_stationary)
+
+    with pytest.raises(DataError, match="discrete_transition_type"):
+        nld.NonLocalSortedSpikesDetector.load_model(path)

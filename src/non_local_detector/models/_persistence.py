@@ -358,7 +358,9 @@ class _PersistenceMixin:
             ``continuous_transition_types`` or ``local_position_std`` changed
             after it was fitted (``set_params``).
         NotFittedError
-            If the detector is only partly fitted.
+            If the detector is only partly fitted, or lacks what ``load_model``
+            requires of a fitted file, as one pickled by an earlier release
+            can; refit it.
         """
         from non_local_detector.model_format._detector import save_detector
 
