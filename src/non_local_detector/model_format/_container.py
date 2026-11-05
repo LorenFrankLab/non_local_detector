@@ -291,7 +291,7 @@ class _Archive:
             raise DataError(msg)
         try:
             return json.loads(self.read(name))
-        except ValueError:
+        except (ValueError, RecursionError):  # nested too deeply to parse
             msg = f"The {name} member of the saved model is not valid JSON"
             raise DataError(msg, hint="The file is corrupt or was edited.") from None
 

@@ -10,6 +10,8 @@ JSON object:
     that were different objects share the member but not the object.
 ``{"$fill": value, "dtype": str, "shape": [...], "ref": n, "jax": bool}``
     A floating array whose every element is 1 (sample weights, by default).
+    No member holds it, so the archive's member-size checks do not bound
+    its size.
 ``{"$ragged": {"data": node, "offsets": node}, "ref": n, "jax": bool}``
     A list of arrays with one dtype and trailing shape (one per neuron or
     electrode), concatenated along the first axis; item ``i`` is

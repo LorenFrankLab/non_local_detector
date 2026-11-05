@@ -1040,8 +1040,9 @@ def data_errors(action: str) -> Iterator[None]:
     """Raise the built-in errors of reading a saved model as ``DataError``.
 
     ``KeyError``, ``IndexError``, ``TypeError`` and ``ValueError`` from a
-    missing or malformed entry become ``DataError``, chained to the
-    original; package errors pass through unchanged.
+    missing or malformed entry, and ``RecursionError`` from one nested too
+    deeply to decode, become ``DataError``, chained to the original; package
+    errors pass through unchanged.
 
     Parameters
     ----------
@@ -1052,7 +1053,7 @@ def data_errors(action: str) -> Iterator[None]:
         yield
     except NonLocalDetectorError:
         raise
-    except (KeyError, IndexError, TypeError, ValueError) as error:
+    except (KeyError, IndexError, TypeError, ValueError, RecursionError) as error:
         msg = f"Cannot {action} the saved model ({type(error).__name__}: {error})"
         raise DataError(msg, hint=_CORRUPT_HINT) from error
 

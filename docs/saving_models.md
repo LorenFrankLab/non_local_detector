@@ -115,7 +115,9 @@ at most 32 calls.
 By default, loading never runs code from a `.nld` file. A crafted file can
 still make loading or decoding slow or memory-hungry, for example with a
 formula whose spline terms interact into a very large design, which these
-limits do not prevent. Load files from untrusted sources with care.
+limits do not prevent, or with an array of ones, which a file stores as its
+dtype and shape alone (`$fill`), so the archive's checks on each member's
+size do not bound it. Load files from untrusted sources with care.
 
 A file whose formula is outside the grammar loads for inspection only:
 `load_model` warns, naming the formula, and does not call patsy, so the design
