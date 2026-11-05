@@ -11,7 +11,11 @@ import numpy as np
 import pytest
 
 import non_local_detector as nld
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    DataQualityWarning,
+    ValidationError,
+)
 from non_local_detector.model_format import _registry, register_type
 from non_local_detector.model_format._codec import Decoder
 from tests.model_format.conftest import algorithm_params
@@ -50,12 +54,13 @@ def test_missing_fitted_flag_is_a_data_error(saved):
         nld.NonLocalSortedSpikesDetector.load_model(saved)
 
 
-def test_unknown_config_key_points_to_a_different_package_version(saved):
+def test_unknown_config_key_is_ignored_naming_a_newer_version(saved):
     _edit_json(saved, "config.json", lambda config: config.update(not_a_param=1))
 
-    with pytest.raises(DataError, match="not_a_param") as info:
-        nld.NonLocalSortedSpikesDetector.load_model(saved)
-    assert "version" in str(info.value)
+    with pytest.warns(DataQualityWarning, match="not_a_param") as info:
+        detector = nld.NonLocalSortedSpikesDetector.load_model(saved)
+    assert "newer version" in str(info[0].message)
+    assert "not_a_param" not in detector.get_params()
 
 
 @pytest.mark.parametrize(
