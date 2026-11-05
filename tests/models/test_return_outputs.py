@@ -1,7 +1,7 @@
 """Tests for the return_outputs parameter in model predict() methods.
 
-Tests the new string-based interface for controlling which outputs are returned
-from predict() methods, as well as backward compatibility with the old boolean flags.
+Tests the string-based interface for controlling which outputs are returned
+from predict() methods, and that the removed boolean output flags are rejected.
 """
 
 import numpy as np
