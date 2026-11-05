@@ -16,6 +16,39 @@ from non_local_detector.exceptions import DataError, DataQualityWarning, Validat
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
 
 
+def parse_tracking_intervals(
+    valid_position_intervals: ArrayLike,
+) -> NDArray[np.float64]:
+    """Validate ``valid_position_intervals`` and return them as a float array.
+
+    Parameters
+    ----------
+    valid_position_intervals : array_like, shape (n_intervals, 2)
+        Ordered, non-overlapping ``(start, stop)`` intervals in seconds.
+
+    Returns
+    -------
+    intervals : np.ndarray, shape (n_intervals, 2)
+
+    Raises
+    ------
+    ValidationError
+        If the shape is wrong or the intervals overlap or are out of order.
+    DataError
+        If an interval is not finite and increasing.
+    """
+    intervals = np.asarray(valid_position_intervals, dtype=float)
+    if intervals.ndim != 2 or intervals.shape[1] != 2:
+        msg = "valid_position_intervals must have shape (n_intervals, 2)"
+        raise ValidationError(msg)
+    for interval in intervals:
+        validate_time_edges(interval, name="valid_position_intervals")
+    if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
+        msg = "valid_position_intervals must be ordered and non-overlapping"
+        raise ValidationError(msg)
+    return intervals
+
+
 class EncodingSupport:
     """Interpolation segments and integrals of their sample basis functions.
 
@@ -104,15 +137,7 @@ class EncodingSupport:
         self.indices = np.flatnonzero(finite)
         intervals = None
         if valid_position_intervals is not None:
-            intervals = np.asarray(valid_position_intervals, dtype=float)
-            if intervals.ndim != 2 or intervals.shape[1] != 2:
-                msg = "valid_position_intervals must have shape (n_intervals, 2)"
-                raise ValidationError(msg)
-            for interval in intervals:
-                validate_time_edges(interval, name="valid_position_intervals")
-            if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
-                msg = "valid_position_intervals must be ordered and non-overlapping"
-                raise ValidationError(msg)
+            intervals = parse_tracking_intervals(valid_position_intervals)
             for start, stop in intervals:
                 if not np.any(finite & (time >= start) & (time <= stop)):
                     msg = "Each valid_position_intervals segment needs a finite position sample"
