@@ -123,6 +123,7 @@ from non_local_detector.models._input_validation import (
     _InputValidationMixin,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
+    _numeric_spike_times_list,
     _require_sampling_frequency_width,
     _sample_mask,
     _sample_times,
@@ -1958,9 +1959,30 @@ class _DetectorBase(
             check_extent=check_extent,
         )
 
+    def _numeric_spike_data(self, spike_data: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Return the spike arrays with ``spike_times`` as numeric arrays.
+
+        Fitting reads the spike times with ``np.interp``, which rejects
+        object-dtype arrays that decoding reads as float.
+
+        Parameters
+        ----------
+        spike_data : tuple
+            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+
+        Returns
+        -------
+        tuple
+            ``spike_data`` with the first entry converted.
+        """
+        spike_times = _numeric_spike_times_list(
+            spike_data[0], clusterless=isinstance(self, ClusterlessDetector)
+        )
+        return (spike_times, *spike_data[1:])
+
     def _check_encoding_spike_data(
         self, position_time: ArrayLike, spike_data: tuple[Any, ...]
-    ) -> None:
+    ) -> tuple[Any, ...]:
         """Check encoding spike data; warn if they look like other units or another clock.
 
         Warns if all lie far to one side of the position_time span, or if
@@ -1973,6 +1995,11 @@ class _DetectorBase(
             Times of the position samples, in seconds.
         spike_data : tuple
             The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+
+        Returns
+        -------
+        tuple
+            The spike arrays with ``spike_times`` as numeric arrays.
         """
         times = _sample_times(position_time)
         finite = times[np.isfinite(times)]
@@ -1984,6 +2011,7 @@ class _DetectorBase(
             range_name="position_time span",
             check_extent=True,
         )
+        return self._numeric_spike_data(spike_data)
 
     def _check_decode_spike_data(
         self, time_edges: np.ndarray, spike_data: tuple[Any, ...]
@@ -2577,6 +2605,7 @@ class _DetectorBase(
         position_time, position = inputs.position_time, inputs.position
         # The internal fit warns if every spike lies outside the position_time span.
         self._check_spike_data(spike_data)
+        spike_data = self._numeric_spike_data(spike_data)
         position = position[:, np.newaxis] if position.ndim == 1 else position
         # Mirror predict(): bins without tracked position are missing
         # observations in the E-step.
@@ -3441,7 +3470,7 @@ class ClusterlessDetector(_DetectorBase):
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
-        self._check_encoding_spike_data(
+        spike_times, spike_waveform_features = self._check_encoding_spike_data(
             position_time, (spike_times, spike_waveform_features)
         )
         self._fit_encoding_model(
@@ -4468,7 +4497,7 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
-        self._check_encoding_spike_data(position_time, (spike_times,))
+        (spike_times,) = self._check_encoding_spike_data(position_time, (spike_times,))
         self._fit_encoding_model(
             position_time,
             position,
