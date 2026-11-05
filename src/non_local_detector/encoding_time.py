@@ -19,8 +19,10 @@ from non_local_detector.time_edges import uniform_time_bin_width, validate_time_
 class EncodingSupport:
     """Interpolation segments and integrals of their sample basis functions.
 
-    ``encoding_time_range`` clips acquisition support without redefining the
-    original interpolation basis. ``valid_position_intervals`` declares
+    ``encoding_time_range`` replaces the outer bounds of the support: inside
+    the samples it clips without redefining the original interpolation basis,
+    and past them it extends the support, holding position at the first or last
+    sample. ``valid_position_intervals`` declares
     disconnected tracking segments; their endpoints are held constant.
     Uniform samples default to supported endpoint half-cells. NaN positions
     inside a tracking segment split its original timeline before acquisition
@@ -39,8 +41,9 @@ class EncodingSupport:
         Position at each sample. Rows with a NaN coordinate are treated as
         missing and split the interpolation segment.
     encoding_time_range : array_like, shape (2,), optional
-        ``(start, stop)`` in seconds clipping the acquisition support. By
-        default None, which uses the span of ``valid_position_intervals`` or,
+        ``(start, stop)`` in seconds of the acquisition support, which clips
+        the tracking and extends past its first or last sample. By default
+        None, which uses the span of ``valid_position_intervals`` or,
         for uniform samples, the first and last sample extended by half a
         sample.
     valid_position_intervals : array_like, shape (n_intervals, 2), optional
@@ -407,7 +410,7 @@ def prepare_encoding_support(
         Dimensionless weight of each sample, or None for all ones. Weights of
         samples with a non-finite position are set to zero.
     encoding_time_range : array_like, shape (2,), optional
-        ``(start, stop)`` in seconds clipping the acquisition support. See
+        ``(start, stop)`` in seconds of the acquisition support. See
         :class:`EncodingSupport`.
     valid_position_intervals : array_like, shape (n_intervals, 2), optional
         Continuous tracking intervals in seconds. See

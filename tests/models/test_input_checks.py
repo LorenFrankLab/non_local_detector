@@ -335,3 +335,62 @@ class TestNoSpikesInsideThePositionSpan:
         )
 
         assert len(messages) == 1
+
+
+class TestEncodingTimeRangePastTheTracking:
+    """A range past the samples extends support: the end samples are held."""
+
+    MESSAGE = "past the position samples"
+
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_fit_warns_once(self, family, recording):
+        time, position, spikes, marks = recording
+        keep = (time >= 20.0) & (time < 40.0)
+        detector = _detector(family)
+
+        _, messages = _quality_warnings(
+            lambda: detector.fit(
+                time[keep],
+                position[keep],
+                *_spike_data(family, spikes, marks),
+                encoding_time_range=[time[0], time[-1]],
+            ),
+            self.MESSAGE,
+        )
+
+        assert len(messages) == 1
+
+    def test_range_within_one_sample_of_the_tracking_is_fine(self, recording):
+        time, position, spikes, _ = recording
+        interval = 1.0 / RATE
+        _no_quality_warnings(
+            lambda: _sorted().fit(
+                time,
+                position,
+                spikes,
+                encoding_time_range=[time[0] - interval, time[-1] + interval],
+            )
+        )
+
+    def test_range_inside_the_tracking_is_fine(self, recording):
+        time, position, spikes, _ = recording
+        _no_quality_warnings(
+            lambda: _sorted().fit(
+                time, position, spikes, encoding_time_range=[10.0, 50.0]
+            )
+        )
+
+    def test_declared_tracking_intervals_do_not_extend_to_the_range(self, recording):
+        """Intervals, not the range, then bound the support."""
+        time, position, spikes, _ = recording
+        keep = (time >= 20.0) & (time < 40.0)
+        tracked = [[time[keep][0], time[keep][-1]]]
+        _no_quality_warnings(
+            lambda: _sorted().fit(
+                time[keep],
+                position[keep],
+                spikes,
+                encoding_time_range=[time[0], time[-1]],
+                valid_position_intervals=tracked,
+            )
+        )

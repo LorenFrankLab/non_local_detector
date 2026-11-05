@@ -1450,6 +1450,56 @@ def _warn_if_off_grid(
     )
 
 
+def _warn_if_range_passes_tracking(
+    position_time: np.ndarray,
+    encoding_time_range: ArrayLike | None,
+    valid_position_intervals: ArrayLike | None,
+) -> None:
+    """Warn when ``encoding_time_range`` reaches well past the position samples.
+
+    Encoding support then extends to the range, holding position at the first
+    or last sample, so that one sample takes all the exposure and spikes of the
+    extra time. Declared tracking intervals bound the support themselves.
+
+    Parameters
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing (``EncodingSupport`` checked).
+    encoding_time_range : array_like, shape (2,), or None
+        ``(start, stop)`` in seconds.
+    valid_position_intervals : array_like, shape (n_intervals, 2), or None
+        Declared tracking intervals.
+
+    Warns
+    -----
+    DataQualityWarning
+        If the range passes the samples by over one sample interval.
+    """
+    if (
+        encoding_time_range is None
+        or valid_position_intervals is not None
+        or position_time.size < 2
+    ):
+        return
+    start, stop = np.asarray(encoding_time_range, dtype=float)
+    excess = max(position_time[0] - start, stop - position_time[-1])
+    sample_interval = float(np.median(np.diff(position_time)))
+    if excess <= sample_interval + _uniformity_tolerance(
+        position_time, sample_interval
+    ):
+        return
+    warnings.warn(
+        f"encoding_time_range [{start:.6g}, {stop:.6g}] s reaches {excess:.3g} s "
+        f"past the position samples [{position_time[0]:.6g}, "
+        f"{position_time[-1]:.6g}] s. Encoding support extends to the range, "
+        "holding position at the first or last sample, so that sample takes all "
+        "the exposure and spikes of the extra time. Pass the tracked period as "
+        "encoding_time_range, or spikes and position of the same period.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
 def _require_position_columns(
     position: np.ndarray, environments: Sequence[Environment]
 ) -> None:
@@ -1770,6 +1820,12 @@ class _InputValidationMixin:
                 cast("ArrayLike", position),
                 encoding_time_range=encoding_time_range,
                 valid_position_intervals=valid_position_intervals,
+            )
+        if stage == "encoding":
+            _warn_if_range_passes_tracking(
+                cast("np.ndarray", position_time),
+                encoding_time_range,
+                valid_position_intervals,
             )
         if stage in ("decode", "estimate"):
             is_missing = _missing_bins(
