@@ -1031,7 +1031,8 @@ class _EMMixin:
                 hint="Call estimate_parameters, which passes its data, or pass "
                 "estimate_encoding_model=False.",
             )
-        checkpointed = self.state_space_.transition_operator is not None
+        state_space = self.state_space_
+        checkpointed = state_space.transition_operator is not None
         _validate_em_options(
             structured=checkpointed,
             n_chunks=n_chunks,
@@ -1046,7 +1047,7 @@ class _EMMixin:
         if checkpointed:
             if chunk_size is None:
                 chunk_size = default_chunk_size(
-                    cast("int", np.count_nonzero(self.is_track_interior_state_bins_)),
+                    cast("int", np.count_nonzero(state_space.is_track_interior)),
                     np.float32,
                 )
             if replay_cache_bytes is None:
@@ -1064,7 +1065,7 @@ class _EMMixin:
             if n_chunks == 1:
                 _warn_if_dense_em_exceeds_memory(
                     len(time_edges) - 1,
-                    int(np.count_nonzero(self.is_track_interior_state_bins_)),
+                    int(np.count_nonzero(state_space.is_track_interior)),
                 )
         # Subclasses have already combined ``is_missing`` with the bins
         # without tracked position via ``_missing_bins``.
@@ -1120,9 +1121,9 @@ class _EMMixin:
         interior_state_ind: np.ndarray | None = None
         interior_continuous_transition: np.ndarray | None = None
         if transition_statistics == "counts" and not checkpointed:
-            interior_state_bins = self.is_track_interior_state_bins_
-            interior_state_ind = self.state_ind_[interior_state_bins]
-            interior_continuous_transition = self.continuous_state_transitions_[
+            interior_state_bins = state_space.is_track_interior
+            interior_state_ind = state_space.interior_state_ind
+            interior_continuous_transition = state_space.continuous_transitions[
                 np.ix_(interior_state_bins, interior_state_bins)
             ]
         prior = (
@@ -1461,14 +1462,16 @@ class _EMMixin:
         self: "non_local_detector.models.base._DetectorBase", e_step: _EMEStep
     ) -> None:
         """Initial-condition M-step: the first bin's smoothed posterior."""
-        self.initial_conditions_[self.is_track_interior_state_bins_] = (
+        self.initial_conditions_[self.state_space_.is_track_interior] = (
             e_step.first_smoothed
         )
         self.discrete_initial_conditions_ = np.asarray(
             e_step.acausal_state_probabilities[0]
         )
 
-        expanded_discrete_ic = e_step.acausal_state_probabilities[0][self.state_ind_]
+        expanded_discrete_ic = e_step.acausal_state_probabilities[0][
+            self.state_space_.state_ind
+        ]
         is_zero = np.isclose(expanded_discrete_ic, 0.0)
         safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
         self.continuous_initial_conditions_ = np.where(
