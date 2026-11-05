@@ -32,7 +32,7 @@ from non_local_detector.continuous_state_transitions import (
 )
 from non_local_detector.core import TransitionOperator
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import NonLocalDetectorError
+from non_local_detector.exceptions import NonLocalDetectorError, ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
 from non_local_detector.observation_models import ObservationModel
 
@@ -1719,7 +1719,22 @@ def _structured_block(
             f"{_DENSE_BLOCK_HINT}"
         )
         raise UnsupportedTransitionError(msg)
-    return planned.structured_block(environments)
+    # Annotated to return a Block, but a custom class can return anything.
+    structured: object = planned.structured_block(environments)
+    if not isinstance(structured, _BLOCK_TYPES):
+        msg = (
+            f"{type(transition).__name__}.structured_block returned a "
+            f"{type(structured).__name__}"
+        )
+        raise ValidationError(
+            msg,
+            expected="a UniformBlock, IdentityBlock, GaussianGridBlock, DenseBlock "
+            "or RestrictedBlock",
+            hint="The transition operator applies only these block classes. "
+            "Return one of them, or raise UnsupportedTransitionError for a dense "
+            "block.",
+        )
+    return structured
 
 
 # Every block type, to tell planned blocks from transitions awaiting a dense

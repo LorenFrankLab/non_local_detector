@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changed:** a NaN or `+inf` log likelihood raises `DataError` once the pass has counted its bins, on every path (`filter`, `viterbi`, the chunked and checkpointed drivers, and so `predict` and `estimate_parameters`), instead of a log message and a NaN posterior. `estimate_parameters` restores the detector, and a `result_path` is left unwritten. Bins marked missing are replaced before the check, an all-`-inf` bin is still only logged, and a pass under `jax.jit` cannot raise. `n_nan` in checkpointed results is now always 0.
 - **Fixed:** a continuous transition whose block moves an interior bin's mass onto exterior bins raises `ValidationError` at fit, naming the transition. The model holds interior bins only, so that mass was discarded, which silently changed how long a state lasts. Every built-in transition keeps its mass on interior bins.
 - **Fixed:** `ObservationModel`s can mix string and integer `encoding_group` values, as their type allows; the encoding fit raised a raw `TypeError` comparing them. `encoding_model_` now lists its groups in the order the states name them, not sorted.
+- **Fixed:** a `structured_block` that returns a block class of its own raises `ValidationError` naming the transition and the class, instead of an error about deferred graph distances or a missing method.
 
 ### Transition estimates and HMM inputs that gave wrong results silently
 

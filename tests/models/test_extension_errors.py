@@ -15,6 +15,8 @@ from non_local_detector import (
     Environment,
     NonLocalSortedSpikesDetector,
     ObservationModel,
+    RandomWalk,
+    Uniform,
     time_edges_from_centers,
 )
 from non_local_detector.continuous_state_transitions import _make_transition_block
@@ -317,3 +319,44 @@ def test_encoding_groups_may_mix_strings_and_integers(sorted_sim):
     assert list(detector.encoding_model_) == [("", 0), ("", "A")]
     results = detector.predict(**_decode_kwargs(sorted_sim))
     assert np.all(np.isfinite(results.acausal_state_probabilities.values))
+
+
+class _OwnBlockClass:
+    """A block that is not one of the package's block classes."""
+
+    def __init__(self, shape):
+        self.shape = shape
+
+
+class _StructuredWithOwnBlock(_AllBinsUniform):
+    def structured_block(self, environments):
+        return _OwnBlockClass(self.dense_block_shape(environments))
+
+    def dense_block_shape(self, environments):
+        n_bins = environments[0].place_bin_centers_.shape[0]
+        return (n_bins, n_bins)
+
+    def graph_distance_environment(self, environments):
+        return None
+
+
+@pytest.mark.parametrize("representation", ["structured", "auto"])
+def test_custom_block_class_is_refused_by_name(sorted_sim, representation):
+    """Not misreported as a dense fallback's deferred graph distances."""
+    time, position, spike_times = sorted_sim
+    detector = ContFragSortedSpikesClassifier(
+        sorted_spikes_algorithm=_ALGORITHM,
+        sorted_spikes_algorithm_params=_FIT_PARAMS,
+        environments=Environment(place_bin_size=10.0),
+        sampling_frequency=SORTED_SIM_RATE,
+        continuous_transition_types=[
+            [RandomWalk(), Uniform()],
+            [Uniform(), _StructuredWithOwnBlock()],
+        ],
+    )
+
+    with pytest.raises(ValidationError, match="_OwnBlockClass") as error:
+        detector.fit(
+            time, position, spike_times, transition_representation=representation
+        )
+    assert "_StructuredWithOwnBlock" in str(error.value)
