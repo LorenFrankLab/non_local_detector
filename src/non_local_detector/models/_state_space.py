@@ -135,6 +135,7 @@ class StateSpace:
         Returns
         -------
         bool
+            True for a Local state without a position kernel.
         """
         return bool(
             self.observation_models[state].is_local and self.local_position_std is None

@@ -588,6 +588,15 @@ class _DetectorBase(
         Fitted initial-condition distribution over discrete states. Set by
         ``estimate_parameters``; initially equal to the user-supplied
         ``discrete_initial_conditions`` constructor argument.
+    state_space_ : StateSpace
+        The fit's state bins and continuous transition, with the
+        ``state_names``, ``observation_models``,
+        ``continuous_transition_types`` and ``local_position_std`` they were
+        built from. Set by ``fit``; decoding reads it rather than the current
+        parameters, so ``set_params`` takes effect at the next fit.
+        ``state_ind_``, ``n_state_bins_``, ``n_discrete_states_``,
+        ``bin_sizes_``, ``is_track_interior_state_bins_`` and
+        ``continuous_state_transitions_`` are read-only views of it.
     """
 
     # Type annotations for attributes assigned during fit
