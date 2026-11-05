@@ -16,6 +16,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
+from non_local_detector.continuous_state_transitions import _make_transition_block
 from non_local_detector.discrete_state_transitions import (
     InitialDiscreteTransition,
     _check_initial_discrete_transition,
@@ -233,3 +234,64 @@ def test_covariate_transition_rows_are_each_checked():
         _check_initial_discrete_transition(
             initial, _ToyDiscreteTransition(matrix, is_stationary=False)
         )
+
+
+class _AllBinsUniform:
+    """A custom transition spreading its rows over every bin, interior or not."""
+
+    environment_name = ""
+
+    def make_state_transition(self, environments, context=None):
+        n_bins = environments[0].place_bin_centers_.shape[0]
+        return np.full((n_bins, n_bins), 1.0 / n_bins)
+
+
+def _gapped_recording():
+    """Positions on two stretches of a track, so the grid has exterior bins."""
+    time = np.arange(1_000) / SORTED_SIM_RATE
+    position = np.r_[np.linspace(0, 40, 500), np.linspace(80, 120, 500)][:, None]
+    environment = Environment(place_bin_size=5.0).fit_place_grid(position)
+    assert not environment.is_track_interior_.all()
+    return time, position, environment
+
+
+def test_transition_mass_on_exterior_bins_is_refused():
+    """Mass on a bin the model cannot hold would be dropped without a word."""
+    _, _, environment = _gapped_recording()
+    n_bins = environment.place_bin_centers_.shape[0]
+
+    with pytest.raises(ValidationError, match=r"_AllBinsUniform.*exterior"):
+        _make_transition_block(_AllBinsUniform(), [environment], None, (n_bins, n_bins))
+
+
+class _InteriorRowsOnly(_AllBinsUniform):
+    """Keeps interior rows on interior bins; exterior rows are not read."""
+
+    def make_state_transition(self, environments, context=None):
+        is_interior = environments[0].is_track_interior_flat_
+        block = np.tile(is_interior / is_interior.sum(), (is_interior.size, 1))
+        block[~is_interior] = ~is_interior / np.count_nonzero(~is_interior)
+        return block
+
+
+def test_exterior_rows_may_hold_anything():
+    """No probability starts on an exterior bin, so its row is not checked."""
+    _, _, environment = _gapped_recording()
+    n_bins = environment.place_bin_centers_.shape[0]
+
+    block = _make_transition_block(
+        _InteriorRowsOnly(), [environment], None, (n_bins, n_bins)
+    )
+
+    assert block.shape == (n_bins, n_bins)
+
+
+def test_block_between_one_bin_states_has_no_bins_to_check():
+    """A custom one-bin block may name an environment with exterior bins."""
+
+    class OneBin(_AllBinsUniform):
+        def make_state_transition(self, environments, context=None):
+            return np.ones((1, 1))
+
+    _, _, environment = _gapped_recording()
+    assert _make_transition_block(OneBin(), [environment], None, (1, 1)).shape == (1, 1)

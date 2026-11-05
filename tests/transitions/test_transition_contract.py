@@ -201,6 +201,7 @@ def test_continuous_transition_contract(cls, layout, layouts):
         assert np.all(np.isfinite(block))
         assert np.all(block >= 0)
         assert np.all(block.sum(axis=1) <= 1 + PROBABILITY_SUM_TOLERANCE)
+        continuous._check_interior_destinations(transition, environments, block)
         assert transition.graph_distance_environment(environments) in (
             None,
             environment,
