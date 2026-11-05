@@ -1,16 +1,24 @@
 """Fitting and decoding check their position inputs against the detector."""
 
+import warnings
+
 import numpy as np
 import pytest
 
 from non_local_detector import (
+    Discrete,
+    DiscreteStationaryDiagonal,
     Environment,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    RandomWalk,
     SortedSpikesDecoder,
+    Uniform,
+    UniformInitialConditions,
 )
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.models import base
+from non_local_detector.observation_models import ObservationModel
 
 pytestmark = pytest.mark.unit
 
@@ -147,17 +155,100 @@ def test_fit_position_outside_the_position_range_warns(family, position):
 
 
 @pytest.mark.parametrize("method", DECODE_METHODS)
-@pytest.mark.parametrize(
-    ("offset", "n_shifted"),
-    [(1.9, TIME.size), (1000.0, 0)],
-    ids=["within-one-bin", "none-shifted"],
-)
-def test_position_near_the_grid_does_not_warn(fitted, method, offset, n_shifted):
+@pytest.mark.parametrize("offset", [0.0, 1.9], ids=["on-the-grid", "within-one-bin"])
+def test_position_near_the_grid_does_not_warn(fitted, method, offset):
     """Samples less than one bin outside the grid are ordinary tracking noise."""
     detector, arguments = fitted
-    position = np.clip(POSITION, 0.5, 9.5)
-    position[:n_shifted] = np.clip(position[:n_shifted] + offset, None, 11.9)
+    position = np.clip(POSITION, 0.5, 9.5) + offset
     _decode(detector, method, arguments | {"position": position})
+
+
+def _two_grids():
+    """A fitted-ready detector with a Local state, so decoding reads position,
+    on grids spanning 0-10 and 100-110."""
+    return SortedSpikesDecoder(
+        environments=(
+            Environment(
+                environment_name="A", place_bin_size=2, position_range=((0, 10),)
+            ),
+            Environment(
+                environment_name="B", place_bin_size=2, position_range=((100, 110),)
+            ),
+        ),
+        observation_models=[
+            ObservationModel("A", is_local=True),
+            ObservationModel("A"),
+            ObservationModel("B"),
+        ],
+        continuous_transition_types=[
+            [Discrete(), Uniform("A"), Uniform("B")],
+            [Discrete(), RandomWalk("A"), Uniform("A", "B")],
+            [Discrete(), Uniform("B", "A"), RandomWalk("B")],
+        ],
+        discrete_initial_conditions=np.full(3, 1 / 3),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions() for _ in range(3)
+        ],
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            diagonal_values=np.full(3, 0.98)
+        ),
+        discrete_transition_stickiness=np.zeros(3),
+        state_names=["Local", "A", "B"],
+        infer_track_interior=False,
+        sampling_frequency=50.0,
+    )
+
+
+TWO_GRID_TIME = np.linspace(0, 2, 61)
+TWO_GRID_POSITION = np.where(TWO_GRID_TIME < 1, 5.0, 105.0)[:, np.newaxis]
+TWO_GRID_LABELS = np.where(TWO_GRID_TIME < 1, "A", "B")
+
+
+@pytest.fixture(scope="module")
+def fitted_on_two_grids():
+    with warnings.catch_warnings():
+        # The animal jumps between environments once.
+        warnings.filterwarnings("ignore", message="Tracking moves up to")
+        detector = _two_grids().fit(
+            TWO_GRID_TIME,
+            TWO_GRID_POSITION,
+            **SPIKE_DATA["sorted"],
+            environment_labels=TWO_GRID_LABELS,
+        )
+    return detector, {
+        "position_time": TWO_GRID_TIME,
+        "time_edges": np.linspace(0, 2, 101),
+        **SPIKE_DATA["sorted"],
+    }
+
+
+@pytest.mark.filterwarnings("ignore:Tracking moves up to")
+def test_labels_swapping_two_grids_warn_at_fit():
+    """Each environment's samples are checked against its own grid, so positions
+    on the other grid are off it."""
+    swapped = np.where(TWO_GRID_LABELS == "A", "B", "A")
+    with pytest.warns(DataQualityWarning, match="outside the fitted grid"):
+        _two_grids().fit(
+            TWO_GRID_TIME,
+            TWO_GRID_POSITION,
+            **SPIKE_DATA["sorted"],
+            environment_labels=swapped,
+        )
+
+
+@pytest.mark.parametrize("position", [5.0, 105.0], ids=["grid-A", "grid-B"])
+def test_decoding_on_either_grid_does_not_warn(fitted_on_two_grids, position):
+    """Decoding has no labels: a sample may be on any environment's grid."""
+    detector, arguments = fitted_on_two_grids
+    location = np.full((TWO_GRID_TIME.size, 1), position)
+    detector.predict(**arguments, position=location)
+
+
+def test_decoding_off_both_grids_warns(fitted_on_two_grids):
+    detector, arguments = fitted_on_two_grids
+    location = np.full((TWO_GRID_TIME.size, 1), 50.0)
+    with pytest.warns(DataQualityWarning, match="outside the fitted grid"):
+        detector.predict(**arguments, position=location)
 
 
 @pytest.mark.parametrize("method", DECODE_METHODS)
