@@ -203,6 +203,43 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
             _unify_stored_encoding_values(entry)
 
 
+def _refuse_lazy_variables_beyond_budget(results: xr.Dataset) -> None:
+    """Raise if a variable read lazily from a result store cannot be saved.
+
+    A checkpointed result (one with ``_native_metadata``) reads its spatial
+    variables from its result store at most ``max_read_bytes`` at a time,
+    and netCDF writes each variable whole. Results read lazily from a netCDF
+    file have no such limit.
+
+    Raises
+    ------
+    ValidationError
+        Naming each such variable.
+    """
+    metadata = results.attrs.get("_native_metadata")
+    if not metadata:
+        return
+    budget = int(metadata["max_read_bytes"])
+    too_large = {
+        str(name): variable.nbytes
+        for name, variable in results.variables.items()
+        if not variable._in_memory and variable.nbytes > budget
+    }
+    if too_large:
+        msg = (
+            f"Cannot save the results: {too_large} (bytes) are read lazily "
+            f"from their checkpointed result store, at most max_read_bytes="
+            f"{budget} at a time"
+        )
+        raise ValidationError(
+            msg,
+            hint="Keep the result store directory, which load_results reopens, "
+            "or save a selection (results.isel(time=...)) of at most "
+            "max_read_bytes, or reopen the store with load_results(path, "
+            "max_read_bytes=...) large enough to hold each variable in memory.",
+        )
+
+
 class _PersistenceMixin:
     """Saving and loading methods of ``_DetectorBase``."""
 
@@ -355,13 +392,24 @@ class _PersistenceMixin:
         installed, stores int64 as int32, and netCDF reads a boolean attribute
         back as an integer and a one-element array as a scalar.
 
+        The file is written beside ``filename`` and replaces it once
+        complete, so a failed save leaves an existing file unchanged.
+
         Parameters
         ----------
         results : xr.Dataset
             Decoding results.
         filename : str, optional
             Name to save, by default "results.nc".
+
+        Raises
+        ------
+        ValidationError
+            If a variable of a checkpointed result, read lazily from its
+            result store, is larger than the store's ``max_read_bytes``, so
+            it cannot be read in one piece to be written.
         """
+        _refuse_lazy_variables_beyond_budget(results)
         export = (
             results.reset_index("state_bins")
             if "state_bins" in results.indexes
@@ -387,7 +435,13 @@ class _PersistenceMixin:
                 if variable.dtype.kind in "iu"
             }
         )
-        export.to_netcdf(filename)
+        path = Path(filename)
+        partial = path.with_name(path.name + ".partial")
+        try:
+            export.to_netcdf(partial)
+            partial.replace(path)
+        finally:
+            partial.unlink(missing_ok=True)
 
     @staticmethod
     def load_results(
@@ -425,6 +479,7 @@ class _PersistenceMixin:
             metadata = results.attrs.get("_native_metadata")
             if metadata:
                 metadata = {**metadata, "max_read_bytes": max_read_bytes}
+                results.attrs["_native_metadata"] = metadata
                 return label_checkpointed_result(results, metadata)
             return results
         opened = xr.open_dataset(filename)

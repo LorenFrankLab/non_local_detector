@@ -22,6 +22,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
 )
 from non_local_detector.analysis import get_spatial_posterior
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.models._results import has_place_bins, state_bin_positions
 
 pytestmark = pytest.mark.integration
@@ -249,6 +250,44 @@ def test_netcdf_round_trip_restores_attribute_types_and_levels(
         xr.testing.assert_identical(
             restored.reset_index("state_bins"), expected.reset_index("state_bins")
         )
+
+
+def test_saving_results_larger_than_the_read_budget_is_refused(
+    fitted, checkpointed, tmp_path
+):
+    """A checkpointed result reads its arrays lazily, at most max_read_bytes
+    at a time; one too large to save is refused before anything is written,
+    and an existing file is kept."""
+    store = tmp_path / "store"
+    fitted.predict(**_PREDICT, result_path=store, inference_mode="checkpointed")
+    budget = checkpointed.acausal_posterior.nbytes // 2
+    lazy = fitted.load_results(store, max_read_bytes=budget)
+    filename = tmp_path / "results.nc"
+    filename.write_bytes(b"previous results")
+
+    with pytest.raises(ValidationError, match="max_read_bytes") as error:
+        fitted.save_results(lazy, filename)
+
+    assert "acausal_posterior" in str(error.value)
+    assert filename.read_bytes() == b"previous results"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["results.nc", "store"]
+
+
+def test_a_failed_save_keeps_the_previous_file(fitted, dense, tmp_path, monkeypatch):
+    filename = tmp_path / "results.nc"
+    filename.write_bytes(b"previous results")
+
+    def fail_midway(self, path, *args, **kwargs):
+        Path(path).write_bytes(b"truncated")
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr(xr.Dataset, "to_netcdf", fail_midway)
+    with pytest.raises(OSError, match="disk full"):
+        fitted.save_results(dense, filename)
+
+    assert filename.read_bytes() == b"previous results"
+    assert [path.name for path in tmp_path.iterdir()] == ["results.nc"]
 
 
 def test_a_recorded_dtype_is_not_forced_on_a_non_integer_variable(

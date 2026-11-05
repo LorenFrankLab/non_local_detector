@@ -136,6 +136,14 @@ attribute types, keep the attributes netCDF reads, except that
 (or leaving a `with` block) closes the file. `load_results(result_path)`
 reopens a checkpointed store with lazy arrays.
 
+`save_results` writes the file beside its destination and replaces the
+destination once complete, so a failed save leaves an existing file
+unchanged. netCDF writes each variable whole, so saving a checkpointed
+result whose lazily read variable is larger than its `max_read_bytes` is
+refused before anything is written: keep the store directory, which
+`load_results` reopens, save a selection, or reopen the store with a larger
+`max_read_bytes`.
+
 ## Most likely sequence
 
 `most_likely_sequence` returns a pandas `DataFrame` indexed by `time`, with
