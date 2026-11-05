@@ -61,6 +61,7 @@ from non_local_detector.exceptions import (
     ConfigurationError,
     DataQualityWarning,
     NotFittedError,
+    ParameterWarning,
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
@@ -833,9 +834,10 @@ class _DetectorBase(
         reads them: a change to ``environments``, ``state_names``,
         ``observation_models``, ``continuous_transition_types``,
         ``local_position_std`` or any other parameter a fit depends on takes
-        effect at the next fit. ``save_model`` refuses a detector whose
-        ``state_names``, ``observation_models``, ``continuous_transition_types``
-        or ``local_position_std`` changed after fitting.
+        effect at the next fit. Decoding a detector whose ``state_names``,
+        ``observation_models``, ``continuous_transition_types`` or
+        ``local_position_std`` changed after fitting warns
+        (``ParameterWarning``), and ``save_model`` refuses it.
 
         As with the constructor, parameters that must agree (for example
         ``discrete_initial_conditions``, ``observation_models``,
@@ -1928,6 +1930,28 @@ class _DetectorBase(
         """Term added to the No-Spike log likelihood, or None when there is none."""
         return None
 
+    def _warn_if_layout_parameters_changed(self) -> None:
+        """Warn when a parameter the fit recorded was changed since.
+
+        Decoding uses the recorded values (``state_space_``). Parameters of a
+        type not registered for saving cannot be compared and do not warn.
+        """
+        from non_local_detector.model_format._detector import (
+            changed_layout_parameters,
+        )
+
+        try:
+            changed = changed_layout_parameters(self)
+        except ValidationError:
+            return
+        if changed:
+            warnings.warn(
+                f"The detector's {changed} changed after it was fitted; "
+                "decoding uses the values from the last fit. Refit to apply them.",
+                ParameterWarning,
+                stacklevel=user_stacklevel(),
+            )
+
     def _compute_spike_log_likelihood(
         self,
         position_time: ArrayLike | None,
@@ -1946,6 +1970,7 @@ class _DetectorBase(
         per call, then evaluates the requested rows.
         """
         self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
         decode = _DecodeInputs.from_arguments(position_time, position)
         time_edges, _ = _decode_time_edges(
             time_edges,
@@ -2351,6 +2376,7 @@ class _DetectorBase(
         )
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
         time_edges, time_centers = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),
@@ -2616,6 +2642,7 @@ class _DetectorBase(
         decode = _DecodeInputs.from_arguments(position_time, position)
         position_time, position = decode.position_time, decode.position
         self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
         time_edges, time_centers = _decode_time_edges(
             time_edges,
             *self._learned_transition_time_bin_width(),

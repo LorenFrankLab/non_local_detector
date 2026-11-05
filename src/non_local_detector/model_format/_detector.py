@@ -635,6 +635,34 @@ def _stored_form(value: Any) -> JSON:
     return Encoder(cast("ArrayWriter", _DigestWriter())).encode(value, "parameter")
 
 
+def changed_layout_parameters(detector: "_DetectorBase") -> list[str]:
+    """Return the recorded parameters that changed since the detector was fitted.
+
+    A parameter changed when its saved form differs from that of the value
+    its fit recorded in ``state_space_`` (see ``layout_parameters``).
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Fitted detector.
+
+    Returns
+    -------
+    changed : list of str
+        Names of the changed parameters, in ``layout_parameters`` order.
+
+    Raises
+    ------
+    ValidationError
+        If a parameter holds an object of a type not registered for saving.
+    """
+    return [
+        name
+        for name, value in layout_parameters(detector).items()
+        if _stored_form(value) != _stored_form(getattr(detector.state_space_, name))
+    ]
+
+
 def detector_documents(
     detector: "_DetectorBase", writer: ArrayWriter
 ) -> tuple[dict[str, Any], JSON, dict[str, Any]]:
@@ -673,11 +701,7 @@ def detector_documents(
         raise NotFittedError(msg, hint="Call fit(...) before save_model.")
     # The file holds the current parameters, and loading rebuilds the state
     # space from them.
-    changed = [
-        name
-        for name, value in layout_parameters(detector).items()
-        if _stored_form(value) != _stored_form(getattr(detector.state_space_, name))
-    ]
+    changed = changed_layout_parameters(detector)
     if changed:
         msg = (
             f"Cannot save the detector: its {changed} changed after it was "

@@ -20,7 +20,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
     time_edges_from_centers,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import ParameterWarning, ValidationError
 from non_local_detector.observation_models import ObservationModel
 from tests.models._helpers import SORTED_SIM_RATE
 
@@ -78,20 +78,71 @@ CHANGES = {
 }
 
 
+def _changed_parameter_warnings(record, change):
+    return [
+        warning
+        for warning in record
+        if issubclass(warning.category, ParameterWarning)
+        and change in str(warning.message)
+    ]
+
+
 @pytest.mark.parametrize("change", CHANGES)
 def test_decoding_after_set_params_uses_the_fit(fitted, change):
     detector, decode, expected = fitted
     changed = detector.copy().set_params(**CHANGES[change](detector))
 
-    actual = changed.predict(**decode, return_outputs="all")
+    with pytest.warns(ParameterWarning, match="decoding uses the values"):
+        actual = changed.predict(**decode, return_outputs="all")
+    with pytest.warns(ParameterWarning, match="decoding uses the values"):
+        sequence = changed.most_likely_sequence(**decode)
 
     for name in expected.data_vars:
         np.testing.assert_array_equal(actual[name].values, expected[name].values)
     for name in ("state_ind", "states", "state", "environments", "encoding_groups"):
         np.testing.assert_array_equal(actual[name].values, expected[name].values)
     np.testing.assert_array_equal(
-        changed.most_likely_sequence(**decode).state,
-        detector.most_likely_sequence(**decode).state,
+        sequence.state, detector.most_likely_sequence(**decode).state
+    )
+
+
+DECODES = {
+    "predict": lambda detector, decode: detector.predict(**decode),
+    "checkpointed predict": lambda detector, decode: detector.predict(
+        **decode, inference_mode="checkpointed", output_mode="compact"
+    ),
+    "most_likely_sequence": lambda detector, decode: detector.most_likely_sequence(
+        **decode
+    ),
+    "compute_log_likelihood": lambda detector, decode: detector.compute_log_likelihood(
+        **decode
+    ),
+}
+
+
+@pytest.mark.parametrize("decoding", DECODES)
+def test_decoding_after_set_params_warns_once(fitted, decoding):
+    detector, decode, _ = fitted
+    changed = detector.copy().set_params(local_position_std=2.0)
+
+    with pytest.warns(ParameterWarning) as record:
+        DECODES[decoding](changed, decode)
+
+    (warning,) = _changed_parameter_warnings(record, "local_position_std")
+    assert "Refit" in str(warning.message)
+
+
+@pytest.mark.parametrize("name", RECORDED)
+def test_decoding_after_setting_an_equal_copy_does_not_warn(fitted, name):
+    detector, decode, expected = fitted
+    value = copy.deepcopy(detector.get_params(deep=False)[name])
+    unchanged = detector.copy().set_params(**{name: value})
+
+    # The suite turns warnings into errors.
+    actual = unchanged.predict(**decode, return_outputs="all")
+
+    np.testing.assert_array_equal(
+        actual.acausal_posterior.values, expected.acausal_posterior.values
     )
 
 
