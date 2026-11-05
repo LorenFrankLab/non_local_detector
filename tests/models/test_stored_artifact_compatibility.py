@@ -280,7 +280,7 @@ def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     path = tmp_path / "environment.pkl"
     path.write_bytes(pickle.dumps(_LegacyEnvironmentPickle(state)))
 
-    environment = Environment.load_environment(str(path))
+    environment = Environment.load_environment(str(path), allow_pickle=True)
 
     assert environment._is_fitted
     assert "place_bin_centers_" not in vars(environment)
