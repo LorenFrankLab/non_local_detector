@@ -11,7 +11,6 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import (
     estimate_discrete_transition_counts_from_factorized_posteriors,
-    estimate_discrete_transition_responses_from_factorized_posteriors,
 )
 
 pytestmark = pytest.mark.unit
@@ -83,7 +82,7 @@ def test_device_posteriors_equal_host_posteriors(model, covariate, n_chunks):
 @pytest.mark.parametrize("covariate", [False, True])
 def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
     """The historical fields come first, in the old tuple order, followed by
-    the degenerate time indices, so unpacking takes nine names."""
+    the degenerate time indices and the transition responses."""
     result = _decode(model, covariate, n_chunks=2, host_outputs=True)
     assert isinstance(result, FilterSmootherResult)
     assert FilterSmootherResult._fields == (
@@ -96,8 +95,9 @@ def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
         "causal_posterior",
         "predictive_posterior",
         "degenerate_indices",
+        "transition_responses",
     )
-    (acausal, _, marginal, _, _, log_likelihoods, causal, _, _) = result
+    (acausal, _, marginal, _, _, log_likelihoods, causal, *_) = result
     assert acausal is result.acausal_posterior
     assert causal is result.causal_posterior
     assert marginal == result.marginal_log_likelihood
@@ -105,25 +105,18 @@ def test_result_is_a_named_tuple_in_the_historical_order(model, covariate):
     np.testing.assert_array_equal(log_likelihoods, model["log_likelihoods"])
 
 
-@pytest.mark.parametrize(
-    "estimator",
-    [
-        estimate_discrete_transition_counts_from_factorized_posteriors,
-        estimate_discrete_transition_responses_from_factorized_posteriors,
-    ],
-)
-def test_transition_statistics_from_device_posteriors(model, estimator):
+def test_transition_counts_from_device_posteriors(model):
     host = _decode(model, covariate=False, n_chunks=1, host_outputs=True)
     device = _decode(model, covariate=False, n_chunks=1, host_outputs=False)
-    discrete = (
-        model["discrete"][0]
-        if estimator is estimate_discrete_transition_counts_from_factorized_posteriors
-        else model["discrete"]
-    )
 
     def statistics(outputs):
-        return estimator(
-            outputs[6], outputs[7], outputs[0], model["continuous"], discrete, STATE_IND
+        return estimate_discrete_transition_counts_from_factorized_posteriors(
+            outputs.causal_posterior,
+            outputs.predictive_posterior,
+            outputs.acausal_posterior,
+            model["continuous"],
+            model["discrete"][0],
+            STATE_IND,
         )
 
     np.testing.assert_array_equal(statistics(device), statistics(host))

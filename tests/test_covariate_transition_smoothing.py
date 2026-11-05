@@ -21,14 +21,13 @@ from non_local_detector.discrete_state_transitions import (
     _smoothness_matrix,
     _transition_log_prior,
     cyclic_bs,  # noqa: F401  (used inside patsy formulas)
-    dirichlet_gradient,
-    dirichlet_hessian,
     dirichlet_neg_log_likelihood,
     estimate_non_stationary_state_transition_from_responses,
     predict_discrete_state_transition_intervals,
     predict_discrete_state_transitions,
     quantile_bs,  # noqa: F401  (used inside patsy formulas)
 )
+from tests._transition_statistics import dirichlet_gradient, dirichlet_hessian
 
 N_STATES = 3
 

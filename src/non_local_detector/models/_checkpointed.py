@@ -105,6 +105,9 @@ class _PosteriorOutputs:
     log_likelihood : np.ndarray, shape (n_time, n_state_bins), or None
     causal_posterior : array, shape (n_time, n_state_bins), or None
     predictive_posterior : array, shape (n_time, n_state_bins), or None
+    transition_responses : np.ndarray, shape (n_time - 1, n_states, n_states), or None
+        Expected discrete transitions between consecutive bins, when the
+        covariate-dependent smoother was asked for them.
     """
 
     marginal_log_likelihood: float
@@ -116,6 +119,7 @@ class _PosteriorOutputs:
     log_likelihood: np.ndarray | None = None
     causal_posterior: Any = None
     predictive_posterior: Any = None
+    transition_responses: np.ndarray | None = None
 
     def requested_results(self, requested_outputs: set[str]) -> dict[str, Any]:
         """Return the optional ``convert_results_to_xarray`` arrays that were requested.

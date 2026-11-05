@@ -2775,6 +2775,7 @@ class _DetectorBase(
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
         accumulate_log_likelihoods: bool = False,
+        transition_responses: bool = False,
     ) -> _PosteriorOutputs:
         """
         Compute the posterior probabilities.
@@ -2805,6 +2806,11 @@ class _DetectorBase(
             and is intended only for a caller that explicitly requested the log
             likelihood; when the likelihood is not requested the chunk arrays
             are not retained. By default False.
+        transition_responses : bool, optional
+            If True, the covariate-dependent smoother also returns the
+            expected discrete transitions between consecutive bins (EM's
+            responses). Only for covariate-dependent transitions. By default
+            False.
 
         Returns
         -------
@@ -2891,6 +2897,7 @@ class _DetectorBase(
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 host_outputs=False,
+                transition_responses=transition_responses,
             )
         return _PosteriorOutputs(
             marginal_log_likelihood=result.marginal_log_likelihood,
@@ -2902,6 +2909,7 @@ class _DetectorBase(
             log_likelihood=result.log_likelihoods,
             causal_posterior=result.causal_posterior,
             predictive_posterior=result.predictive_posterior,
+            transition_responses=result.transition_responses,
         )
 
     @contextmanager

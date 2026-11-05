@@ -8,7 +8,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.initial_conditions import (
     UniformInitialConditions,
-    estimate_initial_conditions,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
@@ -56,15 +55,6 @@ def test_uniform_initial_conditions_nonlocal_with_mask(simple_1d_environment):
     assert np.all(arr[-2:] == 0.0)
     # Uniform across unmasked bins
     assert np.allclose(arr[:-2], 1.0 / (env.place_bin_centers_.shape[0] - 2))
-
-
-@pytest.mark.unit
-def test_estimate_initial_conditions_returns_first_row():
-    post = np.random.default_rng(0).random((7, 5))
-    post = post / post.sum(axis=1, keepdims=True)
-    init = estimate_initial_conditions(post)
-    assert init.shape == (post.shape[1],)
-    assert np.allclose(init, post[0])
 
 
 @pytest.mark.unit
