@@ -2278,7 +2278,7 @@ class _DetectorBase(
         time_centers: np.ndarray,
         *,
         method: str,
-    ) -> np.ndarray | None:
+    ) -> np.ndarray:
         """Discrete transitions at the decode bins of one decoding call.
 
         Covariate-dependent transitions are evaluated on the call's own
@@ -2296,9 +2296,10 @@ class _DetectorBase(
 
         Returns
         -------
-        discrete_transitions : np.ndarray, shape (n_bins, n_states, n_states), or None
-            None for transitions that do not depend on covariates, which
-            decode with ``discrete_state_transitions_``.
+        discrete_transitions : np.ndarray
+            Shape (n_bins, n_states, n_states), or
+            ``discrete_state_transitions_`` for transitions that do not depend
+            on covariates, shape (n_states, n_states).
 
         Raises
         ------
@@ -2310,7 +2311,7 @@ class _DetectorBase(
         """
         if covariate_data is None:
             if self.discrete_transition_coefficients_ is None:
-                return None
+                return self.discrete_state_transitions_
             msg = (
                 "Missing required parameter: discrete_transition_covariate_data "
                 "(the discrete transitions depend on covariates)"
@@ -2532,7 +2533,7 @@ class _DetectorBase(
         )
         # EM estimates covariate transitions at the decode bins. Their rows,
         # which come from the columns the formula reads, are counted here,
-        # before the internal fit, and checked again after it.
+        # before the internal fit.
         time_centers = 0.5 * (time_edges[:-1] + time_edges[1:])
         if (
             discrete_transition_covariate_data is not None
@@ -2597,10 +2598,6 @@ class _DetectorBase(
                     _structured_em_options(chunk_size, result_path, replay_cache_bytes)
                 ),
             )
-            if self.discrete_state_transitions_.ndim == 3:
-                _validate_covariate_time_length(
-                    self.discrete_state_transitions_, time_centers
-                )
             return self._run_em(
                 time_edges=time_edges,
                 log_likelihood_args=(
@@ -3016,7 +3013,7 @@ class _DetectorBase(
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
         *,
-        discrete_state_transitions: np.ndarray | None = None,
+        discrete_state_transitions: np.ndarray,
     ) -> pd.DataFrame:
         """Viterbi engine: the most likely sequence of states.
 
@@ -3035,9 +3032,10 @@ class _DetectorBase(
             Boolean array indicating missing data, by default None.
         n_chunks : int, optional
             Number of chunks, by default 1.
-        discrete_state_transitions : np.ndarray, shape (n_bins, n_states, n_states), optional
-            Covariate-driven transition matrices to use instead of
-            ``discrete_state_transitions_``, by default None.
+        discrete_state_transitions : np.ndarray
+            The call's transitions (``_decode_discrete_transitions``): shape
+            (n_states, n_states), or (n_bins, n_states, n_states) with
+            covariates.
 
         Returns
         -------
@@ -3056,24 +3054,6 @@ class _DetectorBase(
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
-        discrete_transitions = (
-            self.discrete_state_transitions_
-            if discrete_state_transitions is None
-            else discrete_state_transitions
-        )
-        if (
-            discrete_transitions.ndim == 3
-            and discrete_transitions.shape[0] != len(time_edges) - 1
-        ):
-            msg = "Viterbi covariate transitions must have one row per decode bin"
-            raise ValidationError(
-                msg,
-                expected=f"{len(time_edges) - 1} transition rows",
-                got=f"{discrete_transitions.shape[0]} rows",
-                hint="Pass discrete_transition_covariate_data with one row per "
-                "decode bin to most_likely_sequence.",
-            )
-
         log_likelihood_func = self._decode_likelihood_callback(
             time_edges, log_likelihood_args
         )
@@ -3081,13 +3061,13 @@ class _DetectorBase(
         is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = state_space.interior_state_ind
-        if discrete_transitions.ndim == 2:
+        if discrete_state_transitions.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
                 time_edges=time_edges,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
                     state_space.continuous_transitions[cross_is_track_interior]
-                    * discrete_transitions[np.ix_(state_ind, state_ind)]
+                    * discrete_state_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
                 log_likelihood_args=log_likelihood_args,
@@ -3099,7 +3079,7 @@ class _DetectorBase(
                 time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
-                discrete_transition_matrix=discrete_transitions,
+                discrete_transition_matrix=discrete_state_transitions,
                 continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],

@@ -126,7 +126,11 @@ def test_base_viterbi_with_custom_likelihood_cannot_bypass_uniformity(
 
     monkeypatch.setattr(detector, "compute_log_likelihood", custom_likelihood)
     with pytest.raises(DataError, match="uniform"):
-        _DetectorBase._run_viterbi(detector, np.array([0.0, 0.002, 0.012]))
+        _DetectorBase._run_viterbi(
+            detector,
+            np.array([0.0, 0.002, 0.012]),
+            discrete_state_transitions=detector.discrete_state_transitions_,
+        )
 
 
 @pytest.mark.integration

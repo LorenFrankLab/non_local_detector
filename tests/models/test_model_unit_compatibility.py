@@ -336,7 +336,12 @@ def test_missing_encoding_container_cannot_bypass_concrete_model_guard(
             ),
         )
     else:
-        call = functools.partial(base._DetectorBase._run_viterbi, detector, edges)
+        call = functools.partial(
+            base._DetectorBase._run_viterbi,
+            detector,
+            edges,
+            discrete_state_transitions=detector.discrete_state_transitions_,
+        )
     with pytest.raises(NotFittedError, match="fit"):
         call()
 

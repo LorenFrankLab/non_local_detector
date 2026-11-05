@@ -255,7 +255,7 @@ def test_viterbi_rejects_unaligned_covariate_transitions_before_likelihood(
         pytest.fail("Covariate alignment must fail before likelihood evaluation")
 
     monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_likelihood)
-    with pytest.raises(ValidationError, match="covariate"):
+    with pytest.raises(ValidationError, match="discrete_transition_matrix"):
         detector.most_likely_sequence(spikes, time_edges=np.arange(6) * 0.002)
 
 
