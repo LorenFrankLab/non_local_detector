@@ -377,6 +377,43 @@ def _numeric_spike_times(times: Any, unit: str, index: int) -> np.ndarray:
     return array
 
 
+# Spike times in ms against a position_time span in s that starts near 0
+# overlap the span, so they are not far from it; instead almost none lie
+# inside it (~0.1%) and they reach ~1000 spans past it. Spikes of a whole
+# recording with position for part of it (one epoch of a day) keep far more
+# than 1% inside and reach only a few spans past it.
+_MIN_FRACTION_INSIDE = 0.01
+_MAX_SPANS_PAST = 10.0
+
+
+def _warn_if_spikes_reach_far_past(
+    arrays: list[np.ndarray], start: float, stop: float, first: float, last: float
+) -> None:
+    """Warn if under 1% of the spikes lie in ``[start, stop]`` and they reach over 10 spans past it."""
+    span = stop - start
+    if span <= 0:
+        return
+    n_spikes = sum(times.size for times in arrays)
+    n_inside = sum(
+        int(np.count_nonzero((times >= start) & (times <= stop))) for times in arrays
+    )
+    reach = max(last - stop, start - first)
+    if n_inside >= _MIN_FRACTION_INSIDE * n_spikes or reach <= _MAX_SPANS_PAST * span:
+        return
+    warnings.warn(
+        f"Only {n_inside} of the {n_spikes} spike times "
+        f"({n_inside / n_spikes:.2%}) lie within the position_time span "
+        f"[{start:.6g}, {stop:.6g}] s, and they reach {reach / span:.3g} times "
+        f"its length past it (spanning [{first:.6g}, {last:.6g}]). The spike "
+        "times are probably in milliseconds (or other units) rather than "
+        "seconds; the encoding model is fit to the few that fall inside. "
+        "Convert them to seconds, or, if the position covers only a small part "
+        "of the recording on purpose, pass the spikes of that part.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
 def _validate_spike_data(
     spike_times: Sequence[Any],
     spike_waveform_features: Sequence[Any] | None = None,
@@ -384,6 +421,7 @@ def _validate_spike_data(
     clusterless: bool,
     time_range: tuple[float, float] | None = None,
     range_name: str = "",
+    check_extent: bool = False,
 ) -> None:
     """Check spike data where it enters a public fitting or decoding method.
 
@@ -409,6 +447,12 @@ def _validate_spike_data(
         None (no warning).
     range_name : str, optional
         What ``time_range`` is, for the warning, e.g. "decode time_edges".
+    check_extent : bool, optional
+        Also warn when the spikes overlap ``time_range`` but almost none lie
+        inside it and they reach far past it (see
+        ``_warn_if_spikes_reach_far_past``), by default False. For the
+        encoding period only: a decode window is legitimately short against
+        the recording its spikes come from.
 
     Raises
     ------
@@ -420,7 +464,8 @@ def _validate_spike_data(
     Warns
     -----
     DataQualityWarning
-        If the spikes lie farther from ``time_range`` than they span.
+        If the spikes lie farther from ``time_range`` than they span, or, with
+        ``check_extent``, reach far past it with almost none inside.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -461,6 +506,8 @@ def _validate_spike_data(
     # they span; a quiet window before, between or after the spikes is data.
     gap = max(first - stop, start - last)
     if gap <= last - first:
+        if check_extent:
+            _warn_if_spikes_reach_far_past(arrays, start, stop, first, last)
         return
     warnings.warn(
         f"None of the {n_spikes} spike times lies within the {range_name} "

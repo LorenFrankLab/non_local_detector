@@ -1932,6 +1932,7 @@ class _DetectorBase(
         *,
         time_range: tuple[float, float] | None = None,
         range_name: str = "",
+        check_extent: bool = False,
     ) -> None:
         """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
 
@@ -1945,18 +1946,26 @@ class _DetectorBase(
             ``(start, stop)`` in seconds to warn against, by default None.
         range_name : str, optional
             What ``time_range`` is, for the warning.
+        check_extent : bool, optional
+            Also warn when almost no spike lies in ``time_range`` and they
+            reach far past it, by default False (encoding period only).
         """
         _validate_spike_data(
             *spike_data,
             clusterless=isinstance(self, ClusterlessDetector),
             time_range=time_range,
             range_name=range_name,
+            check_extent=check_extent,
         )
 
     def _check_encoding_spike_data(
         self, position_time: ArrayLike, spike_data: tuple[Any, ...]
     ) -> None:
-        """Check encoding spike data; warn if all lie on one side of the position_time span.
+        """Check encoding spike data; warn if they look like other units or another clock.
+
+        Warns if all lie far to one side of the position_time span, or if
+        under 1% lie in it and they reach over 10 spans past it (ms for s on a
+        clock starting near 0).
 
         Parameters
         ----------
@@ -1973,6 +1982,7 @@ class _DetectorBase(
             if finite.size
             else None,
             range_name="position_time span",
+            check_extent=True,
         )
 
     def _check_decode_spike_data(

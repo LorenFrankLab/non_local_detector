@@ -168,6 +168,41 @@ def test_spikes_in_ms_warn_at_fit():
         )
 
 
+def _session(duration, n_units=5, rate=10.0):
+    """Uniform spikes of ``n_units`` at ``rate`` Hz over ``[0, duration]`` s."""
+    rng = np.random.default_rng(0)
+    return [
+        np.sort(rng.uniform(0, duration, int(rate * duration))) for _ in range(n_units)
+    ]
+
+
+SESSION_TIME = np.arange(0, 60, 0.02)
+SESSION_POSITION = (50 + 8 * np.sin(SESSION_TIME))[:, None]
+
+
+@pytest.mark.unit
+def test_spikes_in_ms_of_a_recording_from_0_warn_at_fit():
+    """Spike times in ms of a recording starting at 0 overlap its position_time
+    span, so the far-away check misses them, but only ~0.1% fall inside it and
+    they reach ~1000 spans past it."""
+    spikes_ms = [times * 1_000 for times in _session(60.0)]
+    with pytest.warns(DataQualityWarning, match="milliseconds"):
+        _sorted_decoder().fit(SESSION_TIME, SESSION_POSITION, spikes_ms)
+
+
+@pytest.mark.unit
+def test_spikes_of_a_longer_recording_than_position_do_not_warn():
+    """Spikes of a 12-minute recording with position for its first minute: ~8%
+    of the spikes lie inside the span, which is data, not a unit mismatch."""
+    spikes = _session(720.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DataQualityWarning)
+        detector = _sorted_decoder().fit(SESSION_TIME, SESSION_POSITION, spikes)
+        # Decode windows are short against a session: never checked this way.
+        edges = detector.calculate_time_edges([10.0, 10.1])
+        detector.predict(spikes, time_edges=edges)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("method", DECODE_METHODS)
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
