@@ -923,10 +923,10 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
             points, in ``encoding_group``, in this environment (all if
             ``environment_labels`` is None) and finite are counted, so no
             step is taken across an excluded stretch; see
-            ``TransitionContext`` for the defaults. Positions are binned by
-            ``Environment.get_bin_ind``, so a position off the track interior
-            counts in the nearest interior bin and one outside the grid in
-            the bin at its edge.
+            ``TransitionContext`` for the defaults. A sample beyond the
+            grid's outer edges is left out like a non-finite one. Positions
+            are binned by ``Environment.get_bin_ind``, so a position in a bin
+            off the track interior counts in the nearest interior bin.
 
         Returns
         -------
@@ -966,8 +966,16 @@ class EmpiricalMovement(_DropsLegacyEnvironment, _EnvironmentBlock):
         # dropping the others would take a step across each excluded stretch.
         position = np.full((n_time, used_position.shape[1]), np.nan)
         position[is_used] = used_position
-        is_finite = np.all(np.isfinite(position), axis=1)
-        is_step = is_finite[:-1] & is_finite[1:]
+        # A sample beyond the grid's outer edges is left out like a
+        # non-finite one: get_bin_ind would pin it to the edge bin.
+        is_in_grid = np.all(
+            [
+                (position[:, dim] >= edges[0]) & (position[:, dim] <= edges[-1])
+                for dim, edges in enumerate(environment.edges_)
+            ],
+            axis=0,
+        )
+        is_step = is_in_grid[:-1] & is_in_grid[1:]
         in_step = np.zeros(n_time, dtype=bool)
         in_step[:-1] |= is_step
         in_step[1:] |= is_step

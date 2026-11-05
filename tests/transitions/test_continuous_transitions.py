@@ -388,6 +388,32 @@ def test_empirical_movement_does_not_pair_samples_across_excluded_samples(
     np.testing.assert_array_equal(transition, expected)
 
 
+@pytest.mark.parametrize("outside", [400.0, -300.0])
+def test_empirical_movement_leaves_out_samples_beyond_the_grid(outside):
+    """Steps into or out of a sample beyond the grid's outer edges are not counted.
+
+    A sweep up through the ten bins, 50 samples far outside the grid, and a
+    sweep back down. Only the sweeps' steps count: pinning the outside
+    samples to the edge bin made it a long stay there.
+    """
+    up = np.arange(5.0, 100.0, 10.0)
+    position = np.concatenate([up, np.full(50, outside), up[::-1]])[:, None]
+    env = Environment(
+        place_bin_size=10.0, position_range=[(0.0, 100.0)]
+    ).fit_place_grid(up[:, None], infer_track_interior=False)
+
+    transition = EmpiricalMovement().make_state_transition(
+        (env,), TransitionContext(position=position)
+    )
+
+    # Each inner bin is left once upward and once downward; the end bins once.
+    expected = np.zeros((10, 10))
+    for bin_ in range(1, 9):
+        expected[bin_, bin_ + 1] = expected[bin_, bin_ - 1] = 0.5
+    expected[0, 1] = expected[9, 8] = 1.0
+    np.testing.assert_array_equal(transition, expected)
+
+
 def _l_track_environment():
     """L-shaped track graph with a gap bin between its two edges."""
     import networkx as nx
