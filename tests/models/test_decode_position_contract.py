@@ -8,7 +8,7 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
-from non_local_detector.exceptions import DataError
+from non_local_detector.exceptions import DataError, ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -68,3 +68,15 @@ def test_repeated_position_time_raises(fitted, method):
     position_time[10] = position_time[9]
     with pytest.raises(DataError, match="strictly increasing"):
         _decode(detector, method, arguments | {"position_time": position_time})
+
+
+@pytest.mark.parametrize("method", DECODE_METHODS)
+@pytest.mark.parametrize("n_columns", [1, 3])
+def test_position_columns_must_match_the_fitted_environment(fitted, method, n_columns):
+    """A position with another number of columns than the fitted grid raises
+    a ValidationError naming both counts, not a zip or index error."""
+    detector, arguments = fitted
+    position = np.column_stack([arguments["position"][:, 0]] * n_columns)
+    with pytest.raises(ValidationError, match=f"{n_columns} column") as info:
+        _decode(detector, method, arguments | {"position": position})
+    assert "2 columns" in str(info.value)

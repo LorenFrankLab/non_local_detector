@@ -29,6 +29,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
 )
+from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
     DataError,
     DataQualityWarning,
@@ -989,6 +990,27 @@ def _normalize_frozen_discrete_transition_rows(
     return mask
 
 
+def _position_columns(environment: Environment) -> int:
+    """Return the number of position columns a fitted environment decodes.
+
+    Parameters
+    ----------
+    environment : Environment
+        A fitted environment.
+
+    Returns
+    -------
+    n_columns : int
+        The coordinates of the track graph's nodes for a track-graph
+        environment, which linearizes raw positions, otherwise the
+        dimensions of its place grid.
+    """
+    if environment.track_graph is not None:
+        _, node_position = next(iter(environment.track_graph.nodes(data="pos")))
+        return len(node_position)
+    return int(environment.place_bin_centers_.shape[1])
+
+
 def _validate_covariate_time_length(
     predicted_transitions: np.ndarray, time: np.ndarray
 ) -> None:
@@ -1147,11 +1169,29 @@ class _InputValidationMixin:
         ------
         ValidationError
             If position is None but Local states or a non-local position
-            penalty read it, or position is 1-D (one column) while an
-            environment has a track graph, which needs raw 2-D positions.
+            penalty read it, position is 1-D (one column) while an
+            environment has a track graph, which needs raw 2-D positions, or
+            position has another number of columns than a fitted
+            environment's positions.
         """
         if position is not None:
             self._validate_position_dimensionality(position, context="predict")
+            n_columns = 1 if position.ndim == 1 else position.shape[1]
+            for environment in self.environments_:
+                expected = _position_columns(environment)
+                if n_columns != expected:
+                    msg = (
+                        f"position has {n_columns} column(s), but environment "
+                        f"{environment.environment_name!r} was fitted on "
+                        f"positions with {expected} columns"
+                    )
+                    raise ValidationError(
+                        msg,
+                        expected=f"position of shape (n_time_position, {expected})",
+                        got=f"shape {position.shape}",
+                        hint="Decode with the same position columns, in the same "
+                        "order and units, as the detector was fitted with.",
+                    )
             return
         if not self._decode_reads_position():
             return
