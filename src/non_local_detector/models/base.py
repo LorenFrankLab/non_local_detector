@@ -160,7 +160,6 @@ from non_local_detector.transition_operators import (
     _one_bin_block,
 )
 from non_local_detector.types import (
-    ClusterlessAlgorithm,
     ContinuousInitialConditions,
     ContinuousTransitions,
     DiscreteTransitions,
@@ -170,7 +169,6 @@ from non_local_detector.types import (
     Observations,
     OutputMode,
     ReturnOutputs,
-    SortedSpikesAlgorithm,
     StateNames,
     Stickiness,
     TransitionRepresentation,
@@ -186,9 +184,6 @@ logger = getLogger(__name__)
 # The detector type of a method that returns ``self`` (``typing.Self`` needs
 # Python 3.11).
 _Detector = TypeVar("_Detector", bound="_DetectorBase")
-
-# Removed clusterless algorithms that stored parameter sets may still name.
-_REMOVED_CLUSTERLESS_ALGORITHMS = frozenset({"clusterless_kde_log"})
 
 
 @dataclass(frozen=True)
@@ -3342,7 +3337,7 @@ class ClusterlessDetector(_DetectorBase):
         continuous_transition_types: ContinuousTransitions,
         observation_models: Observations,
         environments: Environments,
-        clusterless_algorithm: ClusterlessAlgorithm = "clusterless_kde",
+        clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames = None,
@@ -3375,7 +3370,7 @@ class ClusterlessDetector(_DetectorBase):
             Observation models for the detector.
         environments : Environments
             Environments in which the detector operates.
-        clusterless_algorithm : {"clusterless_kde", "clusterless_gmm", "clusterless_mark_glm", "clusterless_diffusion"}, optional
+        clusterless_algorithm : str, optional
             Algorithm for clusterless spikes, by default "clusterless_kde".
         clusterless_algorithm_params : dict or None, optional
             Parameters for the clusterless algorithm. Stored as-is (``None``
@@ -3428,11 +3423,10 @@ class ClusterlessDetector(_DetectorBase):
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,
         )
-        # Typed str, not ClusterlessAlgorithm: a removed name that stored
-        # parameter sets, such as Spyglass rows, still hold constructs, for
-        # inspection, and fitting raises.
-        self.clusterless_algorithm: str = clusterless_algorithm
-        if self.clusterless_algorithm not in _REMOVED_CLUSTERLESS_ALGORITHMS:
+        self.clusterless_algorithm = clusterless_algorithm
+        # A removed name that stored parameter sets, such as Spyglass rows,
+        # still hold: they construct, for inspection, and fitting raises.
+        if clusterless_algorithm != "clusterless_kde_log":
             self._clusterless_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
@@ -4475,7 +4469,7 @@ class SortedSpikesDetector(_DetectorBase):
         continuous_transition_types: ContinuousTransitions,
         observation_models: Observations,
         environments: Environments,
-        sorted_spikes_algorithm: SortedSpikesAlgorithm = "sorted_spikes_kde",
+        sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames = None,
@@ -4508,7 +4502,7 @@ class SortedSpikesDetector(_DetectorBase):
             Observation models for the detector.
         environments : Environments
             Environments in which the detector operates.
-        sorted_spikes_algorithm : {"sorted_spikes_kde", "sorted_spikes_glm", "sorted_spikes_mrf", "sorted_spikes_diffusion"}, optional
+        sorted_spikes_algorithm : str, optional
             Algorithm for sorted spikes, by default "sorted_spikes_kde".
         sorted_spikes_algorithm_params : dict or None, optional
             Parameters for the sorted spikes algorithm. Stored as-is (``None``

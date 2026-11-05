@@ -17,14 +17,12 @@ from non_local_detector.models.base import (
     SortedSpikesDetector,
 )
 from non_local_detector.types import (
-    ClusterlessAlgorithm,
     ContinuousInitialConditions,
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
     FrozenTransitionRows,
     Observations,
-    SortedSpikesAlgorithm,
     StateNames,
     Stickiness,
 )
@@ -77,7 +75,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         ``ObservationModel()`` for the others.
     environments : Environments, optional
         Spatial environment, by default ``Environment(environment_name="")``.
-    sorted_spikes_algorithm : {"sorted_spikes_kde", "sorted_spikes_glm", "sorted_spikes_mrf", "sorted_spikes_diffusion"}, optional
+    sorted_spikes_algorithm : str, optional
         Sorted-spikes likelihood algorithm, a key of
         ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
     sorted_spikes_algorithm_params : dict or None, optional
@@ -147,7 +145,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
-        sorted_spikes_algorithm: SortedSpikesAlgorithm = "sorted_spikes_kde",
+        sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
@@ -233,7 +231,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         ``ObservationModel()`` for the others.
     environments : Environments, optional
         Spatial environment, by default ``Environment(environment_name="")``.
-    clusterless_algorithm : {"clusterless_kde", "clusterless_gmm", "clusterless_mark_glm", "clusterless_diffusion"}, optional
+    clusterless_algorithm : str, optional
         Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
         by default "clusterless_kde".
     clusterless_algorithm_params : dict or None, optional
@@ -304,7 +302,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations | None = None,
         environments: Environments | None = None,
-        clusterless_algorithm: ClusterlessAlgorithm = "clusterless_kde",
+        clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
