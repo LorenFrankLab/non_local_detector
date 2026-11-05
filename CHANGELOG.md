@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** `create_interactive_1D_decoding_figurl` and `create_interactive_2D_decoding_figurl` are always importable from `non_local_detector.visualization`. Without the optional `sortingview` dependency they previously vanished silently (`AttributeError`/`ImportError` on import); accessing them now raises `ImportError` with the hint `pip install "non_local_detector[viz]"`. Only a missing `sortingview` is reported this way; other import errors propagate.
 - **Fixed:** `create_2D_decode_view` raises `ValidationError` (a `ValueError`) with expected/got/hint when `position_time`, `position` and `posterior` lengths disagree, instead of an `assert` that is skipped under `python -O`.
 - The unused `snapshot` and `gpu` pytest markers are removed; regression protection is the golden-regression tests.
+- **Changed:** the parallel movie renderer behind `visualization.movie` reports its progress and the ffmpeg command through the `non_local_detector.visualization._parallel_video_writer` logger at INFO level instead of printing to stdout, as the rest of the package does; configure `logging` (for example `logging.basicConfig(level=logging.INFO)`) to see it.
 
 ### Detector constructors
 

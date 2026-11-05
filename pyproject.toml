@@ -153,8 +153,6 @@ convention = "numpy"
 "docs/tutorials/**" = ["T201", "B018"]
 # Compares path strings as frames report them; Path.resolve would follow links.
 "src/non_local_detector/_warnings.py" = ["PTH"]
-# Progress of a long render, shown without logging configured.
-"src/non_local_detector/visualization/_parallel_video_writer.py" = ["T201"]
 
 # MyPy configuration
 [tool.mypy]
