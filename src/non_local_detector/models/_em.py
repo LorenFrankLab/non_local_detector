@@ -176,6 +176,13 @@ def _validate_em_options(
         Whether EM keeps the full likelihood in memory.
     replay_cache_bytes : int or None
         Structured EM's replay cache budget.
+
+    Raises
+    ------
+    ValidationError
+        If an option does not apply to the EM path.
+    FileExistsError
+        If ``result_path`` already exists.
     """
     for name, value, minimum in (
         ("chunk_size", chunk_size, 1),
@@ -235,6 +242,10 @@ def _validate_em_options(
                 "it to the store instead."
             ),
         )
+    if result_path is not None and Path(result_path).exists():
+        # The store refuses it too, but only at the end of EM.
+        msg = f"result_path {result_path} already exists; pass a new path"
+        raise FileExistsError(msg)
 
 
 def _dense_em_memory(n_time: int, n_bins: int) -> tuple[int, int | None, str]:
