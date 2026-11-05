@@ -1109,6 +1109,28 @@ def _warn_if_off_grid(
     )
 
 
+def _missing_covariates_error(
+    *, reason: str, expected: str, hint: str, example: str
+) -> ValidationError:
+    """Return the error of a call without the covariates its transitions need.
+
+    Parameters
+    ----------
+    reason : str
+        Why the transitions need them.
+    expected, hint, example : str
+        What the call should pass, as ``ValidationError`` takes them.
+
+    Returns
+    -------
+    error : ValidationError
+    """
+    msg = f"Missing required parameter: discrete_transition_covariate_data ({reason})"
+    return ValidationError(
+        msg, expected=expected, got="None", hint=hint, example=example
+    )
+
+
 def _validate_covariate_time_length(
     covariate_rows: np.ndarray, time: np.ndarray
 ) -> None:

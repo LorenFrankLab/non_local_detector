@@ -112,6 +112,7 @@ from non_local_detector.models._input_validation import (
     _DecodeInputs,
     _EncodingInputs,
     _InputValidationMixin,
+    _missing_covariates_error,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
     _numeric_spike_times_list,
@@ -1643,16 +1644,11 @@ class _DetectorBase(
             not self.discrete_transition_type.is_stationary
             and discrete_transition_covariate_data is None
         ):
-            msg = (
-                "Missing required parameter: discrete_transition_covariate_data "
-                f"({type(self.discrete_transition_type).__name__} depends on "
-                "covariates)"
-            )
-            raise ValidationError(
-                msg,
+            raise _missing_covariates_error(
+                reason=f"{type(self.discrete_transition_type).__name__} depends "
+                "on covariates",
                 expected="the training values of the covariates named in the "
                 "transition formula",
-                got="None",
                 hint="Pass the covariates, or use a stationary transition such as "
                 "DiscreteStationaryDiagonal.",
                 example="    detector.fit(position_time, position, spike_times, "
@@ -2312,17 +2308,12 @@ class _DetectorBase(
         if covariate_data is None:
             if self.discrete_transition_coefficients_ is None:
                 return self.discrete_state_transitions_
-            msg = (
-                "Missing required parameter: discrete_transition_covariate_data "
-                "(the discrete transitions depend on covariates)"
-            )
-            raise ValidationError(
-                msg,
+            raise _missing_covariates_error(
+                reason="the discrete transitions depend on covariates",
                 expected=(
                     "the covariates named in the transition formula, one row per "
                     f"decode bin ({len(time_centers)} rows)"
                 ),
-                got="None",
                 hint=(
                     "The transitions fitted on the training covariates describe "
                     "the training recording only. Pass the covariates of the "
