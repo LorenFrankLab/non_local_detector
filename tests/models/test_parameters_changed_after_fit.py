@@ -8,8 +8,10 @@ saved.
 
 import copy
 
+import matplotlib as mpl
 import numpy as np
 import pytest
+import xarray as xr
 
 from non_local_detector import (
     Environment,
@@ -21,6 +23,9 @@ from non_local_detector import (
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
 from tests.models._helpers import SORTED_SIM_RATE
+
+mpl.use("Agg")
+import matplotlib.pyplot as plt
 
 pytestmark = pytest.mark.integration
 
@@ -145,3 +150,34 @@ def test_saving_after_changing_a_transition_in_place_is_refused(fitted, tmp_path
 
     with pytest.raises(ValidationError, match="continuous_transition_types"):
         changed.save_model(tmp_path / "model.nld")
+
+
+STATE_CHANGES = {
+    "state_names": CHANGES["state_names"],
+    # Every state non-local, so the Local and No-Spike states would join the
+    # conditional posterior.
+    "observation_models": lambda detector: {
+        "observation_models": [
+            ObservationModel(obs.environment_name)
+            for obs in detector.observation_models
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize("change", STATE_CHANGES)
+def test_reading_results_after_set_params_uses_the_fitted_states(fitted, change):
+    detector, _, results = fitted
+    changed = detector.copy().set_params(**STATE_CHANGES[change](detector))
+
+    xr.testing.assert_identical(
+        changed.get_conditional_non_local_posterior(results),
+        detector.get_conditional_non_local_posterior(results),
+    )
+    fig, ax = plt.subplots()
+    try:
+        changed.plot_discrete_state_transition(ax=ax)
+        labels = [label.get_text() for label in ax.get_xticklabels()]
+    finally:
+        plt.close(fig)
+    assert labels == list(detector.state_names)

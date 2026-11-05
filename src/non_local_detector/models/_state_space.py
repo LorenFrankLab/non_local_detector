@@ -190,6 +190,25 @@ def layout_parameters(detector: Any) -> dict[str, Any]:
     )
 
 
+def fitted_states(detector: Any) -> Any:
+    """Return what holds the state names and observation models a detector decodes with.
+
+    The fit's ``state_space_``, whose names label the detector's results; the
+    detector itself, with its current parameters, before a fit. Both have
+    ``state_names`` and ``observation_models``.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        Fitted or unfitted detector.
+
+    Returns
+    -------
+    states : StateSpace or _DetectorBase
+    """
+    return vars(detector).get("state_space_", detector)
+
+
 def has_place_bins(
     observation: ObservationModel, local_position_std: float | None
 ) -> bool:

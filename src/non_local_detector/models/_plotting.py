@@ -24,7 +24,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
 )
 from non_local_detector.exceptions import ConfigurationError, ValidationError
-from non_local_detector.models._state_space import StateSpace
+from non_local_detector.models._state_space import StateSpace, fitted_states
 
 
 class _FittedDetector(Protocol):
@@ -84,6 +84,7 @@ class _PlottingMixin:
         _refuse_untrusted_transition(
             self.discrete_transition_type, "plot the transitions"
         )
+        state_names = fitted_states(self).state_names
         if self.discrete_state_transitions_.ndim == 2:
             if ax is None:
                 ax = plt.gca()
@@ -99,7 +100,7 @@ class _PlottingMixin:
                 vmin, vmax = 0.0, 1.0
                 label = "Probability"
 
-            n_states = len(self.state_names)
+            n_states = len(state_names)
             mesh = ax.pcolormesh(
                 discrete_state_transition,
                 vmin=vmin,
@@ -110,8 +111,8 @@ class _PlottingMixin:
             ax.set_xlim(0, n_states)
             ax.set_ylim(n_states, 0)
             ticks = np.arange(n_states) + 0.5
-            ax.set_xticks(ticks, labels=self.state_names)
-            ax.set_yticks(ticks, labels=self.state_names)
+            ax.set_xticks(ticks, labels=state_names)
+            ax.set_yticks(ticks, labels=state_names)
             cbar = ax.figure.colorbar(mesh, ax=ax, label=label)
             plt.setp(cbar.outline, visible=False)
             for spine in ax.spines.values():
@@ -144,7 +145,6 @@ class _PlottingMixin:
         else:
             discrete_transition_design_matrix = self.discrete_transition_design_matrix_
             discrete_transition_coefficients = self.discrete_transition_coefficients_
-            state_names = self.state_names
 
             if discrete_transition_design_matrix is None:
                 msg = "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
