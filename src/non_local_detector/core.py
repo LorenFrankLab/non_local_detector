@@ -2401,6 +2401,10 @@ class FilterSmootherResult(NamedTuple):
         Increasing time indices whose log likelihoods are ``-inf`` in every
         state bin. Found during the forward pass, so they are available even
         when the log likelihoods are not cached (``log_likelihoods`` is None).
+    transition_responses : np.ndarray, shape (n_time - 1, n_states, n_states), or None
+        Expected discrete transitions from each row to the next, when
+        :func:`chunked_filter_smoother_covariate_dependent` was asked for them
+        (``transition_responses=True``); otherwise None.
     """
 
     acausal_posterior: np.ndarray | jax.Array
@@ -2412,11 +2416,12 @@ class FilterSmootherResult(NamedTuple):
     causal_posterior: np.ndarray | jax.Array
     predictive_posterior: np.ndarray | jax.Array
     degenerate_indices: np.ndarray
+    transition_responses: np.ndarray | None = None
 
 
 def _chunked_filter_smoother(
     filter_chunk: Callable[..., tuple[Any, ...]],
-    smoother_chunk: Callable[..., jax.Array],
+    smoother_chunk: Callable[..., tuple[jax.Array, jax.Array | None]],
     *,
     time_edges: ArrayLike,
     state_ind: np.ndarray,
@@ -2449,7 +2454,10 @@ def _chunked_filter_smoother(
         ``smoother_chunk(filtered_probs, initial, time_inds, n_time)`` smooths
         one chunk backward from ``initial``, the smoothed row after the chunk
         (the last filtered row for the final chunk), as :func:`_smoother_impl`
-        does.
+        does, and returns ``(smoothed, pairs)``. ``pairs`` is None, or each
+        row's expected discrete transitions to the next row, shape
+        (n_rows, n_states, n_states), which the driver returns as
+        ``transition_responses``.
 
     time_edges : array_like, shape (n_time + 1,)
         Boundaries of the decoding bins; their number sets the time bins.
@@ -2490,6 +2498,7 @@ def _chunked_filter_smoother(
     causal_state_probabilities = []
     acausal_posterior = []
     acausal_state_probabilities = []
+    transition_pairs = []
     # Device increments, summed in float64 after the loop so the host does not
     # wait for each chunk's filter.
     chunk_increments = []
@@ -2657,7 +2666,7 @@ def _chunked_filter_smoother(
         # Donated: the filtered_probs slice (a copy) and the initial boundary
         # row are single-use per iteration.
         # Note: Small arrays may trigger benign donation warnings in tests
-        acausal_posterior_chunk = smoother_chunk(
+        acausal_posterior_chunk, pairs = smoother_chunk(
             filtered_probs=causal_posterior_jax[time_inds],
             initial=(
                 causal_posterior_jax[-1]
@@ -2671,11 +2680,19 @@ def _chunked_filter_smoother(
         acausal_state_probabilities.append(
             _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
         )
+        if pairs is not None:
+            transition_pairs.append(pairs)
 
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
     del acausal_posterior
+    # The last row has no successor (its pairs are zero).
+    transition_responses = (
+        np.asarray(jnp.concatenate(transition_pairs[::-1])[: n_time - 1])
+        if transition_pairs
+        else None
+    )
 
     # The state probabilities are small and always go to the host; the
     # (n_time, n_state_bins) posteriors only when the caller wants host arrays.
@@ -2691,6 +2708,7 @@ def _chunked_filter_smoother(
         causal_posterior=spatial(causal_posterior_jax),
         predictive_posterior=spatial(predictive_posterior_jax),
         degenerate_indices=degenerate_time_indices,
+        transition_responses=transition_responses,
     )
 
 
@@ -2816,17 +2834,15 @@ def chunked_filter_smoother(
         initial: jax.Array,
         time_inds: jax.Array,
         n_time: int,
-    ) -> jax.Array:
-        return cast(
-            jax.Array,
-            _smoother_internal(
-                transition_matrix=transition_matrix_jax,
-                filtered_probs=filtered_probs,
-                initial=initial,
-                ind=time_inds,
-                n_time=n_time,
-            ),
+    ) -> tuple[jax.Array, None]:
+        smoothed = _smoother_internal(
+            transition_matrix=transition_matrix_jax,
+            filtered_probs=filtered_probs,
+            initial=initial,
+            ind=time_inds,
+            n_time=n_time,
         )
+        return cast(jax.Array, smoothed), None
 
     return _chunked_filter_smoother(
         filter_chunk,
@@ -3197,7 +3213,9 @@ def _smoother_covariate_dependent_impl(
     initial: ArrayLike | None = None,
     ind: ArrayLike | None = None,
     n_time: int | None = None,
-) -> jax.Array:
+    *,
+    pair_statistics: bool = False,
+) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Smoother step with covariate dependent transitions.
 
     Parameters
@@ -3217,10 +3235,16 @@ def _smoother_covariate_dependent_impl(
     n_time : int, optional
         Rows in the whole recording; by default the length of
         ``filtered_probs``.
+    pair_statistics : bool, optional, keyword-only
+        Also return each row's expected discrete transitions to the next row
+        (see :func:`_smoother_scan`). By default False.
 
     Returns
     -------
     smoothed_probs : jax.Array, shape (n_time, n_state_bins)
+        Or ``(smoothed_probs, pairs)`` with ``pair_statistics``, pairs of
+        shape (n_time, n_states, n_states) and zero on the recording's last
+        row.
     """
     if n_time is None:
         n_time = filtered_probs.shape[0]
@@ -3230,7 +3254,7 @@ def _smoother_covariate_dependent_impl(
     if initial is None:
         initial = filtered_probs[-1]
     return cast(
-        jax.Array,
+        "jax.Array | tuple[jax.Array, jax.Array]",
         _smoother_scan(
             filtered_probs,
             discrete_transition_matrix,
@@ -3242,6 +3266,7 @@ def _smoother_covariate_dependent_impl(
             initial,
             ind,
             n_time,
+            pair_statistics=pair_statistics,
         )[1],
     )
 
@@ -3338,7 +3363,9 @@ def smoother_covariate_dependent(
 # (a donated buffer without one makes JAX warn "Some donated buffers were not
 # usable"). Donation is specified by name because call sites pass by keyword.
 _smoother_covariate_dependent_internal = jax.jit(
-    _smoother_covariate_dependent_impl, donate_argnames=("filtered_probs",)
+    _smoother_covariate_dependent_impl,
+    donate_argnames=("filtered_probs",),
+    static_argnames=("pair_statistics",),
 )
 
 
@@ -3359,6 +3386,7 @@ def chunked_filter_smoother_covariate_dependent(
     *,
     accumulate_log_likelihoods: bool = False,
     host_outputs: bool = True,
+    transition_responses: bool = False,
 ) -> FilterSmootherResult:
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
 
@@ -3424,6 +3452,12 @@ def chunked_filter_smoother_covariate_dependent(
         returned as NumPy arrays. If False, they stay on the device as JAX
         arrays, so a caller that needs only some of them, or computes on them
         on the device, does not copy all three to the host.
+    transition_responses : bool, optional, keyword-only
+        If True, the smoother also returns the expected discrete transitions
+        between consecutive rows, the responses of the covariate M-step, as
+        ``transition_responses``. They are computed in the smoother's scan
+        from the filtered rows, so no posterior is read again. By default
+        False.
 
     Returns
     -------
@@ -3431,8 +3465,9 @@ def chunked_filter_smoother_covariate_dependent(
         Named tuple of ``acausal_posterior``, ``acausal_state_probabilities``,
         ``marginal_log_likelihood``, ``causal_state_probabilities``,
         ``predictive_state_probabilities``, ``log_likelihoods``,
-        ``causal_posterior``, ``predictive_posterior`` and
-        ``degenerate_indices``; see :class:`FilterSmootherResult` for shapes.
+        ``causal_posterior``, ``predictive_posterior``,
+        ``degenerate_indices`` and ``transition_responses``; see
+        :class:`FilterSmootherResult` for shapes.
 
     Raises
     ------
@@ -3487,20 +3522,21 @@ def chunked_filter_smoother_covariate_dependent(
         initial: jax.Array,
         time_inds: jax.Array,
         n_time: int,
-    ) -> jax.Array:
+    ) -> tuple[jax.Array, jax.Array | None]:
         # The time slice is not donated: no output has its shape to reuse.
-        return cast(
-            jax.Array,
-            _smoother_covariate_dependent_internal(
-                discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
-                continuous_transition_matrix=continuous_transition_matrix_jax,
-                state_ind=state_ind_jax,
-                filtered_probs=filtered_probs,
-                initial=initial,
-                ind=time_inds,
-                n_time=n_time,
-            ),
+        smoothed = _smoother_covariate_dependent_internal(
+            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+            continuous_transition_matrix=continuous_transition_matrix_jax,
+            state_ind=state_ind_jax,
+            filtered_probs=filtered_probs,
+            initial=initial,
+            ind=time_inds,
+            n_time=n_time,
+            pair_statistics=transition_responses,
         )
+        if transition_responses:
+            return cast("tuple[jax.Array, jax.Array]", smoothed)
+        return cast(jax.Array, smoothed), None
 
     return _chunked_filter_smoother(
         filter_chunk,

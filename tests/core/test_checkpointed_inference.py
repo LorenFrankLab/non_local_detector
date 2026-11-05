@@ -15,11 +15,8 @@ from non_local_detector.core import (
     smoother,
     smoother_covariate_dependent,
 )
-from non_local_detector.discrete_state_transitions import (
-    estimate_discrete_transition_counts_from_expanded_posteriors,
-    estimate_discrete_transition_responses_from_factorized_posteriors,
-)
 from non_local_detector.result_store import open_result_store
+from tests._transition_statistics import expanded_counts, expanded_responses
 
 pytestmark = pytest.mark.unit
 
@@ -120,16 +117,17 @@ def test_transition_statistics_match_dense_posterior_estimates(covariate, chunk_
     edges, initial, ll, state_ind, kwargs, reference = problem(covariate)
     _, causal, predictive, acausal = reference
     if covariate:
-        expected = estimate_discrete_transition_responses_from_factorized_posteriors(
+        discrete = kwargs["discrete_transition_matrix"]
+        expected = expanded_responses(
             causal,
             predictive,
             acausal,
-            kwargs["continuous_transition_matrix"],
-            kwargs["discrete_transition_matrix"],
+            kwargs["continuous_transition_matrix"][np.newaxis]
+            * discrete[:, state_ind][:, :, state_ind],
             state_ind,
         )
     else:
-        expected = estimate_discrete_transition_counts_from_expanded_posteriors(
+        expected = expanded_counts(
             causal, predictive, acausal, kwargs["transition_matrix"], state_ind
         )
 
@@ -320,7 +318,7 @@ def test_transition_statistics_follow_degenerate_row_semantics(kind):
         initial, kwargs["transition_matrix"], effective
     )
     acausal = smoother(kwargs["transition_matrix"], causal)
-    expected = estimate_discrete_transition_counts_from_expanded_posteriors(
+    expected = expanded_counts(
         causal, predictive, acausal, kwargs["transition_matrix"], state_ind
     )
     result = checkpointed_forward_backward(

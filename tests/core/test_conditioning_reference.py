@@ -845,7 +845,7 @@ class TestMultiStepEnumerationReference:
                 continuous_transition_matrix=continuous,
                 **common,
             )
-        acausal, _, marginal, _, _, _, causal, predictive, _ = result
+        acausal, _, marginal, _, _, _, causal, predictive, *_ = result
 
         np.testing.assert_allclose(acausal, ref["smoothed"], atol=1e-5)
         np.testing.assert_allclose(causal, ref["filtered"], atol=1e-5)

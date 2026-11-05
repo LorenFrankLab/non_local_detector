@@ -36,9 +36,9 @@ from non_local_detector.core import check_converged
 from non_local_detector.discrete_state_transitions import (
     _covariate_transition_covariance,
     _discrete_transition_from_statistics,
-    _discrete_transition_statistics,
     _max_transition_change,
     _transition_log_prior,
+    estimate_discrete_transition_counts_from_factorized_posteriors,
 )
 from non_local_detector.exceptions import (
     CompatibilityWarning,
@@ -441,7 +441,7 @@ class _EMSettings:
     covariate_transitions : bool
         Whether the discrete transitions depend on covariates.
     transition_statistics : {None, "counts", "responses"}
-        What structured E-steps accumulate for the discrete M-step.
+        What each E-step returns for the discrete M-step.
     prior_tracks_counts : bool
         Whether the transition prior scales with each E-step's expected
         counts (``discrete_transition_prior_weight > 0``, stationary).
@@ -456,10 +456,11 @@ class _EMSettings:
     frozen_rows, free_rows : np.ndarray, shape (n_states,), or None
         Discrete-transition rows pinned and estimated.
     interior_state_ind : np.ndarray, shape (n_interior_state_bins,), or None
-        Dense EM with estimated transitions: state of each interior bin.
+        Dense EM with estimated stationary transitions: state of each
+        interior bin.
     interior_continuous_transition : np.ndarray or None
-        Dense EM with estimated transitions: the continuous transition over
-        the interior state bins.
+        Dense EM with estimated stationary transitions: the continuous
+        transition over the interior state bins.
     encoding_fit_arguments : dict or None
         Keyword arguments of ``_fit_encoding_model`` that the encoding M-step
         refits with, besides the posterior weights.
@@ -1131,10 +1132,12 @@ class _EMMixin:
             cache_likelihood = True
 
         covariate_transitions = not self.discrete_transition_type.is_stationary
-        # Structured EM accumulates the discrete M-step's statistics in its
-        # replay: per-row responses for covariate transitions, else counts.
+        # The discrete M-step's statistics: per-row responses for covariate
+        # transitions, accumulated in the smoother's scan (structured EM's
+        # replay or dense EM's smoother); else counts, which dense EM sums from
+        # the posteriors in one product over all rows.
         transition_statistics: TransitionStatistics | None = None
-        if checkpointed and estimate_discrete_transition:
+        if estimate_discrete_transition:
             transition_statistics = "responses" if covariate_transitions else "counts"
         # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary
         # transition) scale with each E-step's expected counts. Any other prior
@@ -1156,7 +1159,7 @@ class _EMMixin:
         prior_changes = prior_tracks_counts or prior_set_in_m_step
         interior_state_ind: np.ndarray | None = None
         interior_continuous_transition: np.ndarray | None = None
-        if estimate_discrete_transition and not checkpointed:
+        if transition_statistics == "counts" and not checkpointed:
             interior_state_bins = self.is_track_interior_state_bins_
             interior_state_ind = self.state_ind_[interior_state_bins]
             interior_continuous_transition = self.continuous_state_transitions_[
@@ -1297,6 +1300,7 @@ class _EMMixin:
                 cache_likelihood=settings.cache_likelihood,
                 log_likelihoods=state.run_log_likelihoods,
                 n_chunks=settings.n_chunks,
+                transition_responses=settings.transition_statistics == "responses",
             )
             acausal_state_probabilities = cast(
                 "np.ndarray", posterior.acausal_state_probabilities
@@ -1304,22 +1308,21 @@ class _EMMixin:
             marginal_log_likelihood = posterior.marginal_log_likelihood
             log_likelihood = posterior.log_likelihood
             first_smoothed = np.asarray(posterior.acausal_posterior[0])
-            # The transition statistics need only these posteriors, so
-            # take them now; the device arrays are released on return, before
-            # the M-step (an encoding refit allocates on the device too).
+            # Covariate responses come from the smoother. Stationary counts
+            # need only these posteriors, so take them now; the device arrays
+            # are released on return, before the M-step (an encoding refit
+            # allocates on the device too).
             transition_statistics = (
-                _discrete_transition_statistics(
+                estimate_discrete_transition_counts_from_factorized_posteriors(
                     posterior.causal_posterior,
                     posterior.predictive_posterior,
                     posterior.acausal_posterior,
                     cast("np.ndarray", settings.interior_continuous_transition),
-                    cast("np.ndarray", settings.interior_state_ind),
                     self.discrete_state_transitions_,
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
+                    cast("np.ndarray", settings.interior_state_ind),
                 )
-                if settings.estimate_discrete_transition
-                else None
+                if settings.transition_statistics == "counts"
+                else posterior.transition_responses
             )
         # Reusable by the next iteration: the likelihood depends only on the
         # data and the encoding model, and the encoding M-step clears this when

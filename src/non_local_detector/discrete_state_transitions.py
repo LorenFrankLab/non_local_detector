@@ -140,16 +140,6 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     return cast(np.ndarray, np.log(y_safe[..., :-1]) - np.log(y_safe[..., [-1]]))
 
 
-def _state_aggregation_matrix(state_ind: np.ndarray) -> np.ndarray:
-    """Return a bin-to-discrete-state aggregation matrix."""
-    state_ind = np.asarray(state_ind, dtype=int)
-    n_state_bins = state_ind.size
-    n_states = int(state_ind.max()) + 1
-    aggregation = np.zeros((n_state_bins, n_states))
-    aggregation[np.arange(n_state_bins), state_ind] = 1.0
-    return aggregation
-
-
 def _n_states_from_state_ind(state_ind: np.ndarray) -> int:
     """Return the number of discrete states represented by expanded bins."""
     return int(np.max(state_ind)) + 1
@@ -200,35 +190,6 @@ def _validate_expanded_posterior_shapes(
     return n_time, n_state_bins
 
 
-def _validate_expanded_transition_shape(
-    transition_matrix: np.ndarray,
-    n_time: int,
-    n_state_bins: int,
-) -> bool:
-    """Validate expanded transition shape and return whether it is stationary."""
-    expected_shape: tuple[int, ...]
-    if transition_matrix.ndim == 2:
-        expected_shape = (n_state_bins, n_state_bins)
-    elif transition_matrix.ndim == 3:
-        expected_shape = (n_time, n_state_bins, n_state_bins)
-    else:
-        msg = (
-            "transition_matrix must have shape (n_state_bins, n_state_bins) or "
-            "(n_time, n_state_bins, n_state_bins), "
-            f"got shape {transition_matrix.shape}"
-        )
-        raise ValueError(msg)
-
-    if transition_matrix.shape != expected_shape:
-        msg = (
-            f"transition_matrix must have shape {expected_shape}, "
-            f"got shape {transition_matrix.shape}"
-        )
-        raise ValueError(msg)
-
-    return transition_matrix.ndim == 2
-
-
 def _validate_continuous_transition_shape(
     continuous_transition_matrix: np.ndarray,
     n_state_bins: int,
@@ -243,47 +204,17 @@ def _validate_continuous_transition_shape(
         raise ValueError(msg)
 
 
-def _validate_factorized_discrete_transition_shape(
-    discrete_transition_matrix: np.ndarray,
-    n_time: int,
-    n_states: int,
-    *,
-    require_stationary: bool,
-) -> bool:
-    """Validate discrete transition shape and return whether it is stationary."""
-    stationary_shape = (n_states, n_states)
-    nonstationary_shape = (n_time, n_states, n_states)
-
-    if require_stationary:
-        if discrete_transition_matrix.shape != stationary_shape:
-            msg = (
-                "discrete_transition_matrix must be stationary with shape "
-                f"{stationary_shape}, got shape {discrete_transition_matrix.shape}"
-            )
-            raise ValueError(msg)
-        return True
-
-    expected_shape: tuple[int, ...]
-    if discrete_transition_matrix.ndim == 2:
-        expected_shape = stationary_shape
-    elif discrete_transition_matrix.ndim == 3:
-        expected_shape = nonstationary_shape
-    else:
-        msg = (
-            "discrete_transition_matrix must have shape (n_states, n_states) or "
-            "(n_time, n_states, n_states), "
-            f"got shape {discrete_transition_matrix.shape}"
-        )
-        raise ValueError(msg)
-
+def _validate_stationary_discrete_transition_shape(
+    discrete_transition_matrix: np.ndarray, n_states: int
+) -> None:
+    """Require a stationary discrete transition of shape (n_states, n_states)."""
+    expected_shape = (n_states, n_states)
     if discrete_transition_matrix.shape != expected_shape:
         msg = (
-            f"discrete_transition_matrix must have shape {expected_shape}, "
-            f"got shape {discrete_transition_matrix.shape}"
+            "discrete_transition_matrix must be stationary with shape "
+            f"{expected_shape}, got shape {discrete_transition_matrix.shape}"
         )
         raise ValueError(msg)
-
-    return discrete_transition_matrix.ndim == 2
 
 
 def _aggregate_xi_by_state_jax(
@@ -301,29 +232,6 @@ def _aggregate_xi_by_state_jax(
         state_ind,
         num_segments=n_states,
     )
-
-
-def _aggregate_factorized_xi_by_state_jax(
-    causal_t: jax.Array,
-    ratio: jax.Array,
-    continuous_transition_matrix: jax.Array,
-    discrete_transition_matrix: jax.Array,
-    target_masks: jax.Array,
-    source_state_ind: jax.Array,
-    n_states: int,
-) -> jax.Array:
-    """Aggregate factorized expanded-bin pair probabilities by state."""
-    # For each target state q, compute C @ (ratio * 1[state == q]).
-    # This follows the filter/smoother pattern of applying the transition as a
-    # dense operator to vectors, avoiding n_bins x n_bins pair-posterior
-    # temporaries while preserving exact dense-C semantics.
-    target_sum = continuous_transition_matrix @ (target_masks * ratio[jnp.newaxis, :]).T
-    source_sum = jax.ops.segment_sum(
-        causal_t[:, jnp.newaxis] * target_sum,
-        source_state_ind,
-        num_segments=n_states,
-    )
-    return source_sum * discrete_transition_matrix
 
 
 def _safe_ratio_jax(numerator: jax.Array, denominator: jax.Array) -> jax.Array:
@@ -501,364 +409,6 @@ def _stationary_counts(
     return counts
 
 
-@partial(
-    jax.jit,
-    static_argnames=(
-        "n_states",
-        "is_factorized",
-        "is_stationary",
-        "return_time_series",
-    ),
-)
-def _transition_pair_stats_jax(
-    causal_posterior: jax.Array,
-    predictive_posterior: jax.Array,
-    acausal_posterior: jax.Array,
-    transition_matrix: jax.Array,
-    continuous_transition_matrix: jax.Array,
-    state_ind: jax.Array,
-    n_states: int,
-    *,
-    is_factorized: bool,
-    is_stationary: bool,
-    return_time_series: bool,
-) -> jax.Array:
-    """JAX scan kernel for per-row responses or non-stationary counts.
-
-    Stationary counts use :func:`_stationary_counts` instead.
-    """
-    if is_stationary and not return_time_series:
-        msg = "stationary counts use _stationary_counts, not this scan"
-        raise ValueError(msg)
-    if is_factorized:
-        target_masks = jax.nn.one_hot(
-            state_ind,
-            n_states,
-            dtype=continuous_transition_matrix.dtype,
-        ).T
-
-    def aggregate(
-        causal_t: jax.Array,
-        predictive_next: jax.Array,
-        acausal_next: jax.Array,
-        transition_t: jax.Array,
-    ) -> jax.Array:
-        ratio = _safe_ratio_jax(acausal_next, predictive_next)
-        if is_factorized:
-            return _aggregate_factorized_xi_by_state_jax(
-                causal_t,
-                ratio,
-                continuous_transition_matrix,
-                transition_t,
-                target_masks,
-                state_ind,
-                n_states,
-            )
-
-        xi = causal_t[:, jnp.newaxis] * transition_t * ratio[jnp.newaxis, :]
-        return _aggregate_xi_by_state_jax(xi, state_ind, n_states)
-
-    if return_time_series:
-        if is_stationary:
-
-            def step(_: Any, inputs: tuple[Any, ...]) -> tuple[None, jax.Array]:
-                causal_t, predictive_next, acausal_next = inputs
-                return (
-                    None,
-                    aggregate(
-                        causal_t,
-                        predictive_next,
-                        acausal_next,
-                        transition_matrix,
-                    ),
-                )
-
-            _, response = jax.lax.scan(
-                step,
-                None,
-                (
-                    causal_posterior[:-1],
-                    predictive_posterior[1:],
-                    acausal_posterior[1:],
-                ),
-            )
-        else:
-
-            def step(_: Any, inputs: tuple[Any, ...]) -> tuple[None, jax.Array]:
-                causal_t, predictive_next, acausal_next, transition_t = inputs
-                return (
-                    None,
-                    aggregate(
-                        causal_t,
-                        predictive_next,
-                        acausal_next,
-                        transition_t,
-                    ),
-                )
-
-            _, response = jax.lax.scan(
-                step,
-                None,
-                (
-                    causal_posterior[:-1],
-                    predictive_posterior[1:],
-                    acausal_posterior[1:],
-                    transition_matrix[:-1],
-                ),
-            )
-
-        return response
-
-    initial_counts = jnp.zeros(
-        (n_states, n_states),
-        dtype=jnp.result_type(
-            causal_posterior,
-            predictive_posterior,
-            acausal_posterior,
-            transition_matrix,
-            continuous_transition_matrix,
-        ),
-    )
-
-    def accumulate(
-        joint_sum: jax.Array, inputs: tuple[Any, ...]
-    ) -> tuple[jax.Array, None]:
-        causal_t, predictive_next, acausal_next, transition_t = inputs
-        counts_t = aggregate(
-            causal_t,
-            predictive_next,
-            acausal_next,
-            transition_t,
-        )
-        return joint_sum + counts_t, None
-
-    joint_sum, _ = jax.lax.scan(
-        accumulate,
-        initial_counts,
-        (
-            causal_posterior[:-1],
-            predictive_posterior[1:],
-            acausal_posterior[1:],
-            transition_matrix[:-1],
-        ),
-    )
-
-    return joint_sum
-
-
-def estimate_discrete_transition_responses_from_expanded_posteriors(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    transition_matrix: np.ndarray | jax.Array,
-    state_ind: np.ndarray,
-) -> np.ndarray:
-    """Return exact expected discrete transition responses.
-
-    Parameters
-    ----------
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Filtered posterior over expanded state bins.
-    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
-        One-step predictive posterior over expanded state bins.
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Smoothed posterior over expanded state bins.
-    transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins) or
-        (n_time, n_state_bins, n_state_bins)
-        Full expanded transition matrix used by filtering.
-    state_ind : np.ndarray, shape (n_state_bins,)
-        Discrete-state index for each expanded state bin.
-
-    Returns
-    -------
-    response : np.ndarray, shape (n_time - 1, n_states, n_states)
-        Exact expected transition counts from each discrete state to each
-        discrete state at each time.
-    """
-    causal_posterior = np.asarray(causal_posterior)
-    predictive_posterior = np.asarray(predictive_posterior)
-    acausal_posterior = np.asarray(acausal_posterior)
-    state_ind = np.asarray(state_ind, dtype=int)
-    n_time, n_state_bins = _validate_expanded_posterior_shapes(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        state_ind,
-    )
-    transition_matrix = np.asarray(transition_matrix)
-    is_stationary = _validate_expanded_transition_shape(
-        transition_matrix,
-        n_time,
-        n_state_bins,
-    )
-    n_states = _n_states_from_state_ind(state_ind)
-    transition_matrix = jnp.asarray(transition_matrix)
-    response = _transition_pair_stats_jax(
-        jnp.asarray(causal_posterior),
-        jnp.asarray(predictive_posterior),
-        jnp.asarray(acausal_posterior),
-        transition_matrix,
-        jnp.empty((0, 0), dtype=transition_matrix.dtype),
-        jnp.asarray(state_ind),
-        n_states,
-        is_factorized=False,
-        is_stationary=is_stationary,
-        return_time_series=True,
-    )
-
-    return np.asarray(response)
-
-
-def estimate_discrete_transition_counts_from_expanded_posteriors(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    transition_matrix: np.ndarray | jax.Array,
-    state_ind: np.ndarray,
-) -> np.ndarray:
-    """Return exact expected discrete transition counts.
-
-    Parameters
-    ----------
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Filtered posterior over expanded state bins.
-    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
-        One-step predictive posterior over expanded state bins.
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Smoothed posterior over expanded state bins.
-    transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins) or
-        (n_time, n_state_bins, n_state_bins)
-        Full expanded transition matrix used by filtering.
-    state_ind : np.ndarray, shape (n_state_bins,)
-        Discrete-state index for each expanded state bin.
-
-    Returns
-    -------
-    joint_sum : np.ndarray, shape (n_states, n_states)
-        Exact expected transition counts from each discrete state to each
-        discrete state.
-    """
-    causal_posterior = np.asarray(causal_posterior)
-    predictive_posterior = np.asarray(predictive_posterior)
-    acausal_posterior = np.asarray(acausal_posterior)
-    state_ind = np.asarray(state_ind, dtype=int)
-    n_time, n_state_bins = _validate_expanded_posterior_shapes(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        state_ind,
-    )
-    transition_matrix = np.asarray(transition_matrix)
-    is_stationary = _validate_expanded_transition_shape(
-        transition_matrix,
-        n_time,
-        n_state_bins,
-    )
-    n_states = _n_states_from_state_ind(state_ind)
-    transition_matrix = jnp.asarray(transition_matrix)
-    if is_stationary:
-        joint_sum = _stationary_counts(
-            causal_posterior,
-            predictive_posterior,
-            acausal_posterior,
-            transition_matrix,
-            state_ind,
-            n_states,
-        )
-        return np.asarray(joint_sum)
-    joint_sum = _transition_pair_stats_jax(
-        jnp.asarray(causal_posterior),
-        jnp.asarray(predictive_posterior),
-        jnp.asarray(acausal_posterior),
-        transition_matrix,
-        jnp.empty((0, 0), dtype=transition_matrix.dtype),
-        jnp.asarray(state_ind),
-        n_states,
-        is_factorized=False,
-        is_stationary=False,
-        return_time_series=False,
-    )
-
-    return np.asarray(joint_sum)
-
-
-def estimate_discrete_transition_responses_from_factorized_posteriors(
-    causal_posterior: np.ndarray | jax.Array,
-    predictive_posterior: np.ndarray | jax.Array,
-    acausal_posterior: np.ndarray | jax.Array,
-    continuous_transition_matrix: np.ndarray | jax.Array,
-    discrete_transition_matrix: np.ndarray | jax.Array,
-    state_ind: np.ndarray,
-) -> np.ndarray:
-    """Return exact discrete transition responses from factorized transitions.
-
-    This is the streaming equivalent of first constructing the full expanded
-    transition from the stationary or time-varying discrete transition matrix
-    and then calling
-    `estimate_discrete_transition_responses_from_expanded_posteriors`.
-
-    Parameters
-    ----------
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Filtered posterior over expanded state bins.
-    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
-        One-step predictive posterior over expanded state bins.
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Smoothed posterior over expanded state bins.
-    continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
-        Continuous transition matrix over expanded state bins.
-    discrete_transition_matrix : np.ndarray, shape (n_states, n_states) or
-        (n_time, n_states, n_states)
-        Stationary or time-varying discrete transition matrix.
-    state_ind : np.ndarray, shape (n_state_bins,)
-        Discrete-state index for each expanded state bin.
-
-    Returns
-    -------
-    response : np.ndarray, shape (n_time - 1, n_states, n_states)
-        Exact expected transition counts from each discrete state to each
-        discrete state at each time.
-    """
-    causal_posterior = _host_or_device(causal_posterior)
-    predictive_posterior = _host_or_device(predictive_posterior)
-    acausal_posterior = _host_or_device(acausal_posterior)
-    state_ind = np.asarray(state_ind, dtype=int)
-    n_time, n_state_bins = _validate_expanded_posterior_shapes(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        state_ind,
-    )
-    continuous_transition_matrix = np.asarray(continuous_transition_matrix)
-    _validate_continuous_transition_shape(
-        continuous_transition_matrix,
-        n_state_bins,
-    )
-    n_states = _n_states_from_state_ind(state_ind)
-    discrete_transition_matrix = np.asarray(discrete_transition_matrix)
-    is_stationary = _validate_factorized_discrete_transition_shape(
-        discrete_transition_matrix,
-        n_time,
-        n_states,
-        require_stationary=False,
-    )
-    continuous_transition_matrix = jnp.asarray(continuous_transition_matrix)
-    discrete_transition_matrix = jnp.asarray(discrete_transition_matrix)
-    response = _transition_pair_stats_jax(
-        jnp.asarray(causal_posterior),
-        jnp.asarray(predictive_posterior),
-        jnp.asarray(acausal_posterior),
-        discrete_transition_matrix,
-        continuous_transition_matrix,
-        jnp.asarray(state_ind),
-        n_states,
-        is_factorized=True,
-        is_stationary=is_stationary,
-        return_time_series=True,
-    )
-    return np.asarray(response)
-
-
 def estimate_discrete_transition_counts_from_factorized_posteriors(
     causal_posterior: np.ndarray | jax.Array,
     predictive_posterior: np.ndarray | jax.Array,
@@ -900,7 +450,7 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     predictive_posterior = _host_or_device(predictive_posterior)
     acausal_posterior = _host_or_device(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
-    n_time, n_state_bins = _validate_expanded_posterior_shapes(
+    _, n_state_bins = _validate_expanded_posterior_shapes(
         causal_posterior,
         predictive_posterior,
         acausal_posterior,
@@ -913,12 +463,7 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     )
     n_states = _n_states_from_state_ind(state_ind)
     discrete_transition_matrix = np.asarray(discrete_transition_matrix)
-    _validate_factorized_discrete_transition_shape(
-        discrete_transition_matrix,
-        n_time,
-        n_states,
-        require_stationary=True,
-    )
+    _validate_stationary_discrete_transition_shape(discrete_transition_matrix, n_states)
     joint_sum = _stationary_counts(
         causal_posterior,
         predictive_posterior,
@@ -2387,70 +1932,6 @@ def dirichlet_neg_log_likelihood(
         )
 
 
-def dirichlet_gradient(
-    coefficients: np.ndarray,
-    design_matrix: np.ndarray,
-    response: np.ndarray,
-    alpha: float | np.ndarray = 1.0,
-    l2_penalty: float = 0.1,
-    smoothness: float = 0.0,
-    smoothness_matrix: np.ndarray | None = None,
-) -> np.ndarray:
-    """Gradient of :func:`dirichlet_neg_log_likelihood`.
-
-    Parameters
-    ----------
-    coefficients, design_matrix, response, alpha, l2_penalty, smoothness, smoothness_matrix
-        As in :func:`dirichlet_neg_log_likelihood`.
-
-    Returns
-    -------
-    gradient : np.ndarray, shape (n_coefficients * (n_states - 1),)
-        Gradient of the negative log posterior with respect to the
-        flattened coefficients.
-    """
-    with _float64_jax():
-        return _blocked_loss_and_gradient(
-            coefficients,
-            *_row_problem(_transition_blocks(design_matrix), response, alpha),
-            _penalty_matrix(
-                np.shape(design_matrix)[1], l2_penalty, smoothness, smoothness_matrix
-            ),
-        )[1]
-
-
-def dirichlet_hessian(
-    coefficients: np.ndarray,
-    design_matrix: np.ndarray,
-    response: np.ndarray,
-    alpha: float | np.ndarray = 1.0,
-    l2_penalty: float = 0.1,
-    smoothness: float = 0.0,
-    smoothness_matrix: np.ndarray | None = None,
-) -> np.ndarray:
-    """Hessian of :func:`dirichlet_neg_log_likelihood`.
-
-    Parameters
-    ----------
-    coefficients, design_matrix, response, alpha, l2_penalty, smoothness, smoothness_matrix
-        As in :func:`dirichlet_neg_log_likelihood`.
-
-    Returns
-    -------
-    hessian : np.ndarray, shape (n_parameters, n_parameters)
-        ``n_parameters = n_coefficients * (n_states - 1)``, in the order of
-        the flattened coefficients.
-    """
-    with _float64_jax():
-        return _blocked_hessian(
-            coefficients,
-            *_row_problem(_transition_blocks(design_matrix), response, alpha),
-            _penalty_matrix(
-                np.shape(design_matrix)[1], l2_penalty, smoothness, smoothness_matrix
-            ),
-        )
-
-
 def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
     """Make a transition matrix with diagonal probabilities `diag`.
 
@@ -2478,60 +1959,6 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
     )
 
     return transition_matrix
-
-
-def _discrete_transition_statistics(
-    causal_posterior: np.ndarray,
-    predictive_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    continuous_transition: np.ndarray,
-    state_ind: np.ndarray,
-    discrete_transition: np.ndarray,
-    discrete_transition_coefficients: np.ndarray | None,
-    discrete_transition_design_matrix: DesignMatrix | None,
-) -> np.ndarray:
-    """Return expected discrete transition statistics from the expanded posteriors.
-
-    Parameters
-    ----------
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Expanded-bin filtered posterior P(X_t | y_{1:t}).
-    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Expanded-bin one-step predictive posterior P(X_{t+1} | y_{1:t}).
-    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        Expanded-bin smoothed posterior P(X_t | y_{1:T}).
-    continuous_transition : np.ndarray, shape (n_state_bins, n_state_bins)
-        Continuous transition matrix over expanded state bins.
-    state_ind : np.ndarray, shape (n_state_bins,)
-        Discrete-state index for each expanded state bin.
-    discrete_transition : np.ndarray, shape (n_states, n_states) or (n_time, n_states, n_states)
-        Current discrete transition matrix.
-    discrete_transition_coefficients : np.ndarray | None, shape (n_coefficients, n_states, n_states - 1)
-        Current coefficient estimate (if non-stationary).
-    discrete_transition_design_matrix : patsy.DesignMatrix | None
-        Design matrix (if non-stationary).
-
-    Returns
-    -------
-    statistics : np.ndarray
-        Expected transition counts, shape (n_states, n_states), for a
-        stationary transition; per-row responses, shape
-        (n_time - 1, n_states, n_states), for a covariate transition.
-    """
-    return (
-        estimate_discrete_transition_responses_from_factorized_posteriors
-        if _is_nonstationary(
-            discrete_transition_coefficients, discrete_transition_design_matrix
-        )
-        else estimate_discrete_transition_counts_from_factorized_posteriors
-    )(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        continuous_transition,
-        discrete_transition,
-        state_ind,
-    )
 
 
 def _transition_log_prior(
@@ -2694,8 +2121,11 @@ def _discrete_transition_from_statistics(
         Expected transition counts, shape (n_states, n_states), for a
         stationary transition; per-row responses, shape
         (n_time - 1, n_states, n_states), for a covariate transition.
-    discrete_transition_coefficients, discrete_transition_design_matrix
-        As in :func:`_discrete_transition_statistics`.
+    discrete_transition_coefficients : np.ndarray or None
+        Current coefficients, shape (n_coefficients, n_states, n_states - 1),
+        of a covariate transition; None for a stationary one.
+    discrete_transition_design_matrix : patsy.DesignMatrix or None
+        Design matrix of a covariate transition; None for a stationary one.
     transition_concentration : float
         Dirichlet prior concentration.
     transition_stickiness : float or np.ndarray
