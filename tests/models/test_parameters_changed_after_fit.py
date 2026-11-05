@@ -19,6 +19,7 @@ from non_local_detector import (
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryDiagonal,
     Environment,
+    NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
     RandomWalk,
     SortedSpikesDecoder,
@@ -26,7 +27,7 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import ParameterWarning, ValidationError
 from non_local_detector.observation_models import ObservationModel
-from tests.models._helpers import SORTED_SIM_RATE
+from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 mpl.use("Agg")
 import matplotlib.pyplot as plt
@@ -46,20 +47,76 @@ RECORDED = (
 
 
 @pytest.fixture(scope="module")
-def fitted(sorted_sim):
-    """A fitted detector, its recording, and what it decodes."""
+def recordings(sorted_sim, clusterless_sim):
+    """Each family's fitted detector and what it decodes."""
     time, position, spike_times = sorted_sim
-    detector = NonLocalSortedSpikesDetector(
+    sorted_detector = NonLocalSortedSpikesDetector(
         sampling_frequency=SORTED_SIM_RATE,
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times)
+    clusterless_detector = NonLocalClusterlessDetector(
+        sampling_frequency=CLUSTERLESS_SIM_RATE,
+        clusterless_algorithm_params={"disable_progress_bar": True},
+    ).fit(
+        clusterless_sim.position_time,
+        clusterless_sim.position,
+        clusterless_sim.spike_times,
+        clusterless_sim.spike_waveform_features,
     )
-    detector.fit(time, position, spike_times)
-    decode = {
-        "spike_times": spike_times,
-        "time_edges": time_edges_from_centers(time[:200]),
-        "position_time": time,
-        "position": position,
+    return {
+        "sorted": (
+            sorted_detector,
+            {
+                "spike_times": spike_times,
+                "time_edges": time_edges_from_centers(time[:200]),
+                "position_time": time,
+                "position": position,
+            },
+        ),
+        "clusterless": (
+            clusterless_detector,
+            {
+                "spike_times": clusterless_sim.spike_times,
+                "spike_waveform_features": clusterless_sim.spike_waveform_features,
+                "time_edges": time_edges_from_centers(
+                    clusterless_sim.position_time[:200]
+                ),
+                "position_time": clusterless_sim.position_time,
+                "position": clusterless_sim.position,
+            },
+        ),
     }
+
+
+def _saved_and_loaded(detector, tmp_path_factory):
+    path = tmp_path_factory.mktemp("saved") / "model.nld"
+    detector.save_model(path)
+    return type(detector).load_model(path)
+
+
+def _pickled(detector, tmp_path_factory):
+    return pickle.loads(pickle.dumps(detector))
+
+
+def _fresh(detector, tmp_path_factory):
+    return detector
+
+
+ROUTES = {"fresh": _fresh, "saved": _saved_and_loaded, "pickled": _pickled}
+
+
+@pytest.fixture(
+    scope="module",
+    params=[
+        (family, route) for family in ("sorted", "clusterless") for route in ROUTES
+    ],
+    ids=lambda param: "-".join(param),
+)
+def fitted(request, recordings, tmp_path_factory):
+    """A fitted detector, by each route, its inputs, and what it decodes."""
+    family, route = request.param
+    detector, decode = recordings[family]
+    detector = ROUTES[route](detector, tmp_path_factory)
     return detector, decode, detector.predict(**decode, return_outputs="all")
 
 
@@ -141,6 +198,42 @@ DECODES = {
         **decode
     ),
 }
+
+
+def test_a_checkpointed_store_after_set_params_uses_the_fit(sorted_sim, tmp_path):
+    """A store written after ``set_params`` holds the fit's state labels and
+    posterior, not the new parameters'."""
+    time, position, spike_times = sorted_sim
+    detector = NonLocalSortedSpikesDetector(
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times, transition_representation="structured")
+    decode = {
+        "spike_times": spike_times,
+        "time_edges": time_edges_from_centers(time[:200]),
+        "position_time": time,
+        "position": position,
+        "inference_mode": "checkpointed",
+        "output_mode": "spatial",
+        "chunk_size": 50,
+    }
+    expected = detector.predict(**decode, result_path=tmp_path / "before")
+    changed = detector.copy().set_params(
+        state_names=[f"state {i}" for i in range(len(detector.state_names))]
+    )
+
+    with pytest.warns(ParameterWarning, match="decoding uses the values"):
+        actual = changed.predict(**decode, result_path=tmp_path / "after")
+    loaded = changed.load_results(tmp_path / "after")
+
+    for result in (actual, loaded):
+        np.testing.assert_array_equal(result["state"].values, expected["state"].values)
+        np.testing.assert_array_equal(
+            result["state_ind"].values, expected["state_ind"].values
+        )
+        np.testing.assert_array_equal(
+            result.acausal_posterior.values, expected.acausal_posterior.values
+        )
 
 
 @pytest.mark.parametrize("decoding", DECODES)
