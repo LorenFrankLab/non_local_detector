@@ -201,9 +201,9 @@ def test_a_partly_fitted_detector_is_not_saved(fitted, tmp_path):
 def test_a_detector_without_a_stored_name_is_not_saved(fitted, tmp_path):
     """Every name ``load_model`` requires is required at save."""
     path = tmp_path / "model.nld"
-    del fitted.transition_time_bin_width_
+    del fitted.initial_conditions_
 
-    with pytest.raises(NotFittedError, match="transition_time_bin_width"):
+    with pytest.raises(NotFittedError, match="initial_conditions_"):
         fitted.save_model(path)
     assert not path.exists()
 

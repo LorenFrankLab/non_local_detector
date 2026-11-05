@@ -253,6 +253,7 @@ loads, and the names the installed release does not read are ignored, with a
 installed release reads, it is refused, naming the version to upgrade to.
 
 A field added to the format has a default, so files written before it still
-load. A fitted file missing a name its kind of model always has raises
-`DataError`, as does an encoding model missing a key its likelihood algorithm
-stores, or naming an algorithm the installed release does not register.
+load. A fitted file missing a name that rebuilding its kind of model reads
+raises `DataError`, as does an encoding model missing a key its likelihood
+algorithm stores, or naming an algorithm the installed release does not
+register.

@@ -3,9 +3,8 @@
 A newer version may add a stored name or field. An older version loads the
 file without it, with one ``DataQualityWarning`` per load listing what it
 ignored, from ``load_model`` and ``read_model_summary`` alike. A fitted file
-must hold every name its kind of model always has, or ``DataError``; one
-missing raised a bare ``AttributeError`` (or loaded and failed later)
-before.
+must hold what rebuilding its kind of model reads, or ``DataError``; any other
+stored name is optional, and leaves its attribute unset.
 """
 
 import shutil
@@ -15,7 +14,7 @@ import pytest
 import non_local_detector as nld
 from non_local_detector.exceptions import DataError, DataQualityWarning
 from non_local_detector.model_format import read_model_summary
-from non_local_detector.model_format._detector import _OPTIONAL_STORED, _STORED
+from non_local_detector.model_format._detector import _REQUIRED_STATE, _STORED
 from tests.model_format._compare import assert_same_fitted_state
 from tests.model_format.conftest import (
     CLUSTERLESS_RATE,
@@ -26,8 +25,7 @@ from tests.model_format.test_refusals import _edit_json
 
 pytestmark = pytest.mark.integration
 
-# Every stored name a fitted sorted-spikes detector without EM has.
-_ALWAYS_STORED = [name for name, _ in _STORED if name not in _OPTIONAL_STORED]
+_REQUIRED_NAMES = dict(_REQUIRED_STATE)
 
 
 @pytest.fixture(scope="module")
@@ -199,23 +197,27 @@ def test_a_block_field_of_a_type_this_version_lacks_is_ignored(
     assert len(warned) == 1
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "environments",
-        "encoding_models",
-        "stored_transition_blocks",
-        "fingerprints",
-        "discrete_state_transitions",
-        *_ALWAYS_STORED,
-    ],
-)
-def test_a_fitted_file_without_a_name_it_always_has_is_refused(saved, name):
+@pytest.mark.parametrize("name", [*_REQUIRED_NAMES, "discrete_state_transitions"])
+def test_a_fitted_file_without_a_name_its_rebuild_reads_is_refused(saved, name):
     _edit_json(saved, "state.json", lambda state: state.pop(name))
 
     error = _refused(saved, "marked fitted but its state has no")
 
     assert repr(name) in str(error)
+
+
+@pytest.mark.parametrize(
+    ("name", "attribute"),
+    [stored for stored in _STORED if stored[0] not in _REQUIRED_NAMES],
+)
+def test_a_file_without_any_other_stored_name_leaves_its_attribute_unset(
+    saved, name, attribute
+):
+    _edit_json(saved, "state.json", lambda state: state.pop(name, None))
+
+    model = nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+    assert attribute not in vars(model)
 
 
 def test_a_clusterless_file_without_its_mark_reference_is_refused(

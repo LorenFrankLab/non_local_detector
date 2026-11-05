@@ -92,7 +92,7 @@ def test_a_model_that_cannot_be_read_back_is_not_saved(version, artifact, tmp_pa
     path = tmp_path / "model.nld"
     model = _family(artifact).load_model(_pickle_path(version, artifact))
 
-    with pytest.raises(NotFittedError, match="time_contract"):
+    with pytest.raises(NotFittedError, match="partly fitted"):
         model.save_model(path)
     assert not path.exists()
 

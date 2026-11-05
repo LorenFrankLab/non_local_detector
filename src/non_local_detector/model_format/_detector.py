@@ -110,7 +110,9 @@ if TYPE_CHECKING:
     from non_local_detector.types import TransitionRepresentation
 
 # (file name, detector attribute) of the fitted state stored as is. An
-# attribute the detector does not have is left out of the file. The names in
+# attribute the detector does not have is left out of the file, and a file
+# without a name leaves its attribute unset (a new name is optional, so older
+# files still load) unless ``_REQUIRED_STATE`` lists it. The names in
 # ``_STATE_SPACE_STORED`` are fields of the detector's ``state_space_``
 # instead, which is rebuilt from them on load.
 _STORED = (
@@ -157,9 +159,19 @@ _REBUILT = frozenset(
 )
 # Not part of a model: the pending rebuild check of a loaded detector.
 _NOT_SAVED = frozenset({"_rebuild_check_"})
-# What writing a fitted detector reads; ``_required_state_names`` gives what the
-# file must hold.
-_REQUIRED = ("environments_", "encoding_model_", "state_space_")
+# What reading a fitted model dereferences: (file name, the detector attribute
+# it is written from). ``_required_state`` adds what its kind of model needs.
+_REQUIRED_STATE = (
+    ("environments", "environments_"),
+    ("encoding_models", "encoding_model_"),
+    ("initial_conditions", "initial_conditions_"),
+    ("discrete_transition_coefficients", "discrete_transition_coefficients_"),
+    ("discrete_transition_covariate_data", "_discrete_transition_covariate_data_"),
+    ("transition_representation", "state_space_"),
+    ("max_dense_transition_bytes", "state_space_"),
+    ("stored_transition_blocks", "state_space_"),
+    ("fingerprints", "state_space_"),
+)
 
 # A rebuilt structure (continuous transition blocks, environment grids and
 # their graph distances, a covariate design) matches its fingerprint to this
@@ -711,10 +723,17 @@ def detector_documents(
     state: dict[str, Any] = {"fitted": bool(fitted)}
     if not fitted:
         return _manifest(spec, writer), config, state
-    missing = [name for name in _REQUIRED if name not in fitted]
+    required = _required_state(
+        config, getattr(detector, "_discrete_transition_covariate_data_", None)
+    )
+    missing = sorted(set(required.values()) - fitted)
     if missing:
         msg = f"Cannot save a partly fitted detector (it has no {missing})"
-        raise NotFittedError(msg, hint="Call fit(...) before save_model.")
+        raise NotFittedError(
+            msg,
+            hint="Call fit(...) before save_model. Refit a detector pickled by "
+            "an earlier release, which can lack what the format stores.",
+        )
     # The file holds the current parameters, and loading rebuilds the state
     # space from them.
     changed = changed_layout_parameters(detector)
@@ -771,14 +790,6 @@ def detector_documents(
     state["fingerprints"] = encoder.encode(
         _structure_fingerprints(detector, blocks), "fingerprints"
     )
-    missing = sorted(_required_state_names(state, config) - set(state))
-    if missing:
-        msg = f"Cannot save a partly fitted detector (it has no {missing})"
-        raise NotFittedError(
-            msg,
-            hint="load_model would refuse the file. Refit the detector; one "
-            "pickled by an earlier release lacks what the format stores.",
-        )
     return _manifest(spec, writer), config, state
 
 
@@ -1000,31 +1011,6 @@ _MANIFEST_NAMES = frozenset(
         "arrays",
     }
 )
-# state.json of an unfitted detector holds only "fitted". A fitted one holds
-# these, every ``_STORED`` name but ``_OPTIONAL_STORED``,
-# "discrete_state_transitions" if it stores no covariates (then the
-# transitions are stored, not rebuilt) and "mark_reference" if it is
-# clusterless.
-_FITTED_STATE = (
-    "fitted",
-    "environments",
-    "encoding_models",
-    "stored_transition_blocks",
-    "fingerprints",
-)
-# Stored names a fitted detector may lack: EM's records, which only
-# ``estimate_parameters`` sets, and a clusterless detector's mark reference.
-_OPTIONAL_STORED = frozenset(
-    {
-        "discrete_initial_conditions",
-        "mark_reference",
-        "converged",
-        "n_iter",
-        "em_monotonicity_violations",
-        "degenerate_timesteps",
-        "log_likelihood",
-    }
-)
 # The fields of each entry of these lists of state.json; an environment holds
 # "place_bin_edges" with a track graph and the distance options without.
 _ENTRY_FIELDS = {
@@ -1049,29 +1035,29 @@ _FINGERPRINT_FIELDS = frozenset(
 _CORRUPT_HINT = "The file is corrupt or was edited."
 
 
-def _required_state_names(state: Any, config: Any) -> set[str]:
+def _required_state(config: Any, covariate_data: Any) -> dict[str, str]:
     """Return the names state.json of a fitted model must hold.
 
     Parameters
     ----------
-    state : dict
-        The state document.
     config : dict
         The config document.
+    covariate_data : Any
+        The model's stored transition covariates, or None for none.
 
     Returns
     -------
-    names : set of str
-        ``_FITTED_STATE``, every ``_STORED`` name but ``_OPTIONAL_STORED``,
-        and the names its kind of model adds (see ``_FITTED_STATE``).
+    names : dict of str to str
+        ``_REQUIRED_STATE``, as each file name and the attribute it is written
+        from, with "discrete_state_transitions" if the model stores no
+        covariates (then the transitions are stored, not rebuilt) and
+        "mark_reference" if it is clusterless.
     """
-    required = {*_FITTED_STATE} | {
-        name for name, _ in _STORED if name not in _OPTIONAL_STORED
-    }
-    if state.get("discrete_transition_covariate_data") is None:
-        required.add("discrete_state_transitions")
+    required = dict(_REQUIRED_STATE)
+    if covariate_data is None:
+        required["discrete_state_transitions"] = "discrete_state_transitions_"
     if isinstance(config, dict) and "clusterless_algorithm" in config:
-        required.add("mark_reference")
+        required["mark_reference"] = "mark_reference_"
     return required
 
 
@@ -1088,14 +1074,14 @@ def _readable_encoding_model(entry: Any) -> dict[str, Any]:
 def check_documents(stored: StoredModel) -> tuple[Any, dict[str, Any]]:
     """Check a saved model's documents and return what this version reads of them.
 
-    state.json must hold every name a model of its kind always has, and each
-    encoding model every key of its algorithm's type. A name this version
-    does not read (outside ``_MANIFEST_NAMES``, ``_FITTED_STATE``,
-    ``_STORED``, ``_ENTRY_FIELDS``, ``_FINGERPRINT_FIELDS``, the encoding
-    model's type or the detector's constructor), which a newer version wrote,
-    is ignored with a warning (``ignore_unread_names``) and left out of what
-    is returned, so a reader never decodes it. The values are checked as they
-    are decoded.
+    state.json must hold what reading a model of its kind dereferences
+    (``_required_state``), and each encoding model every key of its
+    algorithm's type. A name this version does not read (outside
+    ``_MANIFEST_NAMES``, ``_required_state``, ``_STORED``, ``_ENTRY_FIELDS``,
+    ``_FINGERPRINT_FIELDS``, the encoding model's type or the detector's
+    constructor), which a newer version wrote, is ignored with a warning
+    (``ignore_unread_names``) and left out of what is returned, so a reader
+    never decodes it. The values are checked as they are decoded.
 
     Parameters
     ----------
@@ -1125,11 +1111,15 @@ def check_documents(stored: StoredModel) -> tuple[Any, dict[str, Any]]:
     if not isinstance(state, dict) or "fitted" not in state:
         msg = "The saved model's state has no 'fitted' entry"
         raise DataError(msg, hint=_CORRUPT_HINT)
-    if not state["fitted"]:
-        required = allowed = {"fitted"}
-    else:
-        required = _required_state_names(state, config)
-        allowed = required | _OPTIONAL_STORED | {"discrete_state_transitions"}
+    required = allowed = {"fitted"}
+    if state["fitted"]:
+        covariate_data = state.get("discrete_transition_covariate_data")
+        required = {"fitted", *_required_state(config, covariate_data)}
+        allowed = {
+            *required,
+            *(name for name, _ in _STORED),
+            "discrete_state_transitions",
+        }
     state = readable_names("state.json", state, allowed)
     missing = sorted(required - set(state))
     if missing:
