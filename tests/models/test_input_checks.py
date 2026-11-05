@@ -394,3 +394,55 @@ class TestEncodingTimeRangePastTheTracking:
                 valid_position_intervals=tracked,
             )
         )
+
+
+class TestEstimateParametersDecodeClock:
+    def test_spikes_far_from_the_decode_edges_warn_once(self, recording):
+        time, position, spikes, _ = recording
+        edges = time_edges_from_centers(time + 1e5)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            _, messages = _quality_warnings(
+                lambda: _sorted(SortedSpikesDecoder).estimate_parameters(
+                    time, position, spikes, time_edges=edges, max_iter=1
+                ),
+                "decode time_edges",
+            )
+
+        assert len(messages) == 1
+
+
+class TestWarningsFirePerPublicCall:
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_em_refits_do_not_repeat_the_encoding_warnings(self, family, recording):
+        time, position, spikes, marks = recording
+        grid = Environment(place_bin_size=5.0, position_range=[(0.0, 50.0)])
+        detector = _detector(family, environments=grid)
+        n_refits = []
+        original = detector._refit_encoding_model
+
+        def spy(weights, encoding_fit_arguments):
+            n_refits.append(1)
+            return original(weights, encoding_fit_arguments)
+
+        detector._refit_encoding_model = spy
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            _, messages = _quality_warnings(
+                lambda: detector.estimate_parameters(
+                    time,
+                    position,
+                    *_spike_data(family, spikes, marks),
+                    time_edges=time_edges_from_centers(time),
+                    max_iter=3,
+                    estimate_encoding_model=True,
+                    min_encoding_local_mass=0.0,
+                    min_encoding_local_ess=0.0,
+                ),
+                "outside the fitted grid",
+            )
+        del detector._refit_encoding_model
+
+        assert len(n_refits) == 3
+        assert len(messages) == 1

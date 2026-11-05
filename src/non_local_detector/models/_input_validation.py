@@ -1164,6 +1164,11 @@ def _bins_reading_nan_position(
     return np.cumsum(change[:-1]) > 0
 
 
+def _time_span(times: np.ndarray) -> tuple[float, float]:
+    """First and last of validated, increasing times, as Python floats."""
+    return float(times[0]), float(times[-1])
+
+
 def _validate_penalty_params(
     non_local_position_penalty: float, non_local_penalty_std: float
 ) -> None:
@@ -1699,8 +1704,9 @@ class _InputValidationMixin:
           selects the rows of ``time_centers``.
         - ``estimate`` (``estimate_parameters``): ``time_edges`` come checked
           with EM's options, and the model is not fitted yet, so the training
-          arrays and spikes are read as in ``fit`` and the missing bins as in
-          ``decode``. The internal ``fit`` then warns about the position span.
+          arrays are read as in ``fit``, the spikes against the edges and the
+          missing bins as in ``decode``. The internal ``fit`` then warns about
+          the position span.
 
         Parameters
         ----------
@@ -1792,13 +1798,21 @@ class _InputValidationMixin:
             )
             self._check_spike_data(
                 spike_data,
-                time_range=(float(checked_edges[0]), float(checked_edges[-1])),
+                time_range=_time_span(checked_edges),
                 range_name="decode time_edges",
                 bin_width=1.0 / self.sampling_frequency,
             )
             self._validate_decode_position(position)
-        if stage in ("fit", "estimate"):
+        if stage == "fit":
             self._check_spike_data(spike_data)
+        if stage == "estimate":
+            # The dtype check is the internal fit's, which reads the same times.
+            self._check_spike_data(
+                spike_data,
+                time_range=_time_span(cast("np.ndarray", checked_edges)),
+                range_name="decode time_edges",
+            )
+        if stage in ("fit", "estimate"):
             spike_data = self._numeric_spike_data(spike_data)
         if stage == "fit":
             self._validate_fit_arguments(
