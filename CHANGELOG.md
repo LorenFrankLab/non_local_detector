@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed:** `save_results` of an `estimate_parameters` result with a replay cache of 2 GiB or more raised `ValueError` in a default install, which writes netCDF3: such byte counts are stored as floats and `load_results` restores the integer.
 - **Fixed:** `copy()`, `deepcopy` and pickling rebuild a covariate design from the transition the detector was fitted with, not the current `discrete_transition_type`, so a copy made after `set_params` decodes as the original does.
 - **Fixed:** `estimate_parameters` with a `result_path` that already exists raises `FileExistsError` before it fits, not after the fit and every E-step.
+- **Breaking:** `initialize_environments` raises `ValidationError` on a fitted detector, whose state space, transitions and encoding model were built on the grids it would replace. It still works on an unfitted detector, as Spyglass calls it.
 
 ### Reading results
 

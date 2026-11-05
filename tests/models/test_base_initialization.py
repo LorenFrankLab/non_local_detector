@@ -324,6 +324,29 @@ class TestInitializeStateNames:
 class TestInitializeEnvironmentsFitting:
     """Test initialize_environments method (environment fitting)."""
 
+    def test_a_fitted_detector_is_refused(self):
+        """Replacing ``environments_`` would leave the fitted state space, the
+        encoding model and every decode on a grid they were not built for."""
+        position = np.linspace(0, 100, 200)[:, np.newaxis]
+        time = np.arange(200) / 500.0
+        detector = SortedSpikesDecoder(sampling_frequency=500.0).fit(
+            time, position, [np.array([0.1, 0.2])]
+        )
+        fitted_environments = detector.environments_
+
+        with pytest.raises(ValidationError, match="fitted"):
+            detector.initialize_environments(position[:100])
+
+        assert detector.environments_ is fitted_environments
+
+    def test_an_unfitted_detector_can_be_initialized_again(self):
+        environment = Environment(environment_name="", place_bin_size=5.0)
+        decoder = SortedSpikesDecoder(environments=environment)
+        decoder.initialize_environments(np.linspace(0, 100, 50)[:, np.newaxis])
+        decoder.initialize_environments(np.linspace(0, 50, 50)[:, np.newaxis])
+
+        assert decoder.environments_[0].place_bin_edges_.max() == pytest.approx(50.0)
+
     def test_initialize_environments_fits_position_data(self, simple_1d_environment):
         """Test that initialize_environments fits the environment on position data."""
         # Arrange

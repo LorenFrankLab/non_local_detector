@@ -1280,6 +1280,9 @@ class _DetectorBase(
         never changed. ``self.environments`` keeps the configuration and
         ``self.environments_`` holds the fitted copies afterwards.
 
+        This is for an unfitted detector, such as one built to inspect its
+        environments' grids; ``fit`` fits its own.
+
         Parameters
         ----------
         position : np.ndarray, shape (n_time_position, n_position_dims)
@@ -1293,6 +1296,40 @@ class _DetectorBase(
         max_dense_distance_bytes : int, optional
             Byte limit for dense reads of the deferred distance view, by
             default 256 MiB. Used only when compute_all_pairs_distances=False.
+
+        Raises
+        ------
+        ValidationError
+            If the detector is fitted, as its state space, encoding model and
+            transitions were built on the fitted grids, or
+            ``environment_labels`` label no sample with an environment's
+            ``environment_name``.
+        """
+        if "state_space_" in self.__dict__:
+            msg = "initialize_environments would replace a fitted detector's grids"
+            raise ValidationError(
+                msg,
+                hint="Call fit to refit the detector on new position data, or "
+                "sklearn.base.clone(detector) for an unfitted copy.",
+            )
+        self._fit_environments(
+            position,
+            environment_labels,
+            compute_all_pairs_distances=compute_all_pairs_distances,
+            max_dense_distance_bytes=max_dense_distance_bytes,
+        )
+
+    def _fit_environments(
+        self,
+        position: np.ndarray,
+        environment_labels: np.ndarray | None,
+        *,
+        compute_all_pairs_distances: bool,
+        max_dense_distance_bytes: int,
+    ) -> None:
+        """Set ``environments_``; see ``initialize_environments``.
+
+        Parameters are those of ``initialize_environments``.
 
         Raises
         ------
@@ -1682,9 +1719,9 @@ class _DetectorBase(
         self.__dict__.pop("_rebuild_check_", None)
         self.__dict__.pop("_em_diagnostics_", None)
         self.__dict__.pop("discrete_initial_conditions_", None)
-        self.initialize_environments(
-            position=position,
-            environment_labels=environment_labels,
+        self._fit_environments(
+            position,
+            environment_labels,
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
