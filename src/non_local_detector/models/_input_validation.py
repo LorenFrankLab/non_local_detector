@@ -1061,8 +1061,10 @@ _OFF_GRID_BINS = 1.0
 _OFF_GRID_FRACTION = 0.01
 
 
-def _off_grid_distance(points: np.ndarray, environment: Environment) -> np.ndarray:
-    """Distance of each point outside a fitted grid's bounding box.
+def _off_grid(
+    points: np.ndarray, environment: Environment
+) -> tuple[np.ndarray, np.ndarray]:
+    """Which points are off a fitted grid, and how far outside its bounding box.
 
     Parameters
     ----------
@@ -1073,10 +1075,11 @@ def _off_grid_distance(points: np.ndarray, environment: Environment) -> np.ndarr
 
     Returns
     -------
+    is_off : np.ndarray of bool, shape (n_points,)
+        True for a point more than ``_OFF_GRID_BINS`` bins outside the
+        bounding box of the grid's bins in some dimension.
     distance : np.ndarray, shape (n_points,)
-        Euclidean distance to the bounding box of the grid's bins, in
-        position units, or NaN for a point within ``_OFF_GRID_BINS`` bins of
-        it in every dimension.
+        Euclidean distance to that bounding box, in position units.
     """
     edges = environment.edges_
     lower = np.array([dimension_edges[0] for dimension_edges in edges])
@@ -1085,8 +1088,10 @@ def _off_grid_distance(points: np.ndarray, environment: Environment) -> np.ndarr
         [np.max(np.diff(dimension_edges)) for dimension_edges in edges]
     )
     excess = np.maximum(lower - points, 0.0) + np.maximum(points - upper, 0.0)
-    is_off = np.any(excess > _OFF_GRID_BINS * bin_width, axis=1)
-    return np.where(is_off, np.linalg.norm(excess, axis=1), np.nan)
+    return (
+        np.any(excess > _OFF_GRID_BINS * bin_width, axis=1),
+        np.linalg.norm(excess, axis=1),
+    )
 
 
 def _warn_if_off_grid(
@@ -1122,22 +1127,22 @@ def _warn_if_off_grid(
     n_samples = len(points)
     if n_samples == 0:
         return
-    # NaN (on the grid) wherever a sample is on any environment's grid.
-    distance = np.min(
-        [_off_grid_distance(points, environment) for environment in environments],
-        axis=0,
+    is_off_each, distance_each = zip(
+        *(_off_grid(points, environment) for environment in environments), strict=True
     )
-    is_off = np.isfinite(distance)
+    # A sample on any environment's grid is on the grid.
+    is_off = np.all(is_off_each, axis=0)
     n_off = int(np.count_nonzero(is_off))
     if n_off <= _OFF_GRID_FRACTION * n_samples:
         return
+    farthest = np.max(np.min(distance_each, axis=0)[is_off])
     names = ", ".join(
         repr(environment.environment_name) for environment in environments
     )
     warnings.warn(
         f"{n_off / n_samples:.1%} of the {n_samples} finite position samples "
         f"lie more than one place bin outside the fitted grid of environment "
-        f"{names}, up to {np.max(distance[is_off]):.3g} position units beyond "
+        f"{names}, up to {farthest:.3g} position units beyond "
         "it. The likelihoods evaluate such a position at the nearest interior "
         "bin instead. Position may be in larger units than the grid (for "
         "example millimetres on a grid in centimetres), the environment's "
