@@ -51,7 +51,6 @@ from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _uniformity_tolerance,
     decode_bin_centers,
-    uniform_time_bin_width,
     uniform_time_edges,
 )
 from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
@@ -1243,39 +1242,62 @@ def _bins_meeting_spans(
     return np.cumsum(change[:-1]) > 0
 
 
-def _warn_if_tracking_is_irregular(position_time: np.ndarray) -> None:
-    """Warn when decoding interpolates over tracking gaps nobody declared.
+# A step in position_time this many samples wide is a gap in the tracking.
+# Narrower ones (a dropped frame, camera jitter) interpolate over no real
+# movement. Fitting refuses any irregular step, but it can be told the intervals
+# at no cost; a decode warning has to mean something on every call.
+_TRACKING_GAP_SAMPLES = 5.0
 
-    Irregular samples mean dropped rows or disconnected epochs by the rule
-    fitting refuses them with (``uniform_time_bin_width``). Their bins are
-    not decoded as missing: only the caller knows where tracking stopped.
+
+def _warn_if_decoding_across_gaps(
+    time_edges: np.ndarray, position_time: np.ndarray, is_missing: np.ndarray | None
+) -> None:
+    """Warn when an observed decode bin reads position across a tracking gap.
+
+    Only the caller knows where tracking stopped, so these bins are not
+    decoded as missing.
 
     Parameters
     ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
     position_time : np.ndarray, shape (n_time_position,)
         Finite and strictly increasing.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins already decoded as missing.
 
     Warns
     -----
     DataQualityWarning
-        If ``position_time`` is not uniform.
+        If a bin not in is_missing reaches more than half a sample into a
+        gap of at least ``_TRACKING_GAP_SAMPLES`` samples.
     """
     if position_time.size < 2:
         return
-    try:
-        uniform_time_bin_width(position_time, name="position_time")
-    except DataError:
-        widest = float(np.max(np.diff(position_time)))
-        warnings.warn(
-            "position_time is irregular (its widest step is "
-            f"{widest:.3g} s), so position is interpolated between the samples "
-            "either side of each gap, and bins there are decoded on that "
-            "invented path: spikes that disagree with it can read as replay. "
-            "Pass valid_position_intervals=[[start, stop], ...] to decode bins "
-            "outside continuous tracking as missing, as fitting requires.",
-            DataQualityWarning,
-            stacklevel=user_stacklevel(),
-        )
+    steps = np.diff(position_time)
+    is_gap = steps > _TRACKING_GAP_SAMPLES * np.median(steps)
+    if not np.any(is_gap):
+        return
+    half_sample = _half_sample(position_time)
+    reads_gap = _bins_meeting_spans(
+        time_edges,
+        position_time[:-1][is_gap] + half_sample,
+        position_time[1:][is_gap] - half_sample,
+    )
+    if is_missing is not None:
+        reads_gap &= ~is_missing
+    if not np.any(reads_gap):
+        return
+    warnings.warn(
+        f"{int(reads_gap.sum())} of {reads_gap.size} decode bins fall in gaps in "
+        f"position_time (the widest is {float(steps.max()):.3g} s), so position "
+        "is interpolated between the samples either side and these bins are "
+        "decoded on that invented path: spikes that disagree with it can read "
+        "as replay. Pass valid_position_intervals=[[start, stop], ...] to decode "
+        "bins outside continuous tracking as missing.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
 
 
 def _time_span(times: np.ndarray) -> tuple[float, float]:
@@ -1978,7 +2000,11 @@ class _InputValidationMixin:
             )
             # fit, which estimate_parameters runs next, refuses these samples.
             if decoding and reads_position and tracking_intervals is None:
-                _warn_if_tracking_is_irregular(cast("np.ndarray", position_time))
+                _warn_if_decoding_across_gaps(
+                    cast("np.ndarray", checked_edges),
+                    cast("np.ndarray", position_time),
+                    is_missing,
+                )
         return replace(
             inputs,
             spike_data=spike_data,

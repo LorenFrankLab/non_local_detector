@@ -87,8 +87,9 @@ continuous. Do not drop NaN rows and concatenate across a gap without it:
 - `fit`, `fit_encoding_model` and `estimate_parameters` raise `DataError`;
 - `predict`, `most_likely_sequence` and `compute_log_likelihood` interpolate
   position across the gap, so the animal appears to glide from one side to the
-  other, and they warn once. Spikes in the gap then disagree with that invented
-  path, which reads as replay.
+  other. Spikes in the gap then disagree with that invented path, which reads
+  as replay. They warn once if a bin not already missing reaches a gap of five
+  or more position samples; a dropped frame or a jittery clock does not warn.
 
 With `valid_position_intervals`, a decoding method marks as missing every bin
 that owns a time outside the intervals. As for the tracked period as a whole,
@@ -113,7 +114,9 @@ finite position sample, and positions are interpolated within it and held at
 its endpoint samples. NaN rows inside an interval split it.
 
 Spikes, position and time edges are checked against each other: spike times far
-from the position span or the decode edges (other units or another clock), a
+from the position span or the decode edges (other units or another clock; a
+spike list that puts under 1% of its spikes in the position span also warns, so
+pass one epoch's spikes rather than a day's), a
 position span a hundred times longer than the spikes (position in ms, spikes in
 s), no spike inside the position span, and positions more than one place bin
 outside a fitted grid each warn. A track graph projects every position onto its

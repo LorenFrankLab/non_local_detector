@@ -526,7 +526,7 @@ class TestValidPositionIntervals:
         )
 
         assert len(messages) == 1
-        assert "irregular" in messages[0]
+        assert "40 s" in messages[0]
         # Warned, not decoded as missing: the false replay this warns about.
         assert not results.is_missing.values[in_gap].any()
         non_local = results.acausal_state_probabilities.sel(
@@ -547,6 +547,55 @@ class TestValidPositionIntervals:
         assert results.is_missing.values[in_gap].all()
         assert not results.is_missing.values[gap[4]].any()
         assert np.isfinite(results.acausal_posterior.values).all()
+
+    def test_no_warning_when_every_bin_reaching_the_gap_is_missing(
+        self, detectors, gap
+    ):
+        """The caller already masked them, as a multi-epoch pipeline does."""
+        time = gap[0]
+        reaches_gap = (time > 40 - 2 / RATE) & (time < 80 + 2 / RATE)
+
+        _no_quality_warnings(
+            lambda: self._predict("sorted", detectors, gap, is_missing=reaches_gap)
+        )
+
+    def test_no_warning_when_the_decode_window_avoids_the_gap(self, detectors, gap):
+        time, position, spikes, _, tracked, _ = gap
+        window = time < 30
+
+        _no_quality_warnings(
+            lambda: detectors["sorted"].predict(
+                [unit[unit < 30 - 1 / RATE] for unit in spikes],
+                time_edges=time_edges_from_centers(time[window]),
+                position=position[tracked],
+                position_time=time[tracked],
+            )
+        )
+
+    @pytest.mark.parametrize("change", ["jitter", "dropped_frame"])
+    def test_no_warning_for_a_jittery_clock_or_a_dropped_frame(
+        self, recording, fitted, change
+    ):
+        """Interpolating across these invents no path."""
+        time, position, spikes, _ = recording
+        if change == "jitter":
+            jitter = np.random.default_rng(0).uniform(-0.1, 0.1, time.size)
+            position_time, positions = time + jitter / RATE, position
+        else:
+            kept = np.arange(time.size) != time.size // 2
+            position_time, positions = time[kept], position[kept]
+
+        centers = time[2:-2]  # a jittered clock's end bins count as outside it
+        edges = time_edges_from_centers(centers)
+
+        _no_quality_warnings(
+            lambda: fitted["sorted"].predict(
+                [unit[(unit >= edges[0]) & (unit < edges[-1])] for unit in spikes],
+                time_edges=edges,
+                position=positions,
+                position_time=position_time,
+            )
+        )
 
     def test_passing_them_removes_the_false_replay(self, detectors, gap, in_gap):
         """Without evidence in the gap, the states relax to the transitions'
@@ -683,6 +732,19 @@ class TestValidPositionIntervals:
 
         assert results.is_missing.values[in_gap].all()
         assert not results.is_missing.values[tracked].any()
+        # Without evidence the E-step's states relax to the steady state; with
+        # the invented path they lock onto Non-Local Continuous.
+        probabilities = results.acausal_state_probabilities
+        eigenvalues, eigenvectors = np.linalg.eig(
+            detector.discrete_state_transitions_.T
+        )
+        steady = np.real(eigenvectors[:, np.argmax(np.real(eigenvalues))])
+        steady /= steady.sum()
+        index = list(probabilities.states.values).index("Non-Local Continuous")
+        assert (
+            probabilities.sel(states="Non-Local Continuous").values[in_gap].mean()
+            < 2 * steady[index]
+        )
 
     def test_an_interval_over_all_the_tracking_changes_nothing(self, recording, fitted):
         """Bins at the ends reach half a sample past it, like the tracked
