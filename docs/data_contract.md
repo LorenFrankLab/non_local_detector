@@ -31,7 +31,7 @@ that cannot resolve their own bins raise.
 | `spike_times` | list of `(n_spikes_i,)` arrays | sorted data: one array per neuron. Clusterless data: one array per electrode |
 | `spike_waveform_features` | list of `(n_spikes_i, n_features)` arrays | clusterless data only: the waveform features (marks) of each spike on each electrode |
 | `time_edges` | `(n_bins + 1,)` | decode bin edges; results have one row per bin |
-| `is_missing` | `(n_bins,)` | bins to decode without their observations |
+| `is_missing` | `(n_bins,)` | bins to decode without their observations; for `compute_log_likelihood` with `row_slice`, one entry per requested row |
 | `is_training`, `encoding_group_labels`, `environment_labels`, `weights` | `(n_position_samples,)` | one entry per position sample |
 | `valid_position_intervals` | `(n_intervals, 2)` | ordered, non-overlapping `[start, stop]` spans of continuous tracking |
 | `encoding_time_range` | `(2,)` | `[start, stop]` of the encoding support |
@@ -45,8 +45,9 @@ that cannot resolve their own bins raise.
 - **`position`**: a row with a NaN marks an untracked sample; an infinite value
   raises when fitting. Fitting splits its support at NaN rows. Decoding marks
   every bin that would read a NaN position as missing: a bin that owns any time
-  between the samples either side of a NaN sample, so isolated dropouts at
-  30 Hz mask about 67 ms each. No warning fires; the results' `is_missing` says
+  between the samples either side of a NaN sample, so an isolated dropout at
+  30 Hz masks three bins, about 100 ms, when decoding one bin per sample. No
+  warning fires; the results' `is_missing` says
   which bins these are.
 - **`is_missing`** only concerns decoding: a bin marked missing has a log
   likelihood of 0, so its posterior follows the transitions alone. It does not
@@ -108,8 +109,9 @@ missing and the caller did not ask for that, since the transitions' steady state
 looks like a decode. Pass the tracking intervals of the decoded period, which
 need not be those of the fit.
 
-Decode bins that reach more than half a sample outside the tracked period are
-always missing, with one warning: position there could only be extrapolated.
+In a model that reads position at decode, bins that reach more than half a
+sample outside the tracked period are always missing, with one warning: position
+there could only be extrapolated.
 
 **Decoding without tracking**, such as sleep after fitting on a run, takes a
 model that does not read position: `predict(spike_times, time_edges=...)` with
@@ -133,5 +135,6 @@ over ten spans past it also warns, so pass one epoch's spikes rather than a
 day's), a
 position span a hundred times longer than the spikes (position in ms, spikes in
 s), no spike inside the position span, and positions more than one place bin
-outside a fitted grid each warn. A track graph projects every position onto its
+outside a fitted grid for over 1% of samples each warn. A track graph projects
+every position onto its
 track, so nothing warns about positions off it. See [Warnings](warnings.md).

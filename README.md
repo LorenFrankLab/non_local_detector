@@ -165,9 +165,10 @@ Unix times) is rejected.
   Changing decode width does not automatically rescale those transitions.
 
 Fitted firing rates and ground-process intensities are in **Hz**. Encoding uses
-sample exposure in seconds, independently of decode frequency. Irregular
-tracking needs explicit `valid_position_intervals`, when fitting and when
-decoding; saved models with unknown units require refitting. Results save exact
+sample exposure in seconds, independently of decode frequency. Fitting irregular
+tracking needs explicit `valid_position_intervals`; pass them when decoding too,
+or a gap is interpolated across and warned about. Saved models with unknown units
+require refitting. Results save exact
 bin bounds and effective missingness. The [data contract](docs/data_contract.md)
 lists what the arrays must hold; see the
 [migration guide](docs/time_grid_migration.md) for covariates, independent

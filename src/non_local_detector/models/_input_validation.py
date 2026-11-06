@@ -605,6 +605,11 @@ def _validate_spike_data(
         ``time_range`` warnings, which would read the rounded times, are
         skipped.
 
+    Returns
+    -------
+    spike_times : list of np.ndarray
+        Every unit's spike times as a numeric array, shape (n_spikes,).
+
     Raises
     ------
     ValidationError
@@ -618,11 +623,6 @@ def _validate_spike_data(
         If the spikes lie farther from ``time_range`` than they span, with
         ``check_extent`` look like other units than it, or with ``bin_width``
         have a dtype too coarse for the bins.
-
-    Returns
-    -------
-    spike_times : list of np.ndarray
-        Every unit's spike times as a numeric array, shape (n_spikes,).
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -1243,8 +1243,8 @@ def _bins_meeting_spans(
 
 # A step in position_time this many samples wide is a gap in the tracking.
 # Narrower ones (a dropped frame, camera jitter) interpolate over no real
-# movement. Fitting refuses any irregular step, but it can be told the intervals
-# at no cost; a decode warning has to mean something on every call.
+# movement. Fitting refuses any irregular step; decoding takes the data as given,
+# so it warns only where interpolation invents movement.
 _TRACKING_GAP_SAMPLES = 5
 
 
@@ -1949,7 +1949,7 @@ class _InputValidationMixin:
         - ``encoding`` (``fit_encoding_model``): the spikes against the
           position span come first, then the training arrays, position against
           the grids, and the encoding support.
-        - ``refit`` (EM's encoding refits, through ``_fit_encoding_model``):
+        - ``refit`` (EM's encoding refits, through ``_refit_encoding_model``):
           the arrays are the ones the public call checked, so this reads the
           iteration's ``weights`` and warns of nothing.
         - ``decode`` (``predict``, ``most_likely_sequence``): position is
@@ -2121,7 +2121,8 @@ class _InputValidationMixin:
                 _warn_about_tracking_coverage(
                     edges, times, row_slice, caller_is_missing, is_missing
                 )
-            # Without intervals, the fit that comes next refuses a gap.
+            # Only with intervals: without them, the fit that comes next refuses
+            # a gap.
             if (
                 stage == "estimate"
                 and reads_position

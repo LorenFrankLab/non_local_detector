@@ -1548,7 +1548,6 @@ def fit_sorted_spikes_glm_encoding_model(
         Ordered, non-overlapping continuous tracking intervals in seconds.
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
-        Encoding support does not automatically mark decode bins missing.
     _encoding_support : EncodingSupport, optional
         Internal: the detector's precomputed encoding support. Direct callers
         omit it and the support is built from the other arguments.

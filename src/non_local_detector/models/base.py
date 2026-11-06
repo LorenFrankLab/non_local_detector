@@ -1525,7 +1525,6 @@ class _DetectorBase(
                             "and decoding, including when tracking is missing.",
                         )
 
-    """Names of the spike-data arrays, in the order the decode methods take them."""
     _PREDICT_EXAMPLE: str = ""
     """Example ``predict`` call shown in validation errors."""
 
@@ -2873,7 +2872,7 @@ class ClusterlessDetector(_DetectorBase):
         weights : np.ndarray, shape (n_time_position,)
             Posterior weight of each time sample in the refit.
         encoding_fit_arguments : dict
-            The other keyword arguments of ``_fit_encoding_model``.
+            Keyword arguments of ``_validated_inputs``.
         """
         self._fit_encoding_model(
             self._validated_inputs("refit", **encoding_fit_arguments, weights=weights),
