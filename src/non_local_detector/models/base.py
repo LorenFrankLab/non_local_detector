@@ -4052,6 +4052,12 @@ class ClusterlessDetector(_DetectorBase):
             - log_likelihood : (n_time, n_state_bins) - if 'log_likelihood'
                 Per-timepoint observation log likelihoods
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Examples
         --------
         Get only smoother (default, minimal memory):
@@ -4284,6 +4290,12 @@ class ClusterlessDetector(_DetectorBase):
         results : xr.Dataset
             Results of the decoding.
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Notes
         -----
         If the call raises after its arguments are validated, the detector and
@@ -4376,6 +4388,12 @@ class ClusterlessDetector(_DetectorBase):
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
             Most likely state and position at each decode bin, indexed by
             the bin center time.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
         return self._most_likely_spike_sequence(
             (spike_times, spike_waveform_features),
@@ -4966,6 +4984,12 @@ class SortedSpikesDetector(_DetectorBase):
         -------
         xr.Dataset
             Predicted posterior probabilities.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
         return self._predict_spikes(
             (spike_times,),
@@ -5158,6 +5182,12 @@ class SortedSpikesDetector(_DetectorBase):
         results : xr.Dataset
             Results of the decoding.
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Notes
         -----
         If the call raises after its arguments are validated, the detector and
@@ -5246,6 +5276,12 @@ class SortedSpikesDetector(_DetectorBase):
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
             Most likely state and position at each decode bin, indexed by
             the bin center time.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
         return self._most_likely_spike_sequence(
             (spike_times,),

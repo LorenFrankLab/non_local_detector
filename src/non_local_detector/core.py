@@ -2836,6 +2836,8 @@ def chunked_filter_smoother(
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
+    DataError
+        If a log likelihood outside the bins marked missing is NaN or ``+inf``.
     """
     _validate_hmm_inputs(
         n_time=_validate_time_edges(time_edges),
@@ -3518,6 +3520,8 @@ def chunked_filter_smoother_covariate_dependent(
         ``n_state_bins = len(initial_distribution)``; an input breaks the
         probability contract of its parameter description; or
         ``log_likelihood_func`` returns the wrong shape.
+    DataError
+        If a log likelihood outside the bins marked missing is NaN or ``+inf``.
     """
     _validate_hmm_inputs(
         n_time=_validate_time_edges(time_edges),

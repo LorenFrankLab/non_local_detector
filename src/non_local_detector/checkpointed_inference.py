@@ -266,8 +266,7 @@ class CheckpointedResult:
         Log marginal likelihood of the whole recording.
     diagnostics : dict
         Whole-recording diagnostics, such as counts and indices of degenerate
-        rows and the number of likelihood evaluations. A row with a ``NaN`` or
-        ``+inf`` log likelihood raises ``DataError``, so its counts are zero.
+        rows and the number of likelihood evaluations.
     result_path : Path or None
         Directory of the disk result store, or None for an in-memory result.
     first_smoothed : np.ndarray or None
@@ -585,6 +584,8 @@ def checkpointed_forward_backward(
         that cannot be applied to ``n_bins`` state bins, or a likelihood
         callback that returns the wrong shape, changes between passes, or is
         not ``row_slice_aware`` although ``chunk_size`` splits the rows.
+    DataError
+        If a log likelihood outside the bins marked missing is NaN or ``+inf``.
     TypeError
         If ``transition_operator`` is not a registered JAX pytree implementing
         :class:`~non_local_detector.core.TransitionProducts`, or, with
