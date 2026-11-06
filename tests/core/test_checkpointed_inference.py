@@ -315,7 +315,6 @@ def test_missing_row_hides_nan_from_the_check():
         is_missing=missing,
         **kwargs,
     )
-    assert result.diagnostics["n_nan"] == 0
     assert np.isfinite(result.marginal_log_likelihood)
 
 

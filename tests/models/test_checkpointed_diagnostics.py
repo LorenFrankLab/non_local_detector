@@ -56,16 +56,13 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
     np.testing.assert_array_equal(model.degenerate_timesteps_, [98])
     np.testing.assert_array_equal(result.source_row, np.arange(5, 10))
     assert result.attrs["n_degenerate"] == len(expected)
-    assert result.attrs["n_nan"] == 0
     assert result.attrs["diagnostics_are_global"] is True
     loaded = model.load_results(path)
-    for key, indices in [
-        ("degenerate_row_mask_hex", expected),
-        ("nan_row_mask_hex", []),
-    ]:
-        packed = np.frombuffer(bytes.fromhex(loaded.attrs[key]), dtype=np.uint8)
-        actual = np.flatnonzero(np.unpackbits(packed, bitorder="little", count=100))
-        np.testing.assert_array_equal(actual, indices)
+    packed = np.frombuffer(
+        bytes.fromhex(loaded.attrs["degenerate_row_mask_hex"]), dtype=np.uint8
+    )
+    actual = np.flatnonzero(np.unpackbits(packed, bitorder="little", count=100))
+    np.testing.assert_array_equal(actual, expected)
     if output_mode == "spatial":
         assert not loaded.acausal_posterior.variable._in_memory
 

@@ -853,7 +853,6 @@ def checkpointed_forward_backward(
     )
     diagnostics: dict[str, Any] = {
         "n_degenerate": 0,
-        "n_nan": 0,
         "max_chunk_rows": 0,
         "likelihood_evaluations": 0,
         "checkpoint_bytes": 0,
@@ -984,7 +983,6 @@ def checkpointed_forward_backward(
                 degenerate_rows[start:stop] = degenerate
                 nan_rows[start:stop] = nan
                 diagnostics["n_degenerate"] += int(degenerate.sum())
-                diagnostics["n_nan"] += int(nan.sum())
                 return (
                     _float64_evidence(increments)
                     if evidence_accumulation == "stable"
@@ -1144,17 +1142,13 @@ def checkpointed_forward_backward(
                 emit_chunk(*pending)
         _report_degenerate_and_nan_timesteps(
             diagnostics["n_degenerate"],
-            diagnostics["n_nan"],
+            int(nan_rows.sum()),
             n_time,
             marginal_log_likelihood=marginal,
         )
         diagnostics["degenerate_indices"] = np.flatnonzero(degenerate_rows)
-        diagnostics["nan_indices"] = np.flatnonzero(nan_rows)
         packed_masks = {
             "degenerate_row_mask_hex": np.packbits(degenerate_rows, bitorder="little")
-            .tobytes()
-            .hex(),
-            "nan_row_mask_hex": np.packbits(nan_rows, bitorder="little")
             .tobytes()
             .hex(),
             "diagnostic_row_mask_encoding": "packbits_little_hex",
