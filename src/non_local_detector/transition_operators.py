@@ -1728,8 +1728,7 @@ def _structured_block(
         )
         raise ValidationError(
             msg,
-            expected="a UniformBlock, IdentityBlock, GaussianGridBlock, DenseBlock "
-            "or RestrictedBlock",
+            expected=" or ".join(block.__name__ for block in _BLOCK_TYPES),
             hint="The transition operator applies only these block classes. "
             "Return one of them, or raise UnsupportedTransitionError for a dense "
             "block.",
