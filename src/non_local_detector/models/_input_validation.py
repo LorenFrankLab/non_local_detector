@@ -562,7 +562,7 @@ def _validate_spike_data(
     range_name: str = "",
     check_extent: bool = False,
     bin_width: float | None = None,
-) -> None:
+) -> list[np.ndarray]:
     """Check spike data where it enters a public fitting or decoding method.
 
     Checks the structure (``_validate_spike_structure``), then that every
@@ -611,6 +611,11 @@ def _validate_spike_data(
         If the spikes lie farther from ``time_range`` than they span, with
         ``check_extent`` look like other units than it, or with ``bin_width``
         have a dtype too coarse for the bins.
+
+    Returns
+    -------
+    spike_times : list of np.ndarray
+        Every unit's spike times as a numeric array, shape (n_spikes,).
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -636,13 +641,13 @@ def _validate_spike_data(
             "fix the spike export that produced them.",
         )
     if bin_width is not None and _warn_if_times_cannot_resolve_bins(arrays, bin_width):
-        return
+        return arrays
     if time_range is None:
-        return
+        return arrays
     start, stop = time_range
     n_spikes = sum(times.size for times in arrays)
     if n_spikes == 0:
-        return
+        return arrays
     first = min(times.min() for times in arrays if times.size)
     last = max(times.max() for times in arrays if times.size)
     # A unit or clock mismatch (ms for s ~1000x, or spike times from 0
@@ -652,7 +657,7 @@ def _validate_spike_data(
     if gap <= last - first:
         if check_extent:
             _warn_about_encoding_extent(arrays, start, stop, first, last)
-        return
+        return arrays
     warnings.warn(
         f"None of the {n_spikes} spike times lies within the {range_name} "
         f"[{start:.6g}, {stop:.6g}] s; they span [{first:.6g}, {last:.6g}]. "
@@ -662,6 +667,7 @@ def _validate_spike_data(
         DataQualityWarning,
         stacklevel=user_stacklevel(),
     )
+    return arrays
 
 
 _InputStage = Literal["fit", "encoding", "refit", "decode", "likelihood", "estimate"]
@@ -677,7 +683,7 @@ class _ValidatedInputs:
     Attributes
     ----------
     spike_data : tuple
-        The spike arrays named by ``_SPIKE_DATA_NAMES``.
+        ``spike_times``, then ``spike_waveform_features`` when clusterless.
         ``spike_times`` are numeric arrays except when decoding, whose
         binning reads them as they are.
     position_time : np.ndarray, shape (n_time_position,), or None
@@ -688,14 +694,14 @@ class _ValidatedInputs:
     weights : np.ndarray of float, shape (n_time_position,), or None
     encoding_support : EncodingSupport or None
         Support of an encoding fit.
-    valid_position_intervals : np.ndarray, shape (n_intervals, 2), or None
-        Parsed tracking intervals of a decoding call.
     time_edges : np.ndarray, shape (n_bins + 1,), or None
         Validated decode bin edges.
     time_centers : np.ndarray, shape (n_rows,), or None
         Centers of the requested decode bins.
     is_missing : np.ndarray of bool, shape (n_bins,), or None
-        The caller's mask combined with the bins without tracked position.
+        The caller's mask combined with the bins without tracked position;
+        those bins alone at ``likelihood``, whose mask covers the requested
+        rows.
     """
 
     spike_data: tuple[Any, ...]
@@ -706,7 +712,6 @@ class _ValidatedInputs:
     environment_labels: np.ndarray | None = None
     weights: np.ndarray | None = None
     encoding_support: EncodingSupport | None = None
-    valid_position_intervals: np.ndarray | None = None
     time_edges: np.ndarray | None = None
     time_centers: np.ndarray | None = None
     is_missing: np.ndarray | None = None
@@ -981,7 +986,6 @@ def _missing_bins(
     position: np.ndarray | None,
     *,
     reads_position: bool = True,
-    warn_outside_tracking: bool = False,
     valid_position_intervals: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Combine the caller's missing mask with bins that lack tracked position.
@@ -1021,10 +1025,6 @@ def _missing_bins(
     reads_position : bool, optional
         Whether the decode likelihood reads position, by default True. When
         False, position marks no bin missing; only ``is_missing`` does.
-    warn_outside_tracking : bool, optional
-        Warn when bins are missing because they extend outside the tracked
-        period, by default False. Public decode entry points set it, so one
-        call warns once however many chunks or EM iterations it runs.
     valid_position_intervals : np.ndarray, shape (n_intervals, 2), optional
         Parsed spans of continuous tracking, or None if none were declared.
 
@@ -1036,8 +1036,7 @@ def _missing_bins(
     Warns
     -----
     DataQualityWarning
-        If ``warn_outside_tracking`` and some bins extend outside the tracked
-        period.
+        If some bins extend outside the tracked period.
 
     Raises
     ------
@@ -1057,13 +1056,6 @@ def _missing_bins(
         return is_missing
     position = np.asarray(position)
     position_time = np.asarray(position_time)
-    if position.shape[0] != position_time.shape[0]:
-        msg = "position must have one row per position_time sample"
-        raise ValidationError(
-            msg,
-            expected=f"{position_time.shape[0]} rows",
-            got=f"{position.shape[0]} rows",
-        )
     val.ensure_all_finite(position_time, "position_time")
     # Strictly when the likelihood interpolates position in time, as fitting
     # requires.
@@ -1073,7 +1065,7 @@ def _missing_bins(
     if not reads_position:
         return is_missing
     affected = _bins_outside_tracking(time_edges, position_time)
-    if warn_outside_tracking and np.any(affected):
+    if np.any(affected):
         warnings.warn(
             f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
             "a position sample outside the tracked period "
@@ -1288,6 +1280,49 @@ def _unread_bins(
     return is_unread if position_is_missing is None else is_unread | position_is_missing
 
 
+def _warn_about_tracking_coverage(
+    time_edges: np.ndarray,
+    position_time: np.ndarray,
+    intervals: np.ndarray | None,
+    row_slice: slice | None,
+    caller_is_missing: np.ndarray | None,
+    is_missing: np.ndarray | None,
+) -> None:
+    """Warn about the tracking of a decode that reads position.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and increasing.
+    intervals : np.ndarray, shape (n_intervals, 2), or None
+        Declared spans of continuous tracking.
+    row_slice : slice or None
+        Rows the call evaluates; None requests all.
+    caller_is_missing : np.ndarray of bool, optional
+        The caller's mask: of the requested rows with ``row_slice``.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins without tracked position, with the caller's where it covers the
+        grid.
+    """
+    is_unread = _unread_bins(
+        time_edges.size - 1, row_slice, caller_is_missing, is_missing
+    )
+    _warn_if_no_bin_is_tracked(
+        time_edges,
+        position_time,
+        is_unread if row_slice is None else is_missing,
+        caller_is_missing,
+    )
+    if intervals is None:
+        _warn_if_decoding_across_gaps(time_edges, position_time, is_unread)
+    else:
+        _warn_if_interval_lacks_tracking(
+            time_edges, position_time, intervals, is_unread
+        )
+
+
 def _warn_if_no_bin_is_tracked(
     time_edges: np.ndarray,
     position_time: np.ndarray,
@@ -1341,7 +1376,7 @@ def _warn_if_interval_lacks_tracking(
     time_edges: np.ndarray,
     position_time: np.ndarray,
     intervals: np.ndarray,
-    is_unread: np.ndarray | None,
+    is_unread: np.ndarray,
 ) -> None:
     """Warn when a decode bin reads position in an interval with no samples.
 
@@ -1355,7 +1390,7 @@ def _warn_if_interval_lacks_tracking(
         Finite and increasing.
     intervals : np.ndarray, shape (n_intervals, 2)
         Ordered, non-overlapping spans of continuous tracking.
-    is_unread : np.ndarray of bool, shape (n_bins,), or None
+    is_unread : np.ndarray of bool, shape (n_bins,)
         Bins that read no position, such as those decoded as missing.
 
     Warns
@@ -1367,9 +1402,9 @@ def _warn_if_interval_lacks_tracking(
     is_empty = np.searchsorted(position_time, stops, side="right") == np.searchsorted(
         position_time, starts, side="left"
     )
-    reads_empty = _bins_meeting_spans(time_edges, starts[is_empty], stops[is_empty])
-    if is_unread is not None:
-        reads_empty &= ~is_unread
+    reads_empty = ~is_unread & _bins_meeting_spans(
+        time_edges, starts[is_empty], stops[is_empty]
+    )
     if not np.any(reads_empty):
         return
     warnings.warn(
@@ -1384,7 +1419,7 @@ def _warn_if_interval_lacks_tracking(
 
 
 def _warn_if_decoding_across_gaps(
-    time_edges: np.ndarray, position_time: np.ndarray, is_unread: np.ndarray | None
+    time_edges: np.ndarray, position_time: np.ndarray, is_unread: np.ndarray
 ) -> None:
     """Warn when a decode bin reads position across a tracking gap.
 
@@ -1397,7 +1432,7 @@ def _warn_if_decoding_across_gaps(
         Time bin edges of the decode grid.
     position_time : np.ndarray, shape (n_time_position,)
         Finite and strictly increasing.
-    is_unread : np.ndarray of bool, shape (n_bins,), or None
+    is_unread : np.ndarray of bool, shape (n_bins,)
         Bins that read no position, such as those decoded as missing.
 
     Warns
@@ -1413,13 +1448,11 @@ def _warn_if_decoding_across_gaps(
     if not np.any(is_gap):
         return
     half_sample = _half_sample(position_time)
-    reads_gap = _bins_meeting_spans(
+    reads_gap = ~is_unread & _bins_meeting_spans(
         time_edges,
         position_time[:-1][is_gap] + half_sample,
         position_time[1:][is_gap] - half_sample,
     )
-    if is_unread is not None:
-        reads_gap &= ~is_unread
     if not np.any(reads_gap):
         return
     warnings.warn(
@@ -1792,7 +1825,7 @@ def _require_position_columns(
     ValidationError
         If an environment was fitted on another number of columns.
     """
-    n_columns = 1 if position.ndim == 1 else position.shape[1]
+    n_columns = position.shape[1]
     for environment in environments:
         expected = _position_columns(environment)
         if n_columns != expected:
@@ -1984,7 +2017,7 @@ class _InputValidationMixin:
         stage : {"fit", "encoding", "refit", "decode", "likelihood", "estimate"}
             The kind of public method.
         spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+            ``spike_times``, then ``spike_waveform_features`` when clusterless.
         position_time : array_like, shape (n_time_position,), optional
             Times of the position samples.
         position : array_like, shape (n_time_position,) or (n_time_position, n_position_dims), optional
@@ -2031,7 +2064,7 @@ class _InputValidationMixin:
         if stage == "encoding":
             times = _sample_times(cast("ArrayLike", position_time))
             finite = times[np.isfinite(times)]
-            self._check_spike_data(
+            spike_data = self._check_spike_data(
                 spike_data,
                 time_range=(float(finite.min()), float(finite.max()))
                 if finite.size
@@ -2040,7 +2073,6 @@ class _InputValidationMixin:
                 check_extent=True,
                 bin_width=1.0 / self.sampling_frequency,
             )
-            spike_data = self._numeric_spike_data(spike_data)
         if decoding:
             inputs = _ValidatedInputs.from_decode_arguments(
                 spike_data, position_time, position, example=example
@@ -2074,18 +2106,15 @@ class _InputValidationMixin:
                 bin_width=1.0 / self.sampling_frequency,
             )
             self._validate_decode_position(position)
-        if stage == "fit":
-            self._check_spike_data(spike_data)
         if stage == "estimate":
             # The dtype check is the internal fit's, which reads the same times.
-            self._check_spike_data(
+            spike_data = self._check_spike_data(
                 spike_data,
                 time_range=_time_span(cast("np.ndarray", checked_edges)),
                 range_name="decode time_edges",
             )
-        if stage in ("fit", "estimate"):
-            spike_data = self._numeric_spike_data(spike_data)
         if stage == "fit":
+            spike_data = self._check_spike_data(spike_data)
             self._validate_fit_arguments(
                 cast("np.ndarray", position),
                 discrete_transition_covariate_data,
@@ -2130,38 +2159,23 @@ class _InputValidationMixin:
                 position_time,
                 position,
                 reads_position=reads_position,
-                warn_outside_tracking=True,
                 valid_position_intervals=tracking_intervals,
             )
             # fit, which estimate_parameters runs next, refuses these samples.
             if decoding and reads_position:
-                edges = cast("np.ndarray", checked_edges)
-                times = cast("np.ndarray", position_time)
-                is_unread = (
-                    _unread_bins(
-                        edges.size - 1, row_slice, caller_is_missing, is_missing
-                    )
-                    if stage == "likelihood"
-                    else is_missing
-                )
-                _warn_if_no_bin_is_tracked(
-                    edges,
-                    times,
-                    is_unread if row_slice is None else is_missing,
+                _warn_about_tracking_coverage(
+                    cast("np.ndarray", checked_edges),
+                    cast("np.ndarray", position_time),
+                    tracking_intervals,
+                    row_slice,
                     caller_is_missing,
+                    is_missing,
                 )
-                if tracking_intervals is None:
-                    _warn_if_decoding_across_gaps(edges, times, is_unread)
-                else:
-                    _warn_if_interval_lacks_tracking(
-                        edges, times, tracking_intervals, is_unread
-                    )
         return replace(
             inputs,
             spike_data=spike_data,
             position=position,
             encoding_support=encoding_support,
-            valid_position_intervals=tracking_intervals,
             time_edges=checked_edges,
             time_centers=time_centers,
             is_missing=is_missing,
@@ -2231,28 +2245,6 @@ class _InputValidationMixin:
         self._validate_time_contract()
         self._warn_if_layout_parameters_changed()
 
-    @staticmethod
-    def _numeric_spike_data(spike_data: tuple[Any, ...]) -> tuple[Any, ...]:
-        """Return the spike arrays with ``spike_times`` as numeric arrays.
-
-        Fitting reads the spike times with ``np.interp``, which rejects
-        object-dtype arrays that decoding reads as float.
-
-        Parameters
-        ----------
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-
-        Returns
-        -------
-        tuple
-            ``spike_data`` with the first entry converted.
-        """
-        spike_times = _numeric_spike_times_list(
-            spike_data[0], clusterless=len(spike_data) > 1
-        )
-        return (spike_times, *spike_data[1:])
-
     def _check_spike_data(
         self,
         spike_data: tuple[Any, ...],
@@ -2261,15 +2253,15 @@ class _InputValidationMixin:
         range_name: str = "",
         check_extent: bool = False,
         bin_width: float | None = None,
-    ) -> None:
-        """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
+    ) -> tuple[Any, ...]:
+        """Check the spike arrays.
 
         See ``_validate_spike_data`` for what is checked.
 
         Parameters
         ----------
         spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
+            ``spike_times``, then ``spike_waveform_features`` when clusterless.
         time_range : tuple of float, optional
             ``(start, stop)`` in seconds to warn against, by default None.
         range_name : str, optional
@@ -2280,8 +2272,15 @@ class _InputValidationMixin:
         bin_width : float, optional
             Bin width in seconds the spike times' dtype must resolve, by
             default None.
+
+        Returns
+        -------
+        spike_data : tuple
+            With ``spike_times`` as numeric arrays. Fitting reads them with
+            ``np.interp``, which rejects the object-dtype arrays that decoding
+            reads as float.
         """
-        _validate_spike_data(
+        spike_times = _validate_spike_data(
             *spike_data,
             clusterless=len(spike_data) > 1,
             time_range=time_range,
@@ -2289,6 +2288,7 @@ class _InputValidationMixin:
             check_extent=check_extent,
             bin_width=bin_width,
         )
+        return (spike_times, *spike_data[1:])
 
     def _validate_position_dimensionality(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
@@ -2423,10 +2423,7 @@ class _InputValidationMixin:
             if not self._decode_reads_position(observation_models):
                 return
             _require_position_columns(position, self.environments_)
-            _warn_if_off_grid(
-                position[:, np.newaxis] if position.ndim == 1 else position,
-                self.environments_,
-            )
+            _warn_if_off_grid(position, self.environments_)
             return
         if not self._decode_reads_position(observation_models):
             return

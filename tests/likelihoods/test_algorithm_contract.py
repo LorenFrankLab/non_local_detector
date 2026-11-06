@@ -55,6 +55,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     predict_sorted_spikes_kde_log_likelihood,
 )
 from non_local_detector.model_format import read_model_summary
+from non_local_detector.models.base import ClusterlessDetector
 from tests.models._helpers import ALGORITHMS, _decoder, type_violations
 
 pytestmark = pytest.mark.unit
@@ -100,7 +101,12 @@ def _fit(algorithm, recording):
 
 def _data_names(decoder):
     """The predict arguments the detector passes positionally."""
-    return {"position_time", "position", *type(decoder)._SPIKE_DATA_NAMES}
+    names = {"position_time", "position", "spike_times"}
+    return (
+        names | {"spike_waveform_features"}
+        if isinstance(decoder, ClusterlessDetector)
+        else names
+    )
 
 
 def _declared_keys(encoding_model_type):

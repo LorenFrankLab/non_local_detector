@@ -22,7 +22,7 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
-from non_local_detector.models.base import _missing_bins
+from non_local_detector.models._input_validation import _missing_bins
 from tests.models._helpers import ALGORITHMS, _decoder
 
 pytestmark = pytest.mark.unit

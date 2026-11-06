@@ -139,6 +139,9 @@ class TestEstimationKeepsNoInputData:
                 for name, value in encoding_fit_arguments.items()
                 if value is not None
             }
+            arrays["spike_times"], arrays["spike_waveform_features"] = arrays.pop(
+                "spike_data"
+            )
             refit_data.append(arrays)
             held_during_refit.extend(stored_on(detector, arrays))
             return original_refit(weights, encoding_fit_arguments)

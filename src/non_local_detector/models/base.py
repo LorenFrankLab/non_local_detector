@@ -108,7 +108,6 @@ from non_local_detector.models._input_validation import (
     _TIME_CONTRACT,
     _decode_time_edges,
     _InputValidationMixin,
-    _missing_bins,
     _missing_covariates_error,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
@@ -183,39 +182,23 @@ class _LikelihoodPositionContext:
     """Tracking preparation shared only during one likelihood prediction."""
 
     position: np.ndarray | None
-    is_missing: np.ndarray | None
     all_missing: bool
 
     @classmethod
     def prepare(
-        cls,
-        time_edges: np.ndarray,
-        position_time: np.ndarray | None,
-        position: np.ndarray | None,
-        *,
-        reads_position: bool = True,
-        valid_position_intervals: np.ndarray | None = None,
+        cls, position: np.ndarray | None, *, reads_position: bool
     ) -> "_LikelihoodPositionContext":
-        missing = _missing_bins(
-            time_edges,
-            None,
-            position_time,
-            position,
-            reads_position=reads_position,
-            valid_position_intervals=valid_position_intervals,
-        )
         prepared = position
         all_missing = False
         if position is not None:
             prepared = np.asarray(position)
-            prepared = prepared[:, None] if prepared.ndim == 1 else prepared
             finite = np.all(np.isfinite(prepared), axis=1)
             # A model that never reads position decodes even without any.
             all_missing = reads_position and not np.any(finite)
             if np.any(finite) and not np.all(finite):
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
-        return cls(prepared, missing, all_missing)
+        return cls(prepared, all_missing)
 
 
 @dataclass(frozen=True)
@@ -238,7 +221,8 @@ class _DecodeContext:
     position_time : np.ndarray, shape (n_time_position,), or None
         Tracking times.
     spike_data : tuple
-        The spike arrays named by ``_DetectorBase._SPIKE_DATA_NAMES``.
+        The spike arrays: ``spike_times``, then ``spike_waveform_features``
+        for a clusterless detector.
     position_context : _LikelihoodPositionContext
         Tracking positions prepared on ``time_edges``.
     spike_time_order : _SpikeTimeOrder
@@ -1404,7 +1388,6 @@ class _DetectorBase(
         _DetectorBase
             Fitted model.
         """
-        position = position[:, np.newaxis] if position.ndim == 1 else position
         self._invalidate_stored_log_likelihood()  # stale after a refit
         # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
@@ -1542,7 +1525,6 @@ class _DetectorBase(
                             "and decoding, including when tracking is missing.",
                         )
 
-    _SPIKE_DATA_NAMES: tuple[str, ...] = ()
     """Names of the spike-data arrays, in the order the decode methods take them."""
     _PREDICT_EXAMPLE: str = ""
     """Example ``predict`` call shown in validation errors."""
@@ -1602,7 +1584,8 @@ class _DetectorBase(
     ) -> jax.Array:
         """Body of the detectors' ``compute_log_likelihood``.
 
-        ``spike_data`` holds the spike arrays named by ``_SPIKE_DATA_NAMES``,
+        ``spike_data`` holds ``spike_times``, then ``spike_waveform_features``
+        for a clusterless detector,
         and the other arguments are those of ``compute_log_likelihood``. It
         checks the model and inputs, as the public decoding methods do once
         per call, then evaluates the requested rows.
@@ -1620,17 +1603,17 @@ class _DetectorBase(
         context = self._decode_context(
             cast("np.ndarray", inputs.time_edges),
             (inputs.position_time, inputs.position, *spike_data),
-            valid_position_intervals=inputs.valid_position_intervals,
             share_no_spike_bin_sizes=False,
         )
-        return self._log_likelihood_rows(context, row_slice, is_missing)
+        return self._log_likelihood_rows(
+            context, row_slice, is_missing, position_is_missing=inputs.is_missing
+        )
 
     def _decode_context(
         self,
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...],
         *,
-        valid_position_intervals: np.ndarray | None = None,
         share_no_spike_bin_sizes: bool = True,
     ) -> _DecodeContext:
         """Prepare one likelihood evaluation over validated ``time_edges``.
@@ -1642,9 +1625,6 @@ class _DetectorBase(
         log_likelihood_args : tuple
             ``(position_time, position, *spike_data)``, position coerced by
             ``_validated_inputs``.
-        valid_position_intervals : np.ndarray, shape (n_intervals, 2), optional
-            Tracking intervals of a direct ``compute_log_likelihood`` call.
-            The decoding methods already mark those bins in ``is_missing``.
         share_no_spike_bin_sizes : bool, optional
             Compute the No-Spike bin durations once for every row request, by
             default True.
@@ -1663,13 +1643,10 @@ class _DetectorBase(
             position_time=position_time,
             spike_data=tuple(spike_data),
             position_context=_LikelihoodPositionContext.prepare(
-                time_edges,
-                position_time,
                 position,
                 reads_position=self._decode_reads_position(
                     self.state_space_.observation_models
                 ),
-                valid_position_intervals=valid_position_intervals,
             ),
             spike_time_order=_SpikeTimeOrder(),
             no_spike_time_bin_sizes=(
@@ -1733,6 +1710,8 @@ class _DetectorBase(
         context: _DecodeContext,
         row_slice: slice | None,
         is_missing: np.ndarray | None,
+        *,
+        position_is_missing: np.ndarray | None = None,
     ) -> jax.Array:
         """Log likelihood of the requested decode bins.
 
@@ -1743,7 +1722,12 @@ class _DetectorBase(
         row_slice : slice or None
             Contiguous rows of the full-time likelihood; None requests all.
         is_missing : np.ndarray of bool, shape (n_rows,), or None
-            Missing bins among the requested rows.
+            Missing bins among the requested rows. A decoding method has
+            already marked here the bins without tracked position, whose rows
+            hold a placeholder in the prepared position.
+        position_is_missing : np.ndarray of bool, shape (n_bins,), optional
+            Bins without tracked position, of the full grid, for a direct
+            ``compute_log_likelihood`` call, whose ``is_missing`` lacks them.
 
         Returns
         -------
@@ -1758,7 +1742,6 @@ class _DetectorBase(
         )
         position_time, spike_data = context.position_time, context.spike_data
         self._validate_decode_population(*spike_data)
-        position_missing = context.position_context.is_missing
         logger.info("Computing log likelihood...")
         non_local_penalty = self._non_local_position_penalty()
 
@@ -1777,8 +1760,8 @@ class _DetectorBase(
                 entry="requested decode bin",
                 example=None,
             )
-        if position_missing is not None:
-            is_missing = is_missing | position_missing[row_start:row_stop]
+        if position_is_missing is not None:
+            is_missing = is_missing | position_is_missing[row_start:row_stop]
         if context.position_context.all_missing:
             return jnp.zeros((n_rows, int(self.state_space_.is_track_interior.sum())))
         position = context.position_context.position
@@ -2235,7 +2218,7 @@ class _DetectorBase(
                 encoding_fit_arguments={
                     "position_time": position_time,
                     "position": position,
-                    **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
+                    "spike_data": spike_data,
                     "is_training": inputs.is_training,
                     "encoding_group_labels": inputs.encoding_group_labels,
                     "environment_labels": inputs.environment_labels,
@@ -2893,7 +2876,7 @@ class ClusterlessDetector(_DetectorBase):
             The other keyword arguments of ``_fit_encoding_model``.
         """
         self._fit_encoding_model(
-            self._refit_inputs(weights, encoding_fit_arguments),
+            self._validated_inputs("refit", **encoding_fit_arguments, weights=weights),
             refit_mark_reference=False,
         )
 
@@ -3252,7 +3235,6 @@ class ClusterlessDetector(_DetectorBase):
             )
         return self
 
-    _SPIKE_DATA_NAMES = ("spike_times", "spike_waveform_features")
     _PREDICT_EXAMPLE = (
         "    results = detector.predict(\n"
         "        spike_times=spike_times, spike_waveform_features=features,\n"
@@ -4282,7 +4264,6 @@ class SortedSpikesDetector(_DetectorBase):
             )
         return self
 
-    _SPIKE_DATA_NAMES = ("spike_times",)
     _PREDICT_EXAMPLE = (
         "    results = detector.predict(\n"
         "        spike_times=spike_times, time_edges=time_edges,\n"
