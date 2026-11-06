@@ -10,7 +10,9 @@
 """
 
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 
 from non_local_detector.continuous_state_transitions import (
     Discrete,
@@ -27,6 +29,7 @@ from non_local_detector.models._defaults import _ModelDefaults
 from non_local_detector.models.non_local_model import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    _get_conditional_non_local_posterior,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import time_edges_from_centers
@@ -303,3 +306,38 @@ class TestPositionTimeValidation:
                 position=position,
                 position_time=None,
             )
+
+
+@pytest.mark.unit
+def test_non_local_states_of_two_environments_are_not_summed():
+    grid = np.arange(3.0)
+    index = pd.MultiIndex.from_arrays(
+        [["Local", *["A"] * 3, *["B"] * 3], [np.nan, *grid, *grid]],
+        names=["state", "position"],
+    )
+    results = xr.Dataset(
+        {
+            "acausal_posterior": (
+                ("time", "state_bins"),
+                [[0.1, 0.3, 0.1, 0.0, 0.0, 0.0, 0.5]],
+            )
+        },
+        coords=xr.Coordinates.from_pandas_multiindex(index, "state_bins"),
+    ).assign_coords(
+        time=[0.0], environment=("state_bins", ["other", *["A"] * 3, *["B"] * 3])
+    )
+    observation_models = [
+        ObservationModel(is_local=True),
+        ObservationModel(environment_name="A"),
+        ObservationModel(environment_name="B"),
+    ]
+
+    with pytest.raises(ValueError, match="environments"):
+        _get_conditional_non_local_posterior(
+            results, ["Local", "A", "B"], observation_models
+        )
+    # Local's environment does not count: only A remains to condition on.
+    conditional = _get_conditional_non_local_posterior(
+        results, ["Local", "A"], observation_models[:2]
+    )
+    np.testing.assert_allclose(conditional.values, [[0.75, 0.25, 0.0]])

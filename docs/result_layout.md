@@ -55,7 +55,8 @@ that remain. `maximum_a_posteriori_estimate` and `get_map_speed` accept any of
 these layouts.
 
 A position means nothing in another environment, so `get_position_posterior`,
-and everything that reduces to position through it, refuses a posterior whose
+everything that reduces to position through it, and
+`get_conditional_non_local_posterior` refuse a posterior whose
 states with a position are in more than one environment. Select one first:
 `results.isel(state_bins=results.environment == "A")` works on results or a
 posterior. `get_spatial_posterior` gives each state's `environment` along
@@ -68,7 +69,7 @@ apart and are summed, as they were.
 as coordinates over `(state, *position)`, NaN where a state has no bin. Drop
 them first if you do not want them:
 `results.acausal_posterior.drop_vars(["state_ind", "environment"]).unstack("state_bins")`.
-`get_spatial_posterior` drops it.
+`get_spatial_posterior` drops them, keeping each state's `environment` along `state`.
 
 Bins follow the `time_bin_convention` attribute: each bin is closed on the left
 and open on the right, except the final bin of the decode grid, which is closed

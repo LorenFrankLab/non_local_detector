@@ -10,6 +10,7 @@ from typing import Any, cast
 import numpy as np
 import xarray as xr
 
+from non_local_detector.analysis.posterior import _environment_names
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models._defaults import (
     _initialize_params,
@@ -72,8 +73,9 @@ def _get_conditional_non_local_posterior(
     Raises
     ------
     ValidationError
-        If the detector has no non-local states, or ``results`` lacks them
-        (it came from a different detector).
+        If the detector has no non-local states, ``results`` lacks them (it
+        came from a different detector), or they are in more than one
+        environment.
     """
     non_local_states = list(
         dict.fromkeys(
@@ -100,6 +102,21 @@ def _get_conditional_non_local_posterior(
             got=f"states {sorted(result_states)}",
             hint="Pass results from this detector's predict method.",
         )
+
+    if "environment" in results.acausal_posterior.coords:
+        is_non_local = results.acausal_posterior["state"].isin(non_local_states)
+        environments = _environment_names(
+            results.acausal_posterior["environment"].isel(state_bins=is_non_local)
+        )
+        if len(environments) > 1:
+            msg = "positions in different environments cannot be summed"
+            raise ValidationError(
+                msg,
+                expected="non-local states in one environment",
+                got=f"non-local states in environments {environments}",
+                hint="Normalize one environment's states yourself: "
+                "get_spatial_posterior(results.acausal_posterior, states=[...]).",
+            )
 
     acausal_posterior = sum(
         results.acausal_posterior.sel(state=name) for name in non_local_states

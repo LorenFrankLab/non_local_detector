@@ -21,6 +21,21 @@ __all__ = [
 ]
 
 
+def _environment_names(environment: xr.DataArray) -> list[str]:
+    """Distinct names in an ``environment`` coordinate.
+
+    Parameters
+    ----------
+    environment : xr.DataArray, shape (*coordinate_shape)
+        Unstacking pads it with NaN where a state has no bin.
+
+    Returns
+    -------
+    names : list of str
+    """
+    return sorted(set(environment.values[environment.notnull().values].tolist()))
+
+
 def get_spatial_posterior(
     posterior: xr.DataArray, states: Sequence[str] | None = None
 ) -> xr.DataArray:
@@ -142,7 +157,7 @@ def get_position_posterior(posterior: xr.DataArray) -> xr.DataArray:
         posterior = get_spatial_posterior(posterior)
     if "state" in posterior.dims:
         if "environment" in posterior.coords:
-            environments = sorted(set(posterior["environment"].values.tolist()))
+            environments = _environment_names(posterior["environment"])
             if len(environments) > 1:
                 msg = (
                     f"posterior's states are in environments {environments}, and "
