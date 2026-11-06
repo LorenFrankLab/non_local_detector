@@ -462,6 +462,13 @@ class TestWarningsFirePerPublicCall:
         assert len(messages) == 1
 
 
+def _steady_state(transitions):
+    """Stationary distribution of ``transitions``, shape (n_states,)."""
+    eigenvalues, eigenvectors = np.linalg.eig(transitions.T)
+    steady = np.real(eigenvectors[:, np.argmax(np.real(eigenvalues))])
+    return steady / steady.sum()
+
+
 def _gap_recording():
     """Clean tracking, with its rows from 40 to 80 s dropped.
 
@@ -618,10 +625,7 @@ class TestValidPositionIntervals:
         )
         probabilities = results.acausal_state_probabilities
         non_local = probabilities.sel(states="Non-Local Continuous").values
-        transitions = detectors["sorted"].discrete_state_transitions_
-        eigenvalues, eigenvectors = np.linalg.eig(transitions.T)
-        steady = np.real(eigenvectors[:, np.argmax(np.real(eigenvalues))])
-        steady /= steady.sum()
+        steady = _steady_state(detectors["sorted"].discrete_state_transitions_)
         index = list(probabilities.states.values).index("Non-Local Continuous")
 
         assert non_local[in_gap].mean() < 2 * steady[index]
@@ -664,20 +668,6 @@ class TestValidPositionIntervals:
         )
         assert len(sequence) == len(time)
 
-        log_likelihood = np.asarray(
-            _no_quality_warnings(
-                lambda: detector.compute_log_likelihood(
-                    time[tracked],
-                    position[tracked],
-                    spikes,
-                    time_edges=edges,
-                    valid_position_intervals=intervals,
-                )
-            )
-        )
-        assert (log_likelihood[in_gap] == 0.0).all()
-        assert not (log_likelihood[~in_gap & ~dense.is_missing.values] == 0.0).all()
-
         rows = slice(2_000, 2_100)  # inside the gap
         requested = detector.compute_log_likelihood(
             time[tracked],
@@ -705,6 +695,7 @@ class TestValidPositionIntervals:
         )
 
         assert (np.asarray(log_likelihood)[in_gap] == 0.0).all()
+        assert not (np.asarray(log_likelihood)[~in_gap] == 0.0).all()
 
     @pytest.mark.parametrize("family", FAMILIES)
     def test_most_likely_sequence_reads_them(self, family, detectors, gap, in_gap):
@@ -860,37 +851,32 @@ class TestValidPositionIntervals:
         )
         assert len(messages) == 1
 
-    def test_every_door_warns_about_undeclared_gaps_once(self, detectors, gap):
+    @pytest.mark.parametrize(
+        ("door", "options"),
+        [
+            ("most_likely_sequence", {}),
+            ("compute_log_likelihood", {}),
+            ("predict", {"n_chunks": 3}),
+        ],
+    )
+    def test_every_door_warns_about_undeclared_gaps_once(
+        self, door, options, detectors, gap
+    ):
         time, position, spikes, _, tracked, _ = gap
-        detector = detectors["sorted"]
-        edges = time_edges_from_centers(time)
+
         _, messages = _quality_warnings(
-            lambda: detector.most_likely_sequence(
-                spikes,
-                time_edges=edges,
-                position=position[tracked],
-                position_time=time[tracked],
+            lambda: _decode_at(
+                detectors["sorted"],
+                door,
+                (spikes,),
+                time[tracked],
+                position[tracked],
+                time_edges=time_edges_from_centers(time),
+                **options,
             ),
             "valid_position_intervals",
         )
-        assert len(messages) == 1
-        _, messages = _quality_warnings(
-            lambda: detector.compute_log_likelihood(
-                time[tracked], position[tracked], spikes, time_edges=edges
-            ),
-            "valid_position_intervals",
-        )
-        assert len(messages) == 1
-        _, messages = _quality_warnings(
-            lambda: detector.predict(
-                spikes,
-                time_edges=edges,
-                position=position[tracked],
-                position_time=time[tracked],
-                n_chunks=3,
-            ),
-            "valid_position_intervals",
-        )
+
         assert len(messages) == 1
 
     def test_estimate_parameters_masks_its_e_steps(self, gap, in_gap):
@@ -918,11 +904,7 @@ class TestValidPositionIntervals:
         # Without evidence the E-step's states relax to the steady state; with
         # the invented path they lock onto Non-Local Continuous.
         probabilities = results.acausal_state_probabilities
-        eigenvalues, eigenvectors = np.linalg.eig(
-            detector.discrete_state_transitions_.T
-        )
-        steady = np.real(eigenvectors[:, np.argmax(np.real(eigenvalues))])
-        steady /= steady.sum()
+        steady = _steady_state(detector.discrete_state_transitions_)
         index = list(probabilities.states.values).index("Non-Local Continuous")
         assert (
             probabilities.sel(states="Non-Local Continuous").values[in_gap].mean()
