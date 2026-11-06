@@ -95,7 +95,7 @@ def reference64_prediction(
 
     from non_local_detector.checkpointed_inference import checkpointed_forward_backward
     from non_local_detector.core import row_slice_aware
-    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.models._input_validation import _missing_bins
 
     if not jax.config.x64_enabled:
         msg = "reference64 requires JAX_ENABLE_X64=1"

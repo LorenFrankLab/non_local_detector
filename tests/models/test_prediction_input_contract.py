@@ -84,6 +84,7 @@ def fitted_local_marked_population(request):
     return _fit_population(request.param, local=True)
 
 
+@pytest.mark.filterwarnings("ignore:Every one of the:UserWarning")  # all NaN here
 @pytest.mark.integration
 @pytest.mark.parametrize("all_missing", [False, True])
 @pytest.mark.parametrize("path", ["likelihood", "predict", "viterbi"])
@@ -121,6 +122,7 @@ def test_missing_tracking_cannot_hide_a_dropped_population(
     _assert_unchanged(detector, snapshot)
 
 
+@pytest.mark.filterwarnings("ignore:Every one of the:UserWarning")  # all NaN here
 @pytest.mark.integration
 def test_correct_empty_trains_remain_valid_for_missing_tracking(
     fitted_local_population,
@@ -171,6 +173,7 @@ def test_decoder_ignores_missing_tracking_for_empty_trains(fitted_population):
     )
 
 
+@pytest.mark.filterwarnings("ignore:Every one of the:UserWarning")  # all NaN here
 @pytest.mark.integration
 @pytest.mark.parametrize("all_missing", [False, True])
 @pytest.mark.parametrize("path", ["likelihood", "predict", "viterbi"])

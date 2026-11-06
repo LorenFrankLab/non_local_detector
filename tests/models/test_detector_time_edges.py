@@ -272,7 +272,7 @@ def test_missing_bins_cover_every_time_in_the_bin():
     sample-centered grid with one NaN sample ``k`` that is bins ``k - 1`` to
     ``k + 1``: bin ``k + 1`` has a finite center but owns times below
     ``t[k + 1]`` that read NaN."""
-    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.models._input_validation import _missing_bins
     from non_local_detector.time_edges import time_edges_from_centers
 
     position_time = np.arange(10.0)
@@ -289,7 +289,7 @@ def test_missing_bins_cover_every_time_in_the_bin():
 @pytest.mark.unit
 def test_missing_bins_include_a_nan_read_at_the_closed_final_edge():
     """The final bin also owns ``edges[-1]``; a NaN read exactly there marks it."""
-    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.models._input_validation import _missing_bins
 
     position_time = np.arange(10.0)
     position = np.arange(10.0)[:, None]
@@ -611,12 +611,13 @@ def test_equal_widths_at_different_origins_are_accepted():
         _decode_time_edges(np.arange(51) * 0.002 * 1.002, width, tolerance)
 
 
+@pytest.mark.filterwarnings("ignore:.*decode bins extend:UserWarning")  # the point
 @pytest.mark.unit
 @pytest.mark.parametrize("nan_index", [0, 1, 8, 9])
 def test_nan_near_the_ends_marks_extrapolated_bins_missing(nan_index):
     """Positions outside the samples are extrapolated from the end intervals,
     so a NaN in either end interval affects every bin beyond that end."""
-    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.models._input_validation import _missing_bins
 
     position_time = np.arange(10.0)
     position = np.arange(10.0)[:, None]
@@ -634,12 +635,13 @@ def test_nan_near_the_ends_marks_extrapolated_bins_missing(nan_index):
     assert not np.all(missing)
 
 
+@pytest.mark.filterwarnings("ignore:.*decode bins extend:UserWarning")  # the point
 @pytest.mark.unit
 @pytest.mark.parametrize("seed", range(20))
 def test_missing_bins_match_the_interpolation_oracle(seed):
     """Random masks, edges on sample times, NaN at either end, and edges
     beyond the tracking."""
-    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.models._input_validation import _missing_bins
 
     rng = np.random.default_rng(seed)
     position_time = np.sort(rng.uniform(0, 10, 30))

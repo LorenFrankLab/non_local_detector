@@ -1,10 +1,10 @@
 """Input validation of the detectors.
 
 The checks the detectors run on their constructor parameters and on the data
-of their public methods: the coerced encoding and decoding inputs
-(``_EncodingInputs``, ``_DecodeInputs``), the decode time grid, the
-prediction and transition options, ``return_outputs``, and the fitted
-model's time contract. ``_DetectorBase`` inherits the methods of
+of their public methods: the one input step every public method takes
+(``_InputValidationMixin._validated_inputs``, giving ``_ValidatedInputs``),
+the decode time grid, the prediction and transition options,
+``return_outputs``, and the fitted model's time contract. ``_DetectorBase`` inherits the methods of
 ``_InputValidationMixin``.
 
 Methods that read the detector's attributes annotate ``self`` as
@@ -15,11 +15,12 @@ mixin.
 import contextlib
 import warnings
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 import numpy as np
+import pandas as pd
 from numpy.typing import ArrayLike
 
 import non_local_detector
@@ -28,6 +29,10 @@ from non_local_detector._warnings import user_stacklevel
 from non_local_detector.discrete_state_transitions import (
     DiscreteTransition,
     _refuse_untrusted_transition,
+)
+from non_local_detector.encoding_time import (
+    EncodingSupport,
+    parse_tracking_intervals,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
@@ -48,6 +53,7 @@ from non_local_detector.time_edges import (
     decode_bin_centers,
     uniform_time_edges,
 )
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -276,6 +282,13 @@ def _sample_labels(
     ``compared_with`` describe them for the error message.
     """
     labels = np.asarray(values)
+    # NumPy would turn the integers of a mixed sequence into strings.
+    if (
+        labels.dtype.kind == "U"
+        and isinstance(values, (list, tuple))
+        and not all(isinstance(value, str) for value in values)
+    ):
+        labels = np.asarray(values, dtype=object)
     if labels.shape != (n_time,):
         msg = f"{name} must have one label per position sample"
         raise ValidationError(
@@ -424,15 +437,22 @@ def _numeric_spike_times(times: Any, unit: str, index: int) -> np.ndarray:
 # overlap the span, so they are not far from it; instead almost none lie
 # inside it (~0.1%) and they reach ~1000 spans past it. Spikes of a whole
 # recording with position for part of it (one epoch of a day) keep far more
-# than 1% inside and reach only a few spans past it.
+# than 1% inside and reach only a few spans past it. position_time in ms
+# against spikes in s is the mirror image: all spikes overlap its start, and
+# they span ~0.1% of it, where one epoch of a day spans several percent.
 _MIN_FRACTION_INSIDE = 0.01
 _MAX_SPANS_PAST = 10.0
+_MIN_FRACTION_OF_SPAN = 0.01
 
 
-def _warn_if_spikes_reach_far_past(
+def _warn_about_encoding_extent(
     arrays: list[np.ndarray], start: float, stop: float, first: float, last: float
 ) -> None:
-    """Warn if under 1% of the spikes lie in ``[start, stop]`` and they reach over 10 spans past it."""
+    """Warn if the spikes and ``[start, stop]`` look like different units.
+
+    Warns if under 1% of the spikes lie in the range and they reach over 10
+    of its lengths past it, if none lies in it, or if they span under 1% of it.
+    """
     span = stop - start
     if span <= 0:
         return
@@ -441,20 +461,83 @@ def _warn_if_spikes_reach_far_past(
         int(np.count_nonzero((times >= start) & (times <= stop))) for times in arrays
     )
     reach = max(last - stop, start - first)
-    if n_inside >= _MIN_FRACTION_INSIDE * n_spikes or reach <= _MAX_SPANS_PAST * span:
-        return
+    if n_inside < _MIN_FRACTION_INSIDE * n_spikes and reach > _MAX_SPANS_PAST * span:
+        warnings.warn(
+            f"Only {n_inside} of the {n_spikes} spike times "
+            f"({n_inside / n_spikes:.2%}) lie within the position_time span "
+            f"[{start:.6g}, {stop:.6g}] s, and they reach {reach / span:.3g} times "
+            f"its length past it (spanning [{first:.6g}, {last:.6g}]). The spike "
+            "times are probably in milliseconds (or other units) rather than "
+            "seconds; the encoding model is fit to the few that fall inside. "
+            "Convert them to seconds, or, if the position covers only a small part "
+            "of the recording on purpose, pass the spikes of that part.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+    elif n_inside == 0:
+        warnings.warn(
+            f"None of the {n_spikes} spike times lies inside the position_time span "
+            f"[{start:.6g}, {stop:.6g}] s, so every encoding model is fit without "
+            "spikes and its rates sit at their floor. Check that spike_times "
+            "cover the tracked period.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+    elif 0 < last - first < _MIN_FRACTION_OF_SPAN * span:
+        warnings.warn(
+            f"The spike times span {last - first:.3g} s, {(last - first) / span:.2%} "
+            f"of the position_time span [{start:.6g}, {stop:.6g}] s. position_time "
+            "is probably in milliseconds (or other units) rather than seconds, "
+            "which also shrinks every firing rate; the encoding model counts the "
+            "whole span as occupancy. Convert position_time to seconds, or, if "
+            "the spikes cover only a small part of the tracking on purpose, pass "
+            "the position of that part.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+
+
+def _warn_if_times_cannot_resolve_bins(
+    arrays: list[np.ndarray], bin_width: float
+) -> bool:
+    """Warn if a spike-time dtype is coarser than a decode bin near its values.
+
+    Spikes then round onto a few representable times, away from the bins they
+    fell in. Only ``time_edges`` have a dtype check of their own.
+
+    Parameters
+    ----------
+    arrays : list of np.ndarray, each shape (n_spikes,)
+        Finite spike times of each unit.
+    bin_width : float
+        Decode bin width, in seconds.
+
+    Returns
+    -------
+    warned : bool
+    """
+    coarsest = max(
+        (
+            (float(np.spacing(np.max(np.abs(times)))), times)
+            for times in arrays
+            if times.size and times.dtype.kind == "f"
+        ),
+        key=lambda spacing_times: spacing_times[0],
+        default=(0.0, None),
+    )
+    spacing, times = coarsest
+    if times is None or spacing <= bin_width:
+        return False
     warnings.warn(
-        f"Only {n_inside} of the {n_spikes} spike times "
-        f"({n_inside / n_spikes:.2%}) lie within the position_time span "
-        f"[{start:.6g}, {stop:.6g}] s, and they reach {reach / span:.3g} times "
-        f"its length past it (spanning [{first:.6g}, {last:.6g}]). The spike "
-        "times are probably in milliseconds (or other units) rather than "
-        "seconds; the encoding model is fit to the few that fall inside. "
-        "Convert them to seconds, or, if the position covers only a small part "
-        "of the recording on purpose, pass the spikes of that part.",
+        f"spike_times of dtype {times.dtype} resolve times near "
+        f"{np.max(np.abs(times)):.6g} s only to {spacing:.3g} s, more than the "
+        f"{bin_width:.3g} s decode bin, so spikes round onto a few values and "
+        "away from the bins they fell in. Use float64 timestamps, or subtract a "
+        "reference time before converting to a lower precision.",
         DataQualityWarning,
         stacklevel=user_stacklevel(),
     )
+    return True
 
 
 def _numeric_spike_times_list(
@@ -485,7 +568,8 @@ def _validate_spike_data(
     time_range: tuple[float, float] | None = None,
     range_name: str = "",
     check_extent: bool = False,
-) -> None:
+    bin_width: float | None = None,
+) -> list[np.ndarray]:
     """Check spike data where it enters a public fitting or decoding method.
 
     Checks the structure (``_validate_spike_structure``), then that every
@@ -511,11 +595,20 @@ def _validate_spike_data(
     range_name : str, optional
         What ``time_range`` is, for the warning, e.g. "decode time_edges".
     check_extent : bool, optional
-        Also warn when the spikes overlap ``time_range`` but almost none lie
-        inside it and they reach far past it (see
-        ``_warn_if_spikes_reach_far_past``), by default False. For the
-        encoding period only: a decode window is legitimately short against
-        the recording its spikes come from.
+        Also warn when the spikes overlap ``time_range`` but look like other
+        units than it (see ``_warn_about_encoding_extent``), by default False.
+        For the encoding period only: a decode window is legitimately short
+        against the recording its spikes come from.
+    bin_width : float or None, optional
+        Decode bin width in seconds the spike times' dtype must resolve, by
+        default None (not checked). Times it cannot resolve warn, and the
+        ``time_range`` warnings, which would read the rounded times, are
+        skipped.
+
+    Returns
+    -------
+    spike_times : list of np.ndarray
+        Every unit's spike times as a numeric array, shape (n_spikes,).
 
     Raises
     ------
@@ -527,8 +620,9 @@ def _validate_spike_data(
     Warns
     -----
     DataQualityWarning
-        If the spikes lie farther from ``time_range`` than they span, or, with
-        ``check_extent``, reach far past it with almost none inside.
+        If the spikes lie farther from ``time_range`` than they span, with
+        ``check_extent`` look like other units than it, or with ``bin_width``
+        have a dtype too coarse for the bins.
     """
     _validate_spike_structure(
         spike_times, spike_waveform_features, clusterless=clusterless
@@ -553,12 +647,14 @@ def _validate_spike_data(
             "times[np.isfinite(times)], with the matching feature rows) or "
             "fix the spike export that produced them.",
         )
+    if bin_width is not None and _warn_if_times_cannot_resolve_bins(arrays, bin_width):
+        return arrays
     if time_range is None:
-        return
+        return arrays
     start, stop = time_range
     n_spikes = sum(times.size for times in arrays)
     if n_spikes == 0:
-        return
+        return arrays
     first = min(times.min() for times in arrays if times.size)
     last = max(times.max() for times in arrays if times.size)
     # A unit or clock mismatch (ms for s ~1000x, or spike times from 0
@@ -567,8 +663,8 @@ def _validate_spike_data(
     gap = max(first - stop, start - last)
     if gap <= last - first:
         if check_extent:
-            _warn_if_spikes_reach_far_past(arrays, start, stop, first, last)
-        return
+            _warn_about_encoding_extent(arrays, start, stop, first, last)
+        return arrays
     warnings.warn(
         f"None of the {n_spikes} spike times lies within the {range_name} "
         f"[{start:.6g}, {stop:.6g}] s; they span [{first:.6g}, {last:.6g}]. "
@@ -578,43 +674,71 @@ def _validate_spike_data(
         DataQualityWarning,
         stacklevel=user_stacklevel(),
     )
+    return arrays
+
+
+_InputStage = Literal["fit", "encoding", "refit", "decode", "likelihood", "estimate"]
 
 
 @dataclass(frozen=True)
-class _EncodingInputs:
-    """Encoding data of a public fitting method, coerced and checked once.
+class _ValidatedInputs:
+    """Data of one public call, coerced and checked once.
 
-    Optional arrays stay None, so each fitting stage keeps its own default.
+    Built by ``_InputValidationMixin._validated_inputs``. An array the call's
+    stage does not take stays None.
 
     Attributes
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
-    position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
-        As the caller gave it, so errors report the caller's shape.
+    spike_data : tuple
+        ``spike_times``, then ``spike_waveform_features`` when clusterless.
+        ``spike_times`` are numeric arrays except when decoding, whose
+        binning reads them as they are.
+    position_time : np.ndarray, shape (n_time_position,), or None
+    position : np.ndarray, shape (n_time_position, n_position_dims), or None
     is_training : np.ndarray of bool, shape (n_time_position,), or None
     encoding_group_labels : np.ndarray of int or str, shape (n_time_position,), or None
     environment_labels : np.ndarray of str, shape (n_time_position,), or None
     weights : np.ndarray of float, shape (n_time_position,), or None
+    encoding_support : EncodingSupport or None
+        Support of an encoding fit.
+    time_edges : np.ndarray, shape (n_bins + 1,), or None
+        Validated decode bin edges.
+    time_centers : np.ndarray, shape (n_rows,), or None
+        Centers of the requested decode bins.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        The caller's mask combined with the bins without tracked position;
+        those bins alone at ``likelihood``, whose mask covers the requested
+        rows.
     """
 
-    position_time: np.ndarray
-    position: np.ndarray
-    is_training: np.ndarray | None
-    encoding_group_labels: np.ndarray | None
-    environment_labels: np.ndarray | None
+    spike_data: tuple[Any, ...]
+    position_time: np.ndarray | None = None
+    position: np.ndarray | None = None
+    is_training: np.ndarray | None = None
+    encoding_group_labels: np.ndarray | None = None
+    environment_labels: np.ndarray | None = None
     weights: np.ndarray | None = None
+    encoding_support: EncodingSupport | None = None
+    time_edges: np.ndarray | None = None
+    time_centers: np.ndarray | None = None
+    is_missing: np.ndarray | None = None
 
     @classmethod
-    def from_arguments(
+    def from_encoding_arguments(
         cls,
+        spike_data: tuple[Any, ...],
         position_time: ArrayLike,
         position: ArrayLike | None,
         is_training: ArrayLike | None = None,
         encoding_group_labels: ArrayLike | None = None,
         environment_labels: ArrayLike | None = None,
         weights: ArrayLike | None = None,
-    ) -> "_EncodingInputs":
+    ) -> "_ValidatedInputs":
         """Coerce and check the arguments of ``fit``-like methods.
+
+        Optional arrays stay None, so each fitting stage keeps its own
+        default. ``position`` stays as the caller gave it, so errors report
+        the caller's shape.
 
         Raises
         ------
@@ -636,6 +760,7 @@ class _EncodingInputs:
         times = _sample_times(position_time)
         n_time = len(times)
         return cls(
+            spike_data,
             position_time=times,
             position=_sample_positions(position, n_time),
             is_training=None
@@ -664,28 +789,15 @@ class _EncodingInputs:
             weights=None if weights is None else val.validate_weights(weights, n_time),
         )
 
-
-@dataclass(frozen=True)
-class _DecodeInputs:
-    """Position of a public decoding method, coerced and checked once.
-
-    Attributes
-    ----------
-    position_time : np.ndarray, shape (n_time_position,), or None
-    position : np.ndarray, shape (n_time_position, n_position_dims), or None
-    """
-
-    position_time: np.ndarray | None
-    position: np.ndarray | None
-
     @classmethod
-    def from_arguments(
+    def from_decode_arguments(
         cls,
+        spike_data: tuple[Any, ...],
         position_time: ArrayLike | None,
         position: ArrayLike | None,
         *,
         example: str | None = None,
-    ) -> "_DecodeInputs":
+    ) -> "_ValidatedInputs":
         """Coerce and check the position arguments of a decoding method.
 
         Raises
@@ -705,9 +817,13 @@ class _DecodeInputs:
             )
         times = None if position_time is None else _sample_times(position_time)
         if position is None or times is None:
-            return cls(times, None)
+            return cls(spike_data, times)
         position = _sample_positions(position, len(times))
-        return cls(times, position[:, np.newaxis] if position.ndim == 1 else position)
+        return cls(
+            spike_data,
+            times,
+            position[:, np.newaxis] if position.ndim == 1 else position,
+        )
 
 
 def _require_sampling_frequency_width(
@@ -868,6 +984,446 @@ def _decode_time_edges(
         )
     start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     return time_edges, decode_bin_centers(time_edges, start, stop)
+
+
+def _missing_bins(
+    time_edges: np.ndarray,
+    is_missing: np.ndarray | None,
+    position_time: np.ndarray | None,
+    position: np.ndarray | None,
+    *,
+    reads_position: bool = True,
+    valid_position_intervals: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """Combine the caller's missing mask with bins that lack tracked position.
+
+    Missing tracking is a break in support. Likelihoods read the position by
+    linear interpolation (extrapolating from the end intervals) at the bin
+    centers and, for local clusterless models, at every decoding spike time.
+    A read is non-finite exactly when its time lies in ``[t[k - 1], t[k + 1])``
+    for a non-finite sample ``k``: at ``t[k - 1]`` the sample still enters
+    with weight zero (``0 * nan``), while at ``t[k + 1]`` it no longer does.
+    The span extends to infinity for a sample in an end interval. A read more
+    than half a sample before ``t[0]`` or after ``t[-1]`` is an extrapolation,
+    not tracking, so it is missing too; the half sample keeps bins centered on
+    the tracking samples, whose outer edges lie half a sample beyond them. The
+    half sample is half the median sampling interval, plus the timestamp
+    uniformity tolerance. A read more than half a sample outside every declared
+    tracking interval is missing by the same reasoning: samples either side of
+    a gap would otherwise be interpolated across it. A bin is decoded as
+    missing when any time it owns (``[edges[i], edges[i + 1])``, plus
+    ``edges[-1]`` for the final bin) lies in such a span, so the center and
+    every spike of a non-missing bin have tracked, finite positions. These
+    rules apply only when the decode likelihood reads position
+    (``reads_position``); a model without Local states or a non-local position
+    penalty decodes every bin. This concerns decoding only: encoding fits use
+    position for their support.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    is_missing : np.ndarray, shape (n_bins,), optional
+        Caller's boolean mask of missing bins.
+    position_time : np.ndarray, shape (n_time_position,), optional
+        Times of the position samples.
+    position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        Position samples; non-finite rows mark untracked times.
+    reads_position : bool, optional
+        Whether the decode likelihood reads position, by default True. When
+        False, position marks no bin missing; only ``is_missing`` does.
+    valid_position_intervals : np.ndarray, shape (n_intervals, 2), optional
+        Parsed spans of continuous tracking, or None if none were declared.
+
+    Returns
+    -------
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        None when nothing is missing and no mask was given.
+
+    Warns
+    -----
+    DataQualityWarning
+        If some bins extend outside the tracked period.
+
+    Raises
+    ------
+    ValidationError
+        If ``is_missing`` does not have one entry per bin, or ``position`` does
+        not have one row per ``position_time`` sample.
+    DataError
+        If ``position_time`` is not finite and increasing, strictly when
+        ``reads_position``.
+    """
+    n_bins = len(time_edges) - 1
+    if is_missing is not None:
+        is_missing = _sample_mask(
+            is_missing, n_bins, "is_missing", entry="decode bin", example=None
+        )
+    if position is None or position_time is None:
+        return is_missing
+    position = np.asarray(position)
+    position_time = np.asarray(position_time)
+    val.ensure_all_finite(position_time, "position_time")
+    # Strictly when the likelihood interpolates position in time, as fitting
+    # requires.
+    val.ensure_monotonic_increasing(
+        position_time, "position_time", strict=reads_position
+    )
+    if not reads_position:
+        return is_missing
+    affected = _bins_outside_tracking(time_edges, position_time)
+    if np.any(affected):
+        warnings.warn(
+            f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
+            "a position sample outside the tracked period "
+            f"[{position_time[0]:.6g}, {position_time[-1]:.6g}] s. Position there "
+            "could only be extrapolated from the first or last tracking interval, "
+            "so these bins are decoded as missing, like bins with NaN position: "
+            "their log likelihood is 0 and the posterior follows the transitions "
+            "alone. Pass position covering the decode time_edges, or restrict "
+            "time_edges to the tracked period.",
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
+        )
+    is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
+    if np.any(is_nan):
+        affected |= _bins_reading_nan_position(time_edges, position_time, is_nan)
+    if valid_position_intervals is not None:
+        affected |= _bins_outside_intervals(
+            time_edges, position_time, valid_position_intervals
+        )
+    if not np.any(affected):
+        return is_missing
+    return affected if is_missing is None else is_missing | affected
+
+
+def _half_sample(position_time: np.ndarray) -> float:
+    """Half the median sampling interval, plus the uniformity tolerance.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing, at least two samples.
+
+    Returns
+    -------
+    half_sample : float
+    """
+    sample_interval = float(np.median(np.diff(position_time)))
+    return sample_interval / 2 + _uniformity_tolerance(position_time, sample_interval)
+
+
+def _bins_outside_tracking(
+    time_edges: np.ndarray, position_time: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time more than half a sample outside the tracking.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing.
+
+    Returns
+    -------
+    is_outside : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
+    if position_time.size < 2:
+        return np.zeros(n_bins, dtype=bool)
+    half_sample = _half_sample(position_time)
+    # Bin i owns [edges[i], edges[i + 1]) (the final bin also edges[-1]), so it
+    # reaches before ``start`` iff edges[i] < start and after ``stop`` iff
+    # edges[i + 1] > stop.
+    start = position_time[0] - half_sample
+    stop = position_time[-1] + half_sample
+    return cast("np.ndarray", (time_edges[:-1] < start) | (time_edges[1:] > stop))
+
+
+def _bins_reading_nan_position(
+    time_edges: np.ndarray, position_time: np.ndarray, is_nan: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time whose interpolated position is non-finite.
+
+    See :func:`_missing_bins` for the rule.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Times of the position samples.
+    is_nan : np.ndarray of bool, shape (n_time_position,)
+        Samples with a non-finite position; at least one is True.
+
+    Returns
+    -------
+    affected : np.ndarray of bool, shape (n_bins,)
+    """
+    nan_index = np.flatnonzero(is_nan)
+    # Spans of consecutive NaN samples, widened to the neighbouring samples.
+    # Positions before the first sample (after the last) are extrapolated from
+    # the first (last) interval, so a NaN in an end interval reaches every bin
+    # beyond that end.
+    n_samples = position_time.size
+    run_starts = nan_index[np.r_[True, np.diff(nan_index) > 1]]
+    run_ends = nan_index[np.r_[np.diff(nan_index) > 1, True]]
+    lower = np.where(
+        run_starts > 1, position_time[np.maximum(run_starts - 1, 0)], -np.inf
+    )
+    upper = np.where(
+        run_ends < n_samples - 2,
+        position_time[np.minimum(run_ends + 1, n_samples - 1)],
+        np.inf,
+    )
+    return _bins_meeting_spans(time_edges, lower, upper)
+
+
+def _bins_outside_intervals(
+    time_edges: np.ndarray, position_time: np.ndarray, intervals: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time more than half a sample outside every interval.
+
+    See :func:`_missing_bins` for the rule. Intervals closer than a sample
+    leave no gap between them, so adjacent intervals keep the bin they share.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing.
+    intervals : np.ndarray, shape (n_intervals, 2)
+        Ordered, non-overlapping spans of continuous tracking.
+
+    Returns
+    -------
+    is_outside : np.ndarray of bool, shape (n_bins,)
+    """
+    half_sample = _half_sample(position_time) if position_time.size > 1 else 0.0
+    gap_start = np.r_[-np.inf, intervals[:, 1] + half_sample]
+    gap_stop = np.r_[intervals[:, 0] - half_sample, np.inf]
+    is_gap = gap_start < gap_stop
+    return _bins_meeting_spans(time_edges, gap_start[is_gap], gap_stop[is_gap])
+
+
+def _bins_meeting_spans(
+    time_edges: np.ndarray, lower: np.ndarray, upper: np.ndarray
+) -> np.ndarray:
+    """Bins owning a time in any of the spans ``[lower, upper)``.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    lower, upper : np.ndarray, shape (n_spans,)
+        Ends of the spans, which may be infinite.
+
+    Returns
+    -------
+    affected : np.ndarray of bool, shape (n_bins,)
+    """
+    n_bins = len(time_edges) - 1
+    # Bin i owns [edges[i], edges[i + 1]) and meets [lower, upper) iff
+    # edges[i + 1] > lower and edges[i] < upper; the final bin also owns
+    # edges[-1], so a read exactly there (lower == edges[-1]) marks it.
+    first = np.searchsorted(time_edges[1:], lower, side="right")
+    first = np.where(lower == time_edges[-1], n_bins - 1, first)
+    stop = np.maximum(np.searchsorted(time_edges[:-1], upper, side="left"), first)
+    change = np.zeros(n_bins + 1, dtype=int)
+    np.add.at(change, first, 1)
+    np.add.at(change, stop, -1)
+    return np.cumsum(change[:-1]) > 0
+
+
+# A step in position_time this many samples wide is a gap in the tracking.
+# Narrower ones (a dropped frame, camera jitter) interpolate over no real
+# movement. Fitting refuses any irregular step; decoding takes the data as given,
+# so it warns only where interpolation invents movement.
+_TRACKING_GAP_SAMPLES = 5
+
+
+def _unread_bins(
+    n_bins: int,
+    row_slice: slice | None,
+    requested_is_missing: np.ndarray | None,
+    position_is_missing: np.ndarray | None,
+) -> np.ndarray:
+    """Bins a ``compute_log_likelihood`` call does not read position for.
+
+    Parameters
+    ----------
+    n_bins : int
+        Bins of the decode grid.
+    row_slice : slice or None
+        Rows the call evaluates; None requests all.
+    requested_is_missing : np.ndarray of bool, shape (n_rows,), or None
+        The caller's mask of the requested rows.
+    position_is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins without tracked position.
+
+    Returns
+    -------
+    is_unread : np.ndarray of bool, shape (n_bins,)
+    """
+    row_start, row_stop = resolve_row_slice(row_slice, n_bins)
+    is_unread = np.ones(n_bins, dtype=bool)
+    is_unread[row_start:row_stop] = (
+        False
+        if requested_is_missing is None
+        else _sample_mask(
+            requested_is_missing,
+            row_stop - row_start,
+            "is_missing",
+            entry="requested decode bin",
+            example=None,
+        )
+    )
+    return is_unread if position_is_missing is None else is_unread | position_is_missing
+
+
+def _warn_about_tracking_coverage(
+    time_edges: np.ndarray,
+    position_time: np.ndarray,
+    row_slice: slice | None,
+    caller_is_missing: np.ndarray | None,
+    is_missing: np.ndarray | None,
+) -> None:
+    """Warn about the tracking of a decode that reads position.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and increasing.
+    row_slice : slice or None
+        Rows the call evaluates; None requests all.
+    caller_is_missing : np.ndarray of bool, optional
+        The caller's mask: of the requested rows with ``row_slice``.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins without tracked position, with the caller's where it covers the
+        grid.
+    """
+    is_unread = _unread_bins(
+        time_edges.size - 1, row_slice, caller_is_missing, is_missing
+    )
+    _warn_if_no_bin_is_tracked(
+        time_edges,
+        position_time,
+        is_unread if row_slice is None else is_missing,
+        caller_is_missing,
+    )
+    _warn_if_decoding_across_gaps(time_edges, position_time, is_unread)
+
+
+def _warn_if_no_bin_is_tracked(
+    time_edges: np.ndarray,
+    position_time: np.ndarray,
+    is_missing: np.ndarray | None,
+    caller_is_missing: np.ndarray | None,
+) -> None:
+    """Warn when tracking, not the caller, leaves no bin to decode.
+
+    The transitions' steady state looks like a decode, and only ``is_missing``
+    would tell it apart. Bins outside the tracked period have their own
+    warning.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and increasing.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins decoded as missing.
+    caller_is_missing : np.ndarray of bool, optional
+        The caller's mask.
+
+    Warns
+    -----
+    DataQualityWarning
+        If every bin is missing, unless the caller marked every bin or all
+        lie outside the tracked period.
+    """
+    if (
+        is_missing is None
+        or not np.all(is_missing)
+        or (caller_is_missing is not None and np.all(caller_is_missing))
+        or np.all(_bins_outside_tracking(time_edges, position_time))
+    ):
+        return
+    warnings.warn(
+        f"Every one of the {is_missing.size} decode bins is missing: over "
+        "time_edges position is NaN or outside valid_position_intervals, so "
+        "their log likelihood is 0 and the posterior follows the transitions "
+        "alone. Pass the tracking intervals of the decoded period, in the units "
+        "of position_time. To decode a period without tracking, use a model "
+        "that reads no position (no Local state or non-local position penalty) "
+        "and position=None.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
+def _warn_if_decoding_across_gaps(
+    time_edges: np.ndarray, position_time: np.ndarray, is_unread: np.ndarray
+) -> None:
+    """Warn when a decode bin reads position across a tracking gap.
+
+    Only the caller knows where tracking stopped, so these bins are not
+    decoded as missing. Intervals that exclude a gap leave its bins missing;
+    one that spans it, such as a session's bounds, does not.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing.
+    is_unread : np.ndarray of bool, shape (n_bins,)
+        Bins that read no position, such as those decoded as missing.
+
+    Warns
+    -----
+    DataQualityWarning
+        If a bin not in ``is_unread`` reaches more than half a sample into a
+        gap of at least ``_TRACKING_GAP_SAMPLES`` samples.
+    """
+    if position_time.size < 2:
+        return
+    steps = np.diff(position_time)
+    is_gap = np.rint(steps / np.median(steps)) >= _TRACKING_GAP_SAMPLES
+    if not np.any(is_gap):
+        return
+    half_sample = _half_sample(position_time)
+    reads_gap = ~is_unread & _bins_meeting_spans(
+        time_edges,
+        position_time[:-1][is_gap] + half_sample,
+        position_time[1:][is_gap] - half_sample,
+    )
+    if not np.any(reads_gap):
+        return
+    warnings.warn(
+        f"{int(reads_gap.sum())} of {reads_gap.size} decode bins fall in gaps in "
+        f"position_time (the widest is {float(steps.max()):.3g} s), so position "
+        "is interpolated between the samples either side and these bins are "
+        "decoded on that invented path: spikes that disagree with it can read "
+        "as replay. Pass valid_position_intervals=[[start, stop], ...] that "
+        "exclude the gaps to decode these bins as missing.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
+def _time_span(times: np.ndarray) -> tuple[float, float]:
+    """First and last of validated, increasing times, as Python floats."""
+    return float(times[0]), float(times[-1])
 
 
 def _validate_penalty_params(
@@ -1156,6 +1712,91 @@ def _warn_if_off_grid(
     )
 
 
+def _warn_if_range_passes_tracking(
+    position_time: np.ndarray,
+    encoding_time_range: ArrayLike | None,
+    valid_position_intervals: ArrayLike | None,
+) -> None:
+    """Warn when ``encoding_time_range`` reaches well past the position samples.
+
+    Encoding support then extends to the range, holding position at the first
+    or last sample, so that one sample takes all the exposure and spikes of the
+    extra time. Declared tracking intervals bound the support themselves.
+
+    Parameters
+    ----------
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and strictly increasing (``EncodingSupport`` checked).
+    encoding_time_range : array_like, shape (2,), or None
+        ``(start, stop)`` in seconds.
+    valid_position_intervals : array_like, shape (n_intervals, 2), or None
+        Declared tracking intervals.
+
+    Warns
+    -----
+    DataQualityWarning
+        If the range passes the samples by over one sample interval.
+    """
+    if (
+        encoding_time_range is None
+        or valid_position_intervals is not None
+        or position_time.size < 2
+    ):
+        return
+    start, stop = np.asarray(encoding_time_range, dtype=float)
+    excess = max(position_time[0] - start, stop - position_time[-1])
+    sample_interval = float(np.median(np.diff(position_time)))
+    if excess <= sample_interval + _uniformity_tolerance(
+        position_time, sample_interval
+    ):
+        return
+    warnings.warn(
+        f"encoding_time_range [{start:.6g}, {stop:.6g}] s reaches {excess:.3g} s "
+        f"past the position samples [{position_time[0]:.6g}, "
+        f"{position_time[-1]:.6g}] s. Encoding support extends to the range, "
+        "holding position at the first or last sample, so that sample takes all "
+        "the exposure and spikes of the extra time. Pass the tracked period as "
+        "encoding_time_range, or spikes and position of the same period.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
+def _require_position_columns(
+    position: np.ndarray, environments: Sequence[Environment]
+) -> None:
+    """Require the number of position columns the fitted environments read.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
+        Positions.
+    environments : sequence of Environment
+        Fitted environments.
+
+    Raises
+    ------
+    ValidationError
+        If an environment was fitted on another number of columns.
+    """
+    n_columns = position.shape[1]
+    for environment in environments:
+        expected = _position_columns(environment)
+        if n_columns != expected:
+            msg = (
+                f"position has {n_columns} column(s), but environment "
+                f"{environment.environment_name!r} was fitted on "
+                f"positions with {expected} columns"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"position of shape (n_time_position, {expected})",
+                got=f"shape {position.shape}",
+                hint="Use the same position columns, in the same "
+                "order and units, as the detector was fitted with.",
+            )
+
+
 def _missing_covariates_error(
     *, reason: str, expected: str, hint: str, example: str
 ) -> ValidationError:
@@ -1274,6 +1915,341 @@ def _normalize_return_outputs(return_outputs: ReturnOutputs) -> set[str]:
 class _InputValidationMixin:
     """Validation methods of ``_DetectorBase``."""
 
+    def _validated_inputs(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        stage: _InputStage,
+        spike_data: tuple[Any, ...],
+        *,
+        position_time: ArrayLike | None = None,
+        position: ArrayLike | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
+        encoding_time_range: ArrayLike | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+        time_edges: ArrayLike | None = None,
+        row_slice: slice | None = None,
+        is_missing: np.ndarray | None = None,
+        example: str | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
+        transition_representation: TransitionRepresentation = "dense",
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+    ) -> _ValidatedInputs:
+        """Coerce and check the data of one public call.
+
+        Every public method taking data goes through this before any work,
+        once per stage it runs, so a new check is added here and applies to
+        each stage that takes the argument. Warnings fire here and nowhere that a call can repeat
+        (chunks, EM iterations). What differs between the stages:
+
+        - ``fit``: the training arrays, the spikes, then what ``_fit`` needs
+          before anything changes. Spikes are not compared with a time range
+          here: ``fit`` goes on to ``fit_encoding_model``, whose stage warns.
+        - ``encoding`` (``fit_encoding_model``): the spikes against the
+          position span come first, then the training arrays, position against
+          the grids, and the encoding support.
+        - ``refit`` (EM's encoding refits, through ``_refit_encoding_model``):
+          the arrays are the ones the public call checked, so this reads the
+          iteration's ``weights`` and warns of nothing.
+        - ``decode`` (``predict``, ``most_likely_sequence``): position is
+          coerced first, then the fitted model, the time grid, the spikes
+          against it, the position against the model, and the missing bins.
+        - ``likelihood`` (``compute_log_likelihood``): as ``decode``, except
+          that the fitted model comes first, and ``is_missing`` has one entry
+          per requested row: it says which bins the gap check reads, and this
+          stage returns the position's mask. ``row_slice`` selects the rows of
+          ``time_centers``.
+        - ``estimate`` (``estimate_parameters``): ``time_edges`` come checked
+          with EM's options, and the model is not fitted yet, so the training
+          arrays are read as in ``fit``, the spikes against the edges and the
+          missing bins as in ``decode``. The internal ``fit`` then warns about
+          the position span.
+
+        Parameters
+        ----------
+        stage : {"fit", "encoding", "refit", "decode", "likelihood", "estimate"}
+            The kind of public method.
+        spike_data : tuple
+            ``spike_times``, then ``spike_waveform_features`` when clusterless.
+        position_time : array_like, shape (n_time_position,), optional
+            Times of the position samples.
+        position : array_like, shape (n_time_position,) or (n_time_position, n_position_dims), optional
+            Position samples.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            Samples to train the encoding model on.
+        encoding_group_labels : array_like, shape (n_time_position,), optional
+            Encoding group of each sample.
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment of each sample.
+        weights : array_like, shape (n_time_position,), optional
+            Training weights.
+        encoding_time_range : array_like, shape (2,), optional
+            See ``fit``.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            See ``fit`` and ``predict``.
+        time_edges : array_like, shape (n_bins + 1,), optional
+            Decode bin edges.
+        row_slice : slice, optional
+            Rows of ``compute_log_likelihood``.
+        is_missing : array_like of bool, shape (n_bins,) or (n_rows,), optional
+            The caller's missing bins, of the requested rows at ``likelihood``.
+        example : str, optional
+            Example call for the error of a missing ``position_time``.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            The covariates ``fit`` was given.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            See ``fit``.
+        max_dense_transition_bytes : int, optional
+            See ``fit``.
+
+        Returns
+        -------
+        inputs : _ValidatedInputs
+
+        Raises
+        ------
+        ValidationError, DataError, NotFittedError
+            From the checks of the stage.
+        """
+        decoding = stage in ("decode", "likelihood")
+        if stage == "likelihood":
+            self._require_decodable()
+        if stage == "encoding":
+            times = _sample_times(cast("ArrayLike", position_time))
+            finite = times[np.isfinite(times)]
+            spike_data = self._check_spike_data(
+                spike_data,
+                time_range=(float(finite.min()), float(finite.max()))
+                if finite.size
+                else None,
+                range_name="position_time span",
+                check_extent=True,
+                bin_width=1.0 / self.sampling_frequency,
+            )
+        if decoding:
+            inputs = _ValidatedInputs.from_decode_arguments(
+                spike_data, position_time, position, example=example
+            )
+        else:
+            inputs = _ValidatedInputs.from_encoding_arguments(
+                spike_data,
+                cast("ArrayLike", position_time),
+                position,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+                weights,
+            )
+        position_time, position = inputs.position_time, inputs.position
+        if stage == "decode":
+            self._require_decodable()
+        checked_edges = cast("np.ndarray | None", time_edges)
+        time_centers = None
+        if decoding:
+            checked_edges, time_centers = _decode_time_edges(
+                cast("ArrayLike", time_edges),
+                *self._learned_transition_time_bin_width(),
+                sampling_frequency=self.sampling_frequency,
+                row_slice=row_slice,
+            )
+            self._check_spike_data(
+                spike_data,
+                time_range=_time_span(checked_edges),
+                range_name="decode time_edges",
+                bin_width=1.0 / self.sampling_frequency,
+            )
+            self._validate_decode_position(position)
+        if stage == "estimate":
+            # The dtype check is the internal fit's, which reads the same times.
+            spike_data = self._check_spike_data(
+                spike_data,
+                time_range=_time_span(cast("np.ndarray", checked_edges)),
+                range_name="decode time_edges",
+            )
+        if stage == "fit":
+            spike_data = self._check_spike_data(spike_data)
+            self._validate_fit_arguments(
+                cast("np.ndarray", position),
+                discrete_transition_covariate_data,
+                transition_representation,
+                max_dense_transition_bytes,
+            )
+        if position is not None and position.ndim == 1:
+            position = position[:, np.newaxis]
+        if stage == "encoding":
+            self._validate_encoding_position(
+                cast("np.ndarray", position), inputs.environment_labels
+            )
+        encoding_support = tracking_intervals = None
+        if stage in ("encoding", "refit"):
+            encoding_support = EncodingSupport(
+                cast("ArrayLike", position_time),
+                cast("ArrayLike", position),
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+            )
+        if stage == "encoding":
+            _warn_if_range_passes_tracking(
+                cast("np.ndarray", position_time),
+                encoding_time_range,
+                valid_position_intervals,
+            )
+        if stage in ("decode", "likelihood", "estimate"):
+            tracking_intervals = (
+                None
+                if valid_position_intervals is None
+                else parse_tracking_intervals(valid_position_intervals)
+            )
+            reads_position = self._decode_reads_position(
+                self.observation_models
+                if stage == "estimate"
+                else self.state_space_.observation_models
+            )
+            caller_is_missing = is_missing
+            is_missing = _missing_bins(
+                cast("np.ndarray", checked_edges),
+                None if stage == "likelihood" else is_missing,
+                position_time,
+                position,
+                reads_position=reads_position,
+                valid_position_intervals=tracking_intervals,
+            )
+            edges = cast("np.ndarray", checked_edges)
+            times = cast("np.ndarray", position_time)
+            if decoding and reads_position:
+                _warn_about_tracking_coverage(
+                    edges, times, row_slice, caller_is_missing, is_missing
+                )
+            # Only with intervals: without them, the fit that comes next refuses
+            # a gap.
+            if (
+                stage == "estimate"
+                and reads_position
+                and tracking_intervals is not None
+            ):
+                _warn_if_decoding_across_gaps(
+                    edges, times, _unread_bins(edges.size - 1, None, None, is_missing)
+                )
+        return replace(
+            inputs,
+            spike_data=spike_data,
+            position=position,
+            encoding_support=encoding_support,
+            time_edges=checked_edges,
+            time_centers=time_centers,
+            is_missing=is_missing,
+        )
+
+    def _validate_fit_arguments(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        position: np.ndarray,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
+        transition_representation: TransitionRepresentation,
+        max_dense_transition_bytes: int,
+    ) -> None:
+        """Refuse a fit that cannot run, before anything changes.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time_position,) or (n_time_position, n_position_dims)
+            As the caller gave it, so errors report the caller's shape.
+        discrete_transition_covariate_data : dict or pd.DataFrame or None
+            The fit's covariates.
+        transition_representation : {"dense", "structured", "auto"}
+            See ``fit``.
+        max_dense_transition_bytes : int
+            See ``fit``.
+
+        Raises
+        ------
+        ValidationError
+            If a transition setting is unsupported, no position sample is
+            finite, position is 1-D on a track graph, the transition formula
+            is untrusted, or covariate transitions have no covariates.
+        DataError
+            If position holds an infinite value.
+        """
+        _validate_transition_arguments(
+            transition_representation, max_dense_transition_bytes
+        )
+        val.ensure_all_finite(position[~np.isnan(position)], "position")
+        if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
+            msg = "At least one finite position sample is required for fitting"
+            raise ValidationError(msg)
+
+        # Raises ValidationError if position is 1D but env has track_graph.
+        self._validate_position_dimensionality(position, context="fit")
+
+        # Before anything changes, so a refused fit keeps the loaded model.
+        _refuse_untrusted_transition(self.discrete_transition_type, "fit")
+        if (
+            not self.discrete_transition_type.is_stationary
+            and discrete_transition_covariate_data is None
+        ):
+            raise _missing_covariates_error(
+                reason=f"{type(self.discrete_transition_type).__name__} depends "
+                "on covariates",
+                expected="the training values of the covariates named in the "
+                "transition formula",
+                hint="Pass the covariates, or use a stationary transition such as "
+                "DiscreteStationaryDiagonal.",
+                example="    detector.fit(position_time, position, spike_times, "
+                "discrete_transition_covariate_data={'speed': speed})",
+            )
+
+    def _require_decodable(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+    ) -> None:
+        """Check the fitted model a decoding call reads, and warn if it changed."""
+        self._validate_time_contract()
+        self._warn_if_layout_parameters_changed()
+
+    def _check_spike_data(
+        self,
+        spike_data: tuple[Any, ...],
+        *,
+        time_range: tuple[float, float] | None = None,
+        range_name: str = "",
+        check_extent: bool = False,
+        bin_width: float | None = None,
+    ) -> tuple[Any, ...]:
+        """Check the spike arrays.
+
+        See ``_validate_spike_data`` for what is checked.
+
+        Parameters
+        ----------
+        spike_data : tuple
+            ``spike_times``, then ``spike_waveform_features`` when clusterless.
+        time_range : tuple of float, optional
+            ``(start, stop)`` in seconds to warn against, by default None.
+        range_name : str, optional
+            What ``time_range`` is, for the warning.
+        check_extent : bool, optional
+            Also warn when the spikes overlap ``time_range`` but look like
+            other units than it, by default False (encoding period only).
+        bin_width : float, optional
+            Bin width in seconds the spike times' dtype must resolve, by
+            default None.
+
+        Returns
+        -------
+        spike_data : tuple
+            With ``spike_times`` as numeric arrays. Fitting reads them with
+            ``np.interp``, which rejects the object-dtype arrays that decoding
+            reads as float.
+        """
+        spike_times = _validate_spike_data(
+            *spike_data,
+            clusterless=len(spike_data) > 1,
+            time_range=time_range,
+            range_name=range_name,
+            check_extent=check_extent,
+            bin_width=bin_width,
+        )
+        return (spike_times, *spike_data[1:])
+
     def _validate_position_dimensionality(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
         position: np.ndarray,
@@ -1297,16 +2273,16 @@ class _InputValidationMixin:
         position : np.ndarray
             Position array to validate.
         context : str, optional
-            Name of the calling context (``"fit"`` or ``"predict"``)
-            for error messages. ``fit`` checks the configured
-            ``environments``, which it is about to fit; ``predict`` checks
-            the fitted ``environments_``, which it decodes on.
+            Name of the calling method (``"fit"``, ``"fit_encoding_model"`` or
+            ``"predict"``) for error messages. Fitting checks the configured
+            ``environments``; ``predict`` checks the fitted ``environments_``,
+            which it decodes on.
         """
         is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
         if not is_1d:
             return
 
-        environments = self.environments if context == "fit" else self.environments_
+        environments = self.environments_ if context == "predict" else self.environments
         has_track_graph = any(env.track_graph is not None for env in environments)
         if has_track_graph:
             msg = (
@@ -1330,6 +2306,49 @@ class _InputValidationMixin:
                     "    # Raw 2D position, not pre-linearized\n"
                     f"    detector.{context}(..., position=position_2d)"
                 ),
+            )
+
+    def _validate_encoding_position(  # type: ignore[misc]
+        self: "non_local_detector.models.base._DetectorBase",
+        position: np.ndarray,
+        environment_labels: np.ndarray | None,
+    ) -> None:
+        """Check position against the grids an encoding model is fit on.
+
+        A grid is warned about here rather than where it is fit, so ``fit``
+        warns once, after its fit succeeded (an EM fit that falls back to
+        dense warns once), and ``fit_encoding_model`` warns like ``fit``.
+        Without fitted environments there is nothing to compare with.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time_position, n_position_dims)
+            Positions, with NaN rows for untracked samples.
+        environment_labels : np.ndarray, shape (n_time_position,), or None
+            Environment of each sample.
+
+        Raises
+        ------
+        ValidationError
+            If position is 1-D while an environment has a track graph, or has
+            another number of columns than a fitted environment's positions.
+
+        Warns
+        -----
+        DataQualityWarning
+            If many positions lie far outside a fitted grid (see
+            ``_warn_if_off_grid``).
+        """
+        self._validate_position_dimensionality(position, context="fit_encoding_model")
+        environments = getattr(self, "environments_", ())
+        _require_position_columns(position, environments)
+        # Each grid is fitted on its environment's samples.
+        for environment in environments:
+            _warn_if_off_grid(
+                position
+                if environment_labels is None
+                else position[environment_labels == environment.environment_name],
+                [environment],
             )
 
     def _validate_decode_position(  # type: ignore[misc]
@@ -1363,26 +2382,8 @@ class _InputValidationMixin:
             self._validate_position_dimensionality(position, context="predict")
             if not self._decode_reads_position(observation_models):
                 return
-            n_columns = 1 if position.ndim == 1 else position.shape[1]
-            for environment in self.environments_:
-                expected = _position_columns(environment)
-                if n_columns != expected:
-                    msg = (
-                        f"position has {n_columns} column(s), but environment "
-                        f"{environment.environment_name!r} was fitted on "
-                        f"positions with {expected} columns"
-                    )
-                    raise ValidationError(
-                        msg,
-                        expected=f"position of shape (n_time_position, {expected})",
-                        got=f"shape {position.shape}",
-                        hint="Decode with the same position columns, in the same "
-                        "order and units, as the detector was fitted with.",
-                    )
-            _warn_if_off_grid(
-                position[:, np.newaxis] if position.ndim == 1 else position,
-                self.environments_,
-            )
+            _require_position_columns(position, self.environments_)
+            _warn_if_off_grid(position, self.environments_)
             return
         if not self._decode_reads_position(observation_models):
             return

@@ -22,7 +22,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.models.base import _missing_bins
+from non_local_detector.models._input_validation import _missing_bins
 
 MESSAGE = "outside the tracked period"
 SAMPLING_FREQUENCY = 100.0
@@ -33,6 +33,7 @@ def _outside_tracking_warnings(caught):
     return [w for w in caught if MESSAGE in str(w.message)]
 
 
+@pytest.mark.filterwarnings("ignore:.*decode bins extend:UserWarning")  # the point
 @pytest.mark.unit
 def test_missing_bins_marks_bins_more_than_half_a_sample_outside_tracking():
     position_time = np.arange(10) * 0.1  # 0.0 ... 0.9 s
@@ -60,6 +61,7 @@ def test_missing_bins_keeps_sample_centered_bins_over_the_tracking():
     assert is_missing is None
 
 
+@pytest.mark.filterwarnings("ignore:.*decode bins extend:UserWarning")  # the point
 @pytest.mark.unit
 def test_missing_bins_combines_outside_tracking_with_caller_mask():
     position_time = np.arange(10) * 0.1

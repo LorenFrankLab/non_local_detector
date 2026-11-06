@@ -138,6 +138,7 @@ nav:
       - Detecting non-local events: tutorials/05_detecting_non_local_events.py
       - Choosing and checking models: tutorials/06_choosing_and_checking_models.py
   - Guides:
+      - Data contract: data_contract.md
       - Time bins and rates: time_grid_migration.md
       - Result layout: result_layout.md
       - Saving and loading models: saving_models.md

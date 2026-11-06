@@ -37,7 +37,6 @@ from numpy.typing import ArrayLike
 from patsy import DesignMatrix
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 
-from non_local_detector import _validation as val
 from non_local_detector._transition_estimation import _row_smoothness
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import TransitionContext
@@ -81,7 +80,6 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
-    validate_spike_feature_population,
 )
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -109,25 +107,19 @@ from non_local_detector.models._em import (
 from non_local_detector.models._input_validation import (
     _TIME_CONTRACT,
     _decode_time_edges,
-    _DecodeInputs,
-    _EncodingInputs,
     _InputValidationMixin,
     _missing_covariates_error,
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
-    _numeric_spike_times_list,
     _require_labeled_environments,
     _require_sampling_frequency_width,
     _sample_mask,
-    _sample_times,
     _validate_covariate_time_length,
     _validate_inference_arguments,
     _validate_penalty_params,  # noqa: F401 -- imported from base by tests
     _validate_prior_weight,
-    _validate_spike_data,
     _validate_spike_structure,
-    _validate_transition_arguments,
-    _warn_if_off_grid,
+    _ValidatedInputs,
 )
 from non_local_detector.models._persistence import (
     _ModelUnpickler,  # noqa: F401 -- stored-artifact compatibility tests import it from base
@@ -151,7 +143,6 @@ from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _uniform_time_grid,
-    _uniformity_tolerance,
     calculate_time_edges,
     requires_time_edges,
 )
@@ -191,39 +182,23 @@ class _LikelihoodPositionContext:
     """Tracking preparation shared only during one likelihood prediction."""
 
     position: np.ndarray | None
-    is_missing: np.ndarray | None
     all_missing: bool
 
     @classmethod
     def prepare(
-        cls,
-        time_edges: np.ndarray,
-        position_time: np.ndarray | None,
-        position: np.ndarray | None,
-        *,
-        reads_position: bool = True,
-        warn_outside_tracking: bool = False,
+        cls, position: np.ndarray | None, *, reads_position: bool
     ) -> "_LikelihoodPositionContext":
-        missing = _missing_bins(
-            time_edges,
-            None,
-            position_time,
-            position,
-            reads_position=reads_position,
-            warn_outside_tracking=warn_outside_tracking,
-        )
         prepared = position
         all_missing = False
         if position is not None:
             prepared = np.asarray(position)
-            prepared = prepared[:, None] if prepared.ndim == 1 else prepared
             finite = np.all(np.isfinite(prepared), axis=1)
             # A model that never reads position decodes even without any.
             all_missing = reads_position and not np.any(finite)
             if np.any(finite) and not np.all(finite):
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
-        return cls(prepared, missing, all_missing)
+        return cls(prepared, all_missing)
 
 
 @dataclass(frozen=True)
@@ -246,7 +221,8 @@ class _DecodeContext:
     position_time : np.ndarray, shape (n_time_position,), or None
         Tracking times.
     spike_data : tuple
-        The spike arrays named by ``_DetectorBase._SPIKE_DATA_NAMES``.
+        The spike arrays: ``spike_times``, then ``spike_waveform_features``
+        for a clusterless detector.
     position_context : _LikelihoodPositionContext
         Tracking positions prepared on ``time_edges``.
     spike_time_order : _SpikeTimeOrder
@@ -263,202 +239,6 @@ class _DecodeContext:
     position_context: _LikelihoodPositionContext
     spike_time_order: _SpikeTimeOrder
     no_spike_time_bin_sizes: np.ndarray | None
-
-
-def _missing_bins(
-    time_edges: np.ndarray,
-    is_missing: np.ndarray | None,
-    position_time: np.ndarray | None,
-    position: np.ndarray | None,
-    *,
-    reads_position: bool = True,
-    warn_outside_tracking: bool = False,
-) -> np.ndarray | None:
-    """Combine the caller's missing mask with bins that lack tracked position.
-
-    Missing tracking is a break in support. Likelihoods read the position by
-    linear interpolation (extrapolating from the end intervals) at the bin
-    centers and, for local clusterless models, at every decoding spike time.
-    A read is non-finite exactly when its time lies in ``[t[k - 1], t[k + 1])``
-    for a non-finite sample ``k``: at ``t[k - 1]`` the sample still enters
-    with weight zero (``0 * nan``), while at ``t[k + 1]`` it no longer does.
-    The span extends to infinity for a sample in an end interval. A read more
-    than half a sample before ``t[0]`` or after ``t[-1]`` is an extrapolation,
-    not tracking, so it is missing too; the half sample keeps bins centered on
-    the tracking samples, whose outer edges lie half a sample beyond them. The
-    half sample is half the median sampling interval, plus the timestamp
-    uniformity tolerance. A bin is decoded as missing when any time it owns
-    (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
-    in such a span, so the center and every spike of a non-missing bin have
-    tracked, finite positions. Both rules apply only when the decode
-    likelihood reads position (``reads_position``); a model without Local
-    states or a non-local position penalty decodes every bin. This concerns
-    decoding only: encoding fits use position for their support.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Time bin edges of the decode grid.
-    is_missing : np.ndarray, shape (n_bins,), optional
-        Caller's boolean mask of missing bins.
-    position_time : np.ndarray, shape (n_time_position,), optional
-        Times of the position samples.
-    position : np.ndarray, shape (n_time_position, n_position_dims), optional
-        Position samples; non-finite rows mark untracked times.
-    reads_position : bool, optional
-        Whether the decode likelihood reads position, by default True. When
-        False, position marks no bin missing; only ``is_missing`` does.
-    warn_outside_tracking : bool, optional
-        Warn when bins are missing because they extend outside the tracked
-        period, by default False. Public decode entry points set it, so one
-        call warns once however many chunks or EM iterations it runs.
-
-    Returns
-    -------
-    is_missing : np.ndarray of bool, shape (n_bins,), or None
-        None when nothing is missing and no mask was given.
-
-    Warns
-    -----
-    DataQualityWarning
-        If ``warn_outside_tracking`` and some bins extend outside the tracked
-        period.
-
-    Raises
-    ------
-    ValidationError
-        If ``is_missing`` does not have one entry per bin, or ``position`` does
-        not have one row per ``position_time`` sample.
-    DataError
-        If ``position_time`` is not finite and increasing, strictly when
-        ``reads_position``.
-    """
-    n_bins = len(time_edges) - 1
-    if is_missing is not None:
-        is_missing = _sample_mask(
-            is_missing, n_bins, "is_missing", entry="decode bin", example=None
-        )
-    if position is None or position_time is None:
-        return is_missing
-    position = np.asarray(position)
-    position_time = np.asarray(position_time)
-    if position.shape[0] != position_time.shape[0]:
-        msg = "position must have one row per position_time sample"
-        raise ValidationError(
-            msg,
-            expected=f"{position_time.shape[0]} rows",
-            got=f"{position.shape[0]} rows",
-        )
-    val.ensure_all_finite(position_time, "position_time")
-    # Strictly when the likelihood interpolates position in time, as fitting
-    # requires.
-    val.ensure_monotonic_increasing(
-        position_time, "position_time", strict=reads_position
-    )
-    if not reads_position:
-        return is_missing
-    affected = _bins_outside_tracking(time_edges, position_time)
-    if warn_outside_tracking and np.any(affected):
-        warnings.warn(
-            f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
-            "a position sample outside the tracked period "
-            f"[{position_time[0]:.6g}, {position_time[-1]:.6g}] s. Position there "
-            "could only be extrapolated from the first or last tracking interval, "
-            "so these bins are decoded as missing, like bins with NaN position: "
-            "their log likelihood is 0 and the posterior follows the transitions "
-            "alone. Pass position covering the decode time_edges, or restrict "
-            "time_edges to the tracked period.",
-            DataQualityWarning,
-            stacklevel=user_stacklevel(),
-        )
-    is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
-    if np.any(is_nan):
-        affected |= _bins_reading_nan_position(time_edges, position_time, is_nan)
-    if not np.any(affected):
-        return is_missing
-    return affected if is_missing is None else is_missing | affected
-
-
-def _bins_outside_tracking(
-    time_edges: np.ndarray, position_time: np.ndarray
-) -> np.ndarray:
-    """Bins owning a time more than half a sample outside the tracking.
-
-    See :func:`_missing_bins` for the rule.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Time bin edges of the decode grid.
-    position_time : np.ndarray, shape (n_time_position,)
-        Finite and strictly increasing.
-
-    Returns
-    -------
-    is_outside : np.ndarray of bool, shape (n_bins,)
-    """
-    n_bins = len(time_edges) - 1
-    if position_time.size < 2:
-        return np.zeros(n_bins, dtype=bool)
-    sample_interval = float(np.median(np.diff(position_time)))
-    half_sample = sample_interval / 2 + _uniformity_tolerance(
-        position_time, sample_interval
-    )
-    # Bin i owns [edges[i], edges[i + 1]) (the final bin also edges[-1]), so it
-    # reaches before ``start`` iff edges[i] < start and after ``stop`` iff
-    # edges[i + 1] > stop.
-    start = position_time[0] - half_sample
-    stop = position_time[-1] + half_sample
-    return cast("np.ndarray", (time_edges[:-1] < start) | (time_edges[1:] > stop))
-
-
-def _bins_reading_nan_position(
-    time_edges: np.ndarray, position_time: np.ndarray, is_nan: np.ndarray
-) -> np.ndarray:
-    """Bins owning a time whose interpolated position is non-finite.
-
-    See :func:`_missing_bins` for the rule.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Time bin edges of the decode grid.
-    position_time : np.ndarray, shape (n_time_position,)
-        Times of the position samples.
-    is_nan : np.ndarray of bool, shape (n_time_position,)
-        Samples with a non-finite position; at least one is True.
-
-    Returns
-    -------
-    affected : np.ndarray of bool, shape (n_bins,)
-    """
-    n_bins = len(time_edges) - 1
-    nan_index = np.flatnonzero(is_nan)
-    # Spans of consecutive NaN samples, widened to the neighbouring samples.
-    # Positions before the first sample (after the last) are extrapolated from
-    # the first (last) interval, so a NaN in an end interval reaches every bin
-    # beyond that end.
-    n_samples = position_time.size
-    run_starts = nan_index[np.r_[True, np.diff(nan_index) > 1]]
-    run_ends = nan_index[np.r_[np.diff(nan_index) > 1, True]]
-    lower = np.where(
-        run_starts > 1, position_time[np.maximum(run_starts - 1, 0)], -np.inf
-    )
-    upper = np.where(
-        run_ends < n_samples - 2,
-        position_time[np.minimum(run_ends + 1, n_samples - 1)],
-        np.inf,
-    )
-    # Bin i owns [edges[i], edges[i + 1]) and meets [lower, upper) iff
-    # edges[i + 1] > lower and edges[i] < upper; the final bin also owns
-    # edges[-1], so a read exactly there (lower == edges[-1]) marks it.
-    first = np.searchsorted(time_edges[1:], lower, side="right")
-    first = np.where(lower == time_edges[-1], n_bins - 1, first)
-    stop = np.maximum(np.searchsorted(time_edges[:-1], upper, side="left"), first)
-    change = np.zeros(n_bins + 1, dtype=int)
-    np.add.at(change, first, 1)
-    np.add.at(change, stop, -1)
-    return np.cumsum(change[:-1]) > 0
 
 
 def _group_spike_mask(
@@ -1574,8 +1354,8 @@ class _DetectorBase(
         """
         Fit the model to the data.
 
-        The public ``fit`` methods coerce and check the arrays first (see
-        ``_EncodingInputs``).
+        The public ``fit`` methods check the arguments first (see
+        ``_validated_inputs``).
 
         Parameters
         ----------
@@ -1608,34 +1388,6 @@ class _DetectorBase(
         _DetectorBase
             Fitted model.
         """
-        _validate_transition_arguments(
-            transition_representation, max_dense_transition_bytes
-        )
-        val.ensure_all_finite(position[~np.isnan(position)], "position")
-        if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
-            msg = "At least one finite position sample is required for fitting"
-            raise ValidationError(msg)
-
-        # Raises ValidationError if position is 1D but env has track_graph.
-        self._validate_position_dimensionality(position, context="fit")
-
-        position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Before anything changes, so a refused fit keeps the loaded model.
-        _refuse_untrusted_transition(self.discrete_transition_type, "fit")
-        if (
-            not self.discrete_transition_type.is_stationary
-            and discrete_transition_covariate_data is None
-        ):
-            raise _missing_covariates_error(
-                reason=f"{type(self.discrete_transition_type).__name__} depends "
-                "on covariates",
-                expected="the training values of the covariates named in the "
-                "transition formula",
-                hint="Pass the covariates, or use a stationary transition such as "
-                "DiscreteStationaryDiagonal.",
-                example="    detector.fit(position_time, position, spike_times, "
-                "discrete_transition_covariate_data={'speed': speed})",
-            )
         self._invalidate_stored_log_likelihood()  # stale after a refit
         # A refit replaces every structure a loaded detector rebuilt.
         self.__dict__.pop("_rebuild_check_", None)
@@ -1689,16 +1441,6 @@ class _DetectorBase(
             transition_representation=transition_representation,
             max_dense_transition_bytes=int(max_dense_transition_bytes),
         )
-        # Each grid is fitted on its environment's samples. Warned once the
-        # fit succeeds, so an EM fit that falls back to dense warns once.
-        for environment in self.environments_:
-            _warn_if_off_grid(
-                position
-                if environment_labels is None
-                else position[environment_labels == environment.environment_name],
-                [environment],
-            )
-
         return self
 
     @abc.abstractmethod
@@ -1783,112 +1525,6 @@ class _DetectorBase(
                             "and decoding, including when tracking is missing.",
                         )
 
-    def _check_spike_data(
-        self,
-        spike_data: tuple[Any, ...],
-        *,
-        time_range: tuple[float, float] | None = None,
-        range_name: str = "",
-        check_extent: bool = False,
-    ) -> None:
-        """Check the spike arrays named by ``_SPIKE_DATA_NAMES``.
-
-        See ``_validate_spike_data`` for what is checked.
-
-        Parameters
-        ----------
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-        time_range : tuple of float, optional
-            ``(start, stop)`` in seconds to warn against, by default None.
-        range_name : str, optional
-            What ``time_range`` is, for the warning.
-        check_extent : bool, optional
-            Also warn when almost no spike lies in ``time_range`` and they
-            reach far past it, by default False (encoding period only).
-        """
-        _validate_spike_data(
-            *spike_data,
-            clusterless=isinstance(self, ClusterlessDetector),
-            time_range=time_range,
-            range_name=range_name,
-            check_extent=check_extent,
-        )
-
-    def _numeric_spike_data(self, spike_data: tuple[Any, ...]) -> tuple[Any, ...]:
-        """Return the spike arrays with ``spike_times`` as numeric arrays.
-
-        Fitting reads the spike times with ``np.interp``, which rejects
-        object-dtype arrays that decoding reads as float.
-
-        Parameters
-        ----------
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-
-        Returns
-        -------
-        tuple
-            ``spike_data`` with the first entry converted.
-        """
-        spike_times = _numeric_spike_times_list(
-            spike_data[0], clusterless=isinstance(self, ClusterlessDetector)
-        )
-        return (spike_times, *spike_data[1:])
-
-    def _check_encoding_spike_data(
-        self, position_time: ArrayLike, spike_data: tuple[Any, ...]
-    ) -> tuple[Any, ...]:
-        """Check encoding spike data; warn if they look like other units or another clock.
-
-        Warns if all lie far to one side of the position_time span, or if
-        under 1% lie in it and they reach over 10 spans past it (ms for s on a
-        clock starting near 0).
-
-        Parameters
-        ----------
-        position_time : array_like, shape (n_time_position,)
-            Times of the position samples, in seconds.
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-
-        Returns
-        -------
-        tuple
-            The spike arrays with ``spike_times`` as numeric arrays.
-        """
-        times = _sample_times(position_time)
-        finite = times[np.isfinite(times)]
-        self._check_spike_data(
-            spike_data,
-            time_range=(float(finite.min()), float(finite.max()))
-            if finite.size
-            else None,
-            range_name="position_time span",
-            check_extent=True,
-        )
-        return self._numeric_spike_data(spike_data)
-
-    def _check_decode_spike_data(
-        self, time_edges: np.ndarray, spike_data: tuple[Any, ...]
-    ) -> None:
-        """Check decoding spike data; warn if all lie on one side of ``time_edges``.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
-            Validated decode edges, in seconds.
-        spike_data : tuple
-            The spike arrays, in the order of ``_SPIKE_DATA_NAMES``.
-        """
-        self._check_spike_data(
-            spike_data,
-            time_range=(float(time_edges[0]), float(time_edges[-1])),
-            range_name="decode time_edges",
-        )
-
-    _SPIKE_DATA_NAMES: tuple[str, ...] = ()
-    """Names of the spike-data arrays, in the order the decode methods take them."""
     _PREDICT_EXAMPLE: str = ""
     """Example ``predict`` call shown in validation errors."""
 
@@ -1943,40 +1579,40 @@ class _DetectorBase(
         row_slice: slice | None,
         *,
         time_edges: ArrayLike,
+        valid_position_intervals: ArrayLike | None,
     ) -> jax.Array:
         """Body of the detectors' ``compute_log_likelihood``.
 
-        ``spike_data`` holds the spike arrays named by ``_SPIKE_DATA_NAMES``,
+        ``spike_data`` holds ``spike_times``, then ``spike_waveform_features``
+        for a clusterless detector,
         and the other arguments are those of ``compute_log_likelihood``. It
         checks the model and inputs, as the public decoding methods do once
         per call, then evaluates the requested rows.
         """
-        self._validate_time_contract()
-        self._warn_if_layout_parameters_changed()
-        decode = _DecodeInputs.from_arguments(position_time, position)
-        time_edges, _ = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
+        inputs = self._validated_inputs(
+            "likelihood",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
             row_slice=row_slice,
+            is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
         )
-        self._check_decode_spike_data(time_edges, spike_data)
-        self._validate_decode_position(decode.position)
         context = self._decode_context(
-            time_edges,
-            (decode.position_time, decode.position, *spike_data),
-            # A direct call warns like the other public decode entry points.
-            warn_outside_tracking=True,
+            cast("np.ndarray", inputs.time_edges),
+            (inputs.position_time, inputs.position, *spike_data),
             share_no_spike_bin_sizes=False,
         )
-        return self._log_likelihood_rows(context, row_slice, is_missing)
+        return self._log_likelihood_rows(
+            context, row_slice, is_missing, position_is_missing=inputs.is_missing
+        )
 
     def _decode_context(
         self,
         time_edges: np.ndarray,
         log_likelihood_args: tuple[Any, ...],
         *,
-        warn_outside_tracking: bool = False,
         share_no_spike_bin_sizes: bool = True,
     ) -> _DecodeContext:
         """Prepare one likelihood evaluation over validated ``time_edges``.
@@ -1987,10 +1623,7 @@ class _DetectorBase(
             Edges already validated by ``_decode_time_edges``.
         log_likelihood_args : tuple
             ``(position_time, position, *spike_data)``, position coerced by
-            ``_DecodeInputs``.
-        warn_outside_tracking : bool, optional
-            Warn about decode bins outside the tracked period, by default
-            False (the decoding methods warned when they marked them missing).
+            ``_validated_inputs``.
         share_no_spike_bin_sizes : bool, optional
             Compute the No-Spike bin durations once for every row request, by
             default True.
@@ -2009,13 +1642,10 @@ class _DetectorBase(
             position_time=position_time,
             spike_data=tuple(spike_data),
             position_context=_LikelihoodPositionContext.prepare(
-                time_edges,
-                position_time,
                 position,
                 reads_position=self._decode_reads_position(
                     self.state_space_.observation_models
                 ),
-                warn_outside_tracking=warn_outside_tracking,
             ),
             spike_time_order=_SpikeTimeOrder(),
             no_spike_time_bin_sizes=(
@@ -2079,6 +1709,8 @@ class _DetectorBase(
         context: _DecodeContext,
         row_slice: slice | None,
         is_missing: np.ndarray | None,
+        *,
+        position_is_missing: np.ndarray | None = None,
     ) -> jax.Array:
         """Log likelihood of the requested decode bins.
 
@@ -2089,7 +1721,12 @@ class _DetectorBase(
         row_slice : slice or None
             Contiguous rows of the full-time likelihood; None requests all.
         is_missing : np.ndarray of bool, shape (n_rows,), or None
-            Missing bins among the requested rows.
+            Missing bins among the requested rows. A decoding method has
+            already marked here the bins without tracked position, whose rows
+            hold a placeholder in the prepared position.
+        position_is_missing : np.ndarray of bool, shape (n_bins,), optional
+            Bins without tracked position, of the full grid, for a direct
+            ``compute_log_likelihood`` call, whose ``is_missing`` lacks them.
 
         Returns
         -------
@@ -2104,7 +1741,6 @@ class _DetectorBase(
         )
         position_time, spike_data = context.position_time, context.spike_data
         self._validate_decode_population(*spike_data)
-        position_missing = context.position_context.is_missing
         logger.info("Computing log likelihood...")
         non_local_penalty = self._non_local_position_penalty()
 
@@ -2123,8 +1759,8 @@ class _DetectorBase(
                 entry="requested decode bin",
                 example=None,
             )
-        if position_missing is not None:
-            is_missing = is_missing | position_missing[row_start:row_stop]
+        if position_is_missing is not None:
+            is_missing = is_missing | position_is_missing[row_start:row_stop]
         if context.position_context.all_missing:
             return jnp.zeros((n_rows, int(self.state_space_.is_track_interior.sum())))
         position = context.position_context.position
@@ -2335,6 +1971,7 @@ class _DetectorBase(
         position: ArrayLike | None,
         position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         cache_likelihood: bool,
         n_chunks: int,
@@ -2349,29 +1986,20 @@ class _DetectorBase(
         return_outputs: ReturnOutputs,
     ) -> xr.Dataset:
         """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
-        decode = _DecodeInputs.from_arguments(
-            position_time, position, example=self._PREDICT_EXAMPLE
+        inputs = self._validated_inputs(
+            "decode",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+            example=self._PREDICT_EXAMPLE,
         )
-        position_time, position = decode.position_time, decode.position
-        self._validate_time_contract()
-        self._warn_if_layout_parameters_changed()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
-        )
-        self._check_decode_spike_data(time_edges, spike_data)
-        self._validate_decode_position(position)
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(
-                self.state_space_.observation_models
-            ),
-            warn_outside_tracking=True,
-        )
+        position_time, position = inputs.position_time, inputs.position
+        time_edges = cast("np.ndarray", inputs.time_edges)
+        time_centers = cast("np.ndarray", inputs.time_centers)
+        is_missing = inputs.is_missing
 
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
@@ -2518,28 +2146,21 @@ class _DetectorBase(
                 ).transition_matrix,
                 time_centers,
             )
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
+        inputs = self._validated_inputs(
+            "estimate",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            valid_position_intervals=valid_position_intervals,
+            time_edges=time_edges,
+            is_missing=is_missing,
         )
-        position_time, position = inputs.position_time, inputs.position
-        # The internal fit warns if every spike lies outside the position_time span.
-        self._check_spike_data(spike_data)
-        spike_data = self._numeric_spike_data(spike_data)
-        position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Mirror predict(): bins without tracked position are missing
-        # observations in the E-step.
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(self.observation_models),
-            warn_outside_tracking=True,
-        )
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        spike_data, is_missing = inputs.spike_data, inputs.is_missing
         # Before the internal fit, so a refused estimate leaves the model as is.
         _require_observed_bins(is_missing)
         # Every run drops the stored likelihood of the previous fit. Drop it
@@ -2596,7 +2217,7 @@ class _DetectorBase(
                 encoding_fit_arguments={
                     "position_time": position_time,
                     "position": position,
-                    **dict(zip(self._SPIKE_DATA_NAMES, spike_data, strict=True)),
+                    "spike_data": spike_data,
                     "is_training": inputs.is_training,
                     "encoding_group_labels": inputs.encoding_group_labels,
                     "environment_labels": inputs.environment_labels,
@@ -2613,31 +2234,24 @@ class _DetectorBase(
         position: ArrayLike | None,
         position_time: ArrayLike | None,
         is_missing: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
         n_chunks: int,
     ) -> pd.DataFrame:
         """Body of the detectors' ``most_likely_sequence``; see ``_compute_spike_log_likelihood``."""
-        decode = _DecodeInputs.from_arguments(position_time, position)
-        position_time, position = decode.position_time, decode.position
-        self._validate_time_contract()
-        self._warn_if_layout_parameters_changed()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            sampling_frequency=self.sampling_frequency,
+        inputs = self._validated_inputs(
+            "decode",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
         )
-        self._check_decode_spike_data(time_edges, spike_data)
-        self._validate_decode_position(position)
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(
-                self.state_space_.observation_models
-            ),
-            warn_outside_tracking=True,
-        )
+        position_time, position = inputs.position_time, inputs.position
+        time_edges = cast("np.ndarray", inputs.time_edges)
+        time_centers = cast("np.ndarray", inputs.time_centers)
+        is_missing = inputs.is_missing
         return self._run_viterbi(
             time_edges=time_edges,
             log_likelihood_args=(
@@ -2857,7 +2471,7 @@ class _DetectorBase(
             del self.log_likelihood_
 
     def _encoding_masks(
-        self, inputs: _EncodingInputs
+        self, inputs: _ValidatedInputs
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Training mask and labels of an encoding fit, with their defaults.
 
@@ -2870,7 +2484,7 @@ class _DetectorBase(
         encoding_group_labels : np.ndarray, shape (n_time_position,)
         environment_labels : np.ndarray, shape (n_time_position,)
         """
-        n_time = len(inputs.position_time)
+        n_time = len(cast("np.ndarray", inputs.position_time))
         return (
             np.ones((n_time,), dtype=bool)
             if inputs.is_training is None
@@ -2974,7 +2588,7 @@ class _DetectorBase(
         Parameters
         ----------
         *args
-            Positional arguments of the subclass implementation.
+            The ``_ValidatedInputs`` of the fit.
         **kwargs
             Keyword arguments of the subclass implementation.
         """
@@ -3258,10 +2872,11 @@ class ClusterlessDetector(_DetectorBase):
         weights : np.ndarray, shape (n_time_position,)
             Posterior weight of each time sample in the refit.
         encoding_fit_arguments : dict
-            The other keyword arguments of ``_fit_encoding_model``.
+            Keyword arguments of ``_validated_inputs``.
         """
         self._fit_encoding_model(
-            **encoding_fit_arguments, weights=weights, refit_mark_reference=False
+            self._validated_inputs("refit", **encoding_fit_arguments, weights=weights),
+            refit_mark_reference=False,
         )
 
     def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:
@@ -3385,14 +3000,19 @@ class ClusterlessDetector(_DetectorBase):
             Weights for training data, by default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         Attributes
         ----------
@@ -3411,37 +3031,22 @@ class ClusterlessDetector(_DetectorBase):
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
-        spike_times, spike_waveform_features = self._check_encoding_spike_data(
-            position_time, (spike_times, spike_waveform_features)
-        )
-        self._fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
+        inputs = self._validated_inputs(
+            "encoding",
+            (spike_times, spike_waveform_features),
+            position_time=position_time,
+            position=position,
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             weights=weights,
             encoding_time_range=encoding_time_range,
             valid_position_intervals=valid_position_intervals,
-            refit_mark_reference=True,
         )
+        self._fit_encoding_model(inputs, refit_mark_reference=True)
 
     def _fit_encoding_model(
-        self,
-        position_time: ArrayLike,
-        position: ArrayLike,
-        spike_times: list[np.ndarray],
-        spike_waveform_features: list[np.ndarray],
-        *,
-        is_training: ArrayLike | None = None,
-        encoding_group_labels: ArrayLike | None = None,
-        environment_labels: ArrayLike | None = None,
-        weights: ArrayLike | None = None,
-        encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        refit_mark_reference: bool,
+        self, inputs: _ValidatedInputs, *, refit_mark_reference: bool
     ) -> None:
         """Body of ``fit_encoding_model``.
 
@@ -3449,33 +3054,13 @@ class ClusterlessDetector(_DetectorBase):
         as posterior-weighted encoding updates do.
         """
         logger.info("Fitting clusterless spikes...")
-        # Validate before any state changes and before the collections are
-        # paired electrode by electrode (``fit`` also checks first, before
-        # ``_fit`` rebuilds its own state).
-        validate_spike_feature_population(spike_times, spike_waveform_features)
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            weights,
-        )
-        position_time, weights = inputs.position_time, inputs.weights
-        position = (
-            inputs.position[:, np.newaxis]
-            if inputs.position.ndim == 1
-            else inputs.position
-        )
+        spike_times, spike_waveform_features = inputs.spike_data
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        support = cast("EncodingSupport", inputs.encoding_support)
+        weights = inputs.weights
         is_training, encoding_group_labels, environment_labels = self._encoding_masks(
             inputs
-        )
-
-        support = EncodingSupport(
-            position_time,
-            position,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
         )
 
         kwargs = self._resolve_clusterless_algorithm_params()
@@ -3585,14 +3170,19 @@ class ClusterlessDetector(_DetectorBase):
             By default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -3610,18 +3200,21 @@ class ClusterlessDetector(_DetectorBase):
         self
             The fitted detector, of its own class.
         """
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
+        inputs = self._validated_inputs(
+            "fit",
+            (spike_times, spike_waveform_features),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
-        # Before ``_fit``; fit_encoding_model checks again and warns.
-        self._check_spike_data((spike_times, spike_waveform_features))
         with self._restore_state_on_error():
             self._fit(
-                inputs.position,
+                cast("np.ndarray", inputs.position),
                 inputs.is_training,
                 inputs.encoding_group_labels,
                 inputs.environment_labels,
@@ -3632,8 +3225,7 @@ class ClusterlessDetector(_DetectorBase):
             self.fit_encoding_model(
                 inputs.position_time,
                 inputs.position,
-                spike_times,
-                spike_waveform_features,
+                *inputs.spike_data,
                 is_training=inputs.is_training,
                 encoding_group_labels=inputs.encoding_group_labels,
                 environment_labels=inputs.environment_labels,
@@ -3642,7 +3234,6 @@ class ClusterlessDetector(_DetectorBase):
             )
         return self
 
-    _SPIKE_DATA_NAMES = ("spike_times", "spike_waveform_features")
     _PREDICT_EXAMPLE = (
         "    results = detector.predict(\n"
         "        spike_times=spike_times, spike_waveform_features=features,\n"
@@ -3705,6 +3296,7 @@ class ClusterlessDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -3733,6 +3325,14 @@ class ClusterlessDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
 
         Returns
         -------
@@ -3776,6 +3376,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing,
             row_slice,
             time_edges=time_edges,
+            valid_position_intervals=valid_position_intervals,
         )
 
     @requires_time_edges
@@ -3788,6 +3389,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
@@ -3822,6 +3424,14 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -3974,6 +3584,7 @@ class ClusterlessDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
@@ -4042,7 +3653,9 @@ class ClusterlessDetector(_DetectorBase):
             bin centers.
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
-            decode bin, by default None.
+            decode bin, by default None. This concerns the E-steps only: it
+            does not exclude encoding data, in the initial fit or the encoding
+            refits. Leave samples out of those with ``is_training``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4105,14 +3718,18 @@ class ClusterlessDetector(_DetectorBase):
             ``min_encoding_local_ess`` to skip poorly supported updates.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Bins outside them are missing in every E-step, as in ``predict``.
         transition_representation : {"auto", "dense", "structured"}, optional
             Which EM to run, by default "auto"; keep the default unless you
             need one path. "dense" EM holds several (time bins x state bins)
@@ -4216,6 +3833,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -4239,6 +3857,14 @@ class ClusterlessDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -4260,6 +3886,7 @@ class ClusterlessDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )
@@ -4446,14 +4073,19 @@ class SortedSpikesDetector(_DetectorBase):
             Weights for training data, by default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         Attributes
         ----------
@@ -4462,56 +4094,31 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
-        (spike_times,) = self._check_encoding_spike_data(position_time, (spike_times,))
         self._fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
-            weights=weights,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
+            self._validated_inputs(
+                "encoding",
+                (spike_times,),
+                position_time=position_time,
+                position=position,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+                weights=weights,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
+            )
         )
 
-    def _fit_encoding_model(
-        self,
-        position_time: ArrayLike,
-        position: ArrayLike,
-        spike_times: list[np.ndarray],
-        *,
-        is_training: ArrayLike | None = None,
-        encoding_group_labels: ArrayLike | None = None,
-        environment_labels: ArrayLike | None = None,
-        weights: ArrayLike | None = None,
-        encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-    ) -> None:
+    def _fit_encoding_model(self, inputs: _ValidatedInputs) -> None:
         """Body of ``fit_encoding_model``, which EM encoding updates call."""
         logger.info("Fitting place fields...")
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            weights,
-        )
-        position_time, weights = inputs.position_time, inputs.weights
-        position = (
-            inputs.position[:, np.newaxis]
-            if inputs.position.ndim == 1
-            else inputs.position
-        )
+        (spike_times,) = inputs.spike_data
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        support = cast("EncodingSupport", inputs.encoding_support)
+        weights = inputs.weights
         is_training, encoding_group_labels, environment_labels = self._encoding_masks(
             inputs
-        )
-        support = EncodingSupport(
-            position_time,
-            position,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
         )
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
@@ -4592,14 +4199,19 @@ class SortedSpikesDetector(_DetectorBase):
             By default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -4617,18 +4229,21 @@ class SortedSpikesDetector(_DetectorBase):
         self
             The fitted detector, of its own class.
         """
-        inputs = _EncodingInputs.from_arguments(
-            position_time,
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
+        inputs = self._validated_inputs(
+            "fit",
+            (spike_times,),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
         )
-        # Before ``_fit``; fit_encoding_model checks again and warns.
-        self._check_spike_data((spike_times,))
         with self._restore_state_on_error():
             self._fit(
-                inputs.position,
+                cast("np.ndarray", inputs.position),
                 inputs.is_training,
                 inputs.encoding_group_labels,
                 inputs.environment_labels,
@@ -4639,7 +4254,7 @@ class SortedSpikesDetector(_DetectorBase):
             self.fit_encoding_model(
                 inputs.position_time,
                 inputs.position,
-                spike_times,
+                *inputs.spike_data,
                 is_training=inputs.is_training,
                 encoding_group_labels=inputs.encoding_group_labels,
                 environment_labels=inputs.environment_labels,
@@ -4648,7 +4263,6 @@ class SortedSpikesDetector(_DetectorBase):
             )
         return self
 
-    _SPIKE_DATA_NAMES = ("spike_times",)
     _PREDICT_EXAMPLE = (
         "    results = detector.predict(\n"
         "        spike_times=spike_times, time_edges=time_edges,\n"
@@ -4675,6 +4289,7 @@ class SortedSpikesDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -4700,6 +4315,14 @@ class SortedSpikesDetector(_DetectorBase):
         time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
 
         Returns
         -------
@@ -4743,6 +4366,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing,
             row_slice,
             time_edges=time_edges,
+            valid_position_intervals=valid_position_intervals,
         )
 
     @requires_time_edges
@@ -4754,6 +4378,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
@@ -4785,6 +4410,14 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -4850,6 +4483,7 @@ class SortedSpikesDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
@@ -4915,7 +4549,9 @@ class SortedSpikesDetector(_DetectorBase):
             bin centers.
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
-            decode bin, by default None.
+            decode bin, by default None. This concerns the E-steps only: it
+            does not exclude encoding data, in the initial fit or the encoding
+            refits. Leave samples out of those with ``is_training``.
         is_training : array_like of bool, shape (n_time_position,), optional
             True (or 1) for the position samples to train the encoding model
             on, one entry per sample, by default None (every sample).
@@ -4979,14 +4615,18 @@ class SortedSpikesDetector(_DetectorBase):
             ``min_encoding_local_ess`` to skip poorly supported updates.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Bins outside them are missing in every E-step, as in ``predict``.
         transition_representation : {"auto", "dense", "structured"}, optional
             Which EM to run, by default "auto"; keep the default unless you
             need one path. "dense" EM holds several (time bins x state bins)
@@ -5089,6 +4729,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -5109,6 +4750,14 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing : array_like of bool, shape (n_bins,), optional
             True (or 1) for the bins to decode as missing, one entry per
             decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
             covariates named in the transition formula, one row per decode
@@ -5130,6 +4779,7 @@ class SortedSpikesDetector(_DetectorBase):
             position=position,
             position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )

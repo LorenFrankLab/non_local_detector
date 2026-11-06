@@ -60,7 +60,11 @@ def fitted(request):
 
 def _decode(detector, method, arguments):
     if method == "compute_log_likelihood":
-        spikes = [arguments[name] for name in detector._SPIKE_DATA_NAMES]
+        spikes = [
+            arguments[name]
+            for name in ("spike_times", "spike_waveform_features")
+            if name in arguments
+        ]
         return detector.compute_log_likelihood(
             arguments["position_time"],
             arguments["position"],
