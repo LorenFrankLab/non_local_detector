@@ -381,6 +381,31 @@ class TestGetMapSpeedBoundaryHandling:
         np.testing.assert_array_equal(speeds[0], speeds[1])
         np.testing.assert_array_equal(speeds[0], speeds[2])
 
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    @pytest.mark.parametrize("position_dim", ["linear_position", "bin"])
+    def test_map_speed_accepts_any_name_for_the_position_dimension(self, position_dim):
+        """A (time, position) array needs no reducing, whatever its dim is named."""
+        n_bins = 5
+        track_graph = _make_linear_track(n_bins, edge_length=2.0)
+        nodes = np.arange(n_bins)
+        posterior = _posterior_from_node_sequence(np.array([0, 2, 4, 1]), nodes)
+
+        speeds = [
+            get_map_speed(
+                values,
+                track_graph,
+                nodes,
+                sampling_frequency=500.0,
+                smooth_sigma=0.0,
+            )
+            for values in (
+                xr.DataArray(posterior, dims=["time", position_dim]),
+                posterior,
+            )
+        ]
+
+        np.testing.assert_array_equal(speeds[0], speeds[1])
+
     @pytest.mark.parametrize("n_time", [3, 4, 5, 100])
     @pytest.mark.usefixtures("_identity_gaussian_smooth")
     def test_get_map_speed_boundary_appends_trailing(self, n_time):

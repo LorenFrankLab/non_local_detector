@@ -522,7 +522,9 @@ def get_map_speed(
         Speed of the most likely decoded position.
     """
     dt = 1 / sampling_frequency
-    if isinstance(posterior, xr.DataArray):
+    if isinstance(posterior, xr.DataArray) and (
+        "state_bins" in posterior.dims or posterior.ndim > 2
+    ):
         posterior = get_position_posterior(posterior)
     posterior = np.asarray(posterior)
     map_position_ind = np.nanargmax(posterior, axis=1)
