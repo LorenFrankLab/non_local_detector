@@ -1514,7 +1514,9 @@ def _make_transition_block(
     environments : sequence of Environment
         Environments passed to ``make_state_transition``.
     context : TransitionContext or None
-        Context passed to ``make_state_transition``.
+        Context passed to ``make_state_transition``. A ``_RebuildContext``
+        marks a load, which skips the exterior-mass check: what a fit accepted
+        must load.
     shape : tuple of int
         ``(n_source_bins, n_destination_bins)`` of the two states.
 

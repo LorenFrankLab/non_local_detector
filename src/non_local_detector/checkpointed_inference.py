@@ -966,8 +966,8 @@ def checkpointed_forward_backward(
                 cached: jax.Array | None,
                 increments: Any,
             ) -> Any:
-                nonlocal n_nan
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
+                nonlocal n_nan
                 if cached is not None:
                     (cached_rows if cache_rows else cached_likelihoods)[start] = (
                         np.asarray(cached)

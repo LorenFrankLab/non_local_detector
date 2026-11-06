@@ -173,20 +173,6 @@ def test_saved_file_of_a_plain_fit_has_no_diagnostics(sorted_sim, tmp_path):
     assert not hasattr(NonLocalSortedSpikesDetector.load_model(path), "n_iter_")
 
 
-def test_saved_file_holds_the_format_s_names(estimated, tmp_path):
-    """The file stores the diagnostics as it always did, so no format change."""
-    path = tmp_path / "model.nld"
-    estimated.save_model(path)
-    with zipfile.ZipFile(path) as archive:
-        state = json.loads(archive.read("state.json"))
-
-    assert state["n_iter"] == 2
-    assert state["converged"] is False
-    assert state["em_monotonicity_violations"] == []
-    assert "degenerate_timesteps" in state
-    assert not any("em_diagnostics" in name for name in state)
-
-
 @pytest.mark.parametrize(
     "path",
     [

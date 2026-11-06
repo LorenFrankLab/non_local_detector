@@ -541,8 +541,9 @@ def _restore_em_diagnostics(detector: Any) -> None:
     detector : _DetectorBase
         The detector being loaded, holding the saved values of those of
         ``_EM_DIAGNOSTIC_ATTRIBUTES`` that it has. Earlier versions did not
-        save them all; the others are empty. A detector saved without any ran
-        no estimation and gets no diagnostics.
+        save them all; the others take defaults: 0 iterations, not converged,
+        no violations and no degenerate steps. A detector saved without any
+        ran no estimation and gets no diagnostics.
     """
     stored = {
         name: vars(detector).pop(name)
