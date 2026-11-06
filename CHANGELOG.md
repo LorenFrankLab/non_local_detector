@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### One-off fixes
 
+- **Fixed:** `chunked_filter_smoother`, `most_likely_sequence` and their covariate-dependent variants zero the rows marked in `is_missing`, as `checkpointed_forward_backward` does. A replaced `compute_log_likelihood` that ignored `is_missing`, or `log_likelihoods=` passed directly, decoded those rows on their likelihoods while the results said they were missing.
 - **Fixed:** a NaN in the covariates given to decode, `discrete_transition_intervals`, `plot_discrete_state_transition` or `predict_discrete_state_transitions` raises, as it does at fit, instead of patsy dropping the row. Decoding then failed with a confusing row count; the others returned a shorter array that no longer lined up with the covariates.
 - **Fixed:** `save_results` of an `estimate_parameters` result with a replay cache of 2 GiB or more raised `ValueError` in a default install, which writes netCDF3: such byte counts are stored as floats and `load_results` restores the integer.
 - **Fixed:** `copy()`, `deepcopy` and pickling rebuild a covariate design from the transition the detector was fitted with, not the current `discrete_transition_type`, so a copy made after `set_params` decodes as the original does.

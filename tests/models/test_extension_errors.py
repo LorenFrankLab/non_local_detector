@@ -289,6 +289,27 @@ def test_exterior_rows_may_hold_anything():
     assert block.shape == (n_bins, n_bins)
 
 
+def test_missing_bins_hold_when_a_replaced_likelihood_ignores_the_mask(sorted_sim):
+    """``is_missing`` must describe the decode, whatever the callback does."""
+    time, position, spike_times = sorted_sim
+    detector = _detector().fit(time, position, spike_times)
+    decode = _decode_kwargs(sorted_sim)
+    n_bins = len(decode["time_edges"]) - 1
+    is_missing = np.zeros(n_bins, dtype=bool)
+    is_missing[n_bins // 4 : n_bins // 2] = True
+    expected = detector.predict(**decode, is_missing=is_missing).acausal_posterior
+    original = detector.compute_log_likelihood
+
+    def ignores_the_mask(*args, is_missing=None, **kwargs):
+        return original(*args, **kwargs)
+
+    detector.compute_log_likelihood = ignores_the_mask
+
+    result = detector.predict(**decode, is_missing=is_missing).acausal_posterior
+
+    np.testing.assert_allclose(result.values, expected.values, atol=1e-6)
+
+
 def test_block_between_one_bin_states_has_no_bins_to_check():
     """A custom one-bin block may name an environment with exterior bins."""
 

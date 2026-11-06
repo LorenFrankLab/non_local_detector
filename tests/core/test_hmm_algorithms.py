@@ -23,9 +23,11 @@ from non_local_detector import core as core_module
 from non_local_detector.core import (
     _condition_on,
     chunked_filter_smoother,
+    chunked_filter_smoother_covariate_dependent,
     filter,
     filter_covariate_dependent,
     most_likely_sequence,
+    most_likely_sequence_covariate_dependent,
     row_slice_aware,
     smoother,
     viterbi,
@@ -816,7 +818,7 @@ class TestViterbiDegenerateTimestepWarning:
         assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
 
 
-def _decode_with_log_likelihoods(path, log_likes):
+def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
     """Run one decoding path on a two-state stationary HMM."""
     init = np.array([0.5, 0.5])
     trans = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -841,6 +843,32 @@ def _decode_with_log_likelihoods(path, log_likes):
             log_likelihood_args=(),
             n_chunks=2,
             log_likelihoods=log_likes,
+            is_missing=is_missing,
+        )
+    elif path == "chunked_covariate":
+        chunked_filter_smoother_covariate_dependent(
+            time_edges=np.arange(float(n_time) + 1),
+            state_ind=np.array([0, 1]),
+            initial_distribution=init,
+            discrete_transition_matrix=np.broadcast_to(trans, (n_time, 2, 2)),
+            continuous_transition_matrix=np.eye(2),
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            n_chunks=2,
+            log_likelihoods=log_likes,
+            is_missing=is_missing,
+        )
+    elif path == "most_likely_sequence_covariate":
+        most_likely_sequence_covariate_dependent(
+            time_edges=np.arange(float(n_time) + 1),
+            state_ind=np.array([0, 1]),
+            initial_distribution=init,
+            discrete_transition_matrix=np.broadcast_to(trans, (n_time, 2, 2)),
+            continuous_transition_matrix=np.eye(2),
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likes,
+            is_missing=is_missing,
         )
     elif path == "viterbi":
         viterbi(init, trans, log_likes)
@@ -860,7 +888,27 @@ def _decode_with_log_likelihoods(path, log_likes):
             log_likelihood_func=None,
             log_likelihood_args=(),
             log_likelihoods=log_likes,
+            is_missing=is_missing,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    [
+        "chunked_filter_smoother",
+        "chunked_covariate",
+        "most_likely_sequence",
+        "most_likely_sequence_covariate",
+    ],
+)
+def test_a_missing_row_has_no_likelihood_to_refuse(path):
+    """The drivers neutralize it, as ``checkpointed_forward_backward`` does."""
+    log_likes = np.array([[0.0, -1.0], [np.nan, 0.0], [0.0, -1.0], [0.0, -1.0]])
+
+    _decode_with_log_likelihoods(
+        path, log_likes, is_missing=np.array([False, True, False, False])
+    )
 
 
 @pytest.mark.unit
@@ -871,6 +919,7 @@ def _decode_with_log_likelihoods(path, log_likes):
         "filter_covariate",
         "chunked_filter_smoother",
         "most_likely_sequence",
+        "most_likely_sequence_covariate",
         "viterbi",
         "viterbi_covariate",
     ],

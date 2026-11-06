@@ -302,6 +302,31 @@ def _degenerate_and_nan_masks_device(
     )
 
 
+def _neutralize_missing(
+    log_likelihoods: jax.Array, is_missing: np.ndarray | None
+) -> jax.Array:
+    """Zero the rows of bins marked missing, whatever a callback returned.
+
+    Parameters
+    ----------
+    log_likelihoods : jax.Array, shape (n_rows, n_state_bins)
+        Log likelihoods of the rows.
+    is_missing : np.ndarray of bool, shape (n_rows,), or None
+        Bins without observations.
+
+    Returns
+    -------
+    log_likelihoods : jax.Array, shape (n_rows, n_state_bins)
+    """
+    if is_missing is None or not np.any(is_missing):
+        return log_likelihoods
+    return jnp.where(
+        jnp.asarray(is_missing)[:, None],
+        jnp.zeros((), log_likelihoods.dtype),
+        log_likelihoods,
+    )
+
+
 def _accumulate_chunk_degeneracy(
     log_likelihood_chunk: ConcreteArray,
     time_inds: np.ndarray,
@@ -2596,12 +2621,12 @@ def _chunked_filter_smoother(
         # Convert time_inds to JAX once to avoid repeated host↔device syncs
         time_inds = jnp.asarray(time_inds_np)
 
+        is_missing_chunk = is_missing[time_inds_np] if is_missing is not None else None
         if log_likelihoods_jax is not None:
-            log_likelihood_chunk: ConcreteArray = log_likelihoods_jax[time_inds]
-        else:
-            is_missing_chunk = (
-                is_missing[time_inds_np] if is_missing is not None else None
+            log_likelihood_chunk: ConcreteArray = _neutralize_missing(
+                log_likelihoods_jax[time_inds], is_missing_chunk
             )
+        else:
             log_likelihood_chunk = _call_log_likelihood_chunk(
                 log_likelihood_func,
                 time_edges,
@@ -2615,7 +2640,9 @@ def _chunked_filter_smoother(
                 (len(time_inds_np), len(initial_distribution)),
                 _CALLBACK_SHAPE_HINT,
             )
-            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
+            log_likelihood_chunk = _neutralize_missing(
+                jnp.asarray(log_likelihood_chunk, dtype=dtype), is_missing_chunk
+            )
             if accumulate_log_likelihoods:
                 accumulated_log_likelihoods = _store_chunk_rows(
                     accumulated_log_likelihoods,
@@ -3080,7 +3107,9 @@ def most_likely_sequence(
         )
 
     # Cast to desired dtype for precision control
-    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
+    log_likelihoods_jax = _neutralize_missing(
+        jnp.asarray(log_likelihoods, dtype=dtype), is_missing
+    )
 
     # Warn if any time step is all-impossible (-inf) and raise if it contains
     # a NaN, so a Viterbi-only workflow gets the same diagnostics as the
@@ -3827,7 +3856,9 @@ def most_likely_sequence_covariate_dependent(
         )
 
     # Cast to desired dtype for precision control
-    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
+    log_likelihoods_jax = _neutralize_missing(
+        jnp.asarray(log_likelihoods, dtype=dtype), is_missing
+    )
 
     # Warn if any time step is all-impossible (-inf) and raise if it contains
     # a NaN, so a Viterbi-only workflow gets the same diagnostics as the
