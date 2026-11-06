@@ -159,7 +159,8 @@ class TestLowPrecisionSpikeTimes:
     MESSAGE = "resolve"
 
     @pytest.fixture(scope="class")
-    def unix_clock(self):
+    @classmethod
+    def unix_clock(cls):
         return _recording(start=1.7e9)
 
     def test_decoding_float32_times_on_a_large_clock_warns_once(self, unix_clock):
@@ -506,11 +507,13 @@ class TestValidPositionIntervals:
     """
 
     @pytest.fixture(scope="class")
-    def gap(self):
+    @classmethod
+    def gap(cls):
         return _gap_recording()
 
     @pytest.fixture(scope="class")
-    def detectors(self, gap):
+    @classmethod
+    def detectors(cls, gap):
         """A detector of each family fitted on the tracked samples."""
         time, position, spikes, marks, tracked, intervals = gap
         return {
@@ -524,7 +527,8 @@ class TestValidPositionIntervals:
         }
 
     @pytest.fixture(scope="class")
-    def in_gap(self, gap):
+    @classmethod
+    def in_gap(cls, gap):
         """Bins whose centers lie more than a bin inside the gap."""
         time = gap[0]
         return (time > 40 + 1 / RATE) & (time < 80 - 1 / RATE)
@@ -1212,7 +1216,8 @@ class TestDecodingFromSpikesAlone:
     """Fitting on one period and decoding another, as during sleep."""
 
     @pytest.fixture(scope="class")
-    def sleep(self, recording):
+    @classmethod
+    def sleep(cls, recording):
         """A decoder fitted on the first half, and spikes much later.
 
         ``(decoder, sleep_spikes, sleep_edges, run_intervals)``
