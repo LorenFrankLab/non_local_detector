@@ -86,7 +86,7 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
 
         with monkeypatch.context() as patch:
             from non_local_detector import time_edges as grid_module
-            from non_local_detector.models import base
+            from non_local_detector.models import _input_validation as input_validation
 
             def unexpected_precision_scan(*args, **kwargs):
                 pytest.fail(
@@ -98,7 +98,9 @@ def test_detector_chunk_callbacks_do_not_scan_the_complete_grid(
 
             patch.setattr(np, "diff", tracked_diff)
             patch.setattr(grid_module, "_spacing_tolerance", unexpected_precision_scan)
-            patch.setattr(base, "_missing_bins", unexpected_position_preparation)
+            patch.setattr(
+                input_validation, "_missing_bins", unexpected_position_preparation
+            )
             result = original(context, row_slice, is_missing)
         assert not full_scans, "Every requested chunk scanned the full recording grid"
         return result

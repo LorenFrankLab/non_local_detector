@@ -119,13 +119,13 @@ def test_attribution_through_a_symlinked_package(tmp_path):
         "import warnings\n"
         "import numpy as np\n"
         "import non_local_detector\n"
-        "from non_local_detector.models.base import _missing_bins\n"
+        "from non_local_detector.models._input_validation import _missing_bins\n"
         f"assert non_local_detector.__file__.startswith({str(linked)!r})\n"
         "edges = np.linspace(0.0, 1.2, 13)\n"
         "time = np.linspace(0.0, 1.0, 11)\n"
         "with warnings.catch_warnings(record=True) as caught:\n"
         "    warnings.simplefilter('always')\n"
-        "    _missing_bins(edges, None, time, time[:, None], warn_outside_tracking=True)\n"
+        "    _missing_bins(edges, None, time, time[:, None])\n"
         "print(caught[0].filename)\n"
     )
     result = subprocess.run(

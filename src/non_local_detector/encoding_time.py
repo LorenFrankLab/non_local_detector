@@ -16,11 +16,46 @@ from non_local_detector.exceptions import DataError, DataQualityWarning, Validat
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
 
 
+def parse_tracking_intervals(
+    valid_position_intervals: ArrayLike,
+) -> NDArray[np.float64]:
+    """Validate ``valid_position_intervals`` and return them as a float array.
+
+    Parameters
+    ----------
+    valid_position_intervals : array_like, shape (n_intervals, 2)
+        Ordered, non-overlapping ``(start, stop)`` intervals in seconds.
+
+    Returns
+    -------
+    intervals : np.ndarray, shape (n_intervals, 2)
+
+    Raises
+    ------
+    ValidationError
+        If the shape is wrong or the intervals overlap or are out of order.
+    DataError
+        If an interval is not finite and increasing.
+    """
+    intervals = np.asarray(valid_position_intervals, dtype=float)
+    if intervals.ndim != 2 or intervals.shape[1] != 2:
+        msg = "valid_position_intervals must have shape (n_intervals, 2)"
+        raise ValidationError(msg)
+    for interval in intervals:
+        validate_time_edges(interval, name="valid_position_intervals")
+    if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
+        msg = "valid_position_intervals must be ordered and non-overlapping"
+        raise ValidationError(msg)
+    return intervals
+
+
 class EncodingSupport:
     """Interpolation segments and integrals of their sample basis functions.
 
-    ``encoding_time_range`` clips acquisition support without redefining the
-    original interpolation basis. ``valid_position_intervals`` declares
+    ``encoding_time_range`` replaces the outer bounds of the support: inside
+    the samples it clips without redefining the original interpolation basis,
+    and past them it extends the support, holding position at the first or last
+    sample. ``valid_position_intervals`` declares
     disconnected tracking segments; their endpoints are held constant.
     Uniform samples default to supported endpoint half-cells. NaN positions
     inside a tracking segment split its original timeline before acquisition
@@ -39,8 +74,9 @@ class EncodingSupport:
         Position at each sample. Rows with a NaN coordinate are treated as
         missing and split the interpolation segment.
     encoding_time_range : array_like, shape (2,), optional
-        ``(start, stop)`` in seconds clipping the acquisition support. By
-        default None, which uses the span of ``valid_position_intervals`` or,
+        ``(start, stop)`` in seconds of the acquisition support, which clips
+        the tracking and extends past its first or last sample. By default
+        None, which uses the span of ``valid_position_intervals`` or,
         for uniform samples, the first and last sample extended by half a
         sample.
     valid_position_intervals : array_like, shape (n_intervals, 2), optional
@@ -101,15 +137,7 @@ class EncodingSupport:
         self.indices = np.flatnonzero(finite)
         intervals = None
         if valid_position_intervals is not None:
-            intervals = np.asarray(valid_position_intervals, dtype=float)
-            if intervals.ndim != 2 or intervals.shape[1] != 2:
-                msg = "valid_position_intervals must have shape (n_intervals, 2)"
-                raise ValidationError(msg)
-            for interval in intervals:
-                validate_time_edges(interval, name="valid_position_intervals")
-            if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
-                msg = "valid_position_intervals must be ordered and non-overlapping"
-                raise ValidationError(msg)
+            intervals = parse_tracking_intervals(valid_position_intervals)
             for start, stop in intervals:
                 if not np.any(finite & (time >= start) & (time <= stop)):
                     msg = "Each valid_position_intervals segment needs a finite position sample"
@@ -407,7 +435,7 @@ def prepare_encoding_support(
         Dimensionless weight of each sample, or None for all ones. Weights of
         samples with a non-finite position are set to zero.
     encoding_time_range : array_like, shape (2,), optional
-        ``(start, stop)`` in seconds clipping the acquisition support. See
+        ``(start, stop)`` in seconds of the acquisition support. See
         :class:`EncodingSupport`.
     valid_position_intervals : array_like, shape (n_intervals, 2), optional
         Continuous tracking intervals in seconds. See

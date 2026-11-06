@@ -464,9 +464,10 @@ def test_1d_position_without_track_graph_fits_without_warning(position):
     decoder = SortedSpikesDecoder(
         environments=[Environment(place_bin_size=5.0, position_range=((0.0, 100.0),))]
     )
+    time = np.arange(position.shape[0]) / decoder.sampling_frequency
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        decoder._fit(position=position)
+        decoder.fit(time, position, [time[10:40:5]])
 
 
 if __name__ == "__main__":
