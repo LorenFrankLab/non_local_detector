@@ -1283,7 +1283,6 @@ def _unread_bins(
 def _warn_about_tracking_coverage(
     time_edges: np.ndarray,
     position_time: np.ndarray,
-    intervals: np.ndarray | None,
     row_slice: slice | None,
     caller_is_missing: np.ndarray | None,
     is_missing: np.ndarray | None,
@@ -1296,8 +1295,6 @@ def _warn_about_tracking_coverage(
         Time bin edges of the decode grid.
     position_time : np.ndarray, shape (n_time_position,)
         Finite and increasing.
-    intervals : np.ndarray, shape (n_intervals, 2), or None
-        Declared spans of continuous tracking.
     row_slice : slice or None
         Rows the call evaluates; None requests all.
     caller_is_missing : np.ndarray of bool, optional
@@ -1315,12 +1312,7 @@ def _warn_about_tracking_coverage(
         is_unread if row_slice is None else is_missing,
         caller_is_missing,
     )
-    if intervals is None:
-        _warn_if_decoding_across_gaps(time_edges, position_time, is_unread)
-    else:
-        _warn_if_interval_lacks_tracking(
-            time_edges, position_time, intervals, is_unread
-        )
+    _warn_if_decoding_across_gaps(time_edges, position_time, is_unread)
 
 
 def _warn_if_no_bin_is_tracked(
@@ -1372,59 +1364,14 @@ def _warn_if_no_bin_is_tracked(
     )
 
 
-def _warn_if_interval_lacks_tracking(
-    time_edges: np.ndarray,
-    position_time: np.ndarray,
-    intervals: np.ndarray,
-    is_unread: np.ndarray,
-) -> None:
-    """Warn when a decode bin reads position in an interval with no samples.
-
-    Samples that are NaN need no check: bins reading them are already missing.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Time bin edges of the decode grid.
-    position_time : np.ndarray, shape (n_time_position,)
-        Finite and increasing.
-    intervals : np.ndarray, shape (n_intervals, 2)
-        Ordered, non-overlapping spans of continuous tracking.
-    is_unread : np.ndarray of bool, shape (n_bins,)
-        Bins that read no position, such as those decoded as missing.
-
-    Warns
-    -----
-    DataQualityWarning
-        If a bin not in ``is_unread`` owns a time in such an interval.
-    """
-    starts, stops = intervals.T
-    is_empty = np.searchsorted(position_time, stops, side="right") == np.searchsorted(
-        position_time, starts, side="left"
-    )
-    reads_empty = ~is_unread & _bins_meeting_spans(
-        time_edges, starts[is_empty], stops[is_empty]
-    )
-    if not np.any(reads_empty):
-        return
-    warnings.warn(
-        f"{int(reads_empty.sum())} of {reads_empty.size} decode bins fall in "
-        "valid_position_intervals with no position sample, so position there is "
-        "interpolated between samples outside the interval and spikes that "
-        "disagree with that path can read as replay. Remove these intervals, "
-        "which fit refuses.",
-        DataQualityWarning,
-        stacklevel=user_stacklevel(),
-    )
-
-
 def _warn_if_decoding_across_gaps(
     time_edges: np.ndarray, position_time: np.ndarray, is_unread: np.ndarray
 ) -> None:
     """Warn when a decode bin reads position across a tracking gap.
 
     Only the caller knows where tracking stopped, so these bins are not
-    decoded as missing.
+    decoded as missing. Intervals that exclude a gap leave its bins missing;
+    one that spans it, such as a session's bounds, does not.
 
     Parameters
     ----------
@@ -1460,8 +1407,8 @@ def _warn_if_decoding_across_gaps(
         f"position_time (the widest is {float(steps.max()):.3g} s), so position "
         "is interpolated between the samples either side and these bins are "
         "decoded on that invented path: spikes that disagree with it can read "
-        "as replay. Pass valid_position_intervals=[[start, stop], ...] to decode "
-        "bins outside continuous tracking as missing.",
+        "as replay. Pass valid_position_intervals=[[start, stop], ...] that "
+        "exclude the gaps to decode these bins as missing.",
         DataQualityWarning,
         stacklevel=user_stacklevel(),
     )
@@ -2161,15 +2108,20 @@ class _InputValidationMixin:
                 reads_position=reads_position,
                 valid_position_intervals=tracking_intervals,
             )
-            # fit, which estimate_parameters runs next, refuses these samples.
+            edges = cast("np.ndarray", checked_edges)
+            times = cast("np.ndarray", position_time)
             if decoding and reads_position:
                 _warn_about_tracking_coverage(
-                    cast("np.ndarray", checked_edges),
-                    cast("np.ndarray", position_time),
-                    tracking_intervals,
-                    row_slice,
-                    caller_is_missing,
-                    is_missing,
+                    edges, times, row_slice, caller_is_missing, is_missing
+                )
+            # Without intervals, the fit that comes next refuses a gap.
+            if (
+                stage == "estimate"
+                and reads_position
+                and tracking_intervals is not None
+            ):
+                _warn_if_decoding_across_gaps(
+                    edges, times, _unread_bins(edges.size - 1, None, None, is_missing)
                 )
         return replace(
             inputs,

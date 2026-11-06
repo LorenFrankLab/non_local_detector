@@ -737,20 +737,55 @@ class TestValidPositionIntervals:
 
         assert len(messages) == int(warns)
 
-    def test_an_interval_over_a_gap_is_taken_at_its_word(self, detectors, gap):
-        """A caller who declares tracking continuous has answered the warning."""
-        time = gap[0]
-
-        results = _no_quality_warnings(
+    @pytest.mark.parametrize(
+        "intervals",
+        [[[0.0, 119.98]], [[0.0, 45.0], [80.0, 119.98]]],
+        ids=["over the gap", "into the gap"],
+    )
+    def test_an_interval_reaching_a_gap_warns(self, detectors, gap, intervals):
+        """Session bounds are not tracking: those bins read an invented path."""
+        results, messages = _quality_warnings(
             lambda: self._predict(
-                "sorted",
-                detectors,
-                gap,
-                valid_position_intervals=[[time[0], time[-1]]],
-            )
+                "sorted", detectors, gap, valid_position_intervals=intervals
+            ),
+            "gaps",
         )
 
-        assert not results.is_missing.values.any()
+        assert len(messages) == 1
+        assert not results.is_missing.values[gap[0] < 45].any()
+
+    def test_estimate_parameters_warns_of_an_interval_over_a_gap(self, gap):
+        """Without one, its internal fit refuses the gap instead."""
+        time, position, spikes, _, tracked, _ = gap
+
+        _, messages = _quality_warnings(
+            lambda: _sorted().estimate_parameters(
+                time[tracked],
+                position[tracked],
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                valid_position_intervals=[[time[0], time[-1]]],
+                max_iter=1,
+            ),
+            "gaps",
+        )
+
+        assert len(messages) == 1
+
+    def test_estimate_parameters_leaves_an_undeclared_gap_to_its_fit(self, gap):
+        """The fit refuses it, so a warning first would only repeat that."""
+        time, position, spikes, _, tracked, _ = gap
+
+        with pytest.raises(DataError, match="valid_position_intervals"):
+            _no_quality_warnings(
+                lambda: _sorted().estimate_parameters(
+                    time[tracked],
+                    position[tracked],
+                    spikes,
+                    time_edges=time_edges_from_centers(time),
+                    max_iter=1,
+                )
+            )
 
     def test_an_interval_without_samples_warns(self, detectors, gap):
         """Spikes there would be scored on a path between distant samples."""
@@ -763,7 +798,7 @@ class TestValidPositionIntervals:
                 gap,
                 valid_position_intervals=[intervals[0], [50.0, 60.0], intervals[1]],
             ),
-            "no position sample",
+            "gaps",
         )
 
         assert len(messages) == 1
@@ -787,7 +822,7 @@ class TestValidPositionIntervals:
         _no_quality_warnings(lambda: evaluate(is_missing=reaches_it))
         _no_quality_warnings(lambda: evaluate(row_slice=slice(0, 100)))
         _, messages = _quality_warnings(
-            lambda: evaluate(row_slice=slice(2_600, 2_700)), "no position sample"
+            lambda: evaluate(row_slice=slice(2_600, 2_700)), "gaps"
         )
         assert len(messages) == 1
 

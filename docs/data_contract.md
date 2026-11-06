@@ -88,8 +88,8 @@ continuous. Do not drop NaN rows and concatenate across a gap without it:
 - `predict`, `most_likely_sequence` and `compute_log_likelihood` interpolate
   position across the gap, so the animal appears to glide from one side to the
   other. Spikes in the gap then disagree with that invented path, which reads
-  as replay. They warn once if a bin not already missing reaches a gap of five
-  or more position samples; a dropped frame or a jittery clock does not warn.
+  as replay. They warn once if a bin they read reaches a gap of five or more
+  position samples; a dropped frame or a jittery clock does not warn.
 
 With `valid_position_intervals`, a decoding method marks as missing every bin
 that owns a time outside the intervals. As for the tracked period as a whole,
@@ -100,12 +100,13 @@ these bins are missing in every E-step. A model that does not read position at
 decode (no Local state and no non-local position penalty) decodes every bin and
 ignores the intervals.
 
-A decoding method warns once when a bin it reads falls in an interval with no
-position sample, since position there comes from samples outside the interval,
-and when position or the intervals leave every bin missing and the caller did
-not ask for that, since the transitions' steady state looks like a decode. Pass
-the tracking intervals of the decoded period, which need not be those of the
-fit.
+Intervals say where tracking was, so a session's start and stop are not
+intervals: one that spans a gap leaves its bins decoded on the invented path, and
+the gap warning above still fires, as it does in `estimate_parameters`. A
+decoding method also warns once when position or the intervals leave every bin
+missing and the caller did not ask for that, since the transitions' steady state
+looks like a decode. Pass the tracking intervals of the decoded period, which
+need not be those of the fit.
 
 Decode bins that reach more than half a sample outside the tracked period are
 always missing, with one warning: position there could only be extrapolated.
