@@ -23,6 +23,7 @@ from non_local_detector.discrete_state_transitions import (
     get_transition_prior,
     jax_centered_log_softmax_forward,
     make_transition_from_diag,
+    predict_discrete_state_transition_intervals,
     predict_discrete_state_transitions,
 )
 from non_local_detector.exceptions import DataError, ValidationError
@@ -464,6 +465,29 @@ class TestNonStationaryNaNCovariates:
 
         with pytest.raises(PatsyError):
             model.make_state_transition(covariate_data)
+
+    def test_new_covariates_with_nan_are_refused_not_dropped(self):
+        """A NaN row of decode covariates raises in every path that evaluates
+        the fitted design: dropping it would shift each later bin's transition
+        by a row, or for a plot pair values with the wrong covariate."""
+        initial = DiscreteNonStationaryCustom(
+            values=np.array([[0.9, 0.1], [0.2, 0.8]]), formula="1 + speed"
+        ).make_state_transition({"speed": np.array([1.0, 2.0, 3.0, 4.0])})
+        speed = np.array([1.0, np.nan, 3.0])
+
+        with pytest.raises(PatsyError, match="missing"):
+            predict_discrete_state_transitions(
+                initial.design_matrix, initial.coefficients, {"speed": speed}
+            )
+        n_coefficients, n_states, n_free = initial.coefficients.shape
+        n_parameters = n_coefficients * n_free
+        with pytest.raises(PatsyError, match="missing"):
+            predict_discrete_state_transition_intervals(
+                initial.design_matrix,
+                initial.coefficients,
+                np.tile(np.eye(n_parameters), (n_states, 1, 1)),
+                {"speed": speed},
+            )
 
 
 class TestDefaultCovariateSpline:

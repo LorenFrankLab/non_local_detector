@@ -82,6 +82,10 @@ def fitted(request):
     return detector, predict_data
 
 
+def _pickled(detector):
+    return pickle.loads(pickle.dumps(detector))
+
+
 def _state_probabilities(detector, predict_data):
     return detector.predict(**predict_data).acausal_state_probabilities.values
 
@@ -116,6 +120,36 @@ def test_deepcopy(fitted):
     detector, predict_data = fitted
     np.testing.assert_array_equal(
         _state_probabilities(copy.deepcopy(detector), predict_data),
+        _state_probabilities(detector, predict_data),
+    )
+
+
+@pytest.mark.filterwarnings("ignore:The detector's .* changed after it was fitted")
+@pytest.mark.parametrize(
+    "round_trip",
+    [copy.deepcopy, lambda detector: detector.copy(), _pickled],
+    ids=["deepcopy", "copy", "pickle"],
+)
+def test_copy_rebuilds_the_fitted_design_after_a_parameter_change(fitted, round_trip):
+    """``set_params`` takes effect at the next fit; a copy made before it must
+    still decode with the fitted formula's design."""
+    detector, predict_data = fitted
+    changed = copy.deepcopy(detector)
+    changed.set_params(
+        discrete_transition_type=DiscreteNonStationaryDiagonal(
+            np.array([0.99, 0.98, 0.96, 0.96]), formula="1 + speed"
+        )
+    )
+
+    restored = round_trip(changed)
+
+    assert restored.discrete_transition_type.formula == "1 + speed"
+    np.testing.assert_array_equal(
+        np.asarray(restored.discrete_transition_design_matrix_),
+        np.asarray(detector.discrete_transition_design_matrix_),
+    )
+    np.testing.assert_array_equal(
+        _state_probabilities(restored, predict_data),
         _state_probabilities(detector, predict_data),
     )
 

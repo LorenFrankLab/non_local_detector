@@ -14,7 +14,11 @@ import pandas as pd
 import pytest
 
 import non_local_detector as nld
-from non_local_detector import Environment, time_edges_from_centers
+from non_local_detector import (
+    Environment,
+    continuous_state_transitions,
+    time_edges_from_centers,
+)
 from non_local_detector.models.base import SortedSpikesDetector
 from non_local_detector.observation_models import ObservationModel
 from tests.model_format._compare import assert_same_fitted_state
@@ -175,6 +179,46 @@ def test_empirical_movement_block_is_stored(sorted_recording, tmp_path):
         sampling_frequency=SORTED_RATE,
     )
     detector.fit(time, position, spike_times)
+
+    loaded = _assert_round_trip(
+        detector, tmp_path, time, position, {"spike_times": spike_times}
+    )
+    assert loaded._rebuild_check_.stored_blocks == ((0, 0),)
+
+
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")  # the jump
+def test_stored_block_with_exterior_mass_loads(sorted_recording, tmp_path):
+    """A block saved before fits refused exterior mass stays a loadable model."""
+    time, _, spike_times = sorted_recording
+    position = np.r_[
+        np.linspace(0, 40, time.size // 2),
+        np.linspace(80, 120, time.size - time.size // 2),
+    ][:, None]
+    fit_block = nld.EmpiricalMovement.make_state_transition
+
+    def with_exterior_mass(self, environments, context=None):
+        is_exterior = ~environments[0].is_track_interior_flat_
+        return (
+            0.9 * fit_block(self, environments, context)
+            + 0.1 * is_exterior / is_exterior.sum()
+        )
+
+    detector = nld.SortedSpikesDecoder(
+        continuous_transition_types=[[nld.EmpiricalMovement()]],
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        environments=Environment(place_bin_size=5.0),
+        sampling_frequency=SORTED_RATE,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            continuous_state_transitions,
+            "_check_interior_destinations",
+            lambda *args: None,
+        )
+        patch.setattr(
+            nld.EmpiricalMovement, "make_state_transition", with_exterior_mass
+        )
+        detector.fit(time, position, spike_times)
 
     loaded = _assert_round_trip(
         detector, tmp_path, time, position, {"spike_times": spike_times}

@@ -18,6 +18,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 
 from non_local_detector import _validation as val
+from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
@@ -82,15 +83,20 @@ class TransitionContext:
             object.__setattr__(self, "is_training", np.asarray(is_training).squeeze())
 
 
+class _RebuildContext(TransitionContext):
+    """Context of a load, which rebuilds the blocks a fit accepted."""
+
+
 @runtime_checkable
 class ContinuousTransition(Protocol):
     """A model of movement between the place bins of two discrete states.
 
     The detectors call ``make_state_transition`` only for blocks between two
     spatial states or two one-bin states, and check that the block it
-    returns has the two states' shape, is finite and non-negative, and has
+    returns has the two states' shape, is finite and non-negative, has
     rows that sum to at most 1 (1 when every bin the walk can reach is
-    modeled, 0 for bins nothing can leave). A block between a
+    modeled, 0 for bins nothing can leave), and keeps the rows of interior
+    bins on interior bins. A block between a
     one-bin state (No-Spike, or Local without ``local_position_std``) and a
     spatial state is set without calling it: from the one-bin state it is
     uniform over the interior bins of the transition's destination
@@ -1440,6 +1446,57 @@ def _check_block_shape(
     )
 
 
+def _check_interior_destinations(
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    block: np.ndarray,
+) -> None:
+    """Check that no interior bin moves mass onto an exterior bin.
+
+    The model holds interior bins only, so such mass is discarded. Rows of
+    exterior bins hold no probability and are not read. A block without place
+    bins (between two one-bin states, as ``Discrete`` gives) is not checked.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+        Continuous transition that built the block.
+    environments : sequence of Environment
+        Environments in which its declared names are looked up.
+    block : np.ndarray, shape (n_source_bins, n_destination_bins)
+        Its block.
+
+    Raises
+    ------
+    ValidationError
+        If a row of an interior bin puts more than
+        ``PROBABILITY_SUM_TOLERANCE`` on exterior bins.
+    """
+    if block.shape == (1, 1) or transition.environment_name is None:
+        return
+    is_source_interior = find_environment_by_name(
+        environments, transition.environment_name
+    ).is_track_interior_flat_
+    is_destination_exterior = ~find_environment_by_name(
+        environments, cast(str, _declared_destination(transition))
+    ).is_track_interior_flat_
+    exterior_mass = block[np.ix_(is_source_interior, is_destination_exterior)].sum(
+        axis=1
+    )
+    if np.any(exterior_mass > PROBABILITY_SUM_TOLERANCE):
+        msg = (
+            f"{type(transition).__name__}.make_state_transition moves mass onto "
+            "exterior bins, where it would be discarded"
+        )
+        raise ValidationError(
+            msg,
+            expected="columns of exterior bins zero in the rows of interior bins",
+            got=f"up to {exterior_mass.max():g} of a row's mass on exterior bins",
+            hint="Zero the columns of ~environment.is_track_interior_flat_ and "
+            "keep a row's mass on interior bins, as the built-in transitions do.",
+        )
+
+
 def _make_transition_block(
     transition: ContinuousTransition,
     environments: Sequence[Environment],
@@ -1457,7 +1514,9 @@ def _make_transition_block(
     environments : sequence of Environment
         Environments passed to ``make_state_transition``.
     context : TransitionContext or None
-        Context passed to ``make_state_transition``.
+        Context passed to ``make_state_transition``. A ``_RebuildContext``
+        marks a load, which skips the exterior-mass check: what a fit accepted
+        must load.
     shape : tuple of int
         ``(n_source_bins, n_destination_bins)`` of the two states.
 
@@ -1470,8 +1529,9 @@ def _make_transition_block(
     ValidationError
         If ``make_state_transition`` cannot take ``(environments, context)``,
         as a custom transition written before ``context`` existed, or returns
-        a block that is not ``shape``, has negative values, or has a row that
-        sums to more than 1 (beyond ``PROBABILITY_SUM_TOLERANCE``).
+        a block that is not ``shape``, has negative values, has a row that
+        sums to more than 1 (beyond ``PROBABILITY_SUM_TOLERANCE``), or moves
+        an interior bin's mass to exterior bins.
     DataError
         If the block has NaN or infinite values.
     """
@@ -1498,4 +1558,7 @@ def _make_transition_block(
     val.ensure_all_finite(block, label)
     val.ensure_all_non_negative(block, label)
     val.ensure_substochastic_matrix(block, label)
+    # What a fit accepted must load, including fits from before this check.
+    if not isinstance(context, _RebuildContext):
+        _check_interior_destinations(transition, environments, block)
     return block

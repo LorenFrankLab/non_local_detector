@@ -16,6 +16,7 @@ if sortingview_available():
     import sortingview.views.franklab as vvf
     import xarray as xr
 
+    from non_local_detector.analysis.posterior import _state_probabilities
     from non_local_detector.models._state_space import fitted_states
     from non_local_detector.models.base import _DetectorBase
     from non_local_detector.models.non_local_model import (
@@ -205,14 +206,13 @@ if sortingview_available():
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.states.values, COLOR_CYCLE, strict=False):
+        for (state, probability), color in zip(
+            _state_probabilities(results).items(), COLOR_CYCLE, strict=False
+        ):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),
-                y=np.asarray(
-                    results.sel(states=state).acausal_state_probabilities,
-                    dtype=np.float32,
-                ),
+                y=np.asarray(probability, dtype=np.float32),
                 color=color,
                 width=1,
             )

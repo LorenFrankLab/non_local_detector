@@ -975,9 +975,12 @@ def _check_initial_discrete_transition(
     Raises
     ------
     ValidationError
-        If the result's shape does not match ``n_states``, or its
-        coefficients, design matrix or number of dimensions do not match
-        ``is_stationary``.
+        If the result's shape does not match ``n_states``, its coefficients,
+        design matrix or number of dimensions do not match ``is_stationary``,
+        or the matrix has a negative value or a row that does not sum to 1
+        (within ``PROBABILITY_SUM_TOLERANCE``).
+    DataError
+        If the matrix has NaN or infinite values.
     """
     name = type(transition).__name__
     n_states = transition.n_states
@@ -1023,6 +1026,10 @@ def _check_initial_discrete_transition(
             expected=f"{n_states} x {n_states} transition matrices",
             got=f"transition_matrix with shape {matrix.shape}",
         )
+    label = f"{name}.make_state_transition(...).transition_matrix"
+    val.ensure_all_finite(matrix, label)
+    val.ensure_all_non_negative(matrix, label)
+    val.ensure_stochastic_matrix(matrix.reshape(-1, n_states), label)
 
 
 def _validate_diagonal_values(diagonal_values: npt.ArrayLike, name: str) -> None:
@@ -1432,9 +1439,19 @@ def _design_on(
     Returns
     -------
     design_matrix : patsy.DesignMatrix, shape (n_new_time, n_coefficients)
+
+    Raises
+    ------
+    patsy.PatsyError
+        If a covariate is missing (NaN) on any row.
     """
     design_info = discrete_transition_design_matrix.design_info
-    return cast(DesignMatrix, build_design_matrices([design_info], covariate_data)[0])
+    # As at fit: dropping a row with a NaN covariate would shift every later
+    # row off its time step, or off the covariate value it is plotted against.
+    return cast(
+        DesignMatrix,
+        build_design_matrices([design_info], covariate_data, NA_action="raise")[0],
+    )
 
 
 def _refuse_untrusted_transition(transition: object, action: str) -> None:

@@ -16,6 +16,7 @@ from typing import Any, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import DTypeLike
 from numpy.typing import ArrayLike
 from tqdm.autonotebook import tqdm
 
@@ -210,7 +211,7 @@ def _log_marginal_floor(mean_rate: float, occupancy: jax.Array) -> jax.Array:
     )
 
 
-def _scaled_gemm_shift(n_rows: int, dtype: Any) -> float:
+def _scaled_gemm_shift(n_rows: int, dtype: DTypeLike) -> float:
     """Exponent shift that keeps an ``n_rows``-term scaled sum below 1 / (2 tiny).
 
     The cap keeps both the sum and its reciprocal, the derivative of its
@@ -220,7 +221,7 @@ def _scaled_gemm_shift(n_rows: int, dtype: Any) -> float:
     return -0.5 * float(np.log(2.0 * n_rows * dtype_info.tiny))
 
 
-def _scaled_gemm_window(n_rows: int, dtype: Any) -> float:
+def _scaled_gemm_window(n_rows: int, dtype: DTypeLike) -> float:
     """Nats below its factor maxima within which a scaled-GEMM entry is exact.
 
     A sum of ``n_rows`` factors, each scaled by its maximum and shifted up by
@@ -525,7 +526,7 @@ def _tiled_position_peak(
     log_position_distance: jax.Array,
     log_w: jax.Array,
     enc_tile_size: int,
-    dtype: Any,
+    dtype: DTypeLike,
 ) -> jax.Array:
     """Largest weighted position kernel per bin, reduced over encoding tiles.
 
@@ -552,7 +553,7 @@ def _tiled_position_peak(
 
 
 def _position_scale_terms(
-    log_position_distance: jax.Array, log_w: jax.Array, dtype: Any
+    log_position_distance: jax.Array, log_w: jax.Array, dtype: DTypeLike
 ) -> tuple[jax.Array, jax.Array]:
     """Position peak and scaled position factor of the linear reduction.
 

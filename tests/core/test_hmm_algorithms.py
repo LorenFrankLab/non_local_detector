@@ -23,14 +23,17 @@ from non_local_detector import core as core_module
 from non_local_detector.core import (
     _condition_on,
     chunked_filter_smoother,
+    chunked_filter_smoother_covariate_dependent,
     filter,
     filter_covariate_dependent,
     most_likely_sequence,
+    most_likely_sequence_covariate_dependent,
     row_slice_aware,
     smoother,
     viterbi,
     viterbi_covariate_dependent,
 )
+from non_local_detector.exceptions import DataError
 from tests.conftest import precision_mode
 
 
@@ -545,12 +548,11 @@ class TestFilterDegenerateTimestepWarning:
             f"{[r.getMessage() for r in warning_records]}"
         )
 
-    def test_filter_nan_step_warns_distinctly_from_all_impossible(self, caplog):
-        """A NaN log-likelihood step warns about NaN, not 'all-impossible'.
+    def test_filter_nan_step_raises(self, caplog):
+        """A NaN log-likelihood step raises instead of being logged.
 
-        A NaN signals a likelihood-computation bug, which must be reported
-        differently from a legitimately impossible (all ``-inf``) timestep so
-        the user is not misdirected.
+        A NaN signals a likelihood-computation bug, which must not be taken
+        for a legitimately impossible (all ``-inf``) timestep.
         """
         # Arrange: middle step has a NaN (state 0 is otherwise finite).
         init = jnp.array([0.5, 0.5])
@@ -563,24 +565,37 @@ class TestFilterDegenerateTimestepWarning:
             ]
         )
 
-        # Act
-        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        with (
+            caplog.at_level(logging.WARNING, logger=core_module.logger.name),
+            pytest.raises(DataError, match=r"filtering .* 1/3 time step\(s\) with NaN"),
+        ):
             filter(init, trans, log_likes)
 
-        # Assert: a NaN-specific warning fired...
-        nan_records = [r for r in caplog.records if "NaN" in r.getMessage()]
-        assert nan_records, (
-            "Expected a NaN-specific warning; "
-            f"got: {[r.getMessage() for r in caplog.records]}"
-        )
-        # ...and the step was NOT mislabeled as all-impossible.
-        impossible_records = [
-            r for r in caplog.records if "all-impossible" in r.getMessage()
-        ]
-        assert not impossible_records, (
-            "A NaN step was misreported as all-impossible: "
-            f"{[r.getMessage() for r in impossible_records]}"
-        )
+        assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
+
+    def test_filter_reports_impossible_steps_before_raising_on_nan(self, caplog):
+        """Both problems are reported: the log is not lost to the error."""
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        log_likes = jnp.array([[-jnp.inf, -jnp.inf], [0.0, jnp.nan], [0.0, -1.0]])
+
+        with (
+            caplog.at_level(logging.WARNING, logger=core_module.logger.name),
+            pytest.raises(DataError, match="NaN"),
+        ):
+            filter(init, trans, log_likes)
+
+        assert [r for r in caplog.records if "all-impossible" in r.getMessage()]
+
+    def test_transformed_filter_cannot_raise_and_propagates_nan(self):
+        """Under ``jax.jit`` the check is skipped and the NaN reaches the output."""
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        log_likes = jnp.array([[0.0, -1.0], [0.0, jnp.nan], [0.0, -1.0]])
+
+        _, (filtered, _) = jax.jit(filter)(init, trans, log_likes)
+
+        assert np.all(np.isnan(np.asarray(filtered)[1:]))
 
 
 @pytest.mark.unit
@@ -789,15 +804,11 @@ class TestViterbiDegenerateTimestepWarning:
         assert "posterior" not in joined
         assert "predicted distribution" not in joined
 
-    def test_viterbi_nan_step_warns(self, caplog):
-        """A NaN step warns distinctly, with Viterbi wording."""
+    def test_viterbi_nan_step_raises(self, caplog):
+        """A NaN step raises, with Viterbi wording."""
         log_likes = jnp.array([[0.0, -1.0], [jnp.nan, 0.0], [0.0, -1.0]])
-        self._run(log_likes, caplog)
-        nan_msgs = [r.getMessage() for r in caplog.records if "NaN" in r.getMessage()]
-        assert nan_msgs, (
-            f"expected a NaN warning; got {[r.getMessage() for r in caplog.records]}"
-        )
-        assert "Viterbi decoding" in " ".join(nan_msgs)
+        with pytest.raises(DataError, match="Viterbi decoding"):
+            self._run(log_likes, caplog)
 
     def test_viterbi_well_behaved_input_emits_no_warning(self, caplog):
         """A finite-everywhere Viterbi run emits no degeneracy warning."""
@@ -807,7 +818,7 @@ class TestViterbiDegenerateTimestepWarning:
         assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
 
 
-def _decode_with_log_likelihoods(path, log_likes):
+def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
     """Run one decoding path on a two-state stationary HMM."""
     init = np.array([0.5, 0.5])
     trans = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -832,6 +843,32 @@ def _decode_with_log_likelihoods(path, log_likes):
             log_likelihood_args=(),
             n_chunks=2,
             log_likelihoods=log_likes,
+            is_missing=is_missing,
+        )
+    elif path == "chunked_covariate":
+        chunked_filter_smoother_covariate_dependent(
+            time_edges=np.arange(float(n_time) + 1),
+            state_ind=np.array([0, 1]),
+            initial_distribution=init,
+            discrete_transition_matrix=np.broadcast_to(trans, (n_time, 2, 2)),
+            continuous_transition_matrix=np.eye(2),
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            n_chunks=2,
+            log_likelihoods=log_likes,
+            is_missing=is_missing,
+        )
+    elif path == "most_likely_sequence_covariate":
+        most_likely_sequence_covariate_dependent(
+            time_edges=np.arange(float(n_time) + 1),
+            state_ind=np.array([0, 1]),
+            initial_distribution=init,
+            discrete_transition_matrix=np.broadcast_to(trans, (n_time, 2, 2)),
+            continuous_transition_matrix=np.eye(2),
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likes,
+            is_missing=is_missing,
         )
     elif path == "viterbi":
         viterbi(init, trans, log_likes)
@@ -851,7 +888,27 @@ def _decode_with_log_likelihoods(path, log_likes):
             log_likelihood_func=None,
             log_likelihood_args=(),
             log_likelihoods=log_likes,
+            is_missing=is_missing,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    [
+        "chunked_filter_smoother",
+        "chunked_covariate",
+        "most_likely_sequence",
+        "most_likely_sequence_covariate",
+    ],
+)
+def test_a_missing_row_has_no_likelihood_to_refuse(path):
+    """The drivers neutralize it, as ``checkpointed_forward_backward`` does."""
+    log_likes = np.array([[0.0, -1.0], [np.nan, 0.0], [0.0, -1.0], [0.0, -1.0]])
+
+    _decode_with_log_likelihoods(
+        path, log_likes, is_missing=np.array([False, True, False, False])
+    )
 
 
 @pytest.mark.unit
@@ -862,23 +919,25 @@ def _decode_with_log_likelihoods(path, log_likes):
         "filter_covariate",
         "chunked_filter_smoother",
         "most_likely_sequence",
+        "most_likely_sequence_covariate",
         "viterbi",
         "viterbi_covariate",
     ],
 )
-def test_positive_infinite_log_likelihood_warns(path, caplog):
-    """A +inf log likelihood is reported like a NaN one, not passed silently.
+def test_positive_infinite_log_likelihood_raises(path, caplog):
+    """A +inf log likelihood is refused like a NaN one, not passed silently.
 
     ``log_likelihood - max`` is ``inf - inf = NaN`` at that step, so the
     posterior is NaN from there on (and the Viterbi path is undefined); the
     step is counted with the NaN steps.
     """
     log_likes = np.array([[0.0, -1.0], [np.inf, 0.0], [0.0, -1.0], [0.0, -1.0]])
-    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+    with (
+        caplog.at_level(logging.WARNING, logger=core_module.logger.name),
+        pytest.raises(DataError, match=r"1/4 time step\(s\) with NaN or \+inf"),
+    ):
         _decode_with_log_likelihoods(path, log_likes)
-    messages = [r.getMessage() for r in caplog.records]
-    assert any("1/4 time step(s) with NaN or +inf" in m for m in messages), messages
-    assert not any("all-impossible" in m for m in messages), messages
+    assert not any("all-impossible" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit

@@ -365,7 +365,7 @@ def test_fit_rejects_invalid_transition_arguments_before_refit(
         msg = "environments were refit before validation"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(model, "initialize_environments", refit)
+    monkeypatch.setattr(model, "_fit_environments", refit)
     with pytest.raises(ValidationError):
         model.fit(**fit, **arguments)
 

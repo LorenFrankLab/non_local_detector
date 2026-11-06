@@ -7,6 +7,7 @@ from typing import Any, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import DTypeLike
 from numpy.typing import NDArray
 from tqdm.autonotebook import tqdm
 
@@ -92,7 +93,7 @@ def _emission_block_rows(n_bins: int) -> int:
 
 
 def _matrix_emission_is_safe(
-    rates: jax.Array, durations: jax.Array, accumulator_dtype: Any
+    rates: jax.Array, durations: jax.Array, accumulator_dtype: DTypeLike
 ) -> jax.Array:
     """Whether the Poisson emission can use the log-rate matrix product.
 
@@ -112,10 +113,8 @@ def _matrix_emission_is_safe(
         have the accumulator dtype. No duration value enters, so every row
         range of a decode grid takes the same path.
     """
-    return cast(
-        jax.Array,
-        jnp.all(jnp.isfinite(rates) & (rates > 0))
-        & (jnp.result_type(rates, durations) == accumulator_dtype),
+    return jnp.all(jnp.isfinite(rates) & (rates > 0)) & (
+        jnp.result_type(rates, durations) == accumulator_dtype
     )
 
 

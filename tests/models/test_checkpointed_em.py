@@ -502,6 +502,19 @@ def test_em_result_store_without_iterations_keeps_the_em_traces(tmp_path):
     _assert_store_keeps_em_traces(in_memory, stored, loaded, n_iter=0)
 
 
+def test_existing_result_path_is_refused_before_anything_runs(tmp_path, monkeypatch):
+    """Not after the fit and every E-step, when the final E-step opens its store."""
+    model, data = _recording("sorted")
+    path = tmp_path / "store"
+    path.mkdir()
+    monkeypatch.setattr(model, "fit", lambda *a, **k: pytest.fail("fit ran"))
+
+    with pytest.raises(FileExistsError, match="store"):
+        model.estimate_parameters(**data, max_iter=1, result_path=path)
+
+    assert not list(path.iterdir())
+
+
 def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
     model, data = _recording("sorted")
     with pytest.raises(ValidationError, match="structured"):

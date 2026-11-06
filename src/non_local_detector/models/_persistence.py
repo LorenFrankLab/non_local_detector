@@ -29,6 +29,9 @@ from non_local_detector.likelihoods import (
     _record_legacy_encoding_algorithm,
     _unify_stored_encoding_values,
 )
+from non_local_detector.models._em import (
+    _restore_em_diagnostics,
+)
 from non_local_detector.models._results import (
     label_checkpointed_result,
     unify_marginal_log_likelihoods,
@@ -74,6 +77,21 @@ def _attribute_type(value: object) -> str | None:
     if isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype.kind in "biuf":
         return f"{value.dtype.name} array"
     return None
+
+
+def _netcdf_attribute(value: object) -> object:
+    """Return a results attribute in a form every netCDF format can store.
+
+    netCDF holds no booleans, and netCDF3, written when neither netCDF4 nor
+    h5netcdf is installed, no integers beyond 32 bits, such as a cache size in
+    bytes. Floats hold such a value exactly up to 2**53. ``_attribute_type``
+    records the type ``load_results`` restores.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if type(value) is int and not -(2**31) <= value < 2**31:
+        return float(value)
+    return value
 
 
 def _restore_attribute(value: Any, attribute_type: str) -> Any:
@@ -151,11 +169,21 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     # Earlier versions cached the environment lookup on the detector;
     # nothing reads it now.
     detector.__dict__.pop("_env_lookup_cache_", None)
+    # Earlier versions kept each EM diagnostic in an attribute of its own.
+    _restore_em_diagnostics(detector)
     covariate_data = state.get("_discrete_transition_covariate_data_")
+    # The design is the fit's, whatever set_params changed since. A detector
+    # saved before the state space recorded the transition has only its
+    # current parameter.
+    fitted_transition = getattr(
+        state.get("state_space_"),
+        "discrete_transition_type",
+        detector.discrete_transition_type,
+    )
     # A formula a saved model file was not trusted with stays unevaluated:
     # the copy is for inspection only, as the loaded model is.
     untrusted = isinstance(
-        getattr(detector.discrete_transition_type, "formula", None), UntrustedFormula
+        getattr(fitted_transition, "formula", None), UntrustedFormula
     )
     if (
         covariate_data is not None
@@ -163,9 +191,7 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
         and not untrusted
     ):
         detector.discrete_transition_design_matrix_ = (
-            detector.discrete_transition_type.make_state_transition(
-                covariate_data
-            ).design_matrix
+            fitted_transition.make_state_transition(covariate_data).design_matrix
         )
     # Detectors fitted before transition smoothing existed: no penalty
     # strengths and no covariance, so EM and intervals see an unsmoothed
@@ -475,8 +501,9 @@ class _PersistenceMixin:
         Save the results to a netCDF file.
 
         ``state_bins`` is a MultiIndex, which netCDF does not support, so it
-        is converted before saving. Boolean attributes are stored as integers
-        and the internal ``_native_metadata`` attribute is dropped. The dtype
+        is converted before saving. Boolean attributes are stored as integers,
+        integer attributes beyond 32 bits as floats (exact up to 2**53), and
+        the internal ``_native_metadata`` attribute is dropped. The dtype
         of each integer variable and coordinate, and the type of each
         boolean, integer, float and numeric-array attribute, are recorded so
         that ``load_results`` restores them: netCDF3, written when neither netCDF4 nor h5netcdf is
@@ -507,7 +534,7 @@ class _PersistenceMixin:
             else results.copy(deep=False)
         )
         export.attrs = {
-            name: int(value) if isinstance(value, (bool, np.bool_)) else value
+            name: _netcdf_attribute(value)
             for name, value in results.attrs.items()
             if name != "_native_metadata"
         }

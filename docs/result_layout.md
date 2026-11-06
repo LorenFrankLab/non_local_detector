@@ -49,7 +49,9 @@ results until the next fit.
 States without a position (No-Spike, and Local unless `local_position_std` is
 set) have one bin each, with NaN position. Unstacking `state_bins` puts that
 bin at the last position; `non_local_detector.analysis.get_spatial_posterior`
-leaves those states out.
+leaves those states out, and `get_position_posterior` also sums over the states
+that remain. `maximum_a_posteriori_estimate` and `get_map_speed` accept any of
+these layouts.
 
 `state_ind` is a plain (non-index) coordinate along `state_bins`, so
 `results.acausal_posterior.unstack("state_bins")` keeps it as a float
@@ -104,8 +106,8 @@ store at `result_path`; one read larger than `max_read_bytes` raises an error.
 | `recording_rows`, `n_recording_bins` | int | Checkpointed | Bins in the full decode grid |
 | `transition_representation` | str | Checkpointed | Transition representation the decode used |
 | `dtype`, `state_probability_dtype`, `evidence_accumulation`, `evidence_dtype` | str | Checkpointed | Precision of the outputs and of the log-evidence sum |
-| `n_degenerate`, `n_nan` | int | Checkpointed | Rows whose filter was degenerate or NaN, over the full decode grid |
-| `degenerate_row_mask_hex`, `nan_row_mask_hex`, `diagnostic_row_mask_encoding` | str | Checkpointed | Those rows as bit masks over the full decode grid |
+| `n_degenerate` | int | Checkpointed | Rows whose filter was degenerate, over the full decode grid. Results saved by earlier versions also carry `n_nan` and `nan_row_mask_hex`; a NaN or `+inf` log likelihood now raises `DataError` instead |
+| `degenerate_row_mask_hex`, `diagnostic_row_mask_encoding` | str | Checkpointed | Those rows as a bit mask over the full decode grid |
 | `diagnostics_are_global` | bool | Checkpointed | True: the diagnostics cover the full decode grid |
 | `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes` | int | Checkpointed | Run diagnostics |
 | `global_gradients_supported` | bool | Checkpointed | Run diagnostic |

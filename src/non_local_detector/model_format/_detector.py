@@ -55,9 +55,9 @@ from non_local_detector._formula_grammar import (
 )
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
-    TransitionContext,
     _declared_destination,
     _no_structured_block,
+    _RebuildContext,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
@@ -95,6 +95,7 @@ from non_local_detector.model_format._registry import (
     spec_for_object,
     unregistered_type_error,
 )
+from non_local_detector.models._em import _restore_em_diagnostics
 from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
@@ -152,6 +153,7 @@ _REBUILT = frozenset(
         "environments_",
         "encoding_model_",
         "state_space_",
+        "_em_diagnostics_",
         "discrete_state_transitions_",
         "discrete_transition_design_matrix_",
         "discrete_transition_smoothness_matrix_",
@@ -770,7 +772,7 @@ def detector_documents(
             state[name] = encoder.encode(
                 getattr(detector.state_space_, attribute), name
             )
-        elif attribute in fitted:
+        elif hasattr(detector, attribute):
             state[name] = encoder.encode(getattr(detector, attribute), name)
     if getattr(detector, "_discrete_transition_covariate_data_", None) is None:
         state["discrete_state_transitions"] = encoder.encode(
@@ -982,7 +984,7 @@ def _rebuild_state_space(
         detector.local_position_std,
         state_ind,
         bin_sizes,
-        context=TransitionContext(),
+        context=_RebuildContext(),
         transition_representation=built_as,
         max_dense_transition_bytes=max_dense_transition_bytes,
     )
@@ -1315,7 +1317,8 @@ def _build_detector(
     fingerprints = decoder.decode(state["fingerprints"])
     for name, attribute in _STORED:
         if name in values and name not in _STATE_SPACE_STORED:
-            setattr(detector, attribute, values[name])
+            detector.__dict__[attribute] = values[name]  # some are read-only
+    _restore_em_diagnostics(detector)
     _check_fingerprints(fingerprints, len(environments))
     layout = state_layout(
         detector.observation_models, environments, detector.local_position_std
