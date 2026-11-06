@@ -2229,7 +2229,7 @@ class _DetectorBase(
         min_encoding_local_ess: float,
         encoding_update_damping: float,
         encoding_time_range: np.ndarray | None,
-        valid_position_intervals: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
         transition_representation: TransitionRepresentation,
         max_dense_transition_bytes: int,
         chunk_size: int | None,
@@ -3090,7 +3090,7 @@ class ClusterlessDetector(_DetectorBase):
         environment_labels: ArrayLike | None = None,
         weights: ArrayLike | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -3257,7 +3257,7 @@ class ClusterlessDetector(_DetectorBase):
         environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> _Detector:
@@ -3419,7 +3419,7 @@ class ClusterlessDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -3512,7 +3512,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
@@ -3755,7 +3755,7 @@ class ClusterlessDetector(_DetectorBase):
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         transition_representation: TransitionRepresentation = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
@@ -3968,7 +3968,7 @@ class ClusterlessDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -4184,7 +4184,7 @@ class SortedSpikesDetector(_DetectorBase):
         environment_labels: ArrayLike | None = None,
         weights: ArrayLike | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
     ) -> None:
         """
         Fit place fields to the data.
@@ -4307,7 +4307,7 @@ class SortedSpikesDetector(_DetectorBase):
         environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> _Detector:
@@ -4430,7 +4430,7 @@ class SortedSpikesDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: ArrayLike,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
     ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
@@ -4519,7 +4519,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
@@ -4671,7 +4671,7 @@ class SortedSpikesDetector(_DetectorBase):
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         transition_representation: TransitionRepresentation = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
@@ -4882,7 +4882,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: ArrayLike | None = None,
         position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
