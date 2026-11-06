@@ -3028,8 +3028,8 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not mark decode bins missing: pass the same
-            intervals to ``predict``.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         Attributes
         ----------
@@ -3198,8 +3198,8 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not mark decode bins missing: pass the same
-            intervals to ``predict``.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -3347,9 +3347,9 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping ``(start, stop)`` spans of continuous
             tracking in seconds, as ``fit`` takes. A bin owning a time more
             than half a position sample outside them decodes as missing,
-            whole. Pass them when ``position_time`` is irregular (dropped
-            samples, disconnected epochs): without them position is
-            interpolated across the gaps, with a ``DataQualityWarning``. A
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
             model that does not read position ignores them. By default None.
 
         Returns
@@ -3446,9 +3446,9 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping ``(start, stop)`` spans of continuous
             tracking in seconds, as ``fit`` takes. A bin owning a time more
             than half a position sample outside them decodes as missing,
-            whole. Pass them when ``position_time`` is irregular (dropped
-            samples, disconnected epochs): without them position is
-            interpolated across the gaps, with a ``DataQualityWarning``. A
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
             model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
@@ -3879,9 +3879,9 @@ class ClusterlessDetector(_DetectorBase):
             Ordered, non-overlapping ``(start, stop)`` spans of continuous
             tracking in seconds, as ``fit`` takes. A bin owning a time more
             than half a position sample outside them decodes as missing,
-            whole. Pass them when ``position_time`` is irregular (dropped
-            samples, disconnected epochs): without them position is
-            interpolated across the gaps, with a ``DataQualityWarning``. A
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
             model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
@@ -4102,8 +4102,8 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not mark decode bins missing: pass the same
-            intervals to ``predict``.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         Attributes
         ----------
@@ -4228,8 +4228,8 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not mark decode bins missing: pass the same
-            intervals to ``predict``.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -4338,9 +4338,9 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping ``(start, stop)`` spans of continuous
             tracking in seconds, as ``fit`` takes. A bin owning a time more
             than half a position sample outside them decodes as missing,
-            whole. Pass them when ``position_time`` is irregular (dropped
-            samples, disconnected epochs): without them position is
-            interpolated across the gaps, with a ``DataQualityWarning``. A
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
             model that does not read position ignores them. By default None.
 
         Returns
@@ -4433,9 +4433,9 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping ``(start, stop)`` spans of continuous
             tracking in seconds, as ``fit`` takes. A bin owning a time more
             than half a position sample outside them decodes as missing,
-            whole. Pass them when ``position_time`` is irregular (dropped
-            samples, disconnected epochs): without them position is
-            interpolated across the gaps, with a ``DataQualityWarning``. A
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
             model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the
@@ -4773,9 +4773,9 @@ class SortedSpikesDetector(_DetectorBase):
             Ordered, non-overlapping ``(start, stop)`` spans of continuous
             tracking in seconds, as ``fit`` takes. A bin owning a time more
             than half a position sample outside them decodes as missing,
-            whole. Pass them when ``position_time`` is irregular (dropped
-            samples, disconnected epochs): without them position is
-            interpolated across the gaps, with a ``DataQualityWarning``. A
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
             model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Required when the discrete transitions depend on covariates: the

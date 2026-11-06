@@ -115,8 +115,9 @@ its endpoint samples. NaN rows inside an interval split it.
 
 Spikes, position and time edges are checked against each other: spike times far
 from the position span or the decode edges (other units or another clock; a
-spike list that puts under 1% of its spikes in the position span also warns, so
-pass one epoch's spikes rather than a day's), a
+spike list that puts under 1% of its spikes in the position span and reaches
+over ten spans past it also warns, so pass one epoch's spikes rather than a
+day's), a
 position span a hundred times longer than the spikes (position in ms, spikes in
 s), no spike inside the position span, and positions more than one place bin
 outside a fitted grid each warn. A track graph projects every position onto its
