@@ -8,14 +8,11 @@ of the spikes, the transitions, and the time bins.
 
 ## Inputs
 
-| Argument | Shape | Meaning |
-| --- | --- | --- |
-| `position_time` | `(n_position_samples,)` | times of the position samples, in seconds |
-| `position` | `(n_position_samples,)` or `(n_position_samples, n_dims)` | the animal's position, e.g. in cm |
-| `spike_times` | list of `(n_spikes_i,)` arrays | sorted data: one array of spike times per neuron. Clusterless data: one array per electrode |
-| `spike_waveform_features` | list of `(n_spikes_i, n_features)` arrays | clusterless data only: the waveform features (marks), such as peak amplitudes, of each spike on each electrode |
-
-Spike times and position times are in seconds on the same clock.
+A model reads the animal's position (`position_time`, `position`) and its spikes:
+`spike_times`, one array per neuron for sorted data or per electrode for
+clusterless data, plus `spike_waveform_features` for clusterless data. Times are
+in seconds on one clock. The [data contract](../data_contract.md) lists every
+array's shape and units, what NaN means, and how tracking gaps are handled.
 
 ## Environments
 
@@ -42,7 +39,8 @@ An `Environment` discretizes space into position bins.
 moves between neighboring bins of that line and knows nothing of the track's
 topology. For a linear track or a maze, pass the raw 2-D `(x, y)` position with
 a `track_graph`, `edge_order` and `edge_spacing` instead of position you
-linearized yourself; with a track graph, 1-D position raises `ValidationError`.
+linearized yourself; with a track graph, 1-D position raises `ValidationError`
+at `fit`, `fit_encoding_model` and when decoding.
 
 Pass environments to a model with `environments=[Environment(...)]`. Models
 with more than one environment, such as
@@ -138,11 +136,9 @@ Fitted firing rates are in Hz.
 
 Decoding takes bin **edges**, `time_edges` with shape `(n_bins + 1,)`, and
 returns one row per bin. Build them with `detector.calculate_time_edges([start, stop])`
-(bins of `1 / sampling_frequency` seconds) or with
-`time_edges_from_centers(position_time)` (one bin per position sample). Detector
-bins must be uniform and `1 / sampling_frequency` wide, so a detector decoding
-one bin per position sample is constructed with the position sampling rate. See [Time bins and rates](../time_grid_migration.md) for
-the details.
+or `time_edges_from_centers(position_time)`. Detector bins must be uniform and
+`1 / sampling_frequency` wide; see the
+[data contract](../data_contract.md#time-grid).
 
 ## Fit, estimate and predict
 
