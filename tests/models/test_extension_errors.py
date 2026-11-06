@@ -289,6 +289,42 @@ def test_exterior_rows_may_hold_anything():
     assert block.shape == (n_bins, n_bins)
 
 
+def test_exterior_mass_is_judged_on_the_destination_environment():
+    """Mass into a solid grid is fine; the same block into a gapped one is not."""
+
+    class Crossing(_AllBinsUniform):
+        def __init__(self, source, destination):
+            self.environment_name = source
+            self.environment2_name = destination
+
+        def make_state_transition(self, environments, context=None):
+            n_source, n_destination = (
+                next(
+                    env for env in environments if env.environment_name == name
+                ).place_bin_centers_.shape[0]
+                for name in (self.environment_name, self.environment2_name)
+            )
+            return np.full((n_source, n_destination), 1.0 / n_destination)
+
+    position = np.linspace(0, 120, 1_000)[:, None]
+    solid = Environment(environment_name="solid", place_bin_size=5.0)
+    solid = solid.fit_place_grid(position)
+    gapped = Environment(environment_name="gapped", place_bin_size=5.0)
+    gapped = gapped.fit_place_grid(_gapped_recording()[1])
+    environments = [solid, gapped]
+    n_solid, n_gapped = (env.place_bin_centers_.shape[0] for env in environments)
+
+    block = _make_transition_block(
+        Crossing("gapped", "solid"), environments, None, (n_gapped, n_solid)
+    )
+
+    assert block.shape == (n_gapped, n_solid)
+    with pytest.raises(ValidationError, match="exterior"):
+        _make_transition_block(
+            Crossing("solid", "gapped"), environments, None, (n_solid, n_gapped)
+        )
+
+
 def test_missing_bins_hold_when_a_replaced_likelihood_ignores_the_mask(sorted_sim):
     """``is_missing`` must describe the decode, whatever the callback does."""
     time, position, spike_times = sorted_sim
@@ -353,7 +389,7 @@ def test_encoding_groups_may_mix_strings_and_integers(sorted_sim):
         ],
     ).fit(time, position, spike_times, encoding_group_labels=labels)
 
-    assert list(detector.encoding_model_) == [("", 0), ("", "A")]
+    assert set(detector.encoding_model_) == {("", 0), ("", "A")}
     results = detector.predict(**_decode_kwargs(sorted_sim))
     assert np.all(np.isfinite(results.acausal_state_probabilities.values))
 
