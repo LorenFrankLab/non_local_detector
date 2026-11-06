@@ -22,7 +22,7 @@ from non_local_detector import (
 )
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
-from non_local_detector.models._input_validation import _missing_bins
+from non_local_detector.models._input_validation import _missing_bins, _sample_labels
 from tests.models._helpers import ALGORITHMS, _decoder
 
 pytestmark = pytest.mark.unit
@@ -1052,6 +1052,35 @@ def test_touching_intervals_leave_no_gap():
     )
 
     assert is_missing is None
+
+
+@pytest.mark.parametrize("labels", [[0, "A"], (0, "A")], ids=["list", "tuple"])
+def test_mixed_labels_keep_their_types(labels):
+    """A plain sequence must not turn group 0 into the string "0"."""
+    read = _sample_labels(
+        labels,
+        2,
+        "encoding_group_labels",
+        kinds="iuUSO",
+        contents="integer or string encoding groups",
+        compared_with="each observation model's encoding_group",
+    )
+
+    assert np.isin(read, 0).tolist() == [True, False]
+    assert np.isin(read, "A").tolist() == [False, True]
+
+
+def test_uniform_labels_keep_their_dtype():
+    read = _sample_labels(
+        [0, 1],
+        2,
+        "encoding_group_labels",
+        kinds="iuUSO",
+        contents="integer or string encoding groups",
+        compared_with="each observation model's encoding_group",
+    )
+
+    assert read.dtype.kind == "i"
 
 
 def _decode_at(detector, door, spike_data, position_time, position, **kwargs):

@@ -282,6 +282,13 @@ def _sample_labels(
     ``compared_with`` describe them for the error message.
     """
     labels = np.asarray(values)
+    # NumPy would turn the integers of a mixed sequence into strings.
+    if (
+        labels.dtype.kind == "U"
+        and isinstance(values, (list, tuple))
+        and not all(isinstance(value, str) for value in values)
+    ):
+        labels = np.asarray(values, dtype=object)
     if labels.shape != (n_time,):
         msg = f"{name} must have one label per position sample"
         raise ValidationError(
