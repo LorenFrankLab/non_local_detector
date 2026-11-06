@@ -55,9 +55,9 @@ from non_local_detector._formula_grammar import (
 )
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
-    TransitionContext,
     _declared_destination,
     _no_structured_block,
+    _RebuildContext,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import (
@@ -987,7 +987,7 @@ def _rebuild_state_space(
         detector.local_position_std,
         state_ind,
         bin_sizes,
-        context=TransitionContext(),
+        context=_RebuildContext(),
         transition_representation=built_as,
         max_dense_transition_bytes=max_dense_transition_bytes,
     )

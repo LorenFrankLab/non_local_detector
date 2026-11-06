@@ -83,15 +83,20 @@ class TransitionContext:
             object.__setattr__(self, "is_training", np.asarray(is_training).squeeze())
 
 
+class _RebuildContext(TransitionContext):
+    """Context of a load, which rebuilds the blocks a fit accepted."""
+
+
 @runtime_checkable
 class ContinuousTransition(Protocol):
     """A model of movement between the place bins of two discrete states.
 
     The detectors call ``make_state_transition`` only for blocks between two
     spatial states or two one-bin states, and check that the block it
-    returns has the two states' shape, is finite and non-negative, and has
+    returns has the two states' shape, is finite and non-negative, has
     rows that sum to at most 1 (1 when every bin the walk can reach is
-    modeled, 0 for bins nothing can leave). A block between a
+    modeled, 0 for bins nothing can leave), and keeps the rows of interior
+    bins on interior bins. A block between a
     one-bin state (No-Spike, or Local without ``local_position_std``) and a
     spatial state is set without calling it: from the one-bin state it is
     uniform over the interior bins of the transition's destination
@@ -1467,10 +1472,10 @@ def _check_interior_destinations(
         If a row of an interior bin puts more than
         ``PROBABILITY_SUM_TOLERANCE`` on exterior bins.
     """
-    if block.shape == (1, 1):
+    if block.shape == (1, 1) or transition.environment_name is None:
         return
     is_source_interior = find_environment_by_name(
-        environments, cast(str, transition.environment_name)
+        environments, transition.environment_name
     ).is_track_interior_flat_
     is_destination_exterior = ~find_environment_by_name(
         environments, cast(str, _declared_destination(transition))
@@ -1551,5 +1556,7 @@ def _make_transition_block(
     val.ensure_all_finite(block, label)
     val.ensure_all_non_negative(block, label)
     val.ensure_substochastic_matrix(block, label)
-    _check_interior_destinations(transition, environments, block)
+    # What a fit accepted must load, including fits from before this check.
+    if not isinstance(context, _RebuildContext):
+        _check_interior_destinations(transition, environments, block)
     return block

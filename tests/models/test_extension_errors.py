@@ -300,6 +300,22 @@ def test_block_between_one_bin_states_has_no_bins_to_check():
     assert _make_transition_block(OneBin(), [environment], None, (1, 1)).shape == (1, 1)
 
 
+def test_transition_without_place_bins_has_no_exterior_to_check():
+    """``environment_name=None`` declares no environment to look up."""
+
+    class WithoutPlaceBins(_AllBinsUniform):
+        environment_name = None
+
+    _, _, environment = _gapped_recording()
+    n_bins = environment.place_bin_centers_.shape[0]
+
+    block = _make_transition_block(
+        WithoutPlaceBins(), [environment], None, (n_bins, n_bins)
+    )
+
+    assert block.shape == (n_bins, n_bins)
+
+
 def test_encoding_groups_may_mix_strings_and_integers(sorted_sim):
     """Each group is fit once, in the order the states name them."""
     time, position, spike_times = sorted_sim
