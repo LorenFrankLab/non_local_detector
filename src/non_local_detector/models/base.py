@@ -1614,6 +1614,7 @@ class _DetectorBase(
             position=position,
             time_edges=time_edges,
             row_slice=row_slice,
+            is_missing=is_missing,
             valid_position_intervals=valid_position_intervals,
         )
         context = self._decode_context(

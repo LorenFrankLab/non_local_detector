@@ -616,8 +616,9 @@ def _require_observed_bins(is_missing: np.ndarray | None) -> None:
             data_name="is_missing",
             hint=(
                 "Check that is_missing is True only for missing bins, and that "
-                "position is tracked (finite) during time_edges, since bins "
-                "without tracked position are missing too."
+                "position is tracked (finite) during time_edges and "
+                "valid_position_intervals cover them, since bins without tracked "
+                "position are missing too."
             ),
         )
 

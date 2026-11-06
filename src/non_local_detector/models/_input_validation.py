@@ -1246,13 +1246,147 @@ def _bins_meeting_spans(
 # Narrower ones (a dropped frame, camera jitter) interpolate over no real
 # movement. Fitting refuses any irregular step, but it can be told the intervals
 # at no cost; a decode warning has to mean something on every call.
-_TRACKING_GAP_SAMPLES = 5.0
+_TRACKING_GAP_SAMPLES = 5
+
+
+def _unread_bins(
+    n_bins: int,
+    row_slice: slice | None,
+    requested_is_missing: np.ndarray | None,
+    position_is_missing: np.ndarray | None,
+) -> np.ndarray:
+    """Bins a ``compute_log_likelihood`` call does not read position for.
+
+    Parameters
+    ----------
+    n_bins : int
+        Bins of the decode grid.
+    row_slice : slice or None
+        Rows the call evaluates; None requests all.
+    requested_is_missing : np.ndarray of bool, shape (n_rows,), or None
+        The caller's mask of the requested rows.
+    position_is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins without tracked position.
+
+    Returns
+    -------
+    is_unread : np.ndarray of bool, shape (n_bins,)
+    """
+    row_start, row_stop = resolve_row_slice(row_slice, n_bins)
+    is_unread = np.ones(n_bins, dtype=bool)
+    is_unread[row_start:row_stop] = (
+        False
+        if requested_is_missing is None
+        else _sample_mask(
+            requested_is_missing,
+            row_stop - row_start,
+            "is_missing",
+            entry="requested decode bin",
+            example=None,
+        )
+    )
+    return is_unread if position_is_missing is None else is_unread | position_is_missing
+
+
+def _warn_if_no_bin_is_tracked(
+    time_edges: np.ndarray,
+    position_time: np.ndarray,
+    is_missing: np.ndarray | None,
+    caller_is_missing: np.ndarray | None,
+) -> None:
+    """Warn when tracking, not the caller, leaves no bin to decode.
+
+    The transitions' steady state looks like a decode, and only ``is_missing``
+    would tell it apart. Bins outside the tracked period have their own
+    warning.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and increasing.
+    is_missing : np.ndarray of bool, shape (n_bins,), or None
+        Bins decoded as missing.
+    caller_is_missing : np.ndarray of bool, optional
+        The caller's mask.
+
+    Warns
+    -----
+    DataQualityWarning
+        If every bin is missing, unless the caller marked every bin or all
+        lie outside the tracked period.
+    """
+    if (
+        is_missing is None
+        or not np.all(is_missing)
+        or (caller_is_missing is not None and np.all(caller_is_missing))
+        or np.all(_bins_outside_tracking(time_edges, position_time))
+    ):
+        return
+    warnings.warn(
+        f"Every one of the {is_missing.size} decode bins is missing: over "
+        "time_edges position is NaN or outside valid_position_intervals, so "
+        "their log likelihood is 0 and the posterior follows the transitions "
+        "alone. Pass the tracking intervals of the decoded period, in the units "
+        "of position_time. To decode a period without tracking, use a model "
+        "that reads no position (no Local state or non-local position penalty) "
+        "and position=None.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
+
+
+def _warn_if_interval_lacks_tracking(
+    time_edges: np.ndarray,
+    position_time: np.ndarray,
+    intervals: np.ndarray,
+    is_unread: np.ndarray | None,
+) -> None:
+    """Warn when a decode bin reads position in an interval with no samples.
+
+    Samples that are NaN need no check: bins reading them are already missing.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Time bin edges of the decode grid.
+    position_time : np.ndarray, shape (n_time_position,)
+        Finite and increasing.
+    intervals : np.ndarray, shape (n_intervals, 2)
+        Ordered, non-overlapping spans of continuous tracking.
+    is_unread : np.ndarray of bool, shape (n_bins,), or None
+        Bins that read no position, such as those decoded as missing.
+
+    Warns
+    -----
+    DataQualityWarning
+        If a bin not in ``is_unread`` owns a time in such an interval.
+    """
+    starts, stops = intervals.T
+    is_empty = np.searchsorted(position_time, stops, side="right") == np.searchsorted(
+        position_time, starts, side="left"
+    )
+    reads_empty = _bins_meeting_spans(time_edges, starts[is_empty], stops[is_empty])
+    if is_unread is not None:
+        reads_empty &= ~is_unread
+    if not np.any(reads_empty):
+        return
+    warnings.warn(
+        f"{int(reads_empty.sum())} of {reads_empty.size} decode bins fall in "
+        "valid_position_intervals with no position sample, so position there is "
+        "interpolated between samples outside the interval and spikes that "
+        "disagree with that path can read as replay. Remove these intervals, "
+        "which fit refuses.",
+        DataQualityWarning,
+        stacklevel=user_stacklevel(),
+    )
 
 
 def _warn_if_decoding_across_gaps(
-    time_edges: np.ndarray, position_time: np.ndarray, is_missing: np.ndarray | None
+    time_edges: np.ndarray, position_time: np.ndarray, is_unread: np.ndarray | None
 ) -> None:
-    """Warn when an observed decode bin reads position across a tracking gap.
+    """Warn when a decode bin reads position across a tracking gap.
 
     Only the caller knows where tracking stopped, so these bins are not
     decoded as missing.
@@ -1263,19 +1397,19 @@ def _warn_if_decoding_across_gaps(
         Time bin edges of the decode grid.
     position_time : np.ndarray, shape (n_time_position,)
         Finite and strictly increasing.
-    is_missing : np.ndarray of bool, shape (n_bins,), or None
-        Bins already decoded as missing.
+    is_unread : np.ndarray of bool, shape (n_bins,), or None
+        Bins that read no position, such as those decoded as missing.
 
     Warns
     -----
     DataQualityWarning
-        If a bin not in is_missing reaches more than half a sample into a
+        If a bin not in ``is_unread`` reaches more than half a sample into a
         gap of at least ``_TRACKING_GAP_SAMPLES`` samples.
     """
     if position_time.size < 2:
         return
     steps = np.diff(position_time)
-    is_gap = steps > _TRACKING_GAP_SAMPLES * np.median(steps)
+    is_gap = np.rint(steps / np.median(steps)) >= _TRACKING_GAP_SAMPLES
     if not np.any(is_gap):
         return
     half_sample = _half_sample(position_time)
@@ -1284,8 +1418,8 @@ def _warn_if_decoding_across_gaps(
         position_time[:-1][is_gap] + half_sample,
         position_time[1:][is_gap] - half_sample,
     )
-    if is_missing is not None:
-        reads_gap &= ~is_missing
+    if is_unread is not None:
+        reads_gap &= ~is_unread
     if not np.any(reads_gap):
         return
     warnings.warn(
@@ -1817,9 +1951,9 @@ class _InputValidationMixin:
     ) -> _ValidatedInputs:
         """Coerce and check the data of one public call.
 
-        Every public method taking data calls this once, before any work,
-        so a new check is added here and applies to each stage that takes
-        the argument. Warnings fire here and nowhere that a call can repeat
+        Every public method taking data goes through this before any work,
+        once per stage it runs, so a new check is added here and applies to
+        each stage that takes the argument. Warnings fire here and nowhere that a call can repeat
         (chunks, EM iterations). What differs between the stages:
 
         - ``fit``: the training arrays, the spikes, then what ``_fit`` needs
@@ -1836,9 +1970,9 @@ class _InputValidationMixin:
           against it, the position against the model, and the missing bins.
         - ``likelihood`` (``compute_log_likelihood``): as ``decode``, except
           that the fitted model comes first, and ``is_missing`` has one entry
-          per requested row, so the rows it evaluates check it (this stage
-          takes none and returns the position's). ``row_slice`` selects the
-          rows of ``time_centers``.
+          per requested row: it says which bins the gap check reads, and this
+          stage returns the position's mask. ``row_slice`` selects the rows of
+          ``time_centers``.
         - ``estimate`` (``estimate_parameters``): ``time_edges`` come checked
           with EM's options, and the model is not fitted yet, so the training
           arrays are read as in ``fit``, the spikes against the edges and the
@@ -1871,8 +2005,8 @@ class _InputValidationMixin:
             Decode bin edges.
         row_slice : slice, optional
             Rows of ``compute_log_likelihood``.
-        is_missing : array_like of bool, shape (n_bins,), optional
-            The caller's missing bins.
+        is_missing : array_like of bool, shape (n_bins,) or (n_rows,), optional
+            The caller's missing bins, of the requested rows at ``likelihood``.
         example : str, optional
             Example call for the error of a missing ``position_time``.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
@@ -1989,9 +2123,10 @@ class _InputValidationMixin:
                 if stage == "estimate"
                 else self.state_space_.observation_models
             )
+            caller_is_missing = is_missing
             is_missing = _missing_bins(
                 cast("np.ndarray", checked_edges),
-                is_missing,
+                None if stage == "likelihood" else is_missing,
                 position_time,
                 position,
                 reads_position=reads_position,
@@ -1999,12 +2134,28 @@ class _InputValidationMixin:
                 valid_position_intervals=tracking_intervals,
             )
             # fit, which estimate_parameters runs next, refuses these samples.
-            if decoding and reads_position and tracking_intervals is None:
-                _warn_if_decoding_across_gaps(
-                    cast("np.ndarray", checked_edges),
-                    cast("np.ndarray", position_time),
-                    is_missing,
+            if decoding and reads_position:
+                edges = cast("np.ndarray", checked_edges)
+                times = cast("np.ndarray", position_time)
+                is_unread = (
+                    _unread_bins(
+                        edges.size - 1, row_slice, caller_is_missing, is_missing
+                    )
+                    if stage == "likelihood"
+                    else is_missing
                 )
+                _warn_if_no_bin_is_tracked(
+                    edges,
+                    times,
+                    is_unread if row_slice is None else is_missing,
+                    caller_is_missing,
+                )
+                if tracking_intervals is None:
+                    _warn_if_decoding_across_gaps(edges, times, is_unread)
+                else:
+                    _warn_if_interval_lacks_tracking(
+                        edges, times, tracking_intervals, is_unread
+                    )
         return replace(
             inputs,
             spike_data=spike_data,

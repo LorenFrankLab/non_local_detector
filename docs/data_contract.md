@@ -100,8 +100,20 @@ these bins are missing in every E-step. A model that does not read position at
 decode (no Local state and no non-local position penalty) decodes every bin and
 ignores the intervals.
 
+A decoding method warns once when a bin it reads falls in an interval with no
+position sample, since position there comes from samples outside the interval,
+and when position or the intervals leave every bin missing and the caller did
+not ask for that, since the transitions' steady state looks like a decode. Pass
+the tracking intervals of the decoded period, which need not be those of the
+fit.
+
 Decode bins that reach more than half a sample outside the tracked period are
 always missing, with one warning: position there could only be extrapolated.
+
+**Decoding without tracking**, such as sleep after fitting on a run, takes a
+model that does not read position: `predict(spike_times, time_edges=...)` with
+`position=None`. A Local state needs position, so a model with one raises
+`ValidationError` without it.
 
 **Encoding support** is where spikes and occupancy count. By default it is the
 samples' span plus half a sample at each end, N * dt seconds in all; a single

@@ -20,7 +20,7 @@ from non_local_detector import (
     SortedSpikesDecoder,
     time_edges_from_centers,
 )
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.models.base import _missing_bins
 from tests.models._helpers import ALGORITHMS, _decoder
@@ -170,6 +170,19 @@ class TestLowPrecisionSpikeTimes:
 
         _, messages = _quality_warnings(
             lambda: detector.predict(coarse, time_edges=edges), self.MESSAGE
+        )
+
+        assert len(messages) == 1
+        assert "float32" in messages[0]
+
+    def test_they_skip_the_range_checks_they_would_distort(self, unix_clock):
+        time, position, spikes, _ = unix_clock
+        detector = _sorted(SortedSpikesDecoder).fit(time, position, spikes)
+        coarse = [times.astype(np.float32) for times in spikes]
+        edges = time_edges_from_centers(time + 1_000.0)
+
+        _, messages = _quality_warnings(
+            lambda: detector.predict(coarse, time_edges=edges), ""
         )
 
         assert len(messages) == 1
@@ -677,6 +690,176 @@ class TestValidPositionIntervals:
         assert requested.shape[0] == 100
         assert (np.asarray(requested) == 0.0).all()
 
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_compute_log_likelihood_reads_them(self, family, detectors, gap, in_gap):
+        time, position, spikes, marks, tracked, intervals = gap
+
+        log_likelihood = _no_quality_warnings(
+            lambda: detectors[family].compute_log_likelihood(
+                time[tracked],
+                position[tracked],
+                *_spike_data(family, spikes, marks),
+                time_edges=time_edges_from_centers(time),
+                valid_position_intervals=intervals,
+            )
+        )
+
+        assert (np.asarray(log_likelihood)[in_gap] == 0.0).all()
+
+    @pytest.mark.parametrize("family", FAMILIES)
+    def test_most_likely_sequence_reads_them(self, family, detectors, gap, in_gap):
+        time, position, spikes, marks, tracked, intervals = gap
+        decode = {
+            "time_edges": time_edges_from_centers(time),
+            "position": position[tracked],
+            "position_time": time[tracked],
+        }
+        data = _spike_data(family, spikes, marks)
+
+        declared = _no_quality_warnings(
+            lambda: detectors[family].most_likely_sequence(
+                *data, **decode, valid_position_intervals=intervals
+            )
+        )
+        undeclared, _ = _quality_warnings(
+            lambda: detectors[family].most_likely_sequence(*data, **decode), "gaps"
+        )
+
+        assert not declared[in_gap].equals(undeclared[in_gap])
+
+    @pytest.mark.parametrize(("samples", "warns"), [(4, False), (5, True)])
+    def test_a_gap_starts_at_five_samples(self, detectors, gap, samples, warns):
+        time, position, spikes, *_ = gap
+        window = time < 30
+        kept = window.copy()
+        kept[799 : 799 + samples - 1] = False  # five samples round below 5 * median
+
+        _, messages = _quality_warnings(
+            lambda: detectors["sorted"].predict(
+                spikes,
+                time_edges=time_edges_from_centers(time[window]),
+                position=position[kept],
+                position_time=time[kept],
+            ),
+            "gaps",
+        )
+
+        assert len(messages) == int(warns)
+
+    def test_an_interval_over_a_gap_is_taken_at_its_word(self, detectors, gap):
+        """A caller who declares tracking continuous has answered the warning."""
+        time = gap[0]
+
+        results = _no_quality_warnings(
+            lambda: self._predict(
+                "sorted",
+                detectors,
+                gap,
+                valid_position_intervals=[[time[0], time[-1]]],
+            )
+        )
+
+        assert not results.is_missing.values.any()
+
+    def test_an_interval_without_samples_warns(self, detectors, gap):
+        """Spikes there would be scored on a path between distant samples."""
+        intervals = gap[-1]
+
+        _, messages = _quality_warnings(
+            lambda: self._predict(
+                "sorted",
+                detectors,
+                gap,
+                valid_position_intervals=[intervals[0], [50.0, 60.0], intervals[1]],
+            ),
+            "no position sample",
+        )
+
+        assert len(messages) == 1
+
+    def test_an_interval_warns_only_of_bins_that_read_it(self, detectors, gap):
+        """Bins the caller marked or does not request read no position."""
+        time, position, spikes, _, tracked, intervals = gap
+        empty = [intervals[0], [50.0, 60.0], intervals[1]]
+        reaches_it = (time > 50 - 2 / RATE) & (time < 60 + 2 / RATE)
+
+        def evaluate(**kwargs):
+            return detectors["sorted"].compute_log_likelihood(
+                time[tracked],
+                position[tracked],
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                valid_position_intervals=empty,
+                **kwargs,
+            )
+
+        _no_quality_warnings(lambda: evaluate(is_missing=reaches_it))
+        _no_quality_warnings(lambda: evaluate(row_slice=slice(0, 100)))
+        _, messages = _quality_warnings(
+            lambda: evaluate(row_slice=slice(2_600, 2_700)), "no position sample"
+        )
+        assert len(messages) == 1
+
+    def test_an_interval_over_nan_position_is_already_missing(self, detectors, gap):
+        """NaN rows mark those bins, so the warning's claim would be false."""
+        time, position, spikes, _, tracked, intervals = gap
+        with_nan = position.copy()
+        with_nan[~tracked] = np.nan
+
+        results = _no_quality_warnings(
+            lambda: detectors["sorted"].predict(
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                position=with_nan,
+                position_time=time,
+                valid_position_intervals=[intervals[0], [50.0, 60.0], intervals[1]],
+            )
+        )
+
+        assert results.is_missing.values[(time >= 50) & (time < 60)].all()
+
+    def test_an_interval_outside_the_decode_window_may_lack_samples(
+        self, detectors, gap
+    ):
+        """Position passed for the window need not cover the whole session."""
+        time, position, spikes, *_ = gap
+        window = time < 30
+
+        _no_quality_warnings(
+            lambda: detectors["sorted"].predict(
+                spikes,
+                time_edges=time_edges_from_centers(time[window]),
+                position=position[window],
+                position_time=time[window],
+                valid_position_intervals=[[0.0, 40.0], [50.0, 60.0]],
+            )
+        )
+
+    def test_compute_log_likelihood_warns_only_of_gaps_it_reads(self, detectors, gap):
+        time, position, spikes, _, tracked, _ = gap
+        reaches_gap = (time > 40 - 2 / RATE) & (time < 80 + 2 / RATE)
+
+        def evaluate(**kwargs):
+            return detectors["sorted"].compute_log_likelihood(
+                time[tracked],
+                position[tracked],
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                **kwargs,
+            )
+
+        _no_quality_warnings(lambda: evaluate(is_missing=reaches_gap))
+        _no_quality_warnings(lambda: evaluate(row_slice=slice(0, 100)))
+        _no_quality_warnings(
+            lambda: evaluate(
+                row_slice=slice(1_000, 3_000), is_missing=reaches_gap[1_000:3_000]
+            )
+        )
+        _, messages = _quality_warnings(
+            lambda: evaluate(row_slice=slice(2_000, 2_100)), "gaps"
+        )
+        assert len(messages) == 1
+
     def test_every_door_warns_about_undeclared_gaps_once(self, detectors, gap):
         time, position, spikes, _, tracked, _ = gap
         detector = detectors["sorted"]
@@ -852,3 +1035,176 @@ def test_touching_intervals_leave_no_gap():
     )
 
     assert is_missing is None
+
+
+def _decode_at(detector, door, spike_data, position_time, position, **kwargs):
+    """Call a decoding method, whose arguments differ in order."""
+    if door == "compute_log_likelihood":
+        return detector.compute_log_likelihood(
+            position_time, position, *spike_data, **kwargs
+        )
+    return getattr(detector, door)(
+        *spike_data, position_time=position_time, position=position, **kwargs
+    )
+
+
+class TestNothingToDecode:
+    """A flat posterior from a model that reads position must not pass as a decode."""
+
+    MESSAGE = "Every one of the"
+    DOORS = ("predict", "most_likely_sequence", "compute_log_likelihood")
+
+    @pytest.mark.parametrize("door", DOORS)
+    def test_intervals_missing_the_decoded_period_warn_once(
+        self, door, fitted, recording
+    ):
+        """Position covers the period, and the intervals are another period's."""
+        time, position, spikes, _ = recording
+
+        _, messages = _quality_warnings(
+            lambda: _decode_at(
+                fitted["sorted"],
+                door,
+                (spikes,),
+                time,
+                position,
+                time_edges=time_edges_from_centers(time[1_500:]),
+                valid_position_intervals=[[0.0, 29.0]],
+            ),
+            self.MESSAGE,
+        )
+
+        assert len(messages) == 1
+
+    @pytest.mark.parametrize("door", DOORS)
+    def test_position_without_finite_samples_warns_once(self, door, fitted, recording):
+        time, position, spikes, _ = recording
+
+        _, messages = _quality_warnings(
+            lambda: _decode_at(
+                fitted["sorted"],
+                door,
+                (spikes,),
+                time,
+                np.full_like(position, np.nan),
+                time_edges=time_edges_from_centers(time),
+            ),
+            self.MESSAGE,
+        )
+
+        assert len(messages) == 1
+
+    def test_a_caller_marking_every_bin_missing_means_it(self, fitted, recording):
+        time, position, spikes, _ = recording
+
+        _, messages = _quality_warnings(
+            lambda: fitted["sorted"].predict(
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                position=position,
+                position_time=time,
+                is_missing=np.ones(time.size, dtype=bool),
+            ),
+            self.MESSAGE,
+        )
+
+        assert not messages
+
+    def test_a_caller_mask_finishing_the_job_still_warns(self, fitted, recording):
+        """Tracking left half the bins, and the caller marked those."""
+        time, position, spikes, _ = recording
+        half = time < 30
+        with_nan = position.copy()
+        with_nan[half] = np.nan
+
+        _, messages = _quality_warnings(
+            lambda: fitted["sorted"].compute_log_likelihood(
+                time,
+                with_nan,
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                is_missing=~half,
+            ),
+            self.MESSAGE,
+        )
+
+        assert len(messages) == 1
+
+    def test_position_of_another_period_warns_only_of_that(self, fitted, recording):
+        """The outside-tracking warning has already told the caller."""
+        time, position, spikes, _ = recording
+        before = time < 20
+
+        _, messages = _quality_warnings(
+            lambda: fitted["sorted"].predict(
+                spikes,
+                time_edges=time_edges_from_centers(time[~before]),
+                position=position[before],
+                position_time=time[before],
+            ),
+            "decode bins",
+        )
+
+        assert len(messages) == 1
+        assert self.MESSAGE not in messages[0]
+
+    def test_estimate_parameters_names_the_intervals(self, recording):
+        time, position, spikes, _ = recording
+
+        with pytest.raises(DataError, match="valid_position_intervals"):
+            _sorted().estimate_parameters(
+                time,
+                position,
+                spikes,
+                time_edges=time_edges_from_centers(time),
+                valid_position_intervals=[[100.0, 200.0]],
+                max_iter=1,
+            )
+
+
+class TestDecodingFromSpikesAlone:
+    """Fitting on one period and decoding another, as during sleep."""
+
+    @pytest.fixture(scope="class")
+    def sleep(self, recording):
+        """A decoder fitted on the first half, and spikes much later.
+
+        ``(decoder, sleep_spikes, sleep_edges, run_intervals)``
+        """
+        time, position, spikes, _ = recording
+        is_run = time < 30
+        decoder = _sorted(SortedSpikesDecoder).fit(
+            time[is_run],
+            position[is_run],
+            [times[times < time[is_run][-1]] for times in spikes],
+        )
+        edges = time_edges_from_centers(time[~is_run] + 1_000.0)
+        sleep_spikes = [
+            shifted[(shifted >= edges[0]) & (shifted < edges[-1])]
+            for shifted in (times + 1_000.0 for times in spikes)
+        ]
+        return decoder, sleep_spikes, edges, [[time[0], time[is_run][-1]]]
+
+    @pytest.mark.parametrize("intervals_of_the_run", [False, True])
+    def test_a_model_without_local_states_needs_no_position(
+        self, sleep, intervals_of_the_run
+    ):
+        decoder, sleep_spikes, edges, run_intervals = sleep
+        kwargs = (
+            {"valid_position_intervals": run_intervals} if intervals_of_the_run else {}
+        )
+
+        results = _no_quality_warnings(
+            lambda: decoder.predict(sleep_spikes, time_edges=edges, **kwargs)
+        )
+
+        assert not results.is_missing.values.any()
+        posterior = results.acausal_posterior
+        assert np.isfinite(posterior.values).all()
+        assert posterior.std("time").max() > 0.01
+
+    def test_a_local_state_needs_position(self, recording, fitted):
+        time, _, spikes, _ = recording
+
+        with pytest.raises(ValidationError, match="position"):
+            fitted["sorted"].predict(spikes, time_edges=time_edges_from_centers(time))
