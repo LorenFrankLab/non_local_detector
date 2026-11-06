@@ -140,6 +140,10 @@ def label_checkpointed_result(
         )
         coordinates.update(xr.Coordinates.from_pandas_multiindex(index, "state_bins"))
         coordinates["state_ind"] = ("state_bins", state_ind)
+        coordinates["environment"] = (
+            "state_bins",
+            np.asarray(metadata["environment_names"])[state_ind],
+        )
         dataset = xr.Dataset(variables, coords=coordinates, attrs=dataset.attrs)
     if len(states) == 1:
         dataset = dataset.squeeze("states")
@@ -278,6 +282,10 @@ def convert_results_to_xarray(
             saved_missing,
         ),
         "state_ind": ("state_bins", state_space.state_ind),
+        "environment": (
+            "state_bins",
+            np.asarray(environment_names)[state_space.state_ind],
+        ),
         "states": states,
         "environments": ("states", environment_names),
         "encoding_groups": ("states", encoding_group_names),

@@ -640,11 +640,12 @@ class _PersistenceMixin:
                 )
             # Scalar state/environment coordinates are also attached to this
             # array, but only the original one-dimensional levels form its
-            # spatial index; state_ind is a plain coordinate along it.
+            # spatial index; state_ind and environment are plain coordinates
+            # along it.
             coord_names = [
                 name
                 for name, coordinate in results.coords.items()
-                if name not in {"state_bins", "state_ind"}
+                if name not in {"state_bins", "state_ind", "environment"}
                 and coordinate.dims == ("state_bins",)
             ]
             # netCDF reads string levels back as fixed-width strings; the

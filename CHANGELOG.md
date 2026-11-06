@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed (changes results):** `get_map_speed` given a raw `state_bins` posterior read the bins of the position-less states as place bins, so the speed could be silently wrong (0.0 instead of 571.7 cm/s on a simulated recording). It now gives the same speed as for the posterior over position. An array or a posterior already over position gives what it did.
 - **Fixed:** `maximum_a_posteriori_estimate` works in any number of position dimensions; 3-D and higher raised `IndexError`. `get_trajectory_data` accepts a raw `state_bins` posterior.
 - **Fixed:** the interactive figurls of a one-state decoder raised when listing the states.
+- **Fixed (now raises):** `get_position_posterior` summed the states of every environment, and with it `maximum_a_posteriori_estimate`, `get_map_speed`, `get_trajectory_data`, the movie and the 2-D figurl. On a simulated two-environment decoder with identical grids, the result was neither environment's most likely position in 93% of bins, with no error; with different grids the bins of both were merged onto one axis. It now raises when the states with a position are in more than one environment. Select one first with `results.isel(state_bins=results.environment == "A")`, which works on results or a posterior. Results have a new `environment` coordinate along `state_bins` for this. Results saved before it are summed as they were.
 
 ### EM diagnostics
 

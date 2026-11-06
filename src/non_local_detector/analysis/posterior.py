@@ -52,7 +52,8 @@ def get_spatial_posterior(
     spatial_posterior : xr.DataArray, shape (n_time, n_state, *n_position_bins)
         Dimensions are ``(time, state, position)`` for 1D and
         ``(time, state, x_position, y_position)`` for 2D. Position bins a state
-        does not have (for example off-track bins) are NaN.
+        does not have (for example off-track bins) are NaN. Results' posteriors
+        also give each state's ``environment``, a coordinate along ``state``.
 
     Raises
     ------
@@ -91,13 +92,24 @@ def get_spatial_posterior(
     if not keep.any():
         msg = f"No state bins with a position remain (states={states!r})."
         raise ValueError(msg)
-    # state_ind would unstack into a NaN-padded float coordinate that only
-    # repeats the ``state`` dimension.
-    return (
+    # state_ind and environment would unstack into NaN-padded coordinates that
+    # only repeat the ``state`` dimension.
+    spatial = (
         posterior.isel(state_bins=np.flatnonzero(keep))
-        .drop_vars("state_ind", errors="ignore")
+        .drop_vars(["state_ind", "environment"], errors="ignore")
         .unstack("state_bins")
     )
+    if "environment" in posterior.coords:
+        environments = dict(
+            zip(state_names[keep], posterior["environment"].values[keep], strict=True)
+        )
+        spatial = spatial.assign_coords(
+            environment=(
+                "state",
+                [environments[state] for state in spatial["state"].values],
+            )
+        )
+    return spatial
 
 
 def get_position_posterior(posterior: xr.DataArray) -> xr.DataArray:
@@ -121,11 +133,24 @@ def get_position_posterior(posterior: xr.DataArray) -> xr.DataArray:
     ------
     ValueError
         If ``posterior`` has neither a ``state_bins`` nor a position dimension,
-        or ``get_spatial_posterior`` cannot read its ``state_bins``.
+        if ``get_spatial_posterior`` cannot read its ``state_bins``, or if its
+        states are in more than one environment. A position means nothing in
+        another environment, so select one first, with
+        ``posterior.isel(state_bins=posterior.environment == name)``.
     """
     if "state_bins" in posterior.dims:
         posterior = get_spatial_posterior(posterior)
     if "state" in posterior.dims:
+        if "environment" in posterior.coords:
+            environments = sorted(set(posterior["environment"].values.tolist()))
+            if len(environments) > 1:
+                msg = (
+                    f"posterior's states are in environments {environments}, and "
+                    "positions in different environments cannot be summed. Select "
+                    "one first: posterior.isel(state_bins=posterior.environment == "
+                    f"{environments[0]!r}), or .sel(state=[...]) on per-state grids."
+                )
+                raise ValueError(msg)
         posterior = posterior.sum("state")
     if not get_position_dims(posterior):
         msg = f"posterior has no position dimension; got dims {posterior.dims}."
