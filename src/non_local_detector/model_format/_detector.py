@@ -95,10 +95,7 @@ from non_local_detector.model_format._registry import (
     spec_for_object,
     unregistered_type_error,
 )
-from non_local_detector.models._em import (
-    _EM_DIAGNOSTIC_ATTRIBUTES,
-    _restore_em_diagnostics,
-)
+from non_local_detector.models._em import _restore_em_diagnostics
 from non_local_detector.models._state_space import (
     StateSpace,
     continuous_state_transitions,
@@ -1318,15 +1315,10 @@ def _build_detector(
         for entry in state["stored_transition_blocks"]
     }
     fingerprints = decoder.decode(state["fingerprints"])
-    em_diagnostics = {}
     for name, attribute in _STORED:
-        if name not in values or name in _STATE_SPACE_STORED:
-            continue
-        if attribute in _EM_DIAGNOSTIC_ATTRIBUTES:
-            em_diagnostics[attribute] = values[name]
-        else:
-            setattr(detector, attribute, values[name])
-    _restore_em_diagnostics(detector, em_diagnostics)
+        if name in values and name not in _STATE_SPACE_STORED:
+            detector.__dict__[attribute] = values[name]  # some are read-only
+    _restore_em_diagnostics(detector)
     _check_fingerprints(fingerprints, len(environments))
     layout = state_layout(
         detector.observation_models, environments, detector.local_position_std

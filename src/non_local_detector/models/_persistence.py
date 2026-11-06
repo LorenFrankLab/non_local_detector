@@ -30,7 +30,6 @@ from non_local_detector.likelihoods import (
     _unify_stored_encoding_values,
 )
 from non_local_detector.models._em import (
-    _EM_DIAGNOSTIC_ATTRIBUTES,
     _restore_em_diagnostics,
 )
 from non_local_detector.models._results import (
@@ -171,14 +170,7 @@ def _upgrade_saved_state(detector: "_DetectorBase", state: dict[str, Any]) -> No
     # nothing reads it now.
     detector.__dict__.pop("_env_lookup_cache_", None)
     # Earlier versions kept each EM diagnostic in an attribute of its own.
-    _restore_em_diagnostics(
-        detector,
-        {
-            name: detector.__dict__.pop(name)
-            for name in _EM_DIAGNOSTIC_ATTRIBUTES
-            if name in detector.__dict__
-        },
-    )
+    _restore_em_diagnostics(detector)
     covariate_data = state.get("_discrete_transition_covariate_data_")
     # The design is the fit's, whatever set_params changed since. A detector
     # saved before the state space recorded the transition has only its

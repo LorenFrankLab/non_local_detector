@@ -14,7 +14,7 @@ mixin.
 """
 
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
@@ -533,18 +533,22 @@ _EM_DIAGNOSTIC_ATTRIBUTES = (
 )
 
 
-def _restore_em_diagnostics(detector: Any, stored: Mapping[str, Any]) -> None:
-    """Give a loaded detector the diagnostics it was saved with.
+def _restore_em_diagnostics(detector: Any) -> None:
+    """Gather a loaded detector's saved diagnostics into one object.
 
     Parameters
     ----------
     detector : _DetectorBase
-        The detector being loaded.
-    stored : mapping
-        The saved values of those of ``_EM_DIAGNOSTIC_ATTRIBUTES`` that it
-        has. Earlier versions did not save them all; the others are empty. A
-        detector saved without any ran no estimation and gets no diagnostics.
+        The detector being loaded, holding the saved values of those of
+        ``_EM_DIAGNOSTIC_ATTRIBUTES`` that it has. Earlier versions did not
+        save them all; the others are empty. A detector saved without any ran
+        no estimation and gets no diagnostics.
     """
+    stored = {
+        name: vars(detector).pop(name)
+        for name in _EM_DIAGNOSTIC_ATTRIBUTES
+        if name in vars(detector)
+    }
     if stored:
         detector._em_diagnostics_ = _EMDiagnostics(
             n_iter=stored.get("n_iter_", 0),
@@ -1252,7 +1256,7 @@ class _EMMixin:
     def _em_reset_fitted_attributes(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
     ) -> None:
-        """Start EM's result attributes and drop an earlier run's likelihood."""
+        """Drop an earlier run's likelihood and start the initial conditions."""
         # Any likelihood stored by an EARLIER run describes that run's data and
         # encoding model, not this one's. Drop it now, and reuse within this run
         # only a likelihood computed inside this run
