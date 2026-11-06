@@ -27,6 +27,7 @@ from non_local_detector.analysis.distance1D import (
     get_trajectory_data,
 )
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import make_state_bins_results
 
 
 def _make_positioned_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
@@ -165,6 +166,34 @@ class TestGetTrajectoryData:
         x = mental_position_2d[:, 0]
         assert np.all(np.diff(x) > 0)
         np.testing.assert_allclose(x, [0.5, 1.5, 2.5])
+
+    def test_raw_posterior_is_reduced_over_its_states(self):
+        """A raw ``state_bins`` posterior gives the MAP of position over states."""
+        track_graph = _make_positioned_track(4, edge_length=1.0)
+        bin_centers_2d = np.array([[0.5, 0.0], [1.5, 0.0], [2.5, 0.0]])
+        env = _FakeEnv(bin_centers_2d, np.array([0, 1, 2]))
+        posterior = make_state_bins_results(
+            ["Continuous", "Fragmented"],
+            {"position": np.arange(3.0)},
+            n_time=3,
+        ).acausal_posterior.copy()
+        # Each state peaks elsewhere; only their sum peaks at bins 0, 1, 2.
+        posterior.values[:] = [
+            [0.2, 0.0, 0.3, 0.2, 0.3, 0.0],
+            [0.3, 0.2, 0.0, 0.0, 0.2, 0.3],
+            [0.3, 0.0, 0.2, 0.0, 0.3, 0.2],
+        ]
+
+        (_, _, _, mental_position_2d, _) = get_trajectory_data(
+            posterior=posterior,
+            track_graph=track_graph,
+            decoder=env,
+            actual_projected_position=bin_centers_2d.copy(),
+            track_segment_id=np.array([0, 1, 2]),
+            actual_orientation=np.zeros(3),
+        )
+
+        np.testing.assert_array_equal(mental_position_2d, bin_centers_2d)
 
     def test_mental_edges_match_argmax_bins(self):
         """Mental edges are looked up from the MAP bin's edge_id."""

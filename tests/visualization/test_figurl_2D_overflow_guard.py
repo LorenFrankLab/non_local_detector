@@ -170,3 +170,59 @@ def test_default_posterior_has_no_false_peak_at_last_bin(monkeypatch):
 
     posterior = captured["posterior"]
     np.testing.assert_allclose(posterior.values, 0.02)
+
+
+class _View:
+    """Stand-in for a sortingview view: accepts any call and chains."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def add_line_series(self, **kwargs):
+        self.series.append(kwargs)
+        return self
+
+    def url(self, label):
+        return "stub-url"
+
+
+def test_probability_panel_shows_the_one_state_of_a_decoder(monkeypatch):
+    """A decoder's ``states`` is a scalar and its probabilities have no
+    ``states`` dimension; neither is iterated or selected by name."""
+    import types as _types
+
+    from tests.conftest import make_state_bins_results
+
+    figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
+    views = _types.SimpleNamespace(TimeseriesGraph=_View, LayoutItem=_View, Box=_View)
+    monkeypatch.setattr(figurl_2D, "vv", views, raising=False)
+    monkeypatch.setattr(
+        figurl_2D, "create_2D_decode_view", lambda **kwargs: _View(), raising=False
+    )
+    monkeypatch.setattr(_View, "series", [], raising=False)
+    n_time = 10
+    results = make_state_bins_results(
+        ["Continuous"],
+        {
+            "x_position": np.array([0.0, 1.0, 0.0, 1.0]),
+            "y_position": np.array([0.0, 0.0, 1.0, 1.0]),
+        },
+        n_time=n_time,
+    )
+    results["acausal_state_probabilities"] = ("time", np.ones(n_time))
+    results = results.assign_coords(states="Continuous")
+    env = _types.SimpleNamespace(
+        is_track_interior_=np.ones(4, dtype=bool), place_bin_centers_=np.zeros((4, 2))
+    )
+
+    figurl_2D.create_interactive_2D_decoding_figurl(
+        position_time=np.asarray(results.time),
+        position=np.zeros((n_time, 2)),
+        env=env,
+        results=results,
+        spike_times=[np.array([1.0, 4.0])],
+        speed=np.zeros(n_time),
+    )
+
+    (state,) = [entry for entry in _View.series if entry["name"] == "Continuous"]
+    np.testing.assert_array_equal(state["y"], np.ones(n_time))
