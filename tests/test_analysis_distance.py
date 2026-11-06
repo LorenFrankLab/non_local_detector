@@ -374,12 +374,32 @@ class TestGetMapSpeedBoundaryHandling:
                 sampling_frequency=500.0,
                 smooth_sigma=0.0,
             )
-            for posterior in (raw_posterior, spatial_posterior, position_only)
+            for posterior in (
+                raw_posterior,
+                spatial_posterior,
+                position_only,
+            )
         ]
 
         assert np.all(speeds[0] > 0)
         np.testing.assert_array_equal(speeds[0], speeds[1])
         np.testing.assert_array_equal(speeds[0], speeds[2])
+
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    def test_a_row_with_no_position_mass_has_no_speed(self):
+        """A detector that starts in Local has no MAP there, and no jump."""
+        n_bins = 5
+        track_graph = _make_linear_track(n_bins, edge_length=2.0)
+        nodes = np.arange(n_bins)
+        posterior = _posterior_from_node_sequence(np.full(4, 2), nodes)
+        posterior[0] = 0.0
+
+        speed = get_map_speed(
+            posterior, track_graph, nodes, sampling_frequency=500.0, smooth_sigma=0.0
+        )
+
+        assert np.isnan(speed[0])
+        np.testing.assert_array_equal(speed[1:], 0.0)
 
     @pytest.mark.usefixtures("_identity_gaussian_smooth")
     @pytest.mark.parametrize("position_dim", ["linear_position", "bin"])

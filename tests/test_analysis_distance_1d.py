@@ -195,6 +195,29 @@ class TestGetTrajectoryData:
 
         np.testing.assert_array_equal(mental_position_2d, bin_centers_2d)
 
+    def test_a_row_with_no_position_mass_has_no_mental_position(self):
+        """It holds the next row's edge, which has no missing value."""
+        track_graph = _make_positioned_track(4, edge_length=1.0)
+        bin_centers_2d = np.array([[0.5, 0.0], [1.5, 0.0], [2.5, 0.0]])
+        env = _FakeEnv(bin_centers_2d, np.array([0, 1, 2]))
+        posterior = _one_hot_posterior(np.array([0, 2, 1]), n_bins=3)
+        posterior[0] = 0.0
+
+        (_, _, _, mental_position_2d, mental_position_edges) = get_trajectory_data(
+            posterior=posterior,
+            track_graph=track_graph,
+            decoder=env,
+            actual_projected_position=bin_centers_2d.copy(),
+            track_segment_id=np.array([0, 1, 2]),
+            actual_orientation=np.zeros(3),
+        )
+
+        assert np.isnan(mental_position_2d[0]).all()
+        np.testing.assert_array_equal(mental_position_2d[1:], bin_centers_2d[[2, 1]])
+        np.testing.assert_array_equal(
+            mental_position_edges[0], mental_position_edges[1]
+        )
+
     def test_mental_edges_match_argmax_bins(self):
         """Mental edges are looked up from the MAP bin's edge_id."""
         track_graph = _make_positioned_track(4, edge_length=1.0)

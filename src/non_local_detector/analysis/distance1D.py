@@ -24,6 +24,34 @@ __all__ = [
 ]
 
 
+def _most_likely_bins(posterior: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Most likely position bin of each time, and where one exists.
+
+    A row with no position mass, such as the first row of a detector that
+    starts in Local, has no most likely bin. It holds the next row's, so it
+    adds no jump to what is computed from these bins.
+
+    Parameters
+    ----------
+    posterior : np.ndarray, shape (n_time, n_position_bins)
+        Posterior over position; NaN bins hold no mass.
+
+    Returns
+    -------
+    map_bins : np.ndarray of int, shape (n_time,)
+    has_position : np.ndarray of bool, shape (n_time,)
+        False for rows with no position mass.
+    """
+    posterior = np.nan_to_num(posterior)
+    has_position = posterior.sum(axis=1) > 0
+    map_bins = posterior.argmax(axis=1)
+    defined = np.flatnonzero(has_position)
+    if defined.size:
+        next_defined = np.searchsorted(defined, np.arange(len(map_bins)))
+        map_bins = map_bins[defined[np.minimum(next_defined, defined.size - 1)]]
+    return map_bins, has_position
+
+
 def _get_MAP_estimate_2d_position_edges(
     posterior: xr.DataArray,
     track_graph: nx.Graph,
@@ -53,9 +81,11 @@ def _get_MAP_estimate_2d_position_edges(
     Returns
     -------
     mental_position_2d : np.ndarray, shape (n_time, 2)
-        Most likely decoded 2D position coordinates for each time point.
+        Most likely decoded 2D position coordinates for each time point, NaN
+        at a time with no position mass.
     mental_position_edges : np.ndarray, shape (n_time, 2)
         Corresponding track graph edges (node pairs) for each MAP position.
+        A time with no position mass holds the next time's edge.
 
     """
     try:
@@ -68,10 +98,10 @@ def _get_MAP_estimate_2d_position_edges(
             env = decoder
 
     # Get 2D position on track from decoder MAP estimate
-    map_position_ind = (
+    map_position_ind, has_position = _most_likely_bins(
         get_position_posterior(posterior)
         .where(env.is_track_interior_)
-        .argmax("position", skipna=True)
+        .transpose("time", "position")
         .values
     )
     try:
@@ -82,6 +112,7 @@ def _get_MAP_estimate_2d_position_edges(
         )
 
     mental_position_2d = place_bin_center_2D_position[map_position_ind]
+    mental_position_2d[~has_position] = np.nan
 
     # Figure out which track segment it belongs to
     try:
@@ -378,10 +409,10 @@ def get_trajectory_data(
     actual_orientation : numpy.ndarray, shape (n_time,)
         Orientation of the animal in radians.
     mental_position_2d : numpy.ndarray, shape (n_time, 2)
-        Most likely decoded position.
+        Most likely decoded position, NaN at a time with no position mass.
     mental_position_edges : numpy.ndarray, shape (n_time, 2)
         Edge of the `track_graph` that most likely decoded position corresponds
-        to.
+        to. A time with no position mass holds the next time's edge.
     """
     (mental_position_2d, mental_position_edges) = _get_MAP_estimate_2d_position_edges(
         posterior, track_graph, decoder, environment_name
@@ -519,15 +550,16 @@ def get_map_speed(
     Returns
     -------
     map_speed : np.ndarray
-        Speed of the most likely decoded position.
+        Speed of the most likely decoded position, NaN at a time with no
+        position mass, such as the first time of a detector that starts in
+        Local.
     """
     dt = 1 / sampling_frequency
     if isinstance(posterior, xr.DataArray) and (
         "state_bins" in posterior.dims or posterior.ndim > 2
     ):
         posterior = get_position_posterior(posterior)
-    posterior = np.asarray(posterior)
-    map_position_ind = np.nanargmax(posterior, axis=1)
+    map_position_ind, has_position = _most_likely_bins(np.asarray(posterior))
     node_ids = place_bin_center_ind_to_node[map_position_ind]
     n_time = len(node_ids)
 
@@ -586,4 +618,6 @@ def get_map_speed(
             )
             / dt,
         )
-    return _gaussian_smooth(np.abs(speed), smooth_sigma, sampling_frequency)
+    speed = _gaussian_smooth(np.abs(speed), smooth_sigma, sampling_frequency)
+    speed[~has_position] = np.nan
+    return speed
