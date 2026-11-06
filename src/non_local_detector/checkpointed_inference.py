@@ -863,7 +863,7 @@ def checkpointed_forward_backward(
     }
 
     degenerate_rows = np.zeros(n_time, dtype=bool)
-    nan_rows = np.zeros(n_time, dtype=bool)
+    n_nan = 0
     pair_statistics = transition_statistics is not None
     statistics = (
         np.zeros((n_states, n_states))
@@ -966,6 +966,7 @@ def checkpointed_forward_backward(
                 cached: jax.Array | None,
                 increments: Any,
             ) -> Any:
+                nonlocal n_nan
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
                 if cached is not None:
                     (cached_rows if cache_rows else cached_likelihoods)[start] = (
@@ -980,10 +981,10 @@ def checkpointed_forward_backward(
                     checksum=np.asarray(checksum),
                 )
                 diagnostics["checkpoint_bytes"] += checkpoint.stat().st_size
-                degenerate, nan = np.asarray(degenerate), np.asarray(nan)
+                degenerate = np.asarray(degenerate)
                 degenerate_rows[start:stop] = degenerate
-                nan_rows[start:stop] = nan
                 diagnostics["n_degenerate"] += int(degenerate.sum())
+                n_nan += int(np.asarray(nan).sum())
                 return (
                     _float64_evidence(increments)
                     if evidence_accumulation == "stable"
@@ -1039,6 +1040,12 @@ def checkpointed_forward_backward(
                 for _ in forward_increment_sums():
                     pass
                 marginal = float(evidence)
+            _report_degenerate_and_nan_timesteps(
+                diagnostics["n_degenerate"],
+                n_nan,
+                n_time,
+                marginal_log_likelihood=marginal,
+            )
             next_smoothed = jnp.asarray(initial)
             # Outputs are emitted after the next chunk is dispatched; each chunk's
             # checksum is verified before its outputs are emitted.
@@ -1141,12 +1148,6 @@ def checkpointed_forward_backward(
                 pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)
-        _report_degenerate_and_nan_timesteps(
-            diagnostics["n_degenerate"],
-            int(nan_rows.sum()),
-            n_time,
-            marginal_log_likelihood=marginal,
-        )
         diagnostics["degenerate_indices"] = np.flatnonzero(degenerate_rows)
         packed_masks = {
             "degenerate_row_mask_hex": np.packbits(degenerate_rows, bitorder="little")
