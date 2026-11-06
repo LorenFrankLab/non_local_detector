@@ -36,11 +36,11 @@ from non_local_detector.core import (
     _degenerate_and_nan_masks_device,
     _filter_scan,
     _float64_evidence,
+    _report_degenerate_and_nan_timesteps,
     _require_row_slice_aware,
     _smoother_scan,
     _StationaryTransition,
     _validate_hmm_inputs,
-    _warn_degenerate_and_nan_timesteps,
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.result_store import (
@@ -266,8 +266,7 @@ class CheckpointedResult:
         Log marginal likelihood of the whole recording.
     diagnostics : dict
         Whole-recording diagnostics, such as counts and indices of degenerate
-        and NaN rows (a row with a ``NaN`` or ``+inf`` log likelihood) and the
-        number of likelihood evaluations.
+        rows and the number of likelihood evaluations.
     result_path : Path or None
         Directory of the disk result store, or None for an in-memory result.
     first_smoothed : np.ndarray or None
@@ -585,6 +584,8 @@ def checkpointed_forward_backward(
         that cannot be applied to ``n_bins`` state bins, or a likelihood
         callback that returns the wrong shape, changes between passes, or is
         not ``row_slice_aware`` although ``chunk_size`` splits the rows.
+    DataError
+        If a log likelihood outside the bins marked missing is NaN or ``+inf``.
     TypeError
         If ``transition_operator`` is not a registered JAX pytree implementing
         :class:`~non_local_detector.core.TransitionProducts`, or, with
@@ -853,7 +854,6 @@ def checkpointed_forward_backward(
     )
     diagnostics: dict[str, Any] = {
         "n_degenerate": 0,
-        "n_nan": 0,
         "max_chunk_rows": 0,
         "likelihood_evaluations": 0,
         "checkpoint_bytes": 0,
@@ -863,7 +863,7 @@ def checkpointed_forward_backward(
     }
 
     degenerate_rows = np.zeros(n_time, dtype=bool)
-    nan_rows = np.zeros(n_time, dtype=bool)
+    n_nan = 0
     pair_statistics = transition_statistics is not None
     statistics = (
         np.zeros((n_states, n_states))
@@ -967,6 +967,7 @@ def checkpointed_forward_backward(
                 increments: Any,
             ) -> Any:
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
+                nonlocal n_nan
                 if cached is not None:
                     (cached_rows if cache_rows else cached_likelihoods)[start] = (
                         np.asarray(cached)
@@ -980,11 +981,10 @@ def checkpointed_forward_backward(
                     checksum=np.asarray(checksum),
                 )
                 diagnostics["checkpoint_bytes"] += checkpoint.stat().st_size
-                degenerate, nan = np.asarray(degenerate), np.asarray(nan)
+                degenerate = np.asarray(degenerate)
                 degenerate_rows[start:stop] = degenerate
-                nan_rows[start:stop] = nan
                 diagnostics["n_degenerate"] += int(degenerate.sum())
-                diagnostics["n_nan"] += int(nan.sum())
+                n_nan += int(np.asarray(nan).sum())
                 return (
                     _float64_evidence(increments)
                     if evidence_accumulation == "stable"
@@ -1040,6 +1040,12 @@ def checkpointed_forward_backward(
                 for _ in forward_increment_sums():
                     pass
                 marginal = float(evidence)
+            _report_degenerate_and_nan_timesteps(
+                diagnostics["n_degenerate"],
+                n_nan,
+                n_time,
+                marginal_log_likelihood=marginal,
+            )
             next_smoothed = jnp.asarray(initial)
             # Outputs are emitted after the next chunk is dispatched; each chunk's
             # checksum is verified before its outputs are emitted.
@@ -1142,19 +1148,9 @@ def checkpointed_forward_backward(
                 pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)
-        _warn_degenerate_and_nan_timesteps(
-            diagnostics["n_degenerate"],
-            diagnostics["n_nan"],
-            n_time,
-            marginal_log_likelihood=marginal,
-        )
         diagnostics["degenerate_indices"] = np.flatnonzero(degenerate_rows)
-        diagnostics["nan_indices"] = np.flatnonzero(nan_rows)
         packed_masks = {
             "degenerate_row_mask_hex": np.packbits(degenerate_rows, bitorder="little")
-            .tobytes()
-            .hex(),
-            "nan_row_mask_hex": np.packbits(nan_rows, bitorder="little")
             .tobytes()
             .hex(),
             "diagnostic_row_mask_encoding": "packbits_little_hex",

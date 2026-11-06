@@ -97,6 +97,7 @@ from non_local_detector.models._checkpointed import (
 
 # EM looks these names up in models._em: patch them there, not here.
 from non_local_detector.models._em import (
+    _EMDiagnostics,
     _EMMixin,
     _require_observed_bins,
     _resolve_em_options,
@@ -354,26 +355,27 @@ class _DetectorBase(
     converged_ : bool
         True if EM converged within max_iter iterations and the final E-step,
         which evaluates the returned parameters, did not decrease the
-        penalized log-likelihood. Set by ``estimate_parameters``.
+        penalized log-likelihood. Read-only, set by ``estimate_parameters``
+        and cleared by ``fit``, as are the next two and
+        ``degenerate_timesteps_``.
     n_iter_ : int
-        Number of EM iterations actually performed. Set by
-        ``estimate_parameters``.
+        Number of EM iterations actually performed.
     em_monotonicity_violations_ : list[int]
         Iteration indices (1-based) where the penalized log-likelihood
         (marginal log-likelihood plus the discrete-transition log prior)
         decreased; the final E-step counts as iteration ``n_iter_ + 1``.
-        Empty list when EM is well-behaved. Set by ``estimate_parameters``.
+        Empty list when EM is well-behaved.
     degenerate_timesteps_ : np.ndarray
         Time indices (0-based) where the final E-step had all-``-inf``
         log-likelihoods (every state impossible) and the posterior fell back
-        to the predicted distribution. Empty array when none occur. Set by
-        ``estimate_parameters`` (reflects the training data); ``predict`` does
-        not refresh it, though it still logs a degenerate-timestep warning for
-        the data it is given.
+        to the predicted distribution. Empty array when none occur. Reflects
+        the training data; ``predict`` does not refresh it, though it still
+        logs a degenerate-timestep warning for the data it is given.
     discrete_initial_conditions_ : np.ndarray, shape (n_states,)
         Fitted initial-condition distribution over discrete states. Set by
-        ``estimate_parameters``; initially equal to the user-supplied
-        ``discrete_initial_conditions`` constructor argument.
+        ``estimate_parameters``, starting from the user-supplied
+        ``discrete_initial_conditions`` constructor argument, and cleared by
+        ``fit``.
     state_space_ : StateSpace
         The fit's state bins and continuous transition, with the
         ``state_names``, ``observation_models``,
@@ -395,10 +397,6 @@ class _DetectorBase(
     discrete_transition_smoothness_: np.ndarray | None
     discrete_transition_coefficient_covariance_: np.ndarray | None
     state_space_: StateSpace
-    converged_: bool
-    n_iter_: int
-    em_monotonicity_violations_: list[int]
-    degenerate_timesteps_: np.ndarray
     initial_conditions_: np.ndarray
 
     def __init__(
@@ -1062,6 +1060,9 @@ class _DetectorBase(
         never changed. ``self.environments`` keeps the configuration and
         ``self.environments_`` holds the fitted copies afterwards.
 
+        This is for an unfitted detector, such as one built to inspect its
+        environments' grids; ``fit`` fits its own.
+
         Parameters
         ----------
         position : np.ndarray, shape (n_time_position, n_position_dims)
@@ -1075,6 +1076,40 @@ class _DetectorBase(
         max_dense_distance_bytes : int, optional
             Byte limit for dense reads of the deferred distance view, by
             default 256 MiB. Used only when compute_all_pairs_distances=False.
+
+        Raises
+        ------
+        ValidationError
+            If the detector is fitted, as its state space, encoding model and
+            transitions were built on the fitted grids, or
+            ``environment_labels`` label no sample with an environment's
+            ``environment_name``.
+        """
+        if "state_space_" in self.__dict__:
+            msg = "initialize_environments would replace a fitted detector's grids"
+            raise ValidationError(
+                msg,
+                hint="Call fit to refit the detector on new position data, or "
+                "sklearn.base.clone(detector) for an unfitted copy.",
+            )
+        self._fit_environments(
+            position,
+            environment_labels,
+            compute_all_pairs_distances=compute_all_pairs_distances,
+            max_dense_distance_bytes=max_dense_distance_bytes,
+        )
+
+    def _fit_environments(
+        self,
+        position: np.ndarray,
+        environment_labels: np.ndarray | None,
+        *,
+        compute_all_pairs_distances: bool,
+        max_dense_distance_bytes: int,
+    ) -> None:
+        """Set ``environments_``; see ``initialize_environments``.
+
+        Parameters are those of ``initialize_environments``.
 
         Raises
         ------
@@ -1172,6 +1207,48 @@ class _DetectorBase(
         return self._fitted_state_space(
             "continuous_state_transitions_"
         ).continuous_transitions
+
+    def _fitted_em_diagnostics(self, name: str) -> _EMDiagnostics:
+        """Diagnostics of the last EM run, or NotFittedError naming ``name``."""
+        diagnostics = self.__dict__.get("_em_diagnostics_")
+        if diagnostics is None:
+            msg = (
+                f"{name} is set by estimate_parameters, and this detector's "
+                "last fit did not run it"
+            )
+            raise NotFittedError(msg, hint="Call estimate_parameters(...) first.")
+        return cast("_EMDiagnostics", diagnostics)
+
+    @property
+    def n_iter_(self) -> int:
+        """Number of EM iterations performed by the last ``estimate_parameters``."""
+        return self._fitted_em_diagnostics("n_iter_").n_iter
+
+    @property
+    def converged_(self) -> bool:
+        """Whether the last ``estimate_parameters`` converged.
+
+        EM must converge within max_iter iterations and the final E-step must
+        not decrease the penalized log-likelihood.
+        """
+        return self._fitted_em_diagnostics("converged_").converged
+
+    @property
+    def em_monotonicity_violations_(self) -> list[int]:
+        """Iterations (1-based) whose penalized log-likelihood decreased.
+
+        The final E-step counts as iteration ``n_iter_ + 1``.
+        """
+        return list(
+            self._fitted_em_diagnostics(
+                "em_monotonicity_violations_"
+            ).monotonicity_violations
+        )
+
+    @property
+    def degenerate_timesteps_(self) -> np.ndarray:
+        """Time indices (0-based) the final E-step found all-impossible."""
+        return self._fitted_em_diagnostics("degenerate_timesteps_").degenerate_timesteps
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.
@@ -1389,11 +1466,14 @@ class _DetectorBase(
             Fitted model.
         """
         self._invalidate_stored_log_likelihood()  # stale after a refit
-        # A refit replaces every structure a loaded detector rebuilt.
+        # A refit replaces every structure a loaded detector rebuilt, and what
+        # an earlier estimation found no longer describes the detector.
         self.__dict__.pop("_rebuild_check_", None)
-        self.initialize_environments(
-            position=position,
-            environment_labels=environment_labels,
+        self.__dict__.pop("_em_diagnostics_", None)
+        self.__dict__.pop("discrete_initial_conditions_", None)
+        self._fit_environments(
+            position,
+            environment_labels,
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
@@ -1851,10 +1931,12 @@ class _DetectorBase(
             if isinstance(result, int):
                 # Reuse the likelihood computed for an earlier state
                 result = likelihood_results[result]
-            block = jnp.broadcast_to(
-                jnp.asarray(result, dtype=jnp.float32),
-                (n_rows, int(n_state_columns[state_id])),
-            )
+            expected_shape = (n_rows, int(n_state_columns[state_id]))
+            if jnp.shape(result) != expected_shape:
+                raise self._wrong_likelihood_shape(
+                    state_id, jnp.shape(result), expected_shape
+                )
+            block = jnp.asarray(result, dtype=jnp.float32)
             if non_local_penalty > 0 and not obs.is_local and not obs.is_no_spike:
                 env_name = obs.environment_name
                 if env_name not in env_penalties:
@@ -1885,6 +1967,49 @@ class _DetectorBase(
 
         # Apply missing data mask
         return jnp.where(jnp.asarray(is_missing)[:, jnp.newaxis], 0.0, log_likelihood)
+
+    def _wrong_likelihood_shape(
+        self,
+        state_id: int,
+        shape: tuple[int, ...],
+        expected_shape: tuple[int, int],
+    ) -> ValidationError:
+        """Build the error for a state's log likelihood of the wrong shape.
+
+        Parameters
+        ----------
+        state_id : int
+            Index of the state.
+        shape : tuple of int
+            Shape of the state's log likelihood.
+        expected_shape : tuple of int
+            ``(n_rows, n_columns)`` of the state's block.
+
+        Returns
+        -------
+        error : ValidationError
+        """
+        state_space = self.state_space_
+        obs = state_space.observation_models[state_id]
+        algorithm = (
+            "predict_no_spike_log_likelihood"
+            if obs.is_no_spike
+            else self.encoding_model_[(obs.environment_name, obs.encoding_group)][
+                "algorithm"
+            ]
+        )
+        msg = (
+            f"{algorithm} returned the wrong log likelihood shape for state "
+            f"{state_space.state_names[state_id]!r}"
+        )
+        return ValidationError(
+            msg,
+            expected=f"shape {expected_shape}, (n_rows, n_interior_bins) or "
+            "(n_rows, 1) when is_local",
+            got=f"shape {shape}",
+            hint="Predict returns one row per requested decode bin "
+            "(row_slice) and one column per interior bin.",
+        )
 
     def _decode_discrete_transitions(
         self,
@@ -2535,21 +2660,19 @@ class _DetectorBase(
         encoding_model: dict[tuple[Any, ...], Any] = {}
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
-        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
-        # ``ObservationModel`` equality now distinguishes those flags,
-        # ``np.unique`` can return several entries that map to the same
-        # ``likelihood_name`` — fit each key once to avoid redundant work.
-        fitted_likelihood_names: set[tuple[Any, ...]] = set()
-        for obs in np.unique(cast("Any", self.observation_models)):
-            likelihood_name = (obs.environment_name, obs.encoding_group)
-            if likelihood_name in fitted_likelihood_names:
-                continue
-            fitted_likelihood_names.add(likelihood_name)
+        # ``is_local`` / ``is_no_spike`` do not affect the fit, so each key is
+        # fit once. The keys are not sorted: an encoding group may be a string
+        # or an integer, and those do not compare.
+        likelihood_names = dict.fromkeys(
+            (obs.environment_name, obs.encoding_group)
+            for obs in self.observation_models
+        )
+        for likelihood_name in likelihood_names:
+            environment_name, encoding_group = likelihood_name
+            environment = self._get_environment_by_name(environment_name)
 
-            environment = self._get_environment_by_name(obs.environment_name)
-
-            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
+            is_encoding = np.isin(encoding_group_labels, encoding_group)
+            is_environment = environment_labels == environment_name
             is_group = is_training & is_encoding & is_environment
             # The mask is this model's exposure: a sample outside the selection
             # must contribute no occupancy, because only in-group spikes are
@@ -3539,6 +3662,12 @@ class ClusterlessDetector(_DetectorBase):
             - log_likelihood : (n_time, n_state_bins) - if 'log_likelihood'
                 Per-timepoint observation log likelihoods
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Examples
         --------
         Get only smoother (default, minimal memory):
@@ -3778,6 +3907,12 @@ class ClusterlessDetector(_DetectorBase):
         results : xr.Dataset
             Results of the decoding.
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Notes
         -----
         If the call raises after its arguments are validated, the detector and
@@ -3879,6 +4014,12 @@ class ClusterlessDetector(_DetectorBase):
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
             Most likely state and position at each decode bin, indexed by
             the bin center time.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
         return self._most_likely_spike_sequence(
             (spike_times, spike_waveform_features),
@@ -4476,6 +4617,12 @@ class SortedSpikesDetector(_DetectorBase):
         -------
         xr.Dataset
             Predicted posterior probabilities.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
         return self._predict_spikes(
             (spike_times,),
@@ -4675,6 +4822,12 @@ class SortedSpikesDetector(_DetectorBase):
         results : xr.Dataset
             Results of the decoding.
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Notes
         -----
         If the call raises after its arguments are validated, the detector and
@@ -4772,6 +4925,12 @@ class SortedSpikesDetector(_DetectorBase):
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
             Most likely state and position at each decode bin, indexed by
             the bin center time.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
         return self._most_likely_spike_sequence(
             (spike_times,),

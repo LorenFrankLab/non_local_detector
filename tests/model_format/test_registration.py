@@ -89,6 +89,32 @@ def _assert_round_trip(detector, path, sorted_recording):
     return loaded
 
 
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")  # the jump
+def test_transition_rebuilt_on_load_is_not_checked_again(sorted_recording, tmp_path):
+    """A load rebuilds what a fit accepted, even if fits now refuse it."""
+    time, _, spike_times = sorted_recording
+    position = np.r_[
+        np.linspace(0, 40, time.size // 2),
+        np.linspace(80, 120, time.size - time.size // 2),
+    ][:, None]
+    register_type(FlatTransition, "testlab.FlatTransition")
+    detector = nld.SortedSpikesDecoder(
+        continuous_transition_types=[[FlatTransition()]],
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        environments=nld.Environment(place_bin_size=5.0),
+        sampling_frequency=SORTED_RATE,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            nld.continuous_state_transitions,
+            "_check_interior_destinations",
+            lambda *args: None,
+        )
+        detector.fit(time, position, spike_times)
+
+    _assert_round_trip(detector, tmp_path / "model.nld", (time, position, spike_times))
+
+
 def test_registered_dataclass_transition_round_trips(sorted_recording, tmp_path):
     detector = _fit(
         nld.SortedSpikesDecoder, FlatTransition(weight=0.5), sorted_recording

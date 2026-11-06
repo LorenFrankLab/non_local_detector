@@ -63,10 +63,11 @@ def _get_conditional_non_local_posterior(
     Returns
     -------
     conditional_posterior : xr.DataArray
-        Posterior over position given a non-local state. Shape is
-        ``(n_time, n_position_bins)`` for 1-D environments and
-        ``(n_time, n_x_bins, n_y_bins)`` for 2-D. Rows where the non-local
-        states have no posterior mass are NaN.
+        Posterior over position given a non-local state, with dimensions
+        ``(time, position)`` for 1-D environments and ``(time, state_bins)``
+        otherwise, where ``state_bins`` stays stacked: ``x_position`` and
+        ``y_position`` are its levels, not dimensions. Rows where the
+        non-local states have no posterior mass are NaN.
 
     Raises
     ------

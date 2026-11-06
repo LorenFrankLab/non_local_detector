@@ -2,7 +2,9 @@
 
 import networkx as nx
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 
 from non_local_detector.analysis.distance1D import get_map_speed
 from non_local_detector.analysis.distance2D import (
@@ -15,6 +17,7 @@ from non_local_detector.analysis.distance2D import (
     head_direction_simliarity,
     make_2D_track_graph_from_environment,
 )
+from non_local_detector.analysis.posterior import get_spatial_posterior
 
 
 @pytest.mark.unit
@@ -337,6 +340,93 @@ class TestGetMapSpeedBoundaryHandling:
     would insert *before* the last element and silently swap the final two
     samples.
     """
+
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    def test_every_posterior_layout_gives_the_same_map_speed(self):
+        """A raw ``state_bins`` posterior is reduced to position, not read as
+        if its Local bin were a place bin."""
+        n_bins = 5
+        track_graph = _make_linear_track(n_bins, edge_length=2.0)
+        nodes = np.arange(n_bins)
+        positions = 2.0 * nodes
+        position_only = _posterior_from_node_sequence(np.array([0, 2, 4, 1]), nodes)
+        # The Local state, which holds most of the mass, is the first bin.
+        raw = np.column_stack((np.full(len(position_only), 0.9), 0.1 * position_only))
+        index = pd.MultiIndex.from_tuples(
+            [("Local", np.nan), *(("NL", position) for position in positions)],
+            names=["state", "position"],
+        )
+        raw_posterior = xr.DataArray(
+            raw,
+            dims=["time", "state_bins"],
+            coords={"time": np.arange(4) * 0.002, "state_bins": index},
+        )
+        spatial_posterior = xr.DataArray(
+            0.1 * position_only,
+            dims=["time", "position"],
+            coords={"position": positions},
+        )
+
+        speeds = [
+            get_map_speed(
+                posterior,
+                track_graph,
+                nodes,
+                sampling_frequency=500.0,
+                smooth_sigma=0.0,
+            )
+            for posterior in (
+                raw_posterior,
+                get_spatial_posterior(raw_posterior),
+                spatial_posterior,
+                position_only,
+            )
+        ]
+
+        assert np.all(speeds[0] > 0)
+        np.testing.assert_array_equal(speeds[0], speeds[1])
+        np.testing.assert_array_equal(speeds[0], speeds[2])
+
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    def test_a_row_with_no_position_mass_has_no_speed(self):
+        """A detector that starts in Local has no MAP there, and no jump."""
+        n_bins = 5
+        track_graph = _make_linear_track(n_bins, edge_length=2.0)
+        nodes = np.arange(n_bins)
+        posterior = _posterior_from_node_sequence(np.full(4, 2), nodes)
+        posterior[0] = 0.0
+
+        speed = get_map_speed(
+            posterior, track_graph, nodes, sampling_frequency=500.0, smooth_sigma=0.0
+        )
+
+        assert np.isnan(speed[0])
+        np.testing.assert_array_equal(speed[1:], 0.0)
+
+    @pytest.mark.usefixtures("_identity_gaussian_smooth")
+    @pytest.mark.parametrize("position_dim", ["linear_position", "bin"])
+    def test_map_speed_accepts_any_name_for_the_position_dimension(self, position_dim):
+        """A (time, position) array needs no reducing, whatever its dim is named."""
+        n_bins = 5
+        track_graph = _make_linear_track(n_bins, edge_length=2.0)
+        nodes = np.arange(n_bins)
+        posterior = _posterior_from_node_sequence(np.array([0, 2, 4, 1]), nodes)
+
+        speeds = [
+            get_map_speed(
+                values,
+                track_graph,
+                nodes,
+                sampling_frequency=500.0,
+                smooth_sigma=0.0,
+            )
+            for values in (
+                xr.DataArray(posterior, dims=["time", position_dim]),
+                posterior,
+            )
+        ]
+
+        np.testing.assert_array_equal(speeds[0], speeds[1])
 
     @pytest.mark.parametrize("n_time", [3, 4, 5, 100])
     @pytest.mark.usefixtures("_identity_gaussian_smooth")

@@ -1589,8 +1589,8 @@ def _discrete_transition_from_statistics(
         )
         msg = (
             "Expected discrete transition statistics are not finite for state "
-            f"pairs {pairs}. This usually follows NaN or impossible likelihood "
-            "rows; see the degenerate/NaN timestep warnings."
+            f"pairs {pairs}. This usually follows impossible likelihood rows; "
+            "see the degenerate timestep warning."
         )
         raise ValueError(msg)
     if _is_nonstationary(

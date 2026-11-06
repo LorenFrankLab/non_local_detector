@@ -11,6 +11,7 @@ import types
 import numpy as np
 import pytest
 
+from non_local_detector import SortedSpikesDecoder
 from non_local_detector.models.non_local_model import NonLocalSortedSpikesDetector
 from tests.conftest import make_state_bins_results
 
@@ -92,6 +93,38 @@ def test_decode_panel_uses_non_local_states_whatever_their_names(monkeypatch):
         non_local / non_local.sum(axis=1, keepdims=True),
         rtol=1e-12,
     )
+
+
+def test_probability_panel_shows_the_one_state_of_a_decoder(monkeypatch):
+    """A decoder's ``states`` is a scalar and its probabilities have no
+    ``states`` dimension; neither is iterated or selected by name."""
+    figurl_1D = _load_figurl_1d_with_stub_sortingview(monkeypatch)
+    monkeypatch.setattr(
+        figurl_1D, "create_1D_decode_view", lambda **kwargs: _Recorder()
+    )
+    series = []
+    monkeypatch.setattr(
+        _Recorder,
+        "add_line_series",
+        lambda self, **kwargs: series.append(kwargs) or self,
+    )
+    n_time, n_bins = 10, 5
+    results = make_state_bins_results(
+        ["Continuous"], {"position": np.arange(n_bins, dtype=float)}, n_time=n_time
+    )
+    results["acausal_state_probabilities"] = ("time", np.ones(n_time))
+    results = results.assign_coords(states="Continuous")
+
+    figurl_1D.create_interactive_1D_decoding_figurl(
+        position=np.zeros(n_time),
+        speed=np.zeros(n_time),
+        spike_times=[np.array([1.0, 4.0])],
+        results=results,
+        detector=SortedSpikesDecoder(),
+    )
+
+    (state,) = [entry for entry in series if entry["name"] == "Continuous"]
+    np.testing.assert_array_equal(state["y"], np.ones(n_time))
 
 
 def test_detector_and_view_height_are_keyword_only(monkeypatch):

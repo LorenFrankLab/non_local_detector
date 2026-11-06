@@ -13,7 +13,7 @@ import xarray as xr
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar  # type: ignore[import-untyped]  # mpl_toolkits ships no stubs
 
 from non_local_detector.analysis.posterior import (
-    get_spatial_posterior,
+    get_position_posterior,
     maximum_a_posteriori_estimate,
 )
 from non_local_detector.visualization._parallel_video_writer import (
@@ -166,11 +166,9 @@ def _spatial_posterior_for_movie(
     -------
     xr.DataArray, shape (n_time, n_x_bins, n_y_bins)
     """
-    return (
-        get_spatial_posterior(results.acausal_posterior.isel(time=time_slice))
-        .sum("state")
-        .where(is_track_interior)
-    )
+    return get_position_posterior(
+        results.acausal_posterior.isel(time=time_slice)
+    ).where(is_track_interior)
 
 
 def _setup_single_env_figure() -> tuple[Figure, dict[str, Any]]:

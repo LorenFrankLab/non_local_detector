@@ -15,6 +15,7 @@ from non_local_detector.core import (
     smoother,
     smoother_covariate_dependent,
 )
+from non_local_detector.exceptions import DataError
 from non_local_detector.result_store import open_result_store
 from tests._transition_statistics import expanded_counts, expanded_responses
 
@@ -236,20 +237,14 @@ def test_compact_selected_rows_keep_whole_recording_context(tmp_path, covariate)
     assert result.dataset.sizes["time"] == len(selected)
 
 
-@pytest.mark.parametrize(
-    "kind", ["missing", "impossible", "nan", "posinf", "support_mismatch"]
-)
-def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
+@pytest.mark.parametrize("kind", ["missing", "impossible", "support_mismatch"])
+def test_original_degenerate_and_missing_semantics(tmp_path, kind, caplog):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     missing = np.zeros(len(ll), bool)
     if kind == "missing":
         missing[3:5] = True
     elif kind == "impossible":
         ll[4] = -np.inf
-    elif kind == "nan":
-        ll[4, 1] = np.nan
-    elif kind == "posinf":
-        ll[4, 1] = np.inf
     else:
         kwargs["transition_matrix"] = np.eye(4, dtype=np.float32)
         initial = np.array([1, 0, 0, 0], dtype=np.float32)
@@ -282,19 +277,55 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
     np.testing.assert_array_equal(result.dataset.is_missing, missing)
     if kind == "impossible":
         assert result.diagnostics["n_degenerate"] == 1
-    if kind in ("nan", "posinf"):
-        assert result.diagnostics["n_nan"] == 1
-        np.testing.assert_array_equal(result.diagnostics["nan_indices"], [4])
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf], ids=["nan", "posinf"])
+def test_nan_or_positive_infinity_raises_and_leaves_no_output(tmp_path, value):
+    """The driver raises once it has seen every row, leaving no store behind."""
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    ll[4, 1] = value
+    with pytest.raises(DataError, match=r"1/\d+ time step\(s\) with NaN or \+inf"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
+            state_ind=state_ind,
+            chunk_size=3,
+            output_mode="spatial",
+            result_path=tmp_path / "result",
+            **kwargs,
+        )
+    assert not (tmp_path / "result").exists()
+    assert not list(tmp_path.glob(".result-*"))
+    assert not list(tmp_path.glob("checkpoints-*"))
+
+
+def test_missing_row_hides_nan_from_the_check():
+    """A NaN a missing row replaces is not an error, as it never reaches the HMM."""
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    ll[4, 1] = np.nan
+    missing = np.zeros(len(ll), bool)
+    missing[4] = True
+    result = checkpointed_forward_backward(
+        edges,
+        initial,
+        row_slice_aware(lambda **kw: ll[kw["row_slice"]]),
+        state_ind=state_ind,
+        chunk_size=3,
+        is_missing=missing,
+        **kwargs,
+    )
+    assert np.isfinite(result.marginal_log_likelihood)
 
 
 @pytest.mark.parametrize(
-    "kind", ["missing", "impossible", "nan", "support_mismatch", "zero_transition"]
+    "kind", ["missing", "impossible", "support_mismatch", "zero_transition"]
 )
 def test_transition_statistics_follow_degenerate_row_semantics(kind):
     """Counts from the replay match the dense estimate on unusual rows.
 
-    Covers impossible and NaN rows, missing rows, and predicted probabilities
-    of exactly zero (the ratio's zero-denominator rule).
+    Covers impossible rows, missing rows, and predicted probabilities of
+    exactly zero (the ratio's zero-denominator rule).
     """
     edges, initial, ll, state_ind, kwargs, _ = problem()
     missing = np.zeros(len(ll), bool)
@@ -302,8 +333,6 @@ def test_transition_statistics_follow_degenerate_row_semantics(kind):
         missing[3:5] = True
     elif kind == "impossible":
         ll[4] = -np.inf
-    elif kind == "nan":
-        ll[4, 1] = np.nan
     elif kind == "support_mismatch":
         kwargs["transition_matrix"] = np.eye(4, dtype=np.float32)
         initial = np.array([1, 0, 0, 0], dtype=np.float32)
@@ -753,7 +782,6 @@ def test_boundary_events_and_global_final_edge_keep_native_ownership(tmp_path):
 def test_global_diagnostic_indices_are_exact_once_and_packed_for_store(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     ll[[1, 4, 11]] = -np.inf
-    ll[7, 0] = np.nan
     missing = np.zeros(len(ll), bool)
     missing[4] = True
     result = checkpointed_forward_backward(
@@ -768,9 +796,7 @@ def test_global_diagnostic_indices_are_exact_once_and_packed_for_store(tmp_path)
         **kwargs,
     )
     np.testing.assert_array_equal(result.diagnostics["degenerate_indices"], [1, 11])
-    np.testing.assert_array_equal(result.diagnostics["nan_indices"], [7])
     assert result.diagnostics["n_degenerate"] == 2
-    assert result.diagnostics["n_nan"] == 1
     assert result.diagnostics["degenerate_indices"].dtype.kind == "i"
     assert "degenerate_indices" not in result.dataset.attrs
     loaded = open_result_store(tmp_path / "result")
@@ -780,7 +806,6 @@ def test_global_diagnostic_indices_are_exact_once_and_packed_for_store(tmp_path)
         return np.flatnonzero(np.unpackbits(packed, bitorder="little", count=len(ll)))
 
     np.testing.assert_array_equal(indices("degenerate_row_mask_hex"), [1, 11])
-    np.testing.assert_array_equal(indices("nan_row_mask_hex"), [7])
 
 
 def test_all_impossible_diagnostics_use_numpy_metadata_not_per_row_python_objects():
@@ -929,7 +954,7 @@ def test_descending_unsigned_selected_rows_are_rejected_before_callbacks():
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("chunk_size", [1, 4, 13, 20])
-@pytest.mark.parametrize("kind", ["finite", "impossible", "nan", "positive_inf"])
+@pytest.mark.parametrize("kind", ["finite", "impossible"])
 def test_stable_preserves_dense_probabilities(
     tmp_path, dtype, chunk_size, kind, request
 ):
@@ -942,10 +967,6 @@ def test_stable_preserves_dense_probabilities(
     ll = rng.normal(size=(13, 4)).astype(dtype)
     if kind == "impossible":
         ll[4] = -np.inf
-    elif kind == "nan":
-        ll[4, 1] = np.nan
-    elif kind == "positive_inf":
-        ll[4, 1] = np.inf
     (evidence, _), (causal, predictive) = filter(initial, transition, ll)
     acausal = smoother(transition, causal)
     result = checkpointed_forward_backward(
@@ -1168,7 +1189,7 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
     )
 
 
-@pytest.mark.parametrize("tail", [[], [np.nan], [-np.inf]])
+@pytest.mark.parametrize("tail", [[], [-np.inf]])
 def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail, x64):
     ll = np.array([1e308, 1e308, *tail], np.float64)[:, None]
     calls = []

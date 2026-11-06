@@ -325,7 +325,8 @@ def instrumented(profiler, detector_class):
     targets = [
         (detector_class, "estimate_parameters", "estimate_parameters"),
         (detector_class, "fit", "fit"),
-        (detector_class, "initialize_environments", "environments"),
+        (detector_class, "_fit_environments", "environments"),
+        (detector_class, "initialize_environments", "environments"),  # older checkouts
         (environment_module.Environment, "fit_place_grid", "fit_place_grid"),
         (base, "state_layout", "state_index"),
         (detector_class, "_initialize_state_index", "state_index"),  # older checkouts

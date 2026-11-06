@@ -217,6 +217,28 @@ def test_netcdf_round_trip_keeps_every_dtype(
     }
 
 
+@pytest.mark.parametrize("file_format", ["netCDF4", "netCDF3"])
+@pytest.mark.parametrize("value", [2**31, 7_015_923_712, -(2**31) - 1])
+def test_integer_attribute_beyond_32_bits_round_trips(
+    fitted, dense, value, file_format, tmp_path, monkeypatch
+):
+    """Byte counts such as ``em_replay_cache_bytes`` reach several GiB, which
+    netCDF3 (a default install) has no integer attribute to hold."""
+    if file_format == "netCDF4":
+        pytest.importorskip("netCDF4")
+    result = dense.copy()
+    result.attrs["large"] = value
+    filename = tmp_path / "results.nc"
+    with monkeypatch.context() as patch:
+        if file_format == "netCDF3":
+            for writer in ("netCDF4", "h5netcdf"):
+                patch.setitem(sys.modules, writer, None)
+        fitted.save_results(result, filename)
+    with fitted.load_results(filename) as restored:
+        assert restored.attrs["large"] == value
+        assert type(restored.attrs["large"]) is int
+
+
 # String and bytes array attributes a user adds to dense results; netCDF4
 # reads both back as lists of str, and netCDF3 cannot store them.
 _USER_ARRAY_ATTRS = {

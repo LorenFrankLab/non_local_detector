@@ -178,6 +178,13 @@ def _validate_em_options(
         Whether EM keeps the full likelihood in memory.
     replay_cache_bytes : int or None
         Structured EM's replay cache budget.
+
+    Raises
+    ------
+    ValidationError
+        If an option does not apply to the EM path.
+    FileExistsError
+        If ``result_path`` already exists.
     """
     for name, value, minimum in (
         ("chunk_size", chunk_size, 1),
@@ -237,6 +244,10 @@ def _validate_em_options(
                 "it to the store instead."
             ),
         )
+    if result_path is not None and Path(result_path).exists():
+        # The store refuses it too, but only at the end of EM.
+        msg = f"result_path {result_path} already exists; pass a new path"
+        raise FileExistsError(msg)
 
 
 def _dense_em_memory(n_time: int, n_bins: int) -> tuple[int, int | None, str]:
@@ -487,6 +498,73 @@ class _EMSettings:
     encoding_fit_arguments: dict[str, Any] | None
 
 
+@dataclass(frozen=True, eq=False)
+class _EMDiagnostics:
+    """What one ``estimate_parameters`` run reports about itself.
+
+    ``n_iter_``, ``converged_``, ``em_monotonicity_violations_`` and
+    ``degenerate_timesteps_`` of a detector are read-only views of it. A
+    ``fit`` removes it, so a run's diagnostics never outlive its fit.
+
+    Attributes
+    ----------
+    n_iter : int
+        EM iterations performed.
+    converged : bool
+        Whether EM converged and the final E-step did not decrease the
+        penalized log-likelihood.
+    monotonicity_violations : tuple of int
+        Iterations (1-based) whose penalized log-likelihood decreased.
+    degenerate_timesteps : np.ndarray of int, shape (n_degenerate,)
+        Time indices the final E-step found all-impossible.
+    """
+
+    n_iter: int
+    converged: bool
+    monotonicity_violations: tuple[int, ...]
+    degenerate_timesteps: np.ndarray
+
+
+# The names under which saved detectors keep the diagnostics: pickles of
+# earlier versions as attributes, and saved model files as these values.
+_EM_DIAGNOSTIC_ATTRIBUTES = (
+    "n_iter_",
+    "converged_",
+    "em_monotonicity_violations_",
+    "degenerate_timesteps_",
+)
+
+
+def _restore_em_diagnostics(detector: Any) -> None:
+    """Gather a loaded detector's saved diagnostics into one object.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        The detector being loaded, holding the saved values of those of
+        ``_EM_DIAGNOSTIC_ATTRIBUTES`` that it has. Earlier versions did not
+        save them all; the others take defaults: 0 iterations, not converged,
+        no violations and no degenerate steps. A detector saved without any
+        ran no estimation and gets no diagnostics.
+    """
+    stored = {
+        name: vars(detector).pop(name)
+        for name in _EM_DIAGNOSTIC_ATTRIBUTES
+        if name in vars(detector)
+    }
+    if stored:
+        detector._em_diagnostics_ = _EMDiagnostics(
+            n_iter=stored.get("n_iter_", 0),
+            converged=stored.get("converged_", False),
+            monotonicity_violations=tuple(
+                stored.get("em_monotonicity_violations_", ())
+            ),
+            degenerate_timesteps=stored.get(
+                "degenerate_timesteps_", np.array([], dtype=int)
+            ),
+        )
+
+
 @dataclass
 class _EMState:
     """Values one EM iteration hands the next.
@@ -521,6 +599,8 @@ class _EMState:
         A likelihood computed in this run that the next E-step can reuse.
     transition_statistics : np.ndarray or None
         The last discrete M-step's expected transition statistics.
+    monotonicity_violations : list of int
+        Iterations (1-based) whose objective decreased.
     """
 
     marginal_log_likelihoods: list[float] = field(default_factory=list)
@@ -535,6 +615,7 @@ class _EMState:
     transition_change: float = np.inf
     run_log_likelihoods: np.ndarray | None = None
     transition_statistics: np.ndarray | None = None
+    monotonicity_violations: list[int] = field(default_factory=list)
 
     def traces(self, final_log_likelihood: float) -> dict[str, list[float]]:
         """EM's traces, given the final E-step's marginal log-likelihood.
@@ -627,7 +708,7 @@ class _EMMixin:
 
     # mypy declares an attribute on the class whose method assigns it, even
     # through ``self: _DetectorBase``; these match ``_DetectorBase``.
-    em_monotonicity_violations_: list[int]
+    _em_diagnostics_: _EMDiagnostics
     transition_time_bin_width_: float | None
 
     def _refit_encoding_model(  # type: ignore[misc]
@@ -956,23 +1037,26 @@ class _EMMixin:
         ):
             self._em_update_transition_covariance(settings, state)
 
-        # converged_ is set after the final E-step, which evaluates the
-        # returned parameters and can still find a decrease.
-        self.n_iter_ = int(state.n_iter)
-
         if not state.converged:
             self._em_warn_not_converged(settings, state)
 
         final = self._em_final_e_step(settings, state)
         traces = state.traces(final.posterior.marginal_log_likelihood)
 
-        # The final E-step's degenerate (all-impossible) timesteps, from its
-        # forward pass rather than the returned log-likelihoods, so they are
-        # complete even when caching is disabled (n_chunks > 1), where the
-        # returned log-likelihoods are None.
-        self.degenerate_timesteps_ = final.posterior.degenerate_indices
-
-        self._em_check_final_e_step(settings, state, traces["em_objectives"][-1])
+        # Set after the final E-step, which evaluates the returned parameters
+        # and can still find a decrease. Its degenerate (all-impossible)
+        # timesteps come from its forward pass rather than the returned
+        # log-likelihoods, so they are complete even when caching is disabled
+        # (n_chunks > 1), where the returned log-likelihoods are None.
+        final_is_increasing = self._em_check_final_e_step(
+            settings, state, traces["em_objectives"][-1]
+        )
+        self._em_diagnostics_ = _EMDiagnostics(
+            n_iter=int(state.n_iter),
+            converged=bool(state.converged) and final_is_increasing,
+            monotonicity_violations=tuple(state.monotonicity_violations),
+            degenerate_timesteps=final.posterior.degenerate_indices,
+        )
 
         if settings.store_log_likelihood:
             self.log_likelihood_ = final.posterior.log_likelihood
@@ -1178,15 +1262,7 @@ class _EMMixin:
     def _em_reset_fitted_attributes(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
     ) -> None:
-        """Start EM's result attributes and drop an earlier run's likelihood."""
-        # Initialize the EM-result attributes together, after validation, so a
-        # validation failure leaves NONE of them set (all-or-nothing).
-        # converged_/n_iter_ are updated to their final values after the loop;
-        # degenerate_timesteps_ is filled from the final E-step's likelihoods.
-        self.converged_ = False
-        self.n_iter_ = 0
-        self.em_monotonicity_violations_ = []
-        self.degenerate_timesteps_ = np.array([], dtype=int)
+        """Drop an earlier run's likelihood and start the initial conditions."""
         # Any likelihood stored by an EARLIER run describes that run's data and
         # encoding model, not this one's. Drop it now, and reuse within this run
         # only a likelihood computed inside this run
@@ -1534,7 +1610,7 @@ class _EMMixin:
                 # Surfaced via warnings.warn(NumericalWarning) to match the
                 # other EM/GMM/GLM fit-quality diagnostics (decode-time
                 # degenerate-timestep warnings use logger.warning instead;
-                # see core._warn_degenerate_and_nan_timesteps).
+                # see core._report_degenerate_and_nan_timesteps).
                 warnings.warn(
                     f"EM iteration {state.n_iter}: penalized log-likelihood "
                     f"decreased from {state.previous_objectives[-1]:.6f} to "
@@ -1547,7 +1623,7 @@ class _EMMixin:
                     NumericalWarning,
                     stacklevel=user_stacklevel(),
                 )
-                self.em_monotonicity_violations_.append(state.n_iter)
+                state.monotonicity_violations.append(state.n_iter)
 
             logger.info(
                 "iteration %s, likelihood: %s, penalized: %s, change: %s%s",
@@ -1729,12 +1805,17 @@ class _EMMixin:
         settings: _EMSettings,
         state: _EMState,
         final_objective: float,
-    ) -> None:
-        """Check the final E-step like an in-loop iteration and set ``converged_``.
+    ) -> bool:
+        """Check the final E-step like an in-loop iteration.
 
         There is no check when max_iter=0. The final E-step counts as
         iteration n_iter + 1, and a decrease here means the fit has not
         converged.
+
+        Returns
+        -------
+        final_is_increasing : bool
+            Whether the final E-step did not decrease the objective.
         """
         final_is_increasing = True
         if state.n_iter > 0:
@@ -1745,7 +1826,7 @@ class _EMMixin:
                 n_time_bins=settings.n_observed_bins,
             )
             if not final_is_increasing:
-                self.em_monotonicity_violations_.append(state.n_iter + 1)
+                state.monotonicity_violations.append(state.n_iter + 1)
                 decrease = state.previous_objectives[-1] - final_objective
                 warnings.warn(
                     f"Final E-step penalized log-likelihood (marginal log-likelihood "
@@ -1757,7 +1838,7 @@ class _EMMixin:
                     NumericalWarning,
                     stacklevel=user_stacklevel(),
                 )
-        self.converged_ = bool(state.converged) and final_is_increasing
+        return final_is_increasing
 
     def _em_results(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
