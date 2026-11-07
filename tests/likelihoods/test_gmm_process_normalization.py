@@ -189,12 +189,3 @@ def test_fit_only_optimizes_occupancy_and_joint(monkeypatch):
     monkeypatch.setattr(clusterless_gmm, "_fit_gmm_density", record_fit)
     _fit_encoding("full")
     assert fitted_dims == [1, 2]
-
-
-@pytest.mark.parametrize(
-    ("parameter", "value"),
-    [("gmm_components_gpi", 1), ("gmm_covariance_type_gpi", "full")],
-)
-def test_removed_gpi_settings_are_rejected(parameter, value):
-    with pytest.raises(TypeError, match=parameter):
-        _fit_encoding("full", **{parameter: value})

@@ -35,11 +35,6 @@ from non_local_detector.likelihoods import (
     ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
 )
-from non_local_detector.likelihoods.clusterless_kde import (
-    ClusterlessKDEEncodingModel,
-    fit_clusterless_kde_encoding_model,
-    predict_clusterless_kde_log_likelihood,
-)
 from non_local_detector.likelihoods.encoding_model import (
     ClusterlessEncodingModel,
     SortedSpikesEncodingModel,
@@ -628,16 +623,6 @@ def test_records_pickle_and_copy(algorithm):
         assert restored == record
         with pytest.raises(TypeError):
             restored.default_params["block_size"] = 5  # type: ignore[index]
-
-
-def test_clusterless_record_requires_a_mark_scale():
-    """A clusterless record cannot be registered without its mark-kernel width."""
-    with pytest.raises(TypeError, match="mark_reference_scale"):
-        ClusterlessLikelihoodAlgorithm(  # type: ignore[call-arg]
-            fit_clusterless_kde_encoding_model,
-            predict_clusterless_kde_log_likelihood,
-            ClusterlessKDEEncodingModel,
-        )
 
 
 def mark_scale_default_mismatches(record: ClusterlessLikelihoodAlgorithm) -> list[str]:

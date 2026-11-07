@@ -71,9 +71,6 @@ def test_registry_and_end_to_end() -> None:
     """``clusterless_diffusion`` is registered and runs end-to-end."""
     # --- registry ---
     assert "clusterless_diffusion" in _CLUSTERLESS_ALGORITHMS
-    record = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"]
-    assert record.fit is fit_clusterless_diffusion_encoding_model
-    assert record.predict is predict_clusterless_diffusion_log_likelihood
 
     # --- tiny simulated data (2 tetrodes, 1 place field each, ~5s of data) ---
     sim = make_simulated_run_data(

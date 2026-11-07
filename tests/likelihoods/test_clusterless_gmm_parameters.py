@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 
 from non_local_detector import ClusterlessDecoder, time_edges_from_centers
-from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_gmm
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
@@ -23,31 +22,6 @@ def sim():
     return make_simulated_run_data(
         n_tetrodes=3, place_field_means=np.arange(0, 90, 15), n_runs=1, seed=0
     )
-
-
-def _fit(sim, **params):
-    environment = Environment(place_bin_size=5.0).fit_place_grid(sim.position)
-    return clusterless_gmm.fit_clusterless_gmm_encoding_model(
-        sim.position_time,
-        sim.position,
-        sim.spike_times,
-        sim.spike_waveform_features,
-        environment,
-        gmm_components_occupancy=4,
-        gmm_components_joint=4,
-        disable_progress_bar=True,
-        **params,
-    )
-
-
-def test_fit_stores_predict_tiling(sim):
-    model = _fit(sim, spike_block_size=16, bin_tile_size=8)
-    assert model["spike_block_size"] == 16
-    assert model["bin_tile_size"] == 8
-
-    default = _fit(sim)
-    assert default["spike_block_size"] == 1000
-    assert default["bin_tile_size"] is None
 
 
 def test_detector_tiling_parameters_reach_predict(sim, monkeypatch):

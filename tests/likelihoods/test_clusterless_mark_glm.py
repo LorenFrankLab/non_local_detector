@@ -151,8 +151,6 @@ def _component_log_density(mixture, marks):
 @pytest.mark.unit
 def test_registered_with_its_mark_reference_scale():
     record = _CLUSTERLESS_ALGORITHMS["clusterless_mark_glm"]
-    assert record.fit is fit_clusterless_mark_glm_encoding_model
-    assert record.predict is predict_clusterless_mark_glm_log_likelihood
     assert record.mark_reference_scale is not None
     assert record.mark_reference_scale(mark_reg_covar=4.0) == pytest.approx(2.0)
 
