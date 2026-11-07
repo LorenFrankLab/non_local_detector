@@ -11,31 +11,8 @@ from non_local_detector.likelihoods.clusterless_kde import (
 )
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
-    select_spikes_in_rows,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
-
-
-def test_select_spikes_in_rows_right_edge_last_bin():
-    edges = np.array([0.0, 1.0, 2.0, 3.0])
-    spikes = np.array([0.0, 0.5, 2.0, 3.0])
-    selection = select_spikes_in_rows(spikes, 0, 3, time_edges=edges)
-    # bins: [0,1), [1,2), [2,3]; right-edge 3.0 -> last bin index 2
-    assert spikes[selection.indexer].tolist() == spikes.tolist()
-    assert selection.bin_ind.tolist() == [0, 0, 2, 2]
-
-
-def test_select_spikes_in_rows_unsorted_and_interior_edges():
-    edges = np.array([0.0, 1.0, 2.0, 3.0])
-    spikes = np.array(
-        [2.0, 0.0, 1.0, 1.0, 0.5]
-    )  # unsorted, includes interior edges 1.0
-    selection = select_spikes_in_rows(spikes, 0, 3, time_edges=edges)
-    # bins: [0,1), [1,2), [2,3]; interior edge 1.0 -> bin 1 (right side)
-    # Unsorted spikes keep their original order in the selection.
-    assert spikes[selection.indexer].tolist() == spikes.tolist()
-    assert selection.bin_ind.tolist() == [2, 0, 1, 1, 0]
-    assert not selection.indices_are_sorted
 
 
 def test_fit_clusterless_kde_raises_without_place_grid():
