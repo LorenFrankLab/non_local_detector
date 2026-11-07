@@ -637,7 +637,8 @@ def test_binary_weights_match_hard_subset():
 
 
 def test_nonlocal_finite_and_zero_rate():
-    """Non-local output is finite; a zero-weight electrode floors decode spikes to LOG_EPS."""
+    """Non-local output is finite; a zero-weight electrode scores each decode
+    spike at the rate floor, ``LOG_RATE_EPS_HZ + log(dt)``."""
     env = _make_1d_env(1.0, 0.0, 10.0)
     position_time = np.linspace(0.0, 10.0, 201)
     position = np.linspace(0.0, 10.0, 201)[:, None]
@@ -693,17 +694,19 @@ def test_nonlocal_finite_and_zero_rate():
     gpi = np.asarray(enc["summed_ground_process_intensity"])
     seg = _decode_bin(dec_times[1], time_edges)
     for t_bin in seg:
-        # only the zero-rate electrode contributed at this bin -> exactly LOG_EPS + (-gpi)
+        # only the zero-rate electrode contributed at this bin -> exactly the
+        # rate floor LOG_RATE_EPS_HZ + log(dt), minus dt * gpi
         assert np.allclose(
             ll[t_bin] + np.diff(time_edges)[t_bin] * gpi,
             LOG_RATE_EPS_HZ + np.log(np.diff(time_edges)[t_bin]),
             atol=1e-6,
-        ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
+        ), f"zero-rate electrode did not floor to the rate floor at time bin {t_bin}"
 
 
 def test_zero_rate_fit_and_predict_finite_and_warn():
     """All-zero weights: both the occupancy and per-electrode warnings fire; predict
-    stays finite and floors every decode spike to LOG_EPS."""
+    stays finite and scores every decode spike at the rate floor,
+    ``LOG_RATE_EPS_HZ + log(dt)``."""
     env = _make_1d_env(1.0, 0.0, 6.0)
     position_time = np.linspace(0.0, 6.0, 101)
     position = np.linspace(0.0, 6.0, 101)[:, None]
@@ -894,8 +897,9 @@ def test_local_equals_nonlocal_per_spike():
 
 def test_local_finite_and_zero_rate():
     """Local output is finite, shape (n_time, 1); a zero-rate electrode's decode
-    spikes each contribute exactly LOG_EPS (isolated by giving only that
-    electrode decode spikes, mirroring test_nonlocal_finite_and_zero_rate)."""
+    spikes each contribute exactly ``LOG_RATE_EPS_HZ + log(dt)`` (isolated by
+    giving only that electrode decode spikes, mirroring
+    test_nonlocal_finite_and_zero_rate)."""
     env = _make_1d_env(1.0, 0.0, 10.0)
     position_time = np.linspace(0.0, 10.0, 201)
     position = np.linspace(0.0, 10.0, 201)[:, None]
@@ -961,13 +965,13 @@ def test_local_finite_and_zero_rate():
     seg = _decode_bin(dec_times[1], time_edges)
     dt = np.diff(time_edges)[seg]
     # only the zero-rate electrode contributed at these bins -> exactly
-    # LOG_EPS - local_gpi[t_bin]
+    # LOG_RATE_EPS_HZ + log(dt) - dt * local_gpi[t_bin]
     np.testing.assert_allclose(
         ll[seg, 0] + dt * local_gpi[seg],
         LOG_RATE_EPS_HZ + np.log(dt),
         rtol=1e-5,
         atol=1e-6,
-        err_msg="zero-rate electrode did not floor to LOG_EPS",
+        err_msg="zero-rate electrode did not floor to the rate floor",
     )
 
 
@@ -1214,7 +1218,7 @@ def test_validation_predict_zero_rate_precedence(is_local):
     ... continue`` (local ~517-538, non-local ~634-655). If that order were
     ever reversed, a zero-rate electrode's non-finite in-window decode feature
     would be silently skipped (the ``continue`` fires before validation) and
-    the spike would floor to ``LOG_EPS`` instead of raising. This test pins the
+    the spike would floor to ``LOG_RATE_EPS_HZ + log(dt)`` instead of raising. This test pins the
     current (correct) ordering: a zero-rate electrode with a non-finite
     in-window decode feature must raise ``ValidationError``, not floor.
     """
