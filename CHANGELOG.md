@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Test suite audit
+
+- **Breaking:** `fit_sorted_spikes_diffusion_encoding_model` and `fit_sorted_spikes_mrf_encoding_model` no longer return `interior_log_place_fields`, and their predict functions no longer accept it. Prediction only checked its length; the likelihood never read it. Detectors pickled or saved with `save_model` by earlier versions drop the key on load and decode identically. A direct predict call with an old encoding dict raises `TypeError`.
+- **Removed:** the `use_gemm` keyword of the internal `estimate_log_joint_mark_intensity` and `block_estimate_log_joint_mark_intensity`. Only tests used the linear-space path, and decoding never did. They now compare against an independent float64 reference.
+- **Removed:** private helpers that only tests used: the underscore aliases in `non_local_detector.likelihoods.common` (`_pad_rows`, `_SpikeTimeOrder`, …) and `_validation.ensure_matching_lengths`.
+- **Changed (development):** the test suite no longer depends on `hypothesis`, and the `property` marker is gone. Tests that could not fail, only pinned names, signatures, docstrings or defaults, or repeated other tests are deleted. Loose tolerances are tightened to the measured error. Tests now check multi-environment decoding and the EM refit with `environment_labels`, missing-row decodes against zero evidence, and `.nld` members that hold a pickle. Top-level test files moved into the directories that own them.
+
 ### One input step, and tracking coverage at decode
 
 - **Added:** `predict`, `most_likely_sequence` and `compute_log_likelihood` take `valid_position_intervals`, shape `(n_intervals, 2)`, as `fit` does. A bin that owns a time more than half a position sample outside the intervals decodes as missing, whole, and `is_missing` says so. They used to interpolate position across a gap `fit` refuses: on a simulated 120-s recording with tracking dropped from 40 to 80 s, the gap's mean state probabilities went from 0.994 Local with full tracking to 0.990 Non-Local Continuous, with no warning and `is_missing` False. With the intervals the gap's bins are missing and the states follow the transitions to their steady state (0.57 Local, 0.12 Non-Local Continuous). A model that reads no position ignores the argument. Saved files do not change.
