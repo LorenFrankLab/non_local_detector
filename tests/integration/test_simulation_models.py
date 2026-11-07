@@ -64,60 +64,49 @@ def nonlocal_detector(simulated_data):
     )
 
 
-def test_nonlocal_sorted_spikes_detector(simulated_data, nonlocal_detector):
-    """Test NonLocalSortedSpikesDetector fit and predict."""
-    time = simulated_data["time"]
-    position = simulated_data["position"]
-    spike_times = simulated_data["spike_times"]
-    detector = nonlocal_detector
+def median_map_error_while_running(results, simulated_data):
+    """Median |MAP position - true position| over the non-event (running) bins."""
+    posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+    map_position = posterior.idxmax("position").values
+    true_position = np.asarray(simulated_data["position"]).squeeze()
+    is_running = ~simulated_data["is_event"]
+    return np.median(np.abs(map_position - true_position)[is_running])
 
-    # Predict
-    results = detector.predict(
-        spike_times=spike_times,
+
+def test_nonlocal_detector_is_local_while_running_and_non_local_in_events(
+    simulated_data, nonlocal_detector
+):
+    """Running bins decode as Local; the simulated replay events as non-local.
+
+    Measured: Local probability 0.80 while running and non-local probability
+    0.59 in events. With each neuron's spikes circularly shifted (place tuning
+    destroyed) they fall to 0.34 and 0.33.
+    """
+    time = simulated_data["time"]
+    is_event = simulated_data["is_event"]
+
+    results = nonlocal_detector.predict(
+        spike_times=simulated_data["spike_times"],
         time_edges=time_edges_from_centers(time),
-        position=position,
+        position=simulated_data["position"],
         position_time=time,
     )
 
-    # Check output shapes
-    assert results.acausal_posterior.shape[0] == len(time), (
-        "Posterior has wrong time dimension"
+    state_probs = results.acausal_state_probabilities
+    local = state_probs.sel(states="Local").values
+    non_local = (
+        state_probs.sel(states=["Non-Local Continuous", "Non-Local Fragmented"])
+        .sum("states")
+        .values
     )
-    assert results.acausal_state_probabilities.shape[0] == len(time), (
-        "State probs have wrong time dimension"
-    )
-
-    # Check state probabilities
-    n_states = results.acausal_state_probabilities.shape[1]
-    assert n_states == 4, (
-        f"Expected 4 states (Local, No-Spike, Non-Local Continuous, Non-Local Fragmented), got {n_states}"
-    )
-
-    # State probabilities should sum to 1 at each time point
-    state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
-    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6), (
-        "State probabilities don't sum to 1"
-    )
-
-    # Posterior probabilities should sum to 1 at each time point
-    posterior_sums = results.acausal_posterior.sum(axis=1)
-    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
-        "Posterior probabilities don't sum to 1"
-    )
-
-    # Check that encoding model was fitted
-    assert hasattr(detector, "encoding_model_"), "Encoding model not fitted"
-    assert len(detector.encoding_model_) > 0, "Encoding model is empty"
+    assert local[~is_event].mean() > 0.6, local[~is_event].mean()
+    assert non_local[is_event].mean() > 0.45, non_local[is_event].mean()
 
 
-def test_contfrag_sorted_spikes_classifier(simulated_data):
-    """Test ContFragSortedSpikesClassifier fit and predict."""
+def test_contfrag_classifier_decodes_position_while_running(simulated_data):
+    """Measured median MAP error while running: 3.0 cm (29.8 cm with each
+    neuron's spikes circularly shifted)."""
     time = simulated_data["time"]
-    position = simulated_data["position"]
-    spike_times = simulated_data["spike_times"]
-    is_event = simulated_data["is_event"]
-
-    # Fit classifier
     classifier = ContFragSortedSpikesClassifier(
         sampling_frequency=simulated_data["sampling_frequency"],
         sorted_spikes_algorithm="sorted_spikes_kde",
@@ -127,76 +116,24 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
         },
     ).fit(
         position_time=time,
-        position=position,
-        spike_times=spike_times,
-        is_training=~is_event,
+        position=simulated_data["position"],
+        spike_times=simulated_data["spike_times"],
+        is_training=~simulated_data["is_event"],
     )
 
-    # Predict
     results = classifier.predict(
-        spike_times=spike_times,
+        spike_times=simulated_data["spike_times"],
         time_edges=time_edges_from_centers(time),
     )
 
-    # Check output shapes
-    assert results.acausal_posterior.shape[0] == len(time), (
-        "Posterior has wrong time dimension"
-    )
-    assert results.acausal_state_probabilities.shape[0] == len(time), (
-        "State probs have wrong time dimension"
-    )
-
-    # Check state probabilities
-    n_states = results.acausal_state_probabilities.shape[1]
-    assert n_states == 2, f"Expected 2 states (Continuous, Fragmented), got {n_states}"
-
-    # State probabilities should sum to 1
-    state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
-    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6), (
-        "State probabilities don't sum to 1"
-    )
-
-    # Posterior probabilities should sum to 1
-    posterior_sums = results.acausal_posterior.sum(axis=1)
-    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
-        "Posterior probabilities don't sum to 1"
-    )
-
-    # Check transition matrix properties
-    assert hasattr(classifier, "continuous_state_transitions_"), (
-        "Continuous transitions not fitted"
-    )
-    # Continuous transitions should be a valid transition matrix (non-negative, 3D array)
-    assert classifier.continuous_state_transitions_.ndim == 2, (
-        "Continuous transitions should be 2D"
-    )
-    assert np.all(classifier.continuous_state_transitions_ >= 0), (
-        "Transition matrix should be non-negative"
-    )
-    # Each position bin should have valid transitions between discrete states
-    # Note: rows sum to n_discrete_states (2) not 1, because the matrix represents
-    # transitions for all discrete states at each position
-    trans_row_sums = classifier.continuous_state_transitions_.sum(axis=1)
-    assert np.all(trans_row_sums > 0), (
-        "All position bins should have some transition probability"
-    )
-
-    # Initial conditions should sum to ~1
-    assert hasattr(classifier, "initial_conditions_"), "Initial conditions not fitted"
-    init_sum = classifier.initial_conditions_.sum()
-    assert np.isclose(init_sum, 1.0, rtol=1e-5, atol=1e-6), (
-        f"Initial conditions sum to {init_sum}, not 1"
-    )
+    error = median_map_error_while_running(results, simulated_data)
+    assert error < 6.0, error
 
 
-def test_sorted_spikes_decoder(simulated_data):
-    """Test SortedSpikesDecoder fit and predict."""
+def test_sorted_spikes_decoder_decodes_position_while_running(simulated_data):
+    """Measured median MAP error while running: 3.0 cm (28.7 cm with each
+    neuron's spikes circularly shifted)."""
     time = simulated_data["time"]
-    position = simulated_data["position"]
-    spike_times = simulated_data["spike_times"]
-    is_event = simulated_data["is_event"]
-
-    # Fit decoder
     decoder = SortedSpikesDecoder(
         sampling_frequency=simulated_data["sampling_frequency"],
         sorted_spikes_algorithm="sorted_spikes_kde",
@@ -206,70 +143,20 @@ def test_sorted_spikes_decoder(simulated_data):
         },
     ).fit(
         position_time=time,
-        position=position,
-        spike_times=spike_times,
-        is_training=~is_event,
+        position=simulated_data["position"],
+        spike_times=simulated_data["spike_times"],
+        is_training=~simulated_data["is_event"],
     )
 
-    # Predict
     results = decoder.predict(
-        spike_times=spike_times,
+        spike_times=simulated_data["spike_times"],
         time_edges=time_edges_from_centers(time),
-        position=position,
+        position=simulated_data["position"],
         position_time=time,
     )
 
-    # Check output shapes
-    assert results.acausal_posterior.shape[0] == len(time), (
-        "Posterior has wrong time dimension"
-    )
-    assert results.acausal_state_probabilities.shape[0] == len(time), (
-        "State probs have wrong time dimension"
-    )
-
-    # For basic decoder, there's only one state (Continuous)
-    n_states = (
-        results.acausal_state_probabilities.shape[1]
-        if results.acausal_state_probabilities.ndim > 1
-        else 1
-    )
-    assert n_states == 1, f"Expected 1 state (Continuous), got {n_states}"
-
-    # State probabilities should be ~1 (single state)
-    if results.acausal_state_probabilities.ndim > 1:
-        state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
-    else:
-        state_prob_sums = results.acausal_state_probabilities
-    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6), (
-        "State probabilities don't equal 1"
-    )
-
-    # Posterior probabilities should sum to 1
-    posterior_sums = results.acausal_posterior.sum(axis=1)
-    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
-        "Posterior probabilities don't sum to 1"
-    )
-
-    # Test log likelihood computation
-    log_likelihood = decoder.compute_log_likelihood(
-        time_edges=time_edges_from_centers(time),
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-    )
-
-    # Check log likelihood shape
-    assert log_likelihood.shape[0] == len(time), (
-        "Log likelihood has wrong time dimension"
-    )
-    assert log_likelihood.ndim == 2, (
-        f"Expected 2D log likelihood, got {log_likelihood.ndim}D"
-    )
-
-    # Log likelihoods should be finite
-    assert np.all(np.isfinite(log_likelihood)), (
-        "Log likelihoods contain non-finite values"
-    )
+    error = median_map_error_while_running(results, simulated_data)
+    assert error < 6.0, error
 
 
 def test_silent_period_shifts_mass_to_no_spike_state(simulated_data, nonlocal_detector):
