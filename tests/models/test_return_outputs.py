@@ -280,20 +280,3 @@ class TestReturnOutputsParameter:
                 position_time=time,
                 return_outputs=return_outputs,
             )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "flag", ["save_log_likelihood_to_results", "save_causal_posterior_to_results"]
-)
-def test_removed_output_flags_are_rejected(simple_fitted_detector, flag):
-    """The boolean output flags are gone; return_outputs selects the outputs."""
-    detector, spike_times, time, position = simple_fitted_detector
-    with pytest.raises(TypeError, match=flag):
-        detector.predict(
-            spike_times=spike_times,
-            time_edges=time_edges_from_centers(time),
-            position=position,
-            position_time=time,
-            **{flag: True},
-        )

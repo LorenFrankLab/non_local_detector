@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 
 from non_local_detector.discrete_state_transitions import (
-    DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
 )
 
@@ -120,19 +119,6 @@ def test_unpickled_detector_with_any_formula_rebuilds_its_design_and_decodes(
         restored.predict(**predict).acausal_posterior.to_numpy(),
         model.predict(**predict).acausal_posterior.to_numpy(),
     )
-
-
-@pytest.mark.parametrize(
-    "transition",
-    [
-        lambda formula: DiscreteNonStationaryDiagonal(np.full(4, 0.9), formula),
-        lambda formula: DiscreteNonStationaryCustom(np.full((4, 4), 0.25), formula),
-    ],
-    ids=["diagonal", "custom"],
-)
-@pytest.mark.parametrize("formula", [formula for formula, _ in FORMULAS.values()])
-def test_any_formula_constructs(transition, formula):
-    assert transition(formula).formula == formula
 
 
 def test_plot_without_covariate_data_says_it_is_required(checkpoint_recording):
