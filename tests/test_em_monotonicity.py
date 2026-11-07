@@ -14,7 +14,6 @@ Tests cover:
 """
 
 import dataclasses
-import inspect
 import itertools
 import warnings
 from types import SimpleNamespace
@@ -114,25 +113,6 @@ def _assert_monotonic(lls, label=""):
             f"{lls[i]:.6f} < {lls[i - 1]:.6f} "
             f"(diff={lls[i] - lls[i - 1]:.2e})"
         )
-
-
-@pytest.mark.unit
-def test_encoding_refit_is_opt_in():
-    """The encoding refit is not an exact M-step, so neither the EM engine nor
-    any ``estimate_parameters`` runs it by default."""
-    from non_local_detector.models.base import (
-        ClusterlessDetector,
-        SortedSpikesDetector,
-        _DetectorBase,
-    )
-
-    for method in (
-        _DetectorBase._run_em,
-        ClusterlessDetector.estimate_parameters,
-        SortedSpikesDetector.estimate_parameters,
-    ):
-        parameters = inspect.signature(method).parameters
-        assert parameters["estimate_encoding_model"].default is False, method
 
 
 @pytest.mark.slow

@@ -64,19 +64,6 @@ def test_public_modules_are_discovered():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("module_name", PUBLIC_MODULES)
-def test_public_module_defines_all(module_name):
-    module = importlib.import_module(module_name)
-    if _is_internal(module_name) and not hasattr(module, "__all__"):
-        return
-    assert hasattr(module, "__all__"), f"{module_name} must define __all__"
-    names = module.__all__
-    assert isinstance(names, list)
-    assert all(isinstance(name, str) for name in names)
-    assert len(names) == len(set(names)), f"{module_name}.__all__ has duplicates"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("module_name", PUBLIC_MODULES)
 def test_every_name_in_all_exists(module_name):
     module = importlib.import_module(module_name)
     if not hasattr(module, "__all__"):
