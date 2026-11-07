@@ -242,7 +242,7 @@ def test_original_degenerate_and_missing_semantics(tmp_path, kind, caplog):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     missing = np.zeros(len(ll), bool)
     if kind == "missing":
-        missing[3:5] = True
+        missing[2:4] = True  # crosses the chunk boundary at row 3
     elif kind == "impossible":
         ll[4] = -np.inf
     else:
@@ -330,7 +330,7 @@ def test_transition_statistics_follow_degenerate_row_semantics(kind):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     missing = np.zeros(len(ll), bool)
     if kind == "missing":
-        missing[3:5] = True
+        missing[2:4] = True  # crosses the chunk boundary at row 3
     elif kind == "impossible":
         ll[4] = -np.inf
     elif kind == "support_mismatch":
