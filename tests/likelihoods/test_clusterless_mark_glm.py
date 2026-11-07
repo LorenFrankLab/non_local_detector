@@ -217,8 +217,10 @@ def test_integer_weights_equal_replicated_spikes():
     np.testing.assert_allclose(
         weighted.weights[order_w], replicated.weights[order_r], atol=2e-3
     )
+    # Measured max|diff| 6.5e-7 on means up to 60; ignoring the weights moves
+    # the means by a sizable fraction of MARK_STD.
     np.testing.assert_allclose(
-        weighted.means[order_w], replicated.means[order_r], atol=2e-2
+        weighted.means[order_w], replicated.means[order_r], atol=5e-5
     )
 
 
@@ -609,7 +611,9 @@ def test_2d_rate_maps_match_a_sorted_fit_with_the_true_units():
     for estimate, expected in zip(
         _unit_rate_maps(encoding, 0, means), sorted_maps, strict=True
     ):
-        np.testing.assert_allclose(estimate, expected, rtol=0.02, atol=0.02)
+        # Measured max rel diff 1.1e-7 (abs 1.9e-6 on rates up to 23 Hz); a
+        # 1% rate mis-scale is a 1e-2 rel diff.
+        np.testing.assert_allclose(estimate, expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.integration

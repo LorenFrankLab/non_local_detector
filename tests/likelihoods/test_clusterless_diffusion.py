@@ -534,7 +534,8 @@ def test_absolute_log_likelihood_small_fixture():
     assert list(enc_bins) == [0, 2]
     assert _decode_bin(dec_times, time_edges).tolist() == [0, 1]
     assert ll.shape == expected.shape == (len(time_edges) - 1, n_bins)
-    assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
+    # Measured max|diff| 4.1e-7 at |ll| ~ 6.5; a 2% dV mis-scale is ~2e-2 nats.
+    assert np.allclose(ll, expected, rtol=5e-6, atol=1e-5), (
         f"absolute log-likelihood mismatch: max|diff|={np.abs(ll - expected).max():.3e}"
     )
 
@@ -2117,7 +2118,8 @@ def test_nonuniform_dv_log_likelihood_matches_hand_computation():
     )
 
     assert ll.shape == expected.shape == (len(time_edges) - 1, n_bins)
-    assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
+    # Measured max|diff| 2.0e-6 at |ll| ~ 22; a 2% dV mis-scale is ~2e-2 nats.
+    assert np.allclose(ll, expected, rtol=5e-6, atol=1e-5), (
         f"non-uniform-dV log-likelihood mismatch: "
         f"max|diff|={np.abs(ll - expected).max():.3e}"
     )
