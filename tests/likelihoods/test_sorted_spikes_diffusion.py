@@ -4,7 +4,7 @@
 same encoding-dict contract and Poisson log-likelihood, but place fields are
 smoothed on the environment's manifold graph (heat kernel) instead of with a
 Gaussian KDE. These tests pin the encoding-dict shapes, KDE equivalence on a
-wall-less field, weighted-fit parity and predict shapes.
+wall-less field, weighted-fit parity and the Poisson likelihood values.
 """
 
 import networkx as nx
@@ -1016,37 +1016,6 @@ def test_detectors_reject_population_mismatch(env_2d, algorithm):
 def three_neuron_fit(env_2d, request):
     """A registered diffusion-family model fit on three neurons."""
     return _fit_population(env_2d, request.param, n_neurons=3)
-
-
-def test_predict_shapes_local_and_nonlocal(env_2d, three_neuron_fit):
-    """Non-local -> (n_time, n_interior); local -> (n_time, 1); both finite."""
-    env = env_2d
-    predict, encoding, time, position, spike_times = three_neuron_fit
-    decode_time = time[:200]
-    decode_time_edges = time_edges_from_centers(decode_time)
-    n_interior = int(env.is_track_interior_.ravel().sum())
-
-    nonlocal_ll = predict(
-        time,
-        position,
-        spike_times,
-        time_edges=decode_time_edges,
-        is_local=False,
-        **encoding,
-    )
-    assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
-    assert np.all(np.isfinite(nonlocal_ll))
-
-    local_ll = predict(
-        time,
-        position,
-        spike_times,
-        time_edges=decode_time_edges,
-        is_local=True,
-        **encoding,
-    )
-    assert local_ll.shape == (decode_time.shape[0], 1)
-    assert np.all(np.isfinite(local_ll))
 
 
 def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_fit):

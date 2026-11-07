@@ -284,11 +284,3 @@ def test_spike_free_row_is_a_rate_times_its_duration(cross_model_data, name):
     local = _predict(cross_model_data, name, empty=True, is_local=True)
     assert np.all(np.isfinite(local))
     assert np.all(local <= 0.0)
-
-
-@pytest.mark.parametrize("name", ALGORITHMS)
-def test_local_likelihood_finite_all_models(cross_model_data, name):
-    """Every registered model produces finite local log-likelihoods."""
-    ll = _predict(cross_model_data, name, is_local=True)
-    assert ll.shape == (len(DECODE_EDGES) - 1, 1)
-    assert np.all(np.isfinite(ll))

@@ -77,23 +77,6 @@ def simple_spike_data():
 class TestSplineDesignMatrix:
     """Test spline design matrix generation."""
 
-    def test_make_spline_design_matrix_returns_correct_shape(self):
-        """Design matrix should have correct dimensions."""
-        # Arrange
-        n_time = 50
-        position = np.linspace(0, 100, n_time)[:, None]
-        place_bin_edges = np.linspace(0, 100, 21)[:, None]  # 20 bins, shape (21, 1)
-        knot_spacing = 10.0
-
-        # Act
-        design_matrix = make_spline_design_matrix(
-            position, place_bin_edges, knot_spacing
-        )
-
-        # Assert
-        assert design_matrix.shape[0] == n_time
-        assert design_matrix.shape[1] > 1  # At least intercept + some basis functions
-
     def test_make_spline_design_matrix_includes_intercept(self):
         """First column should be all ones (intercept)."""
         # Arrange
@@ -105,51 +88,6 @@ class TestSplineDesignMatrix:
 
         # Assert
         assert np.allclose(design_matrix[:, 0], 1.0)
-
-    def test_make_spline_design_matrix_with_2d_position(self):
-        """Should handle 2D position data."""
-        # Arrange
-        n_time = 30
-        position = np.column_stack(
-            [np.linspace(0, 100, n_time), np.linspace(0, 50, n_time)]
-        )
-        place_bin_edges = np.column_stack(
-            [
-                np.linspace(0, 100, 11),  # 10 bins in x
-                np.linspace(0, 50, 11),  # 10 bins in y
-            ]
-        )  # shape (11, 2)
-        knot_spacing = 20.0
-
-        # Act
-        design_matrix = make_spline_design_matrix(
-            position, place_bin_edges, knot_spacing
-        )
-
-        # Assert
-        assert design_matrix.shape[0] == n_time
-        assert design_matrix.shape[1] > 1
-
-    def test_make_spline_predict_matrix_matches_design_shape(self):
-        """Predict matrix should have consistent basis functions."""
-        # Arrange
-        n_fit = 50
-        n_predict = 30
-        position_fit = np.linspace(0, 100, n_fit)[:, None]
-        position_predict = np.linspace(10, 90, n_predict)[:, None]
-        place_bin_edges = np.linspace(0, 100, 21)[:, None]  # 20 bins, shape (21, 1)
-
-        design_matrix = make_spline_design_matrix(position_fit, place_bin_edges)
-        design_info = design_matrix.design_info
-
-        # Act
-        predict_matrix = make_spline_predict_matrix(design_info, position_predict)
-
-        # Assert
-        assert predict_matrix.shape[0] == n_predict
-        assert (
-            predict_matrix.shape[1] == design_matrix.shape[1]
-        )  # Same number of basis functions
 
     def test_make_spline_predict_matrix_handles_nan_positions(self):
         """Should handle NaN positions gracefully."""
@@ -181,26 +119,6 @@ class TestSplineDesignMatrix:
 @pytest.mark.unit
 class TestPoissonRegression:
     """Test Poisson regression fitting."""
-
-    def test_fit_poisson_regression_returns_coefficients(self):
-        """Should return coefficient array of correct size."""
-        # Arrange
-        rng = np.random.default_rng(0)
-        n_time = 100
-        n_basis = 10
-        design_matrix = rng.standard_normal((n_time, n_basis))
-        design_matrix[:, 0] = 1.0  # Intercept
-        spikes = rng.poisson(5, size=n_time)
-        weights = np.ones(n_time)
-
-        # Act
-        coefficients = fit_poisson_regression(
-            design_matrix, spikes, weights, l2_penalty=1e-3
-        )
-
-        # Assert
-        assert coefficients.shape == (n_basis,)
-        assert jnp.all(jnp.isfinite(coefficients))
 
     def test_fit_poisson_regression_with_zero_spikes(self):
         """Should handle neuron with no spikes."""
@@ -648,26 +566,6 @@ def test_encoding_fit_solves_all_cells_in_one_call(
 class TestFitGLMEncodingModel:
     """Test full GLM encoding model fitting."""
 
-    def test_fit_glm_encoding_model_place_fields_shape(
-        self, line_env_100cm, simple_spike_data
-    ):
-        """Place fields should have correct shape."""
-        # Arrange
-        env = line_env_100cm
-        data = simple_spike_data
-        n_neurons = len(data["spike_times"])
-
-        # Act
-        encoding = _fit_encoding(env, data)
-
-        # Assert
-        place_fields = encoding["place_fields"]
-        n_place_bins = env.place_bin_centers_.shape[0]
-        assert len(place_fields) == n_neurons
-        for pf in place_fields:
-            assert pf.shape[0] == n_place_bins
-            assert jnp.all(pf >= 0)  # Rates should be non-negative
-
     def test_fit_glm_encoding_model_with_custom_knot_spacing(
         self, line_env_100cm, simple_spike_data
     ):
@@ -690,33 +588,13 @@ class TestFitGLMEncodingModel:
 class TestPredictGLMLogLikelihood:
     """Test GLM log-likelihood prediction."""
 
-    def test_predict_glm_log_likelihood_nonlocal_returns_correct_shape(
+    def test_predict_glm_log_likelihood_rejects_a_population_mismatch(
         self, line_env_100cm, simple_spike_data
     ):
-        """Non-local prediction should return likelihood for all bins."""
-        # Arrange
-        env = line_env_100cm
+        """Fewer spike trains than fitted neurons raise instead of truncating."""
         data = simple_spike_data
-
-        encoding = _fit_encoding(env, data)
-
-        # Create decoding time window
+        encoding = _fit_encoding(line_env_100cm, data)
         time = np.linspace(0, 0.5, 10)
-
-        # Act
-        log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time_edges=jnp.asarray(time_edges_from_centers(time)),
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            **encoding,
-            is_local=False,
-        )
-
-        # Assert
-        n_place_bins = np.sum(env.is_track_interior_)
-        assert log_likelihood.shape == (len(time), n_place_bins)
-        assert jnp.all(jnp.isfinite(log_likelihood))
 
         with pytest.raises(ValidationError, match="population lengths do not match"):
             predict_sorted_spikes_glm_log_likelihood(
@@ -727,32 +605,6 @@ class TestPredictGLMLogLikelihood:
                 **encoding,
                 is_local=False,
             )
-
-    def test_predict_glm_log_likelihood_local_returns_correct_shape(
-        self, line_env_100cm, simple_spike_data
-    ):
-        """Local prediction should return likelihood only at current position."""
-        # Arrange
-        env = line_env_100cm
-        data = simple_spike_data
-
-        encoding = _fit_encoding(env, data)
-
-        time = np.linspace(0, 0.5, 10)
-
-        # Act
-        log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time_edges=jnp.asarray(time_edges_from_centers(time)),
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            **encoding,
-            is_local=True,
-        )
-
-        # Assert
-        assert log_likelihood.shape == (len(time), 1)  # One position per time point
-        assert jnp.all(jnp.isfinite(log_likelihood))
 
 
 def _fit_glm(

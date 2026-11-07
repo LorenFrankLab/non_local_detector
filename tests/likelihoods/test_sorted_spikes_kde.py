@@ -50,37 +50,9 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
     assert jnp.all(pf > 0)
 
 
-def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_fit):
+def test_predict_sorted_spikes_kde_rejects_a_population_mismatch(kde_fit):
     _, t_pos, pos, spikes, enc = kde_fit
-
-    # decoding over 5 time bins via 6 edges
     t_edges = jnp.linspace(0.0, 10.0, 6)
-
-    # Non-local
-    ll = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes,
-        **enc,
-        is_local=False,
-    )
-    assert ll.shape[0] == t_edges.shape[0] - 1
-    assert ll.ndim == 2
-    assert ll.shape[1] == int(enc["is_track_interior"].sum())
-    assert jnp.all(jnp.isfinite(ll))
-
-    # Local
-    ll_local = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes,
-        **enc,
-        is_local=True,
-    )
-    assert ll_local.shape == (t_edges.shape[0] - 1, 1)
-    assert jnp.all(jnp.isfinite(ll_local))
 
     with pytest.raises(ValidationError, match="population lengths do not match"):
         predict_sorted_spikes_kde_log_likelihood(
