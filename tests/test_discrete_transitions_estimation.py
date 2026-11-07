@@ -46,7 +46,103 @@ from tests._transition_statistics import (
     expanded_counts,
     expanded_responses,
 )
-from tests.conftest import assert_stochastic_matrix
+from tests.conftest import assert_stochastic_matrix, precision_mode
+
+
+@pytest.fixture
+def posterior_data():
+    """Filtered, predictive and smoothed posteriors of a small sticky HMM.
+
+    A 4-state hidden sequence of 50 steps is sampled from ``transition_matrix``
+    (0.7 on the diagonal) and observed through noisy categorical emissions
+    (the true state is reported with probability 0.6). The posteriors are the
+    float64 outputs of :func:`non_local_detector.core.filter` and
+    :func:`non_local_detector.core.smoother` for that model, so they satisfy
+    ``predictive_distribution[t] = causal_posterior[t - 1] @ transition_matrix``
+    (``predictive_distribution[0]`` is the uniform initial distribution) and
+    ``acausal_posterior`` is the matching smoothed posterior.
+
+    Returns
+    -------
+    dict
+        ``causal_posterior``, ``predictive_distribution``,
+        ``acausal_posterior`` : ndarray, shape (n_time, n_states)
+        ``transition_matrix`` : ndarray, shape (n_states, n_states)
+        ``n_time``, ``n_states`` : int
+    """
+    from non_local_detector.core import filter as hmm_filter
+    from non_local_detector.core import smoother
+
+    rng = np.random.default_rng(42)
+    n_time, n_states = 50, 4
+    transition_matrix = np.full((n_states, n_states), 0.1)
+    np.fill_diagonal(transition_matrix, 0.7)
+    initial_distribution = np.full(n_states, 1.0 / n_states)
+    emission = np.full((n_states, n_states), 0.4 / (n_states - 1))
+    np.fill_diagonal(emission, 0.6)
+
+    states = np.empty(n_time, dtype=int)
+    states[0] = rng.choice(n_states, p=initial_distribution)
+    for t in range(1, n_time):
+        states[t] = rng.choice(n_states, p=transition_matrix[states[t - 1]])
+    observations = np.array([rng.choice(n_states, p=emission[s]) for s in states])
+    # log P(observation_t | state_t = k), shape (n_time, n_states)
+    log_likelihoods = np.log(emission[:, observations].T)
+
+    with precision_mode(True):
+        _, (causal_posterior, predictive_distribution) = hmm_filter(
+            jnp.asarray(initial_distribution),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(log_likelihoods),
+        )
+        acausal_posterior = smoother(jnp.asarray(transition_matrix), causal_posterior)
+        causal_posterior = np.asarray(causal_posterior, dtype=np.float64)
+        predictive_distribution = np.asarray(predictive_distribution, dtype=np.float64)
+        acausal_posterior = np.asarray(acausal_posterior, dtype=np.float64)
+
+    return {
+        "causal_posterior": causal_posterior,
+        "acausal_posterior": acausal_posterior,
+        "predictive_distribution": predictive_distribution,
+        "transition_matrix": transition_matrix,
+        "n_time": n_time,
+        "n_states": n_states,
+    }
+
+
+@pytest.fixture
+def design_matrix_data():
+    """Generate design matrix for non-stationary transition testing.
+
+    Returns
+    -------
+    dict
+        Contains design_matrix, transition_coefficients for testing.
+    """
+    rng = np.random.default_rng(43)
+    n_time, n_coefficients, n_states = 50, 3, 4
+
+    # Create design matrix with intercept and two covariates
+    design_matrix = np.column_stack(
+        [
+            np.ones(n_time),
+            np.linspace(0, 1, n_time),
+            np.sin(np.linspace(0, 2 * np.pi, n_time)),
+        ]
+    )
+
+    # Initialize coefficients (small values to avoid extreme probabilities)
+    transition_coefficients = (
+        rng.standard_normal((n_coefficients, n_states, n_states - 1)) * 0.1
+    )
+
+    return {
+        "design_matrix": design_matrix,
+        "transition_coefficients": transition_coefficients,
+        "n_time": n_time,
+        "n_coefficients": n_coefficients,
+        "n_states": n_states,
+    }
 
 
 class _FixedTransition:
