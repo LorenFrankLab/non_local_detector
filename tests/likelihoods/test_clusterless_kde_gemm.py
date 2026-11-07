@@ -1,4 +1,4 @@
-"""Test parity and performance of GEMM vs loop-based mark kernel computation."""
+"""Mark kernel GEMM and the GEMM joint mark intensity match loop and float64 references."""
 
 import jax.numpy as jnp
 import numpy as np
