@@ -146,18 +146,24 @@ def test_backend_returns_one_row_per_bin_and_owns_the_final_edge(
 @pytest.mark.integration
 @pytest.mark.parametrize("name", ALGORITHMS)
 @pytest.mark.parametrize(
-    "edges",
+    ("edges", "error", "message"),
     [
-        np.array([2.0, 2.1, 2.1, 2.3]),
-        np.array([2.0, 2.2, 2.1, 2.3]),
-        np.array([2.0, np.nan, 2.3]),
-        np.array([2.0]),
-        np.array([[2.0, 2.1], [2.2, 2.3]]),
+        (np.array([2.0, 2.1, 2.1, 2.3]), DataError, "must be strictly increasing"),
+        (np.array([2.0, 2.2, 2.1, 2.3]), DataError, "must be strictly increasing"),
+        (np.array([2.0, np.nan, 2.3]), DataError, "non-finite values in time_edges"),
+        (np.array([2.0]), ValidationError, "one-dimensional array of at least two"),
+        (
+            np.array([[2.0, 2.1], [2.2, 2.3]]),
+            ValidationError,
+            "one-dimensional array of at least two",
+        ),
     ],
     ids=["repeated", "decreasing", "nan", "single-edge", "2d"],
 )
-def test_backend_rejects_invalid_edges(fitted, encoding_data, name, edges):
-    with pytest.raises((DataError, ValidationError)):
+def test_backend_rejects_invalid_edges(
+    fitted, encoding_data, name, edges, error, message
+):
+    with pytest.raises(error, match=message):
         _predict(
             fitted,
             name,
@@ -182,7 +188,7 @@ def test_no_spike_returns_one_row_per_bin_and_owns_the_final_edge():
     np.testing.assert_array_equal(
         np.any(final != empty, axis=tuple(range(1, final.ndim))), [False] * 9 + [True]
     )
-    with pytest.raises(DataError):
+    with pytest.raises(DataError, match="must be strictly increasing"):
         predict_no_spike_log_likelihood(
             [np.array([])], time_edges=np.array([0.0, 1.0, 0.5])
         )
