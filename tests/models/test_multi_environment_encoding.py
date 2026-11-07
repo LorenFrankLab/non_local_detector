@@ -3,11 +3,11 @@
 A detector fit on a recording that spans two environments must give each
 environment the encoding model a detector fit on that environment's samples
 alone would give: same grid, occupancy, place fields or ground intensity, and
-mean rates. The environments differ in extent and the cells remap between
-them, so occupancy from the other environment, or a grid fit on its
-positions, changes the fit. (A spike from the other environment carries zero
-interpolated exposure weight, so it cannot leak in.) Decoding then attributes
-each environment's spikes to it.
+mean rates, also after an EM encoding refit. The environments differ in
+extent and the cells remap between them, so occupancy from the other
+environment, or a grid fit on its positions, changes the fit. (A spike from
+the other environment carries zero interpolated exposure weight, so it cannot
+leak in.) Decoding then attributes each environment's spikes to it.
 """
 
 import numpy as np
@@ -15,6 +15,7 @@ import pytest
 
 from non_local_detector import (
     ClusterlessDecoder,
+    Discrete,
     DiscreteStationaryDiagonal,
     Environment,
     RandomWalk,
@@ -284,3 +285,96 @@ def test_decoding_favors_the_environment_the_spikes_came_from(
         results = detector.predict(*spikes, time_edges=edges)
         probability = results.acausal_state_probabilities.sel(states=name)
         assert float(probability.mean()) > 0.8, name
+
+
+@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+def test_em_encoding_refit_keeps_each_environment_on_its_own_samples(
+    two_environment_recording, monkeypatch
+):
+    """``estimate_parameters`` forwards ``environment_labels`` to the EM
+    encoding refit: each environment's refit model equals a fit on its own
+    samples alone with the same posterior weights.
+
+    The match is exact (largest relative difference 2e-16). If the refit
+    dropped the labels, every sample would train environment A and B none:
+    a no-training-samples warning for B, and relative differences of 0.66 to
+    3e4.
+    """
+    data = two_environment_recording
+    # A Local and a non-local state per environment: the refit weights are
+    # the Local posterior.
+    states = [("A", True), ("B", True), ("A", False), ("B", False)]
+    detector = SortedSpikesDecoder(
+        environments=[
+            Environment(environment_name=name, place_bin_size=4.0) for name in NAMES
+        ],
+        observation_models=[
+            ObservationModel(environment_name=name, is_local=is_local)
+            for name, is_local in states
+        ],
+        continuous_transition_types=[
+            [
+                Discrete()
+                if source_is_local and destination_is_local
+                else Uniform(source, destination)
+                for destination, destination_is_local in states
+            ]
+            for source, source_is_local in states
+        ],
+        discrete_initial_conditions=np.full(len(states), 1.0 / len(states)),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions() for _ in states
+        ],
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            diagonal_values=np.full(len(states), 0.98)
+        ),
+        discrete_transition_stickiness=np.zeros(len(states)),
+        state_names=["A local", "B local", "A non-local", "B non-local"],
+        sampling_frequency=SAMPLING_FREQUENCY,
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    )
+    refit_weights = []
+    refit = detector._refit_encoding_model
+
+    def record_refit_weights(weights, encoding_fit_arguments):
+        refit_weights.append(np.array(weights))
+        return refit(weights, encoding_fit_arguments)
+
+    monkeypatch.setattr(detector, "_refit_encoding_model", record_refit_weights)
+    detector.estimate_parameters(
+        data["time"],
+        data["position"],
+        data["spike_times"],
+        time_edges=time_edges_from_centers(data["time"]),
+        environment_labels=data["labels"],
+        max_iter=1,
+        estimate_discrete_transition=False,
+        estimate_encoding_model=True,
+    )
+    (weights,) = refit_weights
+    # Weighting changes the fit (0.046 to 1 measured), so matching the
+    # weighted fit below is not matching an unweighted one.
+    assert weights.min() < 0.5
+
+    for name in NAMES:
+        is_here = data["labels"] == name
+        time = data["time"][is_here]
+        position = data["position"][is_here]
+        alone_spikes = [_within(t, time[0], time[-1]) for t in data["spike_times"]]
+        alone = _detector(
+            SortedSpikesDecoder, "sorted_spikes_algorithm", "sorted_spikes_kde", (name,)
+        )
+        alone.fit(time, position, alone_spikes)
+        alone.fit_encoding_model(time, position, alone_spikes, weights=weights[is_here])
+
+        joint_model = detector.encoding_model_[(name, 0)]
+        alone_model = alone.encoding_model_[(name, 0)]
+        for key in ("occupancy", "place_fields", "mean_rates"):
+            np.testing.assert_allclose(
+                np.asarray(joint_model[key]),
+                np.asarray(alone_model[key]),
+                rtol=1e-5,
+                atol=0.0,
+                err_msg=f"{name}: {key}",
+            )
