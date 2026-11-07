@@ -151,7 +151,7 @@ def _delete_transition_clock(detector):
     del detector.transition_time_bin_width_
 
 
-_UNKNOWN_UNITS = "Encoding entry .* is missing or has unknown rate units"
+_UNKNOWN_UNITS = r"Encoding entry .* is missing or has unknown rate units"
 _UNKNOWN_CONTRACT = "Saved model has a legacy or unknown time contract"
 _INVALID_CLOCK = "Saved model has invalid transition clock provenance"
 

@@ -366,7 +366,12 @@ def test_fit_rejects_invalid_transition_arguments_before_refit(
         raise AssertionError(msg)
 
     monkeypatch.setattr(model, "_fit_environments", refit)
-    with pytest.raises(ValidationError):
+    (name,) = arguments
+    message = {
+        "transition_representation": "must be dense, structured, or auto",
+        "max_dense_transition_bytes": "must be a positive integer",
+    }[name]
+    with pytest.raises(ValidationError, match=f"{name} {message}"):
         model.fit(**fit, **arguments)
 
 

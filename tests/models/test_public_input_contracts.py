@@ -238,15 +238,27 @@ def test_return_outputs_string_and_list_forms_agree(string, expected):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "arguments",
+    ("arguments", "message"),
     [
-        {"inference_mode": "checkpointed", "cache_likelihood": True},
-        {"inference_mode": "checkpointed", "n_chunks": 2},
-        {"inference_mode": "dense", "output_mode": "compact"},
-        {"inference_mode": "dense", "chunk_size": 10},
+        (
+            {"inference_mode": "checkpointed", "cache_likelihood": True},
+            "leave cache_likelihood=False and n_chunks=1",
+        ),
+        (
+            {"inference_mode": "checkpointed", "n_chunks": 2},
+            "leave cache_likelihood=False and n_chunks=1",
+        ),
+        (
+            {"inference_mode": "dense", "output_mode": "compact"},
+            "options require inference_mode='checkpointed'",
+        ),
+        (
+            {"inference_mode": "dense", "chunk_size": 10},
+            "options require inference_mode='checkpointed'",
+        ),
     ],
 )
-def test_inference_argument_conflicts_raise_validation_error(arguments):
+def test_inference_argument_conflicts_raise_validation_error(arguments, message):
     settings = {
         "inference_mode": "dense",
         "output_mode": "spatial",
@@ -257,7 +269,7 @@ def test_inference_argument_conflicts_raise_validation_error(arguments):
         "checkpoint_dir": None,
         "selected_intervals": None,
     } | arguments
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         _validate_inference_arguments(**settings)
 
 

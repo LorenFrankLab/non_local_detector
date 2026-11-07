@@ -160,7 +160,10 @@ def test_later_active_entry_rejected_before_any_backend_or_hmm_work(
         registry, algorithm, replace(registry[algorithm], predict=unexpected_work)
     )
     monkeypatch.setattr(base, "chunked_filter_smoother", unexpected_work)
-    with pytest.raises(ValidationError, match="refit"):
+    with pytest.raises(
+        ValidationError,
+        match=r"Encoding entry .* is missing or has unknown rate units; refit",
+    ):
         _call_model(detector, entry, time, position, spike_args)
     _assert_unchanged(detector, snapshot)
 
@@ -281,7 +284,7 @@ def test_legacy_file_loads_for_inspection_without_running_constructor(
         np.testing.assert_array_equal(
             restored.encoding_model_[key]["mean_rates"], model["mean_rates"]
         )
-    with pytest.raises(ValidationError, match="refit"):
+    with pytest.raises(ValidationError, match="legacy or unknown time contract; refit"):
         _call_model(restored, entry, time, position, spike_args)
 
 
@@ -377,7 +380,9 @@ def test_direct_predictors_validate_supplied_units_and_default_to_hz(algorithm):
     actual = predictor(time, position, *args, time_edges=edges, **unmarked)
     np.testing.assert_array_equal(actual, expected)
     for units in (None, "per_position_sample"):
-        with pytest.raises(ValidationError, match="refit"):
+        with pytest.raises(
+            ValidationError, match="Encoding rates must be in Hz; refit"
+        ):
             predictor(
                 time, position, *args, time_edges=edges, **unmarked, rate_units=units
             )

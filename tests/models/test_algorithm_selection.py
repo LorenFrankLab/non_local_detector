@@ -124,10 +124,12 @@ def test_switching_the_algorithm_after_fit_raises(sorted_sim, fitted, switched):
     expected = _predict_sorted(detector, sorted_sim)
 
     detector.set_params(sorted_spikes_algorithm=switched)
-    with pytest.raises(ValidationError, match="refit") as error:
+    with pytest.raises(
+        ValidationError,
+        match=f"was fitted by '{fitted}', but sorted_spikes_algorithm is now "
+        f"'{switched}'; refit",
+    ):
         _predict_sorted(detector, sorted_sim)
-    assert fitted in str(error.value)
-    assert switched in str(error.value)
 
     detector.set_params(sorted_spikes_algorithm=fitted)
     restored = _predict_sorted(detector, sorted_sim)
@@ -233,7 +235,9 @@ def test_encoding_model_without_a_recorded_algorithm_raises(sorted_sim):
     detector = _fit_sorted("sorted_spikes_kde", sorted_sim)
     (encoding_model,) = detector.encoding_model_.values()
     del encoding_model["algorithm"]
-    with pytest.raises(ValidationError, match="refit") as error:
+    with pytest.raises(
+        ValidationError, match="does not record the algorithm that fitted it; refit"
+    ) as error:
         _predict_sorted(detector, sorted_sim)
     assert "=None" not in str(error.value)
 
