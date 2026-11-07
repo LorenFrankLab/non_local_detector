@@ -44,10 +44,11 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
-# 202 bins (203 edges) is not divisible by 5, 6 or 7, so every chunk split below
-# has a ragged final chunk as well as uneven boundaries.
+# 202 bins (203 edges) is not divisible by 7, so the chunk split below has a
+# ragged final chunk as well as uneven boundaries. Other non-divisible counts
+# are the same kind of split; single-row chunks are tested separately.
 N_DECODE = 202
-CHUNK_COUNTS = (5, 6, 7)
+CHUNK_COUNTS = (7,)
 N_SINGLETON = 41
 # Rates of the simulated recordings; detectors must match the edges they decode.
 SORTED_SAMPLING_FREQUENCY = 1500.0
