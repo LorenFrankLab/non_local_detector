@@ -290,35 +290,21 @@ class TestPlotting:
             adjust_for_short_trials=False,
         )
 
-    def test_class_plot_ks_returns_axes(self, fitted_rescaling):
-        ax = fitted_rescaling.plot_ks()
-        assert isinstance(ax, plt.Axes)
-        plt.close("all")
-
-    def test_class_plot_qq_returns_axes(self, fitted_rescaling):
-        ax = fitted_rescaling.plot_qq()
-        assert isinstance(ax, plt.Axes)
-        plt.close("all")
-
-    def test_class_plot_autocorrelation_returns_axes(self, fitted_rescaling):
-        ax = fitted_rescaling.plot_rescaled_ISI_autocorrelation()
-        assert isinstance(ax, plt.Axes)
-        plt.close("all")
-
-    def test_module_plot_ks_returns_axes(self, fitted_rescaling):
-        ax = plot_ks(fitted_rescaling.uniform_rescaled_ISIs())
-        assert isinstance(ax, plt.Axes)
-        plt.close("all")
-
-    def test_module_plot_qq_returns_axes(self, fitted_rescaling):
-        ax = plot_qq(fitted_rescaling.uniform_rescaled_ISIs())
-        assert isinstance(ax, plt.Axes)
-        plt.close("all")
-
-    def test_module_plot_autocorrelation_returns_axes(self, fitted_rescaling):
-        ac = fitted_rescaling.rescaled_ISI_autocorrelation()
-        ax = plot_rescaled_ISI_autocorrelation(ac, sampling_frequency=2.0, lag_max=5.0)
-        assert isinstance(ax, plt.Axes)
+    def test_plots_draw_on_axes(self, fitted_rescaling):
+        """Smoke test: each plotting method and function returns its Axes."""
+        uniform = fitted_rescaling.uniform_rescaled_ISIs()
+        autocorrelation = fitted_rescaling.rescaled_ISI_autocorrelation()
+        for ax in (
+            fitted_rescaling.plot_ks(),
+            fitted_rescaling.plot_qq(),
+            fitted_rescaling.plot_rescaled_ISI_autocorrelation(),
+            plot_ks(uniform),
+            plot_qq(uniform),
+            plot_rescaled_ISI_autocorrelation(
+                autocorrelation, sampling_frequency=2.0, lag_max=5.0
+            ),
+        ):
+            assert isinstance(ax, plt.Axes)
         plt.close("all")
 
     @pytest.mark.parametrize(
