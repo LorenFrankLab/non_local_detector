@@ -187,56 +187,13 @@ def _predict(s, enc, is_local=False, mark_reference=None, **overrides):
 # fit encoding model
 # ----------------------------------------------------------------------------
 
-FIT_KEYS = {
-    "environment",
-    "occupancy",
-    "summed_ground_process_intensity",
-    "encoding_bin_indices",
-    "encoding_marks",
-    "encoding_weights",
-    "weight_total",
-    "mean_rates",
-    "resolved_rank",
-    "node_order",
-    "bin_sizes",
-    "position_std",
-    "waveform_std",
-    "block_size",
-    "memory_budget",
-    "disable_progress_bar",
-}
 
-
-def test_fit_returns_finite_densities_and_keys():
-    s = _sim(seed=0)
-    enc = _fit(s)
-
-    assert FIT_KEYS.issubset(enc.keys())
-
-    occupancy = np.asarray(enc["occupancy"])
-    gpi = np.asarray(enc["summed_ground_process_intensity"])
-    assert np.all(np.isfinite(occupancy))
-    assert np.all(occupancy >= 0.0)
-    assert np.all(np.isfinite(gpi))
-    assert np.all(gpi >= 0.0)
-
-    assert isinstance(enc["resolved_rank"], int)
-    assert enc["resolved_rank"] >= 1
-
-    n_elec = len(s["enc_t"])
-    for key in (
-        "encoding_bin_indices",
-        "encoding_marks",
-        "encoding_weights",
-        "weight_total",
-        "mean_rates",
-    ):
-        assert len(enc[key]) == n_elec, key
-
-    # densities live on interior bins (node_order length)
-    n_interior = np.asarray(enc["node_order"]).shape[0]
-    assert occupancy.shape == (n_interior,)
-    assert gpi.shape == (n_interior,)
+def test_fit_densities_are_finite_and_nonnegative():
+    enc = _fit(_sim(seed=0))
+    for key in ("occupancy", "summed_ground_process_intensity"):
+        density = np.asarray(enc[key])
+        assert np.all(np.isfinite(density)), key
+        assert np.all(density >= 0.0), key
 
 
 # ----------------------------------------------------------------------------

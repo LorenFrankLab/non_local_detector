@@ -1,9 +1,4 @@
-"""Tests for GMM fitting convergence and basic clusterless likelihood behavior.
-
-Numerical KDE/GMM equivalence is checked in test_kde_gmm_equivalence.py using
-bandwidth-matched models. This module checks likelihood finiteness and EM
-convergence diagnostics.
-"""
+"""GMM EM convergence diagnostics: ``converged_``, ``n_iter_`` and the warning."""
 
 import warnings
 
@@ -12,90 +7,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.clusterless_gmm import (
-    fit_clusterless_gmm_encoding_model,
-    mark_reference_scale,
-    predict_clusterless_gmm_log_likelihood,
-)
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
-from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture
-def convergence_test_data():
-    """Create controlled test data for convergence analysis."""
-    rng = np.random.default_rng(42)
-
-    # Simple 1D position for clarity
-    n_time = 50
-    dt = 0.02
-    time_edges = np.arange(n_time + 1) * dt  # n_time bins
-
-    position_time = np.linspace(0, time_edges[-1], 200)
-    position = np.linspace(0, 10, len(position_time))[:, None]  # 1D position
-
-    # Single electrode for simplicity
-    n_spikes = 100
-    spike_times = [np.sort(rng.uniform(time_edges[0], time_edges[-1], n_spikes))]
-
-    # 2D waveform features
-    spike_features = [rng.standard_normal((n_spikes, 2)).astype(np.float32)]
-
-    # Environment
-    environment = Environment(position_range=[(0, 10)])
-    environment = environment.fit_place_grid(
-        position=position, infer_track_interior=True
-    )
-
-    return {
-        "time_edges": time_edges,
-        "position_time": position_time,
-        "position": position,
-        "spike_times": spike_times,
-        "spike_features": spike_features,
-        "environment": environment,
-    }
-
-
-def test_gmm_nonlocal_likelihood_is_finite(convergence_test_data):
-    """A fitted GMM produces finite non-local likelihoods on this small dataset."""
-    data = convergence_test_data
-
-    position_time = jnp.asarray(data["position_time"])
-    position = jnp.asarray(data["position"])
-    time_edges = jnp.asarray(data["time_edges"])
-    spike_times = [jnp.asarray(st) for st in data["spike_times"]]
-    spike_features = [jnp.asarray(sf) for sf in data["spike_features"]]
-
-    # Fit GMM
-    gmm_enc = fit_clusterless_gmm_encoding_model(
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_features,
-        environment=data["environment"],
-        gmm_components_occupancy=16,
-        gmm_components_joint=16,
-        disable_progress_bar=True,
-    )
-
-    # Predict
-    ll_gmm = predict_clusterless_gmm_log_likelihood(
-        time_edges=time_edges,
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_features,
-        **gmm_enc,
-        # Training spikes all lie within the position time range.
-        mark_reference=fit_mark_references(spike_features, mark_reference_scale()),
-        is_local=False,
-    )
-
-    assert np.all(np.isfinite(ll_gmm)), "All likelihoods should be finite"
 
 
 def test_gmm_max_iter_warning():

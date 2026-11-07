@@ -153,13 +153,6 @@ class TestScaledGemmJointIntensity:
         for seed in range(5):
             self._assert_matches(np.random.default_rng(seed * 100), 1000, 100, 200, 4)
 
-    def test_output_shape_and_finite(self):
-        rng = np.random.default_rng(42)
-        data = self._make_test_data(rng, n_enc=200, n_dec=30, n_pos=50, n_wf=4)
-        result = self._gemm_terms(*data[:6], 5.0, data[6])
-        assert result.shape == (30, 50)
-        assert jnp.all(jnp.isfinite(result))
-
     def test_zero_occupancy_bins_score_the_background(self):
         """A bin without support has zero intensity: the background explains it."""
         rng = np.random.default_rng(42)

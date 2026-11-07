@@ -1,7 +1,7 @@
 """Unit tests for the JAX ``GaussianMixtureModel`` EM implementation.
 
 These cover behavioral guarantees beyond the EM convergence diagnostics in
-``test_gmm_kde_convergence.py``: stale-state handling on refit, partial
+``test_gmm_convergence.py``: stale-state handling on refit, partial
 user-init behavior, multi-restart initialization, input validation, and
 singular-covariance error reporting.
 """
