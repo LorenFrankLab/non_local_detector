@@ -689,12 +689,22 @@ def test_emission_blocks_of_any_size_agree(zero_rate):
     rates = jnp.asarray(rates)
     durations = jnp.asarray(rng.uniform(0.0019, 0.0021, 700).astype(np.float32))
     summed = rates.sum(axis=0)
-    expected = _poisson_nonlocal_log_likelihood(counts, rates, durations, summed, 5)
+    # The rows start at this decode-grid row, so each block size has its own
+    # lead: 69 rows for 64- and 128-row blocks, 5 for 320, 5061 for 34944.
+    first_row = 40_005
+    expected = _poisson_nonlocal_log_likelihood(
+        counts, rates, durations, summed, first_row % 64
+    )
     assert _emission_block_rows(30) % 64 == 0
     for block_rows in (128, 320, _emission_block_rows(30)):
         np.testing.assert_allclose(
             _poisson_nonlocal_log_likelihood(
-                counts, rates, durations, summed, 5 % block_rows, block_rows=block_rows
+                counts,
+                rates,
+                durations,
+                summed,
+                first_row % block_rows,
+                block_rows=block_rows,
             ),
             expected,
             rtol=1e-6,

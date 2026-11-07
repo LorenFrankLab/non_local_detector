@@ -49,24 +49,29 @@ def no_spike_reference(events, edges, rate, rows):
 
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("population", [0, 3, 64])
-@pytest.mark.parametrize("rate", [0.0, 1e-10, 2.0, -2.0, np.inf, np.nan])
-def test_no_spike_matches_original_neuron_order(x64, population, rate):
+@pytest.mark.parametrize("rate", [0.0, 1e-10, 2.0])
+def test_no_spike_matches_per_neuron_reference(x64, population, rate):
     edges = np.arange(18) * 0.002
     rows = slice(2, 17)
     events = spikes(population)
     with precision_mode(x64):
-        if not np.isfinite(rate) or rate < 0:
-            with pytest.raises(ValidationError, match="no_spike_rate"):
-                no_spike.predict_no_spike_log_likelihood(
-                    events, no_spike_rate=rate, time_edges=edges, row_slice=rows
-                )
-            return
         expected = no_spike_reference(events, edges, rate, rows)
         actual = no_spike.predict_no_spike_log_likelihood(
             events, no_spike_rate=rate, time_edges=edges, row_slice=rows
         )
         assert actual.dtype == expected.dtype
         np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.parametrize("rate", [-2.0, np.inf, np.nan])
+def test_no_spike_rejects_a_negative_or_non_finite_rate(rate):
+    with pytest.raises(ValidationError, match="no_spike_rate"):
+        no_spike.predict_no_spike_log_likelihood(
+            spikes(3),
+            no_spike_rate=rate,
+            time_edges=np.arange(18) * 0.002,
+            row_slice=slice(2, 17),
+        )
 
 
 @pytest.mark.parametrize("x64", [False, True])
