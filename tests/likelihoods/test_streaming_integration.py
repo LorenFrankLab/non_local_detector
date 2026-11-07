@@ -102,7 +102,6 @@ def _streaming(inputs, log_background, *, block_size=None, **tiling):
     )
     kwargs = {
         "log_position_distance": None,
-        "use_gemm": True,
         "use_streaming": True,
         "encoding_positions": inputs["encoding_positions"],
         "position_eval_points": inputs["position_eval_points"],
@@ -216,7 +215,6 @@ def test_streaming_requires_enc_tile_size():
     with pytest.raises(ValueError, match="use_streaming=True requires enc_tile_size"):
         _estimate(
             inputs,
-            use_gemm=True,
             enc_tile_size=None,
             encoding_positions=inputs["encoding_positions"],
             position_eval_points=inputs["position_eval_points"],
@@ -229,20 +227,4 @@ def test_streaming_requires_position_params():
         ValueError,
         match="use_streaming=True requires encoding_positions, position_eval_points",
     ):
-        _estimate(_inputs(123, 1), use_gemm=True, enc_tile_size=5)
-
-
-def test_streaming_with_use_gemm_false_raises_clear_error():
-    """The linear-space (``use_gemm=False``) reference path does not stream; the
-    combination is rejected up front rather than failing later with a
-    confusing ``exp(None)`` TypeError."""
-    inputs = _inputs(2024, 1)
-    with pytest.raises(ValueError, match="use_gemm"):
-        _estimate(
-            inputs,
-            use_gemm=False,
-            enc_tile_size=5,
-            encoding_positions=inputs["encoding_positions"],
-            position_eval_points=inputs["position_eval_points"],
-            position_std=inputs["position_std"],
-        )
+        _estimate(_inputs(123, 1), enc_tile_size=5)

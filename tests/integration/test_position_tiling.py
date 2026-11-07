@@ -7,6 +7,7 @@ import pytest
 from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity as estimate_log,
 )
+from tests.likelihoods._kde_reference import reference_log_joint_mark_intensity
 from tests.likelihoods.conftest import realistic_log_background
 
 pytestmark = pytest.mark.unit
@@ -58,7 +59,6 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
         tiling_test_data["log_position_distance"],
-        use_gemm=True,
         pos_tile_size=None,
         log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
@@ -71,7 +71,6 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
         tiling_test_data["log_position_distance"],
-        use_gemm=True,
         pos_tile_size=100,
         log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
@@ -93,7 +92,6 @@ def test_various_tile_sizes(tiling_test_data):
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
         tiling_test_data["log_position_distance"],
-        use_gemm=True,
         pos_tile_size=None,
         log_background=realistic_log_background(tiling_test_data["decoding_features"]),
     )
@@ -107,7 +105,6 @@ def test_various_tile_sizes(tiling_test_data):
             tiling_test_data["occupancy"],
             tiling_test_data["mean_rate"],
             tiling_test_data["log_position_distance"],
-            use_gemm=True,
             pos_tile_size=tile_size,
             log_background=realistic_log_background(
                 tiling_test_data["decoding_features"]
@@ -150,7 +147,6 @@ def test_tiling_edge_cases():
         occupancy,
         mean_rate,
         log_position_distance,
-        use_gemm=True,
         pos_tile_size=None,
         log_background=realistic_log_background(decoding_features),
     )
@@ -163,7 +159,6 @@ def test_tiling_edge_cases():
         occupancy,
         mean_rate,
         log_position_distance,
-        use_gemm=True,
         pos_tile_size=1,
         log_background=realistic_log_background(decoding_features),
     )
@@ -176,7 +171,6 @@ def test_tiling_edge_cases():
         occupancy,
         mean_rate,
         log_position_distance,
-        use_gemm=True,
         pos_tile_size=3,
         log_background=realistic_log_background(decoding_features),
     )
@@ -185,13 +179,8 @@ def test_tiling_edge_cases():
     assert np.allclose(reference, result_tile_3, rtol=1e-5, atol=1e-6)
 
 
-def test_tiled_gemm_matches_linear_reference(tiling_test_data):
-    """The position-tiled GEMM path matches the linear-space reference.
-
-    ``pos_tile_size`` only applies to the GEMM path, so the reference
-    (``use_gemm=False``) is untiled. These marks are close enough that the
-    reference does not underflow.
-    """
+def test_tiled_gemm_matches_float64_reference(tiling_test_data):
+    """The position-tiled GEMM path matches a float64 logsumexp reference."""
     log_background = realistic_log_background(tiling_test_data["decoding_features"])
     args = (
         tiling_test_data["decoding_features"],
@@ -202,11 +191,11 @@ def test_tiled_gemm_matches_linear_reference(tiling_test_data):
         tiling_test_data["log_position_distance"],
     )
     result_gemm_tiled = estimate_log(
-        *args, use_gemm=True, pos_tile_size=100, log_background=log_background
+        *args, pos_tile_size=100, log_background=log_background
     )
-    result_linear = estimate_log(*args, use_gemm=False, log_background=log_background)
+    reference = reference_log_joint_mark_intensity(*args, log_background=log_background)
 
-    assert np.allclose(result_gemm_tiled, result_linear, rtol=1e-5, atol=1e-6)
+    assert np.allclose(result_gemm_tiled, reference, rtol=1e-5, atol=1e-6)
 
 
 def test_tiling_very_large_grid():
@@ -242,12 +231,9 @@ def test_tiling_very_large_grid():
         log_position_distance,
     )
     log_background = realistic_log_background(decoding_features)
-    reference = estimate_log(
-        *args, use_gemm=True, pos_tile_size=None, log_background=log_background
-    )
+    reference = estimate_log(*args, pos_tile_size=None, log_background=log_background)
     result = estimate_log(
         *args,
-        use_gemm=True,
         pos_tile_size=500,  # Process 500 positions at a time
         log_background=log_background,
     )

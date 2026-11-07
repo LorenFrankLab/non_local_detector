@@ -968,7 +968,6 @@ def estimate_log_joint_mark_intensity(
     mean_rate: float,
     log_position_distance: jax.Array | None = None,
     *,
-    use_gemm: bool = True,
     pos_tile_size: int | None = None,
     enc_tile_size: int | None = None,
     use_streaming: bool = False,
@@ -998,15 +997,11 @@ def estimate_log_joint_mark_intensity(
     log_position_distance : jax.Array | None, shape (n_encoding_spikes, n_position_bins)
         Log-space position kernel (output of log_kde_distance). Required if use_streaming=False.
         Using log-space prevents underflow from multi-dimensional Gaussian products.
-    use_gemm : bool, optional
-        If True (default), reduce bounded encoding tiles with scaled GEMMs (see
-        Notes). If False, sum kernel products in linear space, a reference
-        that underflows in the far tails.
     pos_tile_size : int | None, optional
         If provided, split each encoding tile's GEMM over position chunks of this
-        size (only for use_gemm=True). By default all positions share one GEMM.
+        size. By default all positions share one GEMM.
     enc_tile_size : int | None, optional
-        Encoding rows per tile (only for use_gemm=True). Tiles never exceed 2048
+        Encoding rows per tile. Tiles never exceed 2048
         rows, so peak memory is O(tile * (n_decoding_spikes + n_position_bins))
         plus the output, independent of the encoding count.
     use_streaming : bool, optional, default=False
@@ -1038,7 +1033,7 @@ def estimate_log_joint_mark_intensity(
     Returns
     -------
     log_joint_mark_intensity : jax.Array, shape (n_decoding_spikes, n_position_bins)
-        ``logaddexp(log intensity, log_background)`` on both paths. A zero
+        ``logaddexp(log intensity, log_background)``. A zero
         intensity (no support, zero rate) leaves the background. Values are exact
         to float32 roundoff regardless of the other decoding spikes in the call;
         ``NaN`` inputs propagate.
@@ -1058,79 +1053,14 @@ def estimate_log_joint_mark_intensity(
 
     The module-level ``estimate_log_joint_mark_intensity`` name is rebound just
     below its definition to a jitted version with
-    ``static_argnames=('use_gemm', 'pos_tile_size', 'enc_tile_size',
-    'use_streaming')`` — so callers get JIT automatically and do not need to
+    ``static_argnames=('pos_tile_size', 'enc_tile_size', 'use_streaming')`` —
+    so callers get JIT automatically and do not need to
     wrap it themselves. The undecorated function object remains accessible via
     ``estimate_log_joint_mark_intensity.__wrapped__`` if an un-jitted version is
     needed.
     """
     n_encoding_spikes = encoding_spike_waveform_features.shape[0]
     position_log_normalizer = None
-
-    # Reject unsupported combinations before any array work so the failure is a
-    # clear message rather than a downstream exp(None) TypeError.
-    if use_streaming and not use_gemm:
-        msg = (
-            "use_streaming=True is not supported with use_gemm=False "
-            "(the linear-space reference path). Use use_gemm=True for streaming."
-        )
-        raise ValueError(msg)
-
-    if not use_gemm:
-        # Linear-space reference: convert log position back to linear for the
-        # matrix multiply.
-        if log_occupancy is not None:
-            normalizer, occupancy = _occupancy_normalizer(log_occupancy)
-            log_position_distance = (
-                cast(jax.Array, log_position_distance) - normalizer[None, :]
-            )
-        position_distance = jnp.exp(cast(jax.Array, log_position_distance))
-
-        spike_waveform_feature_distance = kde_distance(
-            decoding_spike_waveform_features,
-            encoding_spike_waveform_features,
-            waveform_stds,
-        )  # shape (n_encoding_spikes, n_decoding_spikes)
-
-        if encoding_weights is None:
-            # Uniform weights: divide the summed kernel by the spike count.
-            # Double-where: substitute safe denominator, then select result.
-            safe_n = jnp.where(n_encoding_spikes > 0, n_encoding_spikes, 1)
-            marginal_density = jnp.where(
-                n_encoding_spikes > 0,
-                jnp.matmul(
-                    spike_waveform_feature_distance.T,
-                    position_distance,
-                    precision=jax.lax.Precision.HIGHEST,
-                )
-                / safe_n,
-                0.0,
-            )  # shape (n_decoding_spikes, n_position_bins)
-        else:
-            # Weighted average: weight each encoding spike's outer product by its
-            # per-spike weight, normalized by the total weight (uniform weights
-            # recover the /n form above).
-            weight_total = jnp.sum(encoding_weights)
-            safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
-            marginal_density = jnp.where(
-                weight_total > 0,
-                jnp.matmul(
-                    spike_waveform_feature_distance.T,
-                    encoding_weights[:, None] * position_distance,
-                    precision=jax.lax.Precision.HIGHEST,
-                )
-                / safe_weight_total,
-                0.0,
-            )  # shape (n_decoding_spikes, n_position_bins)
-        log_joint = log_nonnegative(
-            mean_rate
-            * jnp.where(
-                occupancy > 0.0,
-                marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                0.0,
-            )
-        )
-        return jnp.logaddexp(log_joint, log_background[:, None])
 
     # Validation: streaming requires chunking configuration and inputs.
     if use_streaming:
@@ -1225,7 +1155,7 @@ def estimate_log_joint_mark_intensity(
 # This allows JAX to specialize the function for different tile sizes and modes
 estimate_log_joint_mark_intensity = jax.jit(
     estimate_log_joint_mark_intensity,
-    static_argnames=("use_gemm", "pos_tile_size", "enc_tile_size", "use_streaming"),
+    static_argnames=("pos_tile_size", "enc_tile_size", "use_streaming"),
 )
 
 
@@ -1475,7 +1405,6 @@ def block_estimate_log_joint_mark_intensity(
     log_position_distance: jax.Array | None = None,
     block_size: int = 10_000,
     *,
-    use_gemm: bool = True,
     pos_tile_size: int | None = None,
     enc_tile_size: int | None = None,
     use_streaming: bool = False,
@@ -1509,8 +1438,6 @@ def block_estimate_log_joint_mark_intensity(
         Number of decoding spikes to process per block, by default 10,000.
         Fewer spikes are padded to a power of two (at least 16), so calls
         with nearby spike counts share one compiled reduction.
-    use_gemm : bool, optional
-        If True (default), use the scaled-GEMM reduction.
     pos_tile_size : int | None, optional
         If provided, tile computation over position dimension.
     enc_tile_size : int | None, optional
@@ -1573,7 +1500,6 @@ def block_estimate_log_joint_mark_intensity(
             occupancy,
             mean_rate,
             log_position_distance,
-            use_gemm=use_gemm,
             pos_tile_size=pos_tile_size,
             enc_tile_size=enc_tile_size,
             use_streaming=use_streaming,
