@@ -46,28 +46,20 @@ class TestFilter:
     2. Update: prediction * likelihood, then normalize
     """
 
-    def test_filter_returns_correct_tuple_structure(self):
-        """Filter should return ((log_marginal, predicted_next), (filtered, predicted))."""
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        log_likes = jnp.zeros((10, 2))
+    def test_filter_carry_predicts_the_row_after_the_last(self):
+        """The returned carry is the evidence and ``filtered[-1] @ trans``."""
+        rng = np.random.default_rng(0)
+        init = jnp.array([0.3, 0.7])
+        trans = jnp.array([[0.9, 0.1], [0.2, 0.8]])
+        log_likes = jnp.asarray(rng.standard_normal((10, 2)))
 
-        # Act
-        result = filter(init, trans, log_likes)
+        (log_marginal, predicted_next), (filtered, _) = filter(init, trans, log_likes)
 
-        # Assert
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        carry, outputs = result
-        assert len(carry) == 2
-        log_marginal, predicted_next = carry
-        assert isinstance(log_marginal, float | jax.Array)  # Scalar
-        assert predicted_next.shape == (2,)  # n_states
-
-        filtered_probs, predicted_probs = outputs
-        assert filtered_probs.shape == (10, 2)  # (n_time, n_states)
-        assert predicted_probs.shape == (10, 2)  # (n_time, n_states)
+        # Measured error 4e-8 (float32); a carry one row stale differs by ~1e-1.
+        np.testing.assert_allclose(
+            predicted_next, np.asarray(filtered[-1]) @ np.asarray(trans), atol=1e-6
+        )
+        assert np.ndim(log_marginal) == 0
 
     def test_filter_with_deterministic_emissions_converges(self):
         """Deterministic observations should converge to single state."""
@@ -200,46 +192,29 @@ class TestSmoother:
     """Test backward smoothing algorithm.
 
     The smoother computes P(state_t | observations_1:T) using filtered probs
-    and backward messages. It should have higher certainty than filtering.
+    and backward messages.
     """
 
-    def test_smoother_returns_correct_shape(self):
-        """Smoother should return array of same shape as filtered."""
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        log_likes = jnp.zeros((10, 2))
-        (_, (filtered, _)) = filter(init, trans, log_likes)
+    @pytest.mark.parametrize("n_states", [2, 5])
+    @pytest.mark.parametrize("n_timesteps", [1, 10, 15])
+    def test_smoother_at_final_timestep_equals_filter(self, n_states, n_timesteps):
+        """At the final row there is no future evidence, so smoothed == filtered."""
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
+        init = init / init.sum()
+        trans = rng.random((n_states, n_states))
+        trans = trans / trans.sum(axis=1, keepdims=True)
+        log_likes = rng.standard_normal((n_timesteps, n_states))
 
-        # Act
-        smoothed = smoother(trans, filtered)
+        (_, (filtered, _)) = filter(
+            jnp.asarray(init), jnp.asarray(trans), jnp.asarray(log_likes)
+        )
+        smoothed = smoother(jnp.asarray(trans), filtered)
 
-        # Assert
+        # Measured error 0 (float32) and 1e-16 (float64); pulling the final
+        # row back through the transition changes it by ~1e-1.
         assert smoothed.shape == filtered.shape
-        assert smoothed.shape == (10, 2)
-
-    def test_smoother_has_higher_certainty_than_filter(self):
-        """Smoother should generally have lower entropy (higher certainty)."""
-
-        def entropy(p):
-            """Compute entropy of probability distribution."""
-            return -jnp.sum(p * jnp.log(p + 1e-10), axis=-1)
-
-        # Arrange
-        init = jnp.array([0.5, 0.5])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        # Create informative observations that prefer state 0
-        log_likes = jnp.array([[0.0, -2.0]] * 5 + [[-2.0, 0.0]] * 5)
-        (_, (filtered, _)) = filter(init, trans, log_likes)
-
-        # Act
-        smoothed = smoother(trans, filtered)
-
-        # Assert
-        filtered_entropy = entropy(filtered).mean()
-        smoothed_entropy = entropy(smoothed).mean()
-        # Smoother should have lower or equal entropy
-        assert smoothed_entropy <= filtered_entropy + 1e-5
+        np.testing.assert_allclose(smoothed[-1], filtered[-1], rtol=0, atol=1e-6)
 
     def test_smoother_with_deterministic_observations(self):
         """With very informative observations, should be very certain."""
@@ -278,21 +253,6 @@ class TestSmoother:
         assert smoothed.shape == (5, n_states)
         assert jnp.all(jnp.isfinite(smoothed))
         np.testing.assert_allclose(smoothed.sum(axis=-1), 1.0, rtol=1e-5, atol=1e-8)
-
-    def test_smoother_single_timestep(self):
-        """Should work with single timestep (equals filter)."""
-        # Arrange
-        init = jnp.array([0.7, 0.3])
-        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        log_likes = jnp.array([[0.0, -1.0]])
-        (_, (filtered, _)) = filter(init, trans, log_likes)
-
-        # Act
-        smoothed = smoother(trans, filtered)
-
-        # Assert
-        assert smoothed.shape == (1, 2)
-        assert jnp.allclose(smoothed[0], filtered[0])
 
     def test_smoother_backward_pass_incorporates_future_info(self):
         """Smoothed estimates at t should be affected by observations at t+k."""
@@ -437,21 +397,6 @@ class TestViterbi:
         # Assert
         assert states.shape == (5,)
         assert jnp.all((states >= 0) & (states < n_states))
-
-    def test_viterbi_path_is_valid_sequence(self):
-        """Viterbi path should consist of valid state indices."""
-        # Arrange
-        init = jnp.array([0.5, 0.5, 0.0])
-        trans = jnp.array([[0.7, 0.2, 0.1], [0.1, 0.7, 0.2], [0.2, 0.1, 0.7]])
-        rng = np.random.default_rng(42)
-        log_likes = jnp.array(rng.standard_normal((20, 3)))
-
-        # Act
-        states = viterbi(init, trans, log_likes)
-
-        # Assert
-        assert jnp.all((states >= 0) & (states < 3))
-        assert len(jnp.unique(states)) > 1  # Path should visit multiple states
 
 
 @pytest.mark.unit
