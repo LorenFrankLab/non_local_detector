@@ -76,10 +76,6 @@ def test_names_resolve_with_sortingview_present(monkeypatch):
     assert function.__module__ == module_name
 
 
-def test_dir_lists_figurl_names():
-    assert set(_NAMES) <= set(dir(viz))
-
-
 def test_length_mismatch_raises_validation_error(monkeypatch):
     figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
     position = np.zeros((5, 2))

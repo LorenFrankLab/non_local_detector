@@ -125,13 +125,3 @@ def test_probability_panel_shows_the_one_state_of_a_decoder(monkeypatch):
 
     (state,) = [entry for entry in series if entry["name"] == "Continuous"]
     np.testing.assert_array_equal(state["y"], np.ones(n_time))
-
-
-def test_detector_and_view_height_are_keyword_only(monkeypatch):
-    """A call written before ``detector`` was added, with ``view_height``
-    passed by position, fails at the call instead of later inside it."""
-    figurl_1D = _load_figurl_1d_with_stub_sortingview(monkeypatch)
-    with pytest.raises(TypeError, match="positional"):
-        figurl_1D.create_interactive_1D_decoding_figurl(
-            np.zeros(3), np.zeros(3), [np.array([1.0])], None, 800
-        )

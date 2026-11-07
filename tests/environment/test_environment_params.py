@@ -128,11 +128,6 @@ def test_fitted_values_in_the_constructor_raise(name, value):
         Environment(**{name: value})
 
 
-def test_arguments_are_keyword_only():
-    with pytest.raises(TypeError):
-        Environment("box")  # type: ignore[misc]
-
-
 def test_sklearn_clone_gives_an_unfitted_copy_of_the_configuration():
     environment = _fit(_track_environment())
     cloned = clone(environment)

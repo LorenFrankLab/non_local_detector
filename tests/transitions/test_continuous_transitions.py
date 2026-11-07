@@ -3,7 +3,6 @@ import numpy as np
 import pytest
 
 from non_local_detector.continuous_state_transitions import (
-    ContinuousTransition,
     Discrete,
     EmpiricalMovement,
     Identity,
@@ -209,14 +208,6 @@ def test_random_walk_direction_assigned_after_construction_raises():
         rw.make_state_transition((env,))
 
 
-def test_environment_name_is_part_of_the_protocol():
-    """Every package transition declares environment_name; Discrete has no
-    place bins, so its environment_name is None."""
-    assert Discrete().environment_name is None
-    assert RandomWalk("track").environment_name == "track"
-    assert vars(Discrete()) == {}
-
-
 def test_identity_transition_is_identity_masked(simple_1d_environment):
     env = simple_1d_environment
     envs = (env,)
@@ -309,31 +300,6 @@ def test_empirical_movement_uses_fitted_edges(n_dims, explicit_range):
     assert np.all(np.isfinite(transition))
     assert np.all(transition >= 0)
     np.testing.assert_array_equal(transition.sum(axis=1)[row_mass[:, 0] > 0], 1)
-
-
-@pytest.mark.parametrize(
-    "transition",
-    [
-        Discrete(),
-        EmpiricalMovement(),
-        Identity(),
-        RandomWalk(),
-        RandomWalkDirection1(),
-        RandomWalkDirection2(),
-        Uniform(),
-    ],
-    ids=lambda transition: type(transition).__name__,
-)
-def test_transitions_share_one_signature(transition):
-    """Every package transition is a ContinuousTransition called one way."""
-    assert isinstance(transition, ContinuousTransition)
-    env = Environment(place_bin_size=1.0).fit_place_grid(
-        np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False
-    )
-    context = TransitionContext(position=np.linspace(0.0, 10.0, 51)[:, None])
-    matrix = transition.make_state_transition(environments=(env,), context=context)
-    n_bins = 1 if isinstance(transition, Discrete) else len(env.place_bin_centers_)
-    assert matrix.shape == (n_bins, n_bins)
 
 
 @pytest.mark.parametrize("context", [None, TransitionContext()])

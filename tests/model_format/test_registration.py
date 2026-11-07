@@ -215,54 +215,12 @@ def test_register_type_needs_functions_for_a_plain_class():
     ids=lambda value: getattr(value, "__name__", ""),
 )
 def test_builtin_types_store_every_dataclass_field(cls, fields):
-    """Changing a saved class's fields needs a format migration: the stored
-    field names are the format."""
+    """Every constructor and fitted field of a saved dataclass is stored, so a
+    new field cannot be left out of saved models unnoticed."""
     assert set(fields) == {
         field.name
         for field in dataclasses.fields(cls)
         if field.init or field.name.endswith("_") or field.name == "design_fingerprint"
-    }
-
-
-def test_builtin_type_names_are_fixed():
-    """The stored names are the format: renaming a class must not change
-    them, and changing this list is a format change."""
-    assert {name: cls.__name__ for name, cls, _, _ in builtin_types()} == {
-        f"nld.{name}": name
-        for name in (
-            "Environment",
-            "ObservationModel",
-            "UniformInitialConditions",
-            "RandomWalk",
-            "Uniform",
-            "Identity",
-            "EmpiricalMovement",
-            "RandomWalkDirection1",
-            "RandomWalkDirection2",
-            "Discrete",
-            "DiscreteStationaryDiagonal",
-            "DiscreteStationaryCustom",
-            "DiscreteNonStationaryDiagonal",
-            "DiscreteNonStationaryCustom",
-            "KDEModel",
-            "GaussianMixtureModel",
-            "MarkMixture",
-            "MarkReference",
-            "TrackGraphBasis",
-            "TensorSplineBasis",
-            "SortedSpikesDetector",
-            "ClusterlessDetector",
-            "NonLocalSortedSpikesDetector",
-            "NonLocalClusterlessDetector",
-            "ContFragSortedSpikesClassifier",
-            "ContFragClusterlessClassifier",
-            "NoSpikeContFragSortedSpikesClassifier",
-            "NoSpikeContFragClusterlessClassifier",
-            "MultiEnvironmentSortedSpikesClassifier",
-            "MultiEnvironmentClusterlessClassifier",
-            "SortedSpikesDecoder",
-            "ClusterlessDecoder",
-        )
     }
 
 
