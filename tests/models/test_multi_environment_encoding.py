@@ -6,7 +6,8 @@ alone would give: same grid, occupancy, place fields or ground intensity, and
 mean rates. The environments differ in extent and the cells remap between
 them, so occupancy from the other environment, or a grid fit on its
 positions, changes the fit. (A spike from the other environment carries zero
-interpolated exposure weight, so it cannot leak in.)
+interpolated exposure weight, so it cannot leak in.) Decoding then attributes
+each environment's spikes to it.
 """
 
 import numpy as np
@@ -16,6 +17,7 @@ from non_local_detector import (
     ClusterlessDecoder,
     DiscreteStationaryDiagonal,
     Environment,
+    RandomWalk,
     SortedSpikesDecoder,
     Uniform,
     UniformInitialConditions,
@@ -228,3 +230,57 @@ def test_position_is_read_one_environment_at_a_time(two_environment_recording):
             get_spatial_posterior(results.acausal_posterior, states=["A"])
         ),
     )
+
+
+_FAMILIES = [
+    pytest.param(SortedSpikesDecoder, "sorted_spikes_algorithm", id="sorted"),
+    pytest.param(ClusterlessDecoder, "clusterless_algorithm", id="clusterless"),
+]
+
+
+@pytest.mark.parametrize(("cls", "algorithm_key"), _FAMILIES)
+def test_decoding_favors_the_environment_the_spikes_came_from(
+    cls, algorithm_key, two_environment_recording
+):
+    """A 10 s window recorded in A is decoded as A, and one in B as B.
+
+    Within an environment the represented position follows a random walk and
+    the environment is sticky (0.999 per 10 ms bin), as when the animal stays
+    in one environment for minutes. The mean posterior of the true
+    environment over the window was at least 0.91 (B, sorted; A reached
+    0.998). Fit with the environment labels swapped, the same windows give
+    the true environment at most 0.085.
+    """
+    data = two_environment_recording
+    clusterless = cls is ClusterlessDecoder
+    spikes = (
+        (data["electrode_times"], data["electrode_marks"])
+        if clusterless
+        else (data["spike_times"],)
+    )
+    algorithm = "clusterless_kde" if clusterless else "sorted_spikes_kde"
+    detector = _detector(cls, algorithm_key, algorithm, NAMES)
+    detector.set_params(
+        sampling_frequency=SAMPLING_FREQUENCY,
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            diagonal_values=np.full(len(NAMES), 0.999)
+        ),
+        continuous_transition_types=[
+            [
+                RandomWalk(source)
+                if source == destination
+                else Uniform(source, destination)
+                for destination in NAMES
+            ]
+            for source in NAMES
+        ],
+    )
+    detector.fit(
+        data["time"], data["position"], *spikes, environment_labels=data["labels"]
+    )
+
+    for name, start in (("A", 20.0), ("B", 80.0)):
+        edges = start + np.arange(1001) / SAMPLING_FREQUENCY
+        results = detector.predict(*spikes, time_edges=edges)
+        probability = results.acausal_state_probabilities.sel(states=name)
+        assert float(probability.mean()) > 0.8, name
