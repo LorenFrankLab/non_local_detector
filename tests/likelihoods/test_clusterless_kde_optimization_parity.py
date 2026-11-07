@@ -97,11 +97,10 @@ def test_encoding_weights_consistent_across_paths(n_features):
     """Non-uniform ``encoding_weights`` must give the same joint mark intensity
     on every numerical path.
 
-    ``n_features=4`` exercises the compensated-linear matmul paths, ``n_features=10``
-    (> the compensated-linear feature cap) the logsumexp paths. For each, the
-    non-chunked GEMM path, the encoding-chunked path, and the streaming-chunked
-    path must all match a float64 logsumexp reference. The
-    weight vector includes a zero, which drops that spike out of the reduction --
+    At 4 and 10 mark features, the non-chunked GEMM path, the encoding-chunked
+    path, and the streaming-chunked path must all match a float64 logsumexp
+    reference. The weight vector includes a zero, which drops that spike out of
+    the reduction --
     a case that would produce NaN if the weight were folded into the mark kernel's
     row-max stabilization rather than added as a separate log term.
     """
