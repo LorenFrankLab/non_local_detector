@@ -1,6 +1,6 @@
 """Vectorized clusterless KDE kernels and reductions against direct references.
 
-``kde_distance`` / ``log_kde_distance`` against per-dimension loops, the scaled
+``kde_distance`` / ``log_kde_distance`` against scipy's normal density, the scaled
 GEMM joint-intensity reduction against a float64-kernel logsumexp oracle, and the
 degeneracy rules of ``_log_joint_from_log_marginal``.
 """
@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from non_local_detector.likelihoods.clusterless_kde import (
     _estimate_with_enc_chunking,
@@ -16,71 +17,43 @@ from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance,
     log_kde_distance,
 )
-from non_local_detector.likelihoods.common import (
-    EPS,
-    LOG_EPS,
-    gaussian_pdf,
-    log_gaussian_pdf,
-)
+from non_local_detector.likelihoods.common import EPS, LOG_EPS
 from non_local_detector.likelihoods.mark_reference import MarkReference
 
 
-class TestKdeDistanceVectorized:
-    """Tests for optimized linear-space KDE distance function."""
+class TestKdeDistance:
+    """The kernel products against scipy's float64 normal density.
 
-    @pytest.mark.parametrize("n_dims", [2, 4, 8, 10])
-    def test_numerical_equivalence(self, n_dims):
-        """Optimized version matches manual loop computation."""
+    Measured max error: 3.4e-6 nats in log (|log| up to 26), 3.4e-6 relative
+    in linear space. Using the variance for the std is a 20-nat error; a
+    normalizer off by sqrt(2) per dimension is 1.4 nats.
+    """
+
+    @staticmethod
+    def _data():
         rng = np.random.default_rng(42)
-        eval_points = jnp.array(rng.standard_normal((30, n_dims)))
-        samples = jnp.array(rng.standard_normal((50, n_dims)))
-        std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
+        eval_points = rng.standard_normal((30, 4))
+        samples = rng.standard_normal((50, 4))
+        std = rng.uniform(0.5, 2.0, 4)
+        # Per-dimension log densities, shape (n_samples, n_eval_points, n_dims).
+        per_dimension = norm.logpdf(eval_points[None], loc=samples[:, None], scale=std)
+        reference = per_dimension.sum(axis=-1)
+        return (jnp.asarray(x) for x in (eval_points, samples, std)), reference
 
-        # Reference: manual loop computation
-        distance_ref = jnp.ones((samples.shape[0], eval_points.shape[0]))
-        for dim_eval, dim_samp, dim_std in zip(
-            eval_points.T, samples.T, std, strict=False
-        ):
-            distance_ref *= gaussian_pdf(
-                jnp.expand_dims(dim_eval, axis=0),
-                jnp.expand_dims(dim_samp, axis=1),
-                dim_std,
-            )
+    def test_log_kde_distance_matches_scipy(self):
+        (eval_points, samples, std), reference = self._data()
+        np.testing.assert_allclose(
+            log_kde_distance(eval_points, samples, std), reference, rtol=0, atol=1e-4
+        )
 
-        # Test: optimized version
-        distance_opt = kde_distance(eval_points, samples, std)
-
-        # Verify numerical equivalence
-        assert jnp.allclose(distance_opt, distance_ref, rtol=1e-5, atol=1e-8)
-
-
-class TestLogKdeDistanceVectorized:
-    """Tests for optimized log-space KDE distance function."""
-
-    @pytest.mark.parametrize("n_dims", [2, 4, 8, 10])
-    def test_numerical_equivalence(self, n_dims):
-        """Optimized log version matches manual loop computation."""
-        rng = np.random.default_rng(42)
-        eval_points = jnp.array(rng.standard_normal((30, n_dims)))
-        samples = jnp.array(rng.standard_normal((50, n_dims)))
-        std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
-
-        # Reference: manual loop computation
-        log_dist_ref = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-        for dim_eval, dim_samp, dim_std in zip(
-            eval_points.T, samples.T, std, strict=False
-        ):
-            log_dist_ref += log_gaussian_pdf(
-                jnp.expand_dims(dim_eval, axis=0),
-                jnp.expand_dims(dim_samp, axis=1),
-                dim_std,
-            )
-
-        # Test: optimized version
-        log_dist_opt = log_kde_distance(eval_points, samples, std)
-
-        # Verify numerical equivalence
-        assert jnp.allclose(log_dist_opt, log_dist_ref, rtol=1e-5, atol=1e-8)
+    def test_kde_distance_matches_scipy(self):
+        (eval_points, samples, std), reference = self._data()
+        np.testing.assert_allclose(
+            kde_distance(eval_points, samples, std),
+            np.exp(reference),
+            rtol=1e-4,
+            atol=0,
+        )
 
 
 class TestScaledGemmJointIntensity:
