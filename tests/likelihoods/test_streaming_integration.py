@@ -9,12 +9,14 @@ independent float64 log-space reference built with SciPy.
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.special import logsumexp
-from scipy.stats import norm
 
 from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
+)
+from tests.likelihoods._kde_reference import (
+    reference_log_joint_mark_intensity,
+    reference_log_position_kernel,
 )
 from tests.likelihoods.conftest import realistic_log_background
 
@@ -62,32 +64,22 @@ def _inputs(
 def _float64_reference(inputs, log_background):
     """``logaddexp(log intensity, log background)`` per spike and bin, float64.
 
-    The intensity is ``mean_rate * mean_e K_mark(m, m_e) K_pos(x, x_e) /
-    occupancy(x)`` with Gaussian kernels.
-
     Returns
     -------
     reference : np.ndarray, shape (n_decoding_spikes, n_position_bins)
     """
-    as64 = {key: np.asarray(value, dtype=np.float64) for key, value in inputs.items()}
-    log_mark = norm.logpdf(
-        as64["decoding_features"][:, None],
-        as64["encoding_features"][None],
-        as64["waveform_stds"],
-    ).sum(axis=-1)
-    log_position = norm.logpdf(
-        as64["encoding_positions"][:, None],
-        as64["position_eval_points"][None],
-        as64["position_std"],
-    ).sum(axis=-1)
-    log_intensity = (
-        np.log(MEAN_RATE)
-        + logsumexp(log_mark[:, :, None] + log_position[None], axis=1)
-        - np.log(N_ENCODING_SPIKES)
-        - np.log(as64["occupancy"])
-    )
-    return np.logaddexp(
-        log_intensity, np.asarray(log_background, dtype=np.float64)[:, None]
+    return reference_log_joint_mark_intensity(
+        inputs["decoding_features"],
+        inputs["encoding_features"],
+        inputs["waveform_stds"],
+        inputs["occupancy"],
+        MEAN_RATE,
+        reference_log_position_kernel(
+            inputs["position_eval_points"],
+            inputs["encoding_positions"],
+            inputs["position_std"],
+        ),
+        log_background=log_background,
     )
 
 
@@ -189,8 +181,7 @@ def test_streaming_zero_occupancy_bins_score_the_background():
         np.broadcast_to(np.asarray(log_background)[:, None], (8, 3)),
         rtol=1e-6,
     )
-    with np.errstate(divide="ignore"):  # log(0) occupancy, not compared
-        expected = _float64_reference(inputs, log_background)
+    expected = _float64_reference(inputs, log_background)
     np.testing.assert_allclose(
         actual[:, ~zero_occupancy], expected[:, ~zero_occupancy], **REFERENCE_TOLERANCE
     )

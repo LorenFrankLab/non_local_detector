@@ -10,7 +10,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.special import logsumexp
 
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -22,6 +21,9 @@ from non_local_detector.likelihoods.common import (
     compute_log_mark_kernel_gemm,
 )
 from tests.conftest import precision_mode
+from tests.likelihoods._kde_reference import (
+    reference_log_joint_mark_intensity,
+)
 from tests.likelihoods.conftest import realistic_log_background
 
 # Below ``log_background + log(eps)`` an intensity cannot change a float32 term.
@@ -67,26 +69,6 @@ def _place_field_tile(
             jnp.asarray(bins, jnp.float32),
         )
     return tile
-
-
-def _reference_log_joint(decoding, encoding, stds, occupancy, mean_rate, log_position):
-    """float64 brute-force log(mean_rate * sum_e K_mark K_pos / n / occupancy)."""
-    decoding, encoding, stds, occupancy, log_position = (
-        np.asarray(a, np.float64)
-        for a in (decoding, encoding, stds, occupancy, log_position)
-    )
-    n_features = encoding.shape[1]
-    norm = -0.5 * (n_features * np.log(2 * np.pi) + 2 * np.sum(np.log(stds)))
-    log_mark = norm - 0.5 * np.sum(
-        ((encoding[:, None] - decoding[None]) / stds) ** 2, axis=-1
-    )
-    marginal = np.stack(
-        [
-            logsumexp(log_mark[:, q, None] + log_position, axis=0)
-            for q in range(len(decoding))
-        ]
-    ) - np.log(len(encoding))
-    return np.log(mean_rate) + marginal - np.log(occupancy)[None]
 
 
 @pytest.mark.unit
@@ -191,7 +173,7 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(
             log_background=log_background,
         )
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     background = np.asarray(log_background, np.float64)[:, None]
@@ -243,7 +225,7 @@ def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(
     finally:
         # Keep the patched group size out of later tests' compiled reductions.
         jax.clear_caches()
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     expected = np.logaddexp(reference, np.asarray(log_background, np.float64)[:, None])
@@ -421,7 +403,7 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
         -0.5 * np.log(2 * np.pi * 36.0)
         - 0.5 * ((bins[None, :, 0] - encoding_positions) / 6.0) ** 2
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     log_background = np.array(realistic_log_background(decoding))
@@ -497,7 +479,7 @@ def test_every_spike_flagged_for_exact_repair_matches_reference(n_dec):
             log_background=log_background,
         )
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     expected = np.logaddexp(reference, -1e4)
@@ -555,7 +537,7 @@ def test_only_flagged_spikes_take_the_exact_repair(n_flagged, tiling):
             **streaming,
         )
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     expected = np.logaddexp(reference, log_background[:, None])

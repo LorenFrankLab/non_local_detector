@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.stats import norm
 
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -12,6 +11,11 @@ from non_local_detector.likelihoods.clusterless_kde import (
     log_kde_distance,
 )
 from tests.conftest import precision_mode
+from tests.likelihoods._kde_reference import (
+    reference_log_joint_mark_intensity,
+    reference_log_joint_mark_intensity_gradient,
+    reference_log_position_kernel,
+)
 from tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
     realistic_log_background,
@@ -50,39 +54,29 @@ def joint_inputs(n_decoding, n_encoding, n_positions, weight_kind):
     }
 
 
+def _reference_arguments(values):
+    """``values`` in the float64 references' positional order."""
+    return (
+        values["decoding_features"],
+        values["encoding_features"],
+        values["waveform_stds"],
+        values["occupancy"],
+        values["mean_rate"],
+        reference_log_position_kernel(
+            values["place_bin_centers"],
+            values["encoding_positions"],
+            values["position_std"],
+        ),
+    )
+
+
 def joint_oracle(values):
-    dec, enc, positions, centers = [
-        np.asarray(values[k], np.float64)
-        for k in (
-            "decoding_features",
-            "encoding_features",
-            "encoding_positions",
-            "place_bin_centers",
-        )
-    ]
-    mark = norm.pdf(
-        dec[None], loc=enc[:, None], scale=np.asarray(values["waveform_stds"])
-    ).prod(axis=-1)
-    position = norm.pdf(
-        centers[None], loc=positions[:, None], scale=np.asarray(values["position_std"])
-    ).prod(axis=-1)
-    weights = values["encoding_weights"]
-    weights = np.ones(len(enc)) if weights is None else np.asarray(weights, np.float64)
-    numerator = mark.T @ (weights[:, None] * position)
-    density = (
-        numerator / weights.sum() if weights.sum() > 0 else np.zeros_like(numerator)
+    """Float64 finished terms ``logaddexp(log intensity, log background)``."""
+    return reference_log_joint_mark_intensity(
+        *_reference_arguments(values),
+        values["encoding_weights"],
+        values["log_background"],
     )
-    intensity = np.zeros_like(density)
-    np.divide(
-        density, values["occupancy"], out=intensity, where=values["occupancy"] > 0
-    )
-    intensity *= values["mean_rate"]
-    with np.errstate(divide="ignore"):
-        log_intensity = np.log(intensity)  # -inf where the intensity is zero
-    terms = np.logaddexp(
-        log_intensity, np.asarray(values["log_background"], np.float64)[:, None]
-    )
-    return terms, (mark, position, numerator, weights, log_intensity)
 
 
 def _estimate(values, **options):
@@ -133,7 +127,7 @@ def test_joint_tiles_match_finished_oracle(x64, shape, weight_kind):
     with precision_mode(x64):
         values = joint_inputs(*shape, weight_kind)
         actual = streamed_joint(values)
-        oracle, _ = joint_oracle(values)
+        oracle = joint_oracle(values)
         assert actual.shape == (shape[0], shape[2])
         np.testing.assert_allclose(actual, oracle, **tolerance(x64))
         np.testing.assert_allclose(actual, baseline_joint(values), **tolerance(x64))
@@ -143,26 +137,11 @@ def test_joint_tiles_match_finished_oracle(x64, shape, weight_kind):
 def test_finished_joint_gradients_match_independent_oracle(x64):
     with precision_mode(x64):
         values = joint_inputs(13, 9, 7, "weighted")
-        oracle, (mark, position, numerator, weights, log_intensity) = joint_oracle(
-            values
+        expected = reference_log_joint_mark_intensity_gradient(
+            *_reference_arguments(values),
+            values["log_background"],
+            values["encoding_weights"],
         )
-        derivative = (
-            np.asarray(values["encoding_features"])[:, None]
-            - np.asarray(values["decoding_features"])[None]
-        ) / np.asarray(values["waveform_stds"]) ** 2
-        raw_derivative = np.einsum(
-            "ed,ep,edf->dpf", mark, weights[:, None] * position, derivative
-        )
-        ratio = np.zeros_like(raw_derivative)
-        np.divide(
-            raw_derivative,
-            numerator[:, :, None],
-            out=ratio,
-            where=numerator[:, :, None] > 0,
-        )
-        # d logaddexp(log I, b) / dx = I / (I + B) * d log I / dx.
-        share = np.exp(log_intensity - oracle)
-        expected = (share[:, :, None] * ratio).sum(axis=1)
         marks = values.pop("decoding_features")
         actual = jax.grad(
             lambda x: streamed_joint({"decoding_features": x, **values}).sum()
