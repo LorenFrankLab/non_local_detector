@@ -1,9 +1,10 @@
 """Edge cases of the ``row_slice`` row-request interface.
 
-``test_row_slice_parity.py`` establishes the headline property for every
-registered backend: a requested row range equals the full-time result sliced,
-and a row partition tiles the full-time result. This module pins the *boundary*
-cases of that interface, which is where a chunked driver actually breaks:
+``predict(n_chunks > 1)`` asks each registered backend for contiguous ranges of
+rows of the full-time likelihood, so a requested row range must equal the
+full-time result sliced, and a row partition must tile the full-time result.
+This module pins that property at the *boundary* cases of the interface, which
+is where a chunked driver actually breaks:
 
 * spikes exactly on an edge -- including ``time_edges[0]`` and
   ``time_edges[-1]``;
@@ -32,11 +33,13 @@ import jax.numpy as jnp
 import jax.ops
 import numpy as np
 import pytest
+from patsy import build_design_matrices
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.common import (
+    RATE_EPS_HZ,
     SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
@@ -46,9 +49,11 @@ from non_local_detector.likelihoods.common import (
     sum_spikes_into_rows,
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
+from non_local_detector.likelihoods.sorted_spikes_glm import make_spline_predict_matrix
 from tests.likelihoods.conftest import (
     ALGORITHMS,
     EXACT,
+    FLOAT32_ROUNDING,
     fit_registered_backends,
     parity_kwargs,
     training_mark_references,
@@ -324,6 +329,18 @@ def test_empty_row_request_returns_zero_rows():
     assert get_spikecount_per_time_bin(
         spikes, time_edges=time, row_slice=slice(4, 2)
     ).shape == (0,)
+
+
+@pytest.mark.unit
+def test_open_and_negative_row_bounds_follow_slice_indices():
+    """Open, negative and overlong bounds resolve as ``slice.indices`` does."""
+    assert resolve_row_slice(None, 10) == (0, 10)
+    assert resolve_row_slice(slice(None), 10) == (0, 10)
+    assert resolve_row_slice(slice(3, None), 10) == (3, 10)
+    assert resolve_row_slice(slice(None, 4), 10) == (0, 4)
+    assert resolve_row_slice(slice(-3, None), 10) == (7, 10)
+    assert resolve_row_slice(slice(2, -2), 10) == (2, 8)
+    assert resolve_row_slice(slice(0, 99), 10) == (0, 10)
 
 
 @pytest.mark.unit
@@ -626,7 +643,9 @@ def assert_some_chunk_is_spike_free(edge_case_data, case, partitions) -> None:
         assert spike_free, f"no spike-free chunk in partition {partition}"
 
 
-def chunk_local_result(fitted_backends, edge_case_data, algorithm, case, partition):
+def chunk_local_result(
+    fitted_backends, edge_case_data, algorithm, case, partition, **kwargs
+):
     """The chunk-local call: each chunk gets only its own edges."""
     full_time = edge_case_data["time"]
     return np.concatenate(
@@ -637,6 +656,7 @@ def chunk_local_result(fitted_backends, edge_case_data, algorithm, case, partiti
                 algorithm,
                 case,
                 time=full_time[row_slice.start : row_slice.stop + 1],
+                **kwargs,
             )
             for row_slice in partition
         ]
@@ -666,20 +686,25 @@ def test_zero_row_request_returns_zero_rows(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize(
     "case",
     ["on_timestamps", "between_timestamps", "spike_free_gap", "one_unit_empty"],
 )
 def test_irregular_and_ragged_partitions_tile_the_full_result(
-    fitted_backends, edge_case_data, algorithm, case
+    fitted_backends, edge_case_data, algorithm, case, is_local
 ):
     """Boundary spikes, spike-free chunks and empty units, ragged/uneven chunks.
 
+    Tiling the full result also makes each chunk equal its rows of it.
     ``spike_free_gap`` requests a chunk whose selected-spike count is zero on
     every electrode, i.e. ``segment_sum`` over zero rows.
     """
-    full = call_backend(fitted_backends, edge_case_data, algorithm, case)
+    tolerance = parity_kwargs(algorithm, is_local=is_local)
+    full = call_backend(
+        fitted_backends, edge_case_data, algorithm, case, is_local=is_local
+    )
     assert_fixture_scale(full, algorithm)
     # Even (ragged: 12 bins / 5 chunks) and irregular (chunk lengths 1, 4, 2, 5).
     partitions = [
@@ -700,6 +725,7 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
                     edge_case_data,
                     algorithm,
                     case,
+                    is_local=is_local,
                     row_slice=row_slice,
                 )
                 for row_slice in partition
@@ -709,8 +735,8 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
         np.testing.assert_allclose(
             tiled,
             full,
-            **parity_kwargs(algorithm),
-            err_msg=f"{algorithm} {case} {partition}",
+            **tolerance,
+            err_msg=f"{algorithm} {case} is_local={is_local} {partition}",
         )
 
         # Guard the guard: the chunk-local call must FAIL the same
@@ -719,9 +745,14 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
         # chunk-local edges; the other cases are exempt.
         if case == "on_timestamps":
             chunk_local = chunk_local_result(
-                fitted_backends, edge_case_data, algorithm, case, partition
+                fitted_backends,
+                edge_case_data,
+                algorithm,
+                case,
+                partition,
+                is_local=is_local,
             )
-            assert not np.allclose(chunk_local, full, **parity_kwargs(algorithm)), (
+            assert not np.allclose(chunk_local, full, **tolerance), (
                 f"{algorithm} {case} {partition}: chunk-local binning is "
                 "indistinguishable from global binning here, so this case "
                 "cannot detect a lost or misplaced spike."
@@ -779,6 +810,85 @@ def test_singleton_row_requests_tile_the_full_result(
     )
     assert tiled.shape == full.shape
     np.testing.assert_allclose(tiled, full, **parity_kwargs(algorithm))
+
+
+@pytest.mark.integration
+def test_local_glm_chunks_match_float64_reference(fitted_backends, edge_case_data):
+    """Allow rate-evaluation rounding while independently pinning spike ownership.
+
+    Local GLM rates are recomputed for each chunk's spline matrix. XLA can
+    evaluate that float32 matrix-vector product differently for different row
+    counts. Check every result against float64 Poisson arithmetic, and require
+    the integer counts and float32 spline inputs themselves to match exactly.
+    """
+    predict, model, _ = fitted_backends["sorted_spikes_glm"]
+    time = edge_case_data["time"]
+    spikes, _ = edge_case_data["spike_cases"]["mixed"]
+    args = (edge_case_data["position_time"], edge_case_data["position"], spikes)
+    # Independent 1-D interpolation and Patsy basis evaluation. Match the
+    # predictor's working precision, then use float64 for reference arithmetic.
+    working_dtype = np.float64 if jax.config.jax_enable_x64 else np.float32
+    centers = time[:-1] + 0.5 * np.diff(time)
+    position = np.interp(
+        centers, edge_case_data["position_time"], edge_case_data["position"][:, 0]
+    ).astype(working_dtype)
+    design = np.asarray(
+        build_design_matrices(
+            [model["emission_design_info"].design_info], {"x0": position}
+        )[0],
+        dtype=working_dtype,
+    )
+    coefficients = np.asarray(model["coefficients"], dtype=np.float64)
+    # Fitted coefficients can round the silent unit's exponent just below the
+    # physical rate floor. Match the model's Hz floor before applying duration.
+    rates = np.maximum(np.exp(design.astype(np.float64) @ coefficients.T), RATE_EPS_HZ)
+
+    # Derive full-timeline counts independently of the selection/count helpers.
+    counts = np.zeros((N_BINS, len(spikes)), dtype=int)
+    for neuron, unit_times in enumerate(spikes):
+        in_range = unit_times[(unit_times >= time[0]) & (unit_times <= time[-1])]
+        rows = np.minimum(np.searchsorted(time, in_range, side="right") - 1, N_BINS - 1)
+        np.add.at(counts[:, neuron], rows, 1)
+    assert np.all(counts[-1] > 0)  # the final bin owns its spikes on the last edge
+    rates = rates * np.diff(time)[:, None]
+    expected = np.sum(counts * np.log(rates) - rates, axis=1, keepdims=True)
+
+    partitions = [
+        slice(int(chunk[0]), int(chunk[-1]) + 1)
+        for chunk in np.array_split(np.arange(N_BINS), 5)
+    ]
+    reference_kwargs = (
+        FLOAT32_ROUNDING
+        if working_dtype == np.float32
+        else {"rtol": 1e-12, "atol": 1e-12}
+    )
+    for rows in [slice(None), slice(3, 10), *partitions]:
+        chunk_design = np.asarray(
+            make_spline_predict_matrix(
+                model["emission_design_info"], position[rows, None]
+            )
+        )
+        if working_dtype == np.float32:
+            np.testing.assert_array_equal(chunk_design, design[rows])
+        else:
+            # Patsy's float64 constraint projection itself can regroup its
+            # reduction by shape (measured <= 1.12e-16 absolute).
+            np.testing.assert_allclose(
+                chunk_design, design[rows], rtol=1e-14, atol=1e-14
+            )
+        for neuron, unit_times in enumerate(spikes):
+            np.testing.assert_array_equal(
+                get_spikecount_per_time_bin(
+                    unit_times, time_edges=time, row_slice=rows
+                ),
+                counts[rows, neuron],
+            )
+        actual = np.asarray(
+            predict(*args, **model, is_local=True, row_slice=rows, time_edges=time)
+        )
+        np.testing.assert_allclose(
+            actual, expected[rows], **reference_kwargs, equal_nan=False
+        )
 
 
 def _assert_sorted_segment_ids(ids):
