@@ -79,7 +79,6 @@ _MIN_FILL_SIZE = 64
 # Dimension names recorded in the manifest for arrays with these names.
 _DIMS = {
     "place_fields": ("neuron", "position_bin"),
-    "interior_log_place_fields": ("neuron", "position_bin"),
     "place_bin_centers": ("position_bin", "position_dim"),
     "occupancy": ("position_bin",),
     "log_occupancy": ("position_bin",),

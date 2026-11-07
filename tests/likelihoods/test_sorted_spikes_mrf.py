@@ -148,9 +148,9 @@ def test_fit_uses_smoothest_eigenmodes_as_basis_and_eigenvalues_as_ridge(env_2d)
     """The encoding fit's design is the environment's smoothest Laplacian eigenmodes
     and its penalty is ``penalty * eigenvalue`` per mode (a generalized ridge).
 
-    The stored penalty weights are the cached eigenvalues, the interior log fields are
-    ``basis @ coefficients``, and the coefficients equal an independent float64
-    penalized-Poisson fit on the same counts and exposure with that ridge.
+    The stored penalty weights are the cached eigenvalues, the log interior place
+    fields are ``basis @ coefficients``, and the coefficients equal an independent
+    float64 penalized-Poisson fit on the same counts and exposure with that ridge.
     """
     env = env_2d
     time, position, spike_times = simulate_place_data(env, n_neurons=2)
@@ -173,14 +173,14 @@ def test_fit_uses_smoothest_eigenmodes_as_basis_and_eigenvalues_as_ridge(env_2d)
 
     coefficients = np.asarray(encoding["mrf_coefficients"])
     assert coefficients.shape == (rank, len(spike_times))
+    _, node_order, _ = environment_graph(env)
     # float32 fit: log fields agree with basis @ coefficients to ~1e-6 (max |log| ~8).
     np.testing.assert_allclose(
-        np.asarray(encoding["interior_log_place_fields"]),
+        np.log(np.asarray(encoding["place_fields"])[:, node_order]),
         (basis @ coefficients).T,
         atol=1e-5,
     )
 
-    _, node_order, _ = environment_graph(env)
     exposure, spike_counts, _ = pixellate_interior_fields(
         time, position, spike_times, env, node_order, np.ones_like(time)
     )
@@ -842,11 +842,6 @@ def test_unoccupied_component_returns_eps_place_fields_and_warns():
     place_fields = np.asarray(encoding["place_fields"])[:, node_order]
     np.testing.assert_array_equal(place_fields[:, right_bins], np.float32(RATE_EPS_HZ))
     assert np.all(place_fields[:, ~right_bins] > 1e-3)
-    # Non-local prediction reads the cached interior log fields, in node_order.
-    log_fields = np.asarray(encoding["interior_log_place_fields"])
-    np.testing.assert_allclose(
-        log_fields[:, right_bins], np.log(np.float32(RATE_EPS_HZ)), rtol=1e-6
-    )
 
     # Basis modes are component-local; the right room's modes carry no coefficient.
     _, basis = cached_eigenbasis(encoding["environment"], encoding["mrf_rank"])

@@ -77,7 +77,7 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
 
     Blending only ``place_fields`` cannot keep a refit encoding model
     self-consistent: the GLM and KDE local paths read other fitted state, the
-    diffusion/MRF spike term reads ``interior_log_place_fields``, and the
+    MRF fit's coefficients would no longer describe the blended fields, and the
     clusterless models have no ``place_fields`` at all. Estimation wrappers call
     this before their initial ``fit`` so a rejected value changes nothing.
 

@@ -126,40 +126,6 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffus
     assert encoding["local_interpolation"] == "linear"
 
 
-def test_fit_stores_interior_log_place_fields_that_predict_does_not_read(
-    env_2d, three_neuron_diffusion
-):
-    """The fit stores log(interior place fields); the non-local likelihood takes
-    the log of ``place_fields`` in the shared Poisson emission instead, so the
-    stored value, zeros or None give the same result."""
-    env = env_2d
-    time, position, spike_times, encoding = three_neuron_diffusion
-
-    is_interior = env.is_track_interior_.ravel()
-    cached = np.asarray(encoding["interior_log_place_fields"])
-    expected = np.log(np.asarray(encoding["place_fields"])[:, is_interior])
-    assert cached.shape == (3, int(is_interior.sum()))
-    np.testing.assert_allclose(cached, expected, rtol=1e-6)
-
-    def non_local(model):
-        return np.asarray(
-            predict_sorted_spikes_diffusion_log_likelihood(
-                time,
-                position,
-                spike_times,
-                time_edges=time[:100],
-                is_local=False,
-                **model,
-            )
-        )
-
-    fitted = non_local(encoding)
-    for log_fields in (np.zeros_like(cached), None):
-        np.testing.assert_array_equal(
-            non_local({**encoding, "interior_log_place_fields": log_fields}), fitted
-        )
-
-
 def test_fit_accepts_shared_sorted_spikes_params():
     """The fit signature takes the parameters a detector passes it."""
     params = set(

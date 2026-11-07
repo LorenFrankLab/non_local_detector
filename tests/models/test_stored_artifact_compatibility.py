@@ -372,6 +372,47 @@ def test_unpickling_a_structured_layout_keeps_its_operator_and_limit(sorted_sim)
     assert upgraded.max_dense_transition_bytes == 2**24
 
 
+@pytest.mark.parametrize("algorithm", ["sorted_spikes_diffusion", "sorted_spikes_mrf"])
+@pytest.mark.parametrize("save", ["pickle", "save_model"])
+def test_saved_interior_log_place_fields_are_dropped_on_load(
+    algorithm, save, sorted_sim, tmp_path
+):
+    """Diffusion and MRF fits stored ``interior_log_place_fields``, which no
+    prediction reads. Pickles and saved model files holding it load without a
+    warning, without the key, and decode as before."""
+    time, position, spike_times = sorted_sim
+    model = nld.NonLocalSortedSpikesDetector(
+        sampling_frequency=SORTED_SIM_RATE,
+        sorted_spikes_algorithm=algorithm,
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    ).fit(time, position, spike_times)
+    decode = {
+        "time_edges": model.calculate_time_edges((time[0], time[200])),
+        "position_time": time,
+        "position": position,
+    }
+    expected = model.predict(spike_times, **decode)
+    for entry in model.encoding_model_.values():
+        interior = np.asarray(entry["is_track_interior"])
+        entry["interior_log_place_fields"] = np.log(
+            np.asarray(entry["place_fields"])[:, interior]
+        )
+    path = tmp_path / "model"
+    if save == "pickle":
+        path.write_bytes(pickle.dumps(model))
+    else:
+        model.save_model(path)
+
+    restored = nld.NonLocalSortedSpikesDetector.load_model(path)
+
+    for entry in restored.encoding_model_.values():
+        assert "interior_log_place_fields" not in entry
+    decoded = restored.predict(spike_times, **decode)
+    np.testing.assert_array_equal(
+        decoded.acausal_posterior.values, expected.acausal_posterior.values
+    )
+
+
 @pytest.mark.parametrize(("version", "artifact"), MODELS)
 def test_environment_pickled_with_fitted_fields_unpickles_into_a_place_grid(
     version, artifact, tmp_path

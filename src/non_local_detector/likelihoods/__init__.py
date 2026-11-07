@@ -720,13 +720,24 @@ _ARRAY_ENCODING_KEYS: tuple[str, ...] = (
     "summed_ground_process_intensity",
 )
 
+# Keys that fits stored and no prediction reads any more, which stored
+# encoding models still carry; loading drops them.
+_REMOVED_ENCODING_KEYS: frozenset[str] = frozenset(
+    {
+        # sorted_spikes_diffusion and sorted_spikes_mrf; prediction takes the
+        # log of place_fields itself.
+        "interior_log_place_fields",
+    }
+)
+
 
 def _unify_stored_encoding_values(encoding_model: object) -> None:
-    """Give a stored encoding model's shared keys the value type fits now return.
+    """Give a stored encoding model the keys and value types fits now return.
 
     Each value of ``_ARRAY_ENCODING_KEYS`` that is not an ``np.ndarray`` (a list
     of floats or a JAX array, as saved before) becomes ``np.asarray`` of it,
-    with the dtype it had (float64 for Python floats). The algorithms read the
+    with the dtype it had (float64 for Python floats), and each key of
+    ``_REMOVED_ENCODING_KEYS`` is dropped. The algorithms read the remaining
     values as before, so decoding is unchanged. The model is updated in place.
 
     Parameters
@@ -741,3 +752,5 @@ def _unify_stored_encoding_values(encoding_model: object) -> None:
         value = encoding_model.get(key)
         if value is not None and not isinstance(value, np.ndarray):
             encoding_model[key] = np.asarray(value)
+    for key in _REMOVED_ENCODING_KEYS:
+        encoding_model.pop(key, None)
