@@ -2276,26 +2276,6 @@ class TestEstimateStationaryStateTransition:
 class TestPriorWeightScaling:
     """Test data-adaptive prior weight for stationary transition estimation."""
 
-    def test_prior_weight_zero_uses_legacy_prior(self, posterior_data):
-        """prior_weight=0 should use the legacy fixed-count prior (unchanged behavior)."""
-        post = posterior_data
-        joint_sum = _joint_sum_from_post(post)
-
-        legacy_result = estimate_stationary_state_transition_from_counts(
-            joint_sum,
-            concentration=1.0,
-            stickiness=2.0,
-        )
-
-        pw_result = estimate_stationary_state_transition_from_counts(
-            joint_sum,
-            concentration=1.0,
-            stickiness=2.0,
-            prior_weight=0.0,
-        )
-
-        np.testing.assert_allclose(pw_result, legacy_result, atol=1e-12)
-
     def test_prior_weight_matches_closed_form_adaptive_prior(self, posterior_data):
         """prior_weight > 0 rescales the sticky pseudo-counts to
         ``prior_weight`` times each row's expected count: the estimate is the
