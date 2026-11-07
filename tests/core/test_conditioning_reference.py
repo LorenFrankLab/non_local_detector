@@ -852,6 +852,26 @@ class TestMultiStepEnumerationReference:
         np.testing.assert_allclose(predictive, ref["predicted"], atol=1e-5)
         assert marginal == pytest.approx(ref["log_evidence"], abs=1e-4)
 
+    def test_chunked_driver_on_a_single_row_matches_enumeration(self):
+        initial, transitions, ll = _tiny_model(n_time=1)
+        ref = enumerate_reference(initial, transitions[0], ll)
+
+        acausal, _, marginal, _, _, _, causal, predictive, *_ = chunked_filter_smoother(
+            time_edges=np.arange(2.0),
+            state_ind=np.arange(ll.shape[1]),
+            initial_distribution=initial,
+            transition_matrix=transitions[0],
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            n_chunks=1,
+            log_likelihoods=ll,
+        )
+
+        np.testing.assert_allclose(acausal, ref["smoothed"], atol=1e-5)
+        np.testing.assert_allclose(causal, ref["filtered"], atol=1e-5)
+        np.testing.assert_allclose(predictive, ref["predicted"], atol=1e-5)
+        assert marginal == pytest.approx(ref["log_evidence"], abs=1e-4)
+
 
 @pytest.mark.unit
 class TestViterbiEnumerationReference:
