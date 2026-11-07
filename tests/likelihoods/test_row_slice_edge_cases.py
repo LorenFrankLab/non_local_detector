@@ -354,9 +354,9 @@ def test_empty_spike_input_selects_nothing():
 @pytest.mark.unit
 @pytest.mark.parametrize("spike_kind", SPIKE_KINDS[:3])
 def test_chunk_local_binning_is_detectably_wrong(spike_kind):
-    """The edge cases above must be able to fail: show the legacy call differs.
+    """The edge cases above must be able to fail: show a chunk-local call differs.
 
-    A legacy (unmarked) chunk callback bins against its chunk's own edges,
+    A chunk-local call bins against its chunk's own edges,
     ``time_edges[start : stop + 1]``. Each chunk then closes its final bin, so
     a spike exactly on an edge shared by two chunks is counted in both. Spikes
     strictly inside bins are unaffected, which is why this is shown for the
@@ -540,7 +540,7 @@ def call_backend(fitted_backends, edge_case_data, algorithm, case, time=None, **
     """Evaluate one backend on one decoding-spike case.
 
     ``time`` defaults to the full decoding edges. Passing a chunk's own edges
-    instead reproduces the legacy chunk-local call, which is what
+    instead reproduces a chunk-local call, which is what
     ``chunk_local_result`` uses to show these assertions are not vacuous.
     """
     predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
@@ -627,7 +627,7 @@ def assert_some_chunk_is_spike_free(edge_case_data, case, partitions) -> None:
 
 
 def chunk_local_result(fitted_backends, edge_case_data, algorithm, case, partition):
-    """The legacy per-chunk call: each chunk gets only its own edges."""
+    """The chunk-local call: each chunk gets only its own edges."""
     full_time = edge_case_data["time"]
     return np.concatenate(
         [
@@ -713,7 +713,7 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
             err_msg=f"{algorithm} {case} {partition}",
         )
 
-        # Guard the guard: the legacy chunk-local call must FAIL the same
+        # Guard the guard: the chunk-local call must FAIL the same
         # assertion, otherwise this case could not detect the defect it exists
         # for. Only spikes on a shared chunk edge are miscounted (twice) by
         # chunk-local edges; the other cases are exempt.
