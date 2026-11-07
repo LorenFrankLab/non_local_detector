@@ -75,8 +75,14 @@ def _fit(env, t_pos, pos, spike_times, feats, weights=None):
     )
 
 
-def test_weights_change_the_clusterless_kde_occupancy(simple_1d_environment):
-    """Non-uniform weights must change the fitted occupancy (else weights ignored)."""
+def test_weights_shift_the_clusterless_kde_occupancy(simple_1d_environment):
+    """Up-weighting the left half of the track moves the occupancy there.
+
+    The binary-subset test below cannot see an occupancy that treats every
+    nonzero weight as 1. With the left half weighted 3 and the right 0.5, the
+    weighted time is 6/7 (0.86) left; the fitted occupancy puts 0.80 there,
+    against 0.50 unweighted (and 0.50 if weights are ignored or binarized).
+    """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
@@ -84,13 +90,16 @@ def test_weights_change_the_clusterless_kde_occupancy(simple_1d_environment):
     feats = [jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)]
 
     uniform = _fit(env, t_pos, pos, spikes, feats, weights=None)
-    # Up-weight the left half of the track so occupancy shifts left.
     w = np.where(np.asarray(t_pos) < 5.0, 3.0, 0.5)
     weighted = _fit(env, t_pos, pos, spikes, feats, weights=w)
+    centers = np.asarray(env.place_bin_centers_)[env.is_track_interior_.ravel(), 0]
 
-    assert not np.allclose(
-        np.asarray(uniform["occupancy"]), np.asarray(weighted["occupancy"])
-    ), "weights had no effect on occupancy -- they are being ignored"
+    def left_share(encoding):
+        occupancy = np.asarray(encoding["occupancy"])
+        return occupancy[centers < 5.0].sum() / occupancy.sum()
+
+    assert left_share(uniform) == pytest.approx(0.5, abs=0.05)
+    assert left_share(weighted) > 0.7
 
 
 def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
@@ -156,12 +165,14 @@ def test_binary_weights_match_subset_fit_clusterless_kde(simple_1d_environment):
     )
 
 
-def test_weights_change_the_clusterless_gmm_occupancy(simple_1d_environment):
-    """Non-uniform weights must change the fitted GMM occupancy (else ignored).
+def test_weights_shift_the_clusterless_gmm_occupancy(simple_1d_environment):
+    """Up-weighting the left half of the track moves GMM occupancy there.
 
-    A weaker check than the KDE binary-subset test: the GMM's EM / k-means init is
-    not exactly reproducible under weight-0 points, so we only assert that weights
-    have an effect (the module previously hard-coded ``weights = None``).
+    The animal spends equal time in each half. With the left half weighted 3 and
+    the right 0.5, the weighted time is 6/7 (0.86) left; the fitted occupancy
+    puts 0.79 there, against 0.50 unweighted (and 0.50 if weights are ignored).
+    Unlike the KDE, the GMM's EM / k-means init is not exactly reproducible under
+    weight-0 points, so there is no binary-subset check.
     """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 201)
@@ -188,9 +199,14 @@ def test_weights_change_the_clusterless_gmm_occupancy(simple_1d_environment):
     weighted = fit_clusterless_gmm_encoding_model(
         position_time=t_pos, position=pos, weights=w, **kw
     )
-    assert not np.allclose(
-        np.asarray(uniform["log_occupancy"]), np.asarray(weighted["log_occupancy"])
-    ), "weights had no effect on the GMM occupancy -- they are being ignored"
+    centers = np.asarray(uniform["interior_place_bin_centers"])[:, 0]
+
+    def left_share(encoding):
+        occupancy = np.exp(np.asarray(encoding["log_occupancy"]))
+        return occupancy[centers < 5.0].sum() / occupancy.sum()
+
+    assert left_share(uniform) == pytest.approx(0.5, abs=0.05)
+    assert left_share(weighted) > 0.7
 
 
 @pytest.mark.unit
