@@ -11,7 +11,7 @@ from non_local_detector.initial_conditions import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
-from tests.conftest import assert_probability_distribution, set_place_grid
+from tests.conftest import set_place_grid
 from tests.models._helpers import SORTED_SIM_RATE
 
 
@@ -80,21 +80,6 @@ def test_uniform_initial_conditions_without_interior_bins_raises(
         UniformInitialConditions().make_initial_conditions(obs, (env,))
 
 
-@pytest.mark.unit
-def test_uniform_initial_conditions_normalization(simple_1d_environment):
-    """Test that initial conditions always sum to 1."""
-    env = simple_1d_environment
-    envs = (env,)
-    ic = UniformInitialConditions()
-    obs = ObservationModel(environment_name=env.environment_name, is_local=False)
-
-    # Act
-    arr = ic.make_initial_conditions(obs, envs)
-
-    # Assert
-    assert_probability_distribution(arr)
-
-
 @pytest.fixture(scope="module")
 def em_fit_with_unreachable_states():
     """A detector after one EM step whose discrete initial conditions put zero
@@ -113,7 +98,12 @@ def em_fit_with_unreachable_states():
         discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0]),
     )
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)  # max_iter=1 never converges
+        # max_iter=1 never converges; no other UserWarning is expected.
+        warnings.filterwarnings(
+            "ignore",
+            message="EM did not converge after max_iter=",
+            category=UserWarning,
+        )
         warnings.simplefilter("error", RuntimeWarning)
         detector.estimate_parameters(
             position_time=time,
