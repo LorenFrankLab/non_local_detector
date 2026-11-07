@@ -35,16 +35,20 @@ def weights_for(n_samples, kind):
     )
 
 
-def joint_inputs(n_decoding, n_encoding, n_positions, weight_kind):
+def joint_inputs(n_decoding, n_encoding, n_positions, weight_kind, n_position_dims=2):
     rng = np.random.default_rng(7423)
     decoding_features = jnp.asarray(rng.normal(size=(n_decoding, 3)))
     return {
         "decoding_features": decoding_features,
         "encoding_features": jnp.asarray(rng.normal(size=(n_encoding, 3))),
-        "encoding_positions": jnp.asarray(rng.normal(size=(n_encoding, 2))),
-        "place_bin_centers": jnp.asarray(rng.normal(size=(n_positions, 2))),
+        "encoding_positions": jnp.asarray(
+            rng.normal(size=(n_encoding, n_position_dims))
+        ),
+        "place_bin_centers": jnp.asarray(
+            rng.normal(size=(n_positions, n_position_dims))
+        ),
         "waveform_stds": jnp.asarray([0.7, 1.1, 1.3]),
-        "position_std": jnp.asarray([0.8, 1.2]),
+        "position_std": jnp.asarray([0.8, 1.2][:n_position_dims]),
         "occupancy": jnp.asarray(
             np.where(np.arange(n_positions) == 1, 0.0, rng.uniform(0.2, 1, n_positions))
         ),
@@ -131,6 +135,40 @@ def test_joint_tiles_match_finished_oracle(x64, shape, weight_kind):
         assert actual.shape == (shape[0], shape[2])
         np.testing.assert_allclose(actual, oracle, **tolerance(x64))
         np.testing.assert_allclose(actual, baseline_joint(values), **tolerance(x64))
+
+
+@pytest.mark.parametrize("n_position_dims", [1, 2])
+@pytest.mark.parametrize(
+    ("encoding_tile_size", "position_tile_size", "block_size"),
+    [
+        # Partial last encoding, position and decoding blocks.
+        (4, 3, 5),
+        # Tiles that divide the 9 encoding spikes; one decoding block.
+        (3, None, 16),
+        # One encoding spike per tile.
+        (1, None, 16),
+        # A tile as large as the encoding set cannot be chunked; streaming
+        # falls back to one materialized kernel instead of raising.
+        (9, None, 16),
+    ],
+)
+def test_streamed_tilings_match_finished_oracle(
+    n_position_dims, encoding_tile_size, position_tile_size, block_size
+):
+    """Every encoding, position and decoding tiling gives the finished terms."""
+    values = joint_inputs(13, 9, 7, "weighted", n_position_dims)
+    actual = streamed_joint(values, encoding_tile_size, position_tile_size, block_size)
+    oracle = joint_oracle(values)
+    # Away from the zero-occupancy bin the background must not mask the
+    # intensity, or the comparison is vacuous.
+    supported = np.asarray(values["occupancy"]) > 0
+    background = np.asarray(values["log_background"])[:, None]
+    assert np.all(oracle[:, supported] > background + 1.0)
+    # Measured at most 1.1e-5 absolute on terms of order 5-40 (an eighth of
+    # this bound); dropping one encoding spike moves terms by 0.24 or more.
+    tile_tolerance = {"rtol": 1e-5, "atol": 1e-5}
+    np.testing.assert_allclose(actual, oracle, **tile_tolerance)
+    np.testing.assert_allclose(actual, baseline_joint(values), **tile_tolerance)
 
 
 @pytest.mark.parametrize("x64", [False, True])
