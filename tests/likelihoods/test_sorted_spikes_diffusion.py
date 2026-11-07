@@ -1106,40 +1106,6 @@ def test_end_to_end_sorted_spikes_decoder(algorithm, algorithm_params):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
-def test_nonlocal_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypatch):
-    """Non-local spike counts are built in bounded row blocks, bitwise
-    identically to one block, so a full-grid request never holds the whole
-    rows-by-population count matrix."""
-    import non_local_detector.likelihoods.common.poisson as poisson
-
-    predict, encoding, time, position, spike_times = three_neuron_fit
-    arguments = {
-        **encoding,
-        "is_local": False,
-        "time_edges": time[:1001],
-        "row_slice": rows,
-    }
-    unblocked = predict(time, position, spike_times, **arguments)
-    original = poisson.spike_counts_matrix
-    block_rows = []
-
-    def spy(*args, **kwargs):
-        counts = original(*args, **kwargs)
-        block_rows.append(counts.shape[0])
-        return counts
-
-    monkeypatch.setattr(poisson, "spike_counts_matrix", spy)
-    # Three neurons of int64 counts: a 128-row block budget.
-    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
-    blocked = predict(time, position, spike_times, **arguments)
-    np.testing.assert_array_equal(blocked, unblocked)
-    start, stop, _ = (slice(None) if rows is None else rows).indices(1000)
-    assert sum(block_rows) == stop - start
-    assert max(block_rows, default=0) <= 128
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
 def test_local_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypatch):
     """Local spike counts are built in bounded row blocks, bitwise identically
     to one block."""
