@@ -38,6 +38,9 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from tests.likelihoods._sorted_spikes_helpers import (
+    poisson_log_likelihood_reference,
+)
 from tests.likelihoods.conftest import fit_registered_backends
 
 pytestmark = pytest.mark.unit
@@ -276,7 +279,7 @@ def test_clusterless_gmm_zero_spikes_all_electrodes():
 
 
 def test_sorted_kde_single_spike_per_neuron():
-    """Single spike per neuron should fit and predict without NaN."""
+    """Single spike per neuron should fit and predict with finite log likelihoods."""
     env = _make_env_1d()
     spike_times = [jnp.array([3.0]), jnp.array([7.0])]
     enc, t, pos = _fit_sorted_kde(env, spike_times)
@@ -285,7 +288,7 @@ def test_sorted_kde_single_spike_per_neuron():
     assert jnp.all(jnp.isfinite(enc["place_fields"]))
 
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 def test_sorted_glm_single_spike_per_neuron():
@@ -302,14 +305,14 @@ def test_sorted_glm_single_spike_per_neuron():
 
 
 def test_clusterless_kde_single_spike_per_electrode():
-    """Single spike per electrode should not cause NaN."""
+    """Single spike per electrode should give finite log likelihoods."""
     env = _make_env_1d()
     spike_times = [jnp.array([3.0]), jnp.array([7.0])]
     spike_features = [jnp.array([[0.5, -0.5]]), jnp.array([[1.0, 1.0]])]
     enc, t, pos = _fit_clusterless_kde(env, spike_times, spike_features)
 
     ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 def test_clusterless_gmm_single_spike_per_electrode():
@@ -332,14 +335,14 @@ def test_clusterless_gmm_single_spike_per_electrode():
 # synthetic tracking jumps are incidental to this test.
 @pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 def test_sorted_kde_very_small_bandwidth():
-    """Very small KDE bandwidth should not produce NaN."""
+    """Very small KDE bandwidth should give finite log likelihoods."""
     env = _make_env_1d()
     spike_times = [jnp.array([2.0, 5.0, 8.0]), jnp.array([3.0, 6.0])]
     enc, t, pos = _fit_sorted_kde(env, spike_times, position_std=0.01)
 
     assert jnp.all(jnp.isfinite(enc["place_fields"]))
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 def test_sorted_kde_very_large_bandwidth():
@@ -360,11 +363,11 @@ def test_sorted_kde_very_large_bandwidth():
         )
 
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 def test_clusterless_kde_very_small_waveform_std():
-    """Very small waveform std should not produce NaN."""
+    """Very small waveform std should give finite log likelihoods."""
     env = _make_env_1d()
     spike_times = [jnp.array([2.0, 5.0, 8.0])]
     spike_features = [jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]])]
@@ -373,7 +376,7 @@ def test_clusterless_kde_very_small_waveform_std():
     )
 
     ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 def test_clusterless_kde_very_large_waveform_std():
@@ -588,7 +591,7 @@ def test_decode_single_time_bin_all_models():
 
 
 def test_clusterless_kde_identical_waveforms():
-    """All spikes with identical features should not cause NaN."""
+    """All spikes with identical features should give finite log likelihoods."""
     env = _make_env_1d()
     spike_times = [jnp.array([2.0, 5.0, 8.0])]
     # Identical waveform features
@@ -596,7 +599,7 @@ def test_clusterless_kde_identical_waveforms():
     enc, t, pos = _fit_clusterless_kde(env, spike_times, spike_features)
 
     ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +688,8 @@ def test_clusterless_gmm_extreme_waveform():
 
 
 def test_sorted_kde_many_neurons_few_spikes():
-    """10 neurons with 2 spikes each should not crash."""
+    """10 neurons with 2 spikes each give the Poisson log likelihood of their
+    spike counts under the fitted place fields."""
     env = _make_env_1d()
     rng = np.random.default_rng(99)
     spike_times = [jnp.array(sorted(rng.uniform(0.5, 9.5, size=2))) for _ in range(10)]
@@ -693,5 +697,15 @@ def test_sorted_kde_many_neurons_few_spikes():
 
     assert enc["place_fields"].shape[0] == 10
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
-    assert ll.shape[0] > 0
-    assert not jnp.any(jnp.isnan(ll))
+    assert jnp.all(jnp.isfinite(ll))
+    # The decode edges (multiples of 2 s) hold no spike time, so np.histogram's
+    # closed last bin bins as the package does.
+    expected = poisson_log_likelihood_reference(
+        enc["place_fields"],
+        env.is_track_interior_.ravel(),
+        [np.asarray(spikes) for spikes in spike_times],
+        np.linspace(0.0, 10.0, 6),
+    )
+    # float32 vs float64: measured 3.4e-6 apart (|ll| up to 69); reversing the
+    # neurons' place fields moves it by 48.
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
