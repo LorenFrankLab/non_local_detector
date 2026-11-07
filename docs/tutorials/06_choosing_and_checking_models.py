@@ -211,9 +211,9 @@ fits = {
 }
 
 # %% [markdown]
-# The decoder warns that 1-D position without a track graph is treated as a
-# 1-D open field, which is right for a straight track. JAX may also warn
-# that "Some donated buffers were not usable": a note about reusing memory
+# 1-D position without a track graph is treated as a 1-D open field, which
+# is right for a straight track. JAX may warn that "Some donated buffers were
+# not usable": a note about reusing memory
 # in the compiled filter, which does not change the results.
 #
 # Each fitted encoding model stores the place fields in Hz at every position
