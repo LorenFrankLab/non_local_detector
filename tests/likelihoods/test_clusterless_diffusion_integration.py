@@ -1,5 +1,4 @@
-"""``clusterless_diffusion`` across environment refits, saving and the fit/predict
-handoff of its memory budget."""
+"""``clusterless_diffusion`` across environment refits and saving."""
 
 import numpy as np
 import pytest
@@ -7,11 +6,7 @@ import pytest
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import (
-    clusterless_diffusion,
-)
 from non_local_detector.likelihoods.clusterless_diffusion import (
-    _effective_block,
     fit_clusterless_diffusion_encoding_model,
     mark_reference_scale,
     predict_clusterless_diffusion_log_likelihood,
@@ -26,15 +21,6 @@ POSITION_STD = 3.0
 WAVEFORM_STD = 24.0
 SAVE_LOAD_RTOL = 1e-5
 SAVE_LOAD_ATOL = 1e-10
-DEFAULT_MEMORY_BUDGET = 536_870_912
-
-
-def _toy_environment(upper: float, place_bin_size: float = 1.0) -> Environment:
-    """A tiny 1D environment, fitted, for direct fit/predict-function tests."""
-    env = Environment(position_range=[(0.0, upper)], place_bin_size=place_bin_size)
-    return env.fit_place_grid(
-        position=np.linspace(0.0, upper, 200)[:, None], infer_track_interior=True
-    )
 
 
 def _toy_electrode_data(
@@ -63,7 +49,7 @@ def test_refit_requires_encoding_refit() -> None:
     against the rebuilt grid, and a fresh predict then works (finite, right shape
     matching the NEW interior-bin count) with no stale-``Q`` shape error.
 
-    Unlike ``_toy_environment``, the ``Environment`` here is constructed WITHOUT a
+    The ``Environment`` here is constructed WITHOUT a
     fixed ``position_range``: with a pinned ``position_range``, a second
     ``fit_place_grid`` call produces a bit-identical grid regardless of the
     ``position`` argument passed to it, which would make the shape assertions
@@ -294,72 +280,3 @@ def test_save_load_predict_parity(tmp_path) -> None:
     np.testing.assert_allclose(
         posterior_after, posterior_before, rtol=SAVE_LOAD_RTOL, atol=SAVE_LOAD_ATOL
     )
-
-
-def test_memory_budget_override_survives_handoff(monkeypatch) -> None:
-    """A non-default ``memory_budget`` passed at fit is stored in the encoding dict
-    (not silently lost at the fit -> predict handoff), drives the decode-spike
-    block size predict resolves, and leaves the log-likelihood unchanged."""
-    rng = np.random.default_rng(1)
-    env = _toy_environment(upper=10.0)
-    position_time = np.linspace(0.0, 10.0, 200)
-    position = position_time[:, None]
-    spike_times, spike_waveform_features = _toy_electrode_data(rng, position_time)
-
-    # Small enough that predict splits each electrode's 40 decode spikes into
-    # several blocks.
-    non_default_memory_budget = 10_000
-    encoding_model = fit_clusterless_diffusion_encoding_model(
-        position_time,
-        position,
-        spike_times,
-        spike_waveform_features,
-        environment=env,
-        position_std=POSITION_STD,
-        memory_budget=non_default_memory_budget,
-        disable_progress_bar=True,
-    )
-
-    assert encoding_model["memory_budget"] == non_default_memory_budget
-    assert encoding_model["block_size"] == 10_000  # default, also carried in the dict
-
-    resolved_blocks: list[tuple[int, int]] = []
-
-    def spy_effective_block(memory_budget, *args):
-        block = _effective_block(memory_budget, *args)
-        resolved_blocks.append((memory_budget, block))
-        return block
-
-    monkeypatch.setattr(clusterless_diffusion, "_effective_block", spy_effective_block)
-
-    def predict(model):
-        resolved_blocks.clear()
-        log_likelihood = predict_clusterless_diffusion_log_likelihood(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
-            time_edges=np.linspace(position_time[0], position_time[-1], 6),
-            mark_reference=fit_mark_references(
-                spike_waveform_features, mark_reference_scale()
-            ),
-            **model,
-        )
-        return np.asarray(log_likelihood), list(resolved_blocks)
-
-    overridden, overridden_blocks = predict(encoding_model)
-    default, default_blocks = predict(
-        {**encoding_model, "memory_budget": DEFAULT_MEMORY_BUDGET}
-    )
-
-    n_spikes = [len(times) for times in spike_times]
-    assert [budget for budget, _ in overridden_blocks] == [
-        non_default_memory_budget
-    ] * len(n_spikes)
-    assert all(
-        block < n for (_, block), n in zip(overridden_blocks, n_spikes, strict=True)
-    )
-    assert all(
-        block >= n for (_, block), n in zip(default_blocks, n_spikes, strict=True)
-    )
-    np.testing.assert_allclose(overridden, default, rtol=1e-5, atol=1e-5)

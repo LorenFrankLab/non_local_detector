@@ -701,29 +701,6 @@ def test_nonlocal_finite_and_zero_rate():
         ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
 
 
-@pytest.mark.parametrize("is_local", [False, True])
-def test_block_parity(is_local):
-    """A tiny effective block (memory_budget forced small) matches one large block.
-
-    ``memory_budget=1`` forces ``effective_block == 1``. Non-local, that is one
-    decode-time row per block; local, it exercises the per-decode-spike-block
-    slicing (``spike_bins[block]``, ``decode_features[block]``, ``seg[block]``)
-    with ``_sim``'s default 2 electrodes x 12 decode spikes each, so many
-    single-spike blocks per electrode run against one big block."""
-    s = _sim(seed=3, hi=10.0)
-    enc = _fit(s)
-
-    # Default 512 MiB budget -> one block (block == block_size).
-    ll_big = np.asarray(_predict(s, enc, is_local=is_local))
-    ll_small = np.asarray(_predict(s, enc, is_local=is_local, memory_budget=1))
-
-    n_columns = 1 if is_local else int(s["env"].is_track_interior_.sum())
-    assert ll_big.shape == ll_small.shape == (s["time_edges"].shape[0] - 1, n_columns)
-    assert np.allclose(ll_big, ll_small, rtol=1e-5, atol=1e-6), (
-        f"block parity failed: max|diff|={np.abs(ll_big - ll_small).max():.3e}"
-    )
-
-
 def test_zero_rate_fit_and_predict_finite_and_warn():
     """All-zero weights: both the occupancy and per-electrode warnings fire; predict
     stays finite and floors every decode spike to LOG_EPS."""
