@@ -1143,6 +1143,10 @@ class Discrete:
     is just an identity matrix.
     """
 
+    def __repr__(self) -> str:
+        """``Discrete()``: it has no parameters."""
+        return "Discrete()"
+
     @property
     def environment_name(self) -> None:
         """None: a discrete state has no place bins."""
