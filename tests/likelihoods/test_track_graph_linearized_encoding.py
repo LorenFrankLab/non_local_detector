@@ -170,12 +170,14 @@ def test_two_dimensional_fit_on_graph_equals_linear_fit(
         corner_track["linear_environment"],
         corner_track["linear"],
     )
-    # The KDE fits are bit-identical. The GMM fit is not: refitting the same
-    # input in one process moved its log occupancy by up to 1.1e-3 relative
-    # (measured), and it runs EM to a 1e-3 tolerance. A linearization error
+    # The KDE fits are bit-identical. The GMM fits are not: the two inputs gave
+    # log likelihoods and ground-process intensities up to 7.2e-6 apart
+    # (relative) and log occupancies 1.5e-6 apart (measured; refitting the same
+    # input is bit-identical, as the GMM seed is fixed). EM can take another
+    # path on another platform, hence ~70x headroom. A linearization error
     # moves these quantities by O(1).
     tolerance = (
-        {"rtol": 5e-3, "atol": 0.0}
+        {"rtol": 5e-4, "atol": 0.0}
         if algorithm == "clusterless_gmm"
         else {"rtol": 0.0, "atol": 0.0}
     )

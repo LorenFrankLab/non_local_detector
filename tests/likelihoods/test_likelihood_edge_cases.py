@@ -350,10 +350,14 @@ def test_sorted_kde_very_large_bandwidth():
 
     pf = enc["place_fields"]
     assert jnp.all(jnp.isfinite(pf))
-    # With huge bandwidth, place field should be nearly uniform
+    # With huge bandwidth, place field should be nearly uniform. Measured
+    # coefficients of variation: 2.0e-7 and 1.4e-4; position_std=10 gives up
+    # to 0.014 and position_std=1 up to 0.74.
     for i in range(pf.shape[0]):
         cv = float(jnp.std(pf[i]) / jnp.mean(pf[i]))
-        assert cv < 0.5, f"Neuron {i} place field not near-uniform with large bandwidth"
+        assert cv < 2e-3, (
+            f"Neuron {i} place field not near-uniform with large bandwidth"
+        )
 
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
     assert not jnp.any(jnp.isnan(ll))
@@ -508,9 +512,11 @@ def test_sorted_glm_high_l2_penalty():
 
     for pf in enc["place_fields"]:
         assert jnp.all(jnp.isfinite(pf))
-        # Strong regularization => near-uniform
+        # Strong regularization => near-uniform. Measured coefficient of
+        # variation 2.8e-7 (float32 noise); l2_penalty=1 gives 0.19 and
+        # l2_penalty=1e-10 gives 1.5.
         cv = float(jnp.std(pf) / (jnp.mean(pf) + 1e-15))
-        assert cv < 1.0
+        assert cv < 1e-4
 
 
 def test_sorted_glm_low_l2_penalty():

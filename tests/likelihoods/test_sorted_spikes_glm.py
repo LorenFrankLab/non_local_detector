@@ -218,9 +218,10 @@ class TestPoissonRegression:
 
         # Assert
         assert jnp.all(jnp.isfinite(coefficients))
-        # With no spikes, predicted rate should be very low
-        predicted_rate = jnp.exp(design_matrix @ coefficients)
-        assert jnp.mean(predicted_rate) < 1.0
+        # With no spikes, the rate is the EPS floor everywhere (measured: exactly
+        # EPS; a fit with one spike per bin gives rates near 1 Hz).
+        predicted_rate = np.exp(design_matrix @ np.asarray(coefficients))
+        np.testing.assert_allclose(predicted_rate, EPS, rtol=1e-5, atol=0.0)
 
     def test_fit_poisson_regression_with_zero_exposure(self):
         """No exposure yields finite EPS-floor rates even if counts are nonzero."""
