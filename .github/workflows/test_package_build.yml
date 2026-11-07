@@ -34,8 +34,6 @@ defaults:
 
 env:
   FORCE_COLOR: "1"
-  # Derandomized examples and no per-example deadline (tests/conftest.py).
-  HYPOTHESIS_PROFILE: ci
   UV_VERSION: "0.13.5"
 
 jobs:

@@ -23,16 +23,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from hypothesis import settings
 
 from non_local_detector.environment import Environment, PlaceGrid
-
-# No per-example deadline: the first example of a test includes JAX compilation.
-# CI sets HYPOTHESIS_PROFILE=ci, which also derandomizes examples so a CI
-# failure reproduces on rerun.
-settings.register_profile("dev", deadline=None)
-settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
-settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
 # Persistent JAX compilation cache. Many tests clear JAX's caches or rebuild
 # identical functions, and the suite is mostly XLA compile time: on the six

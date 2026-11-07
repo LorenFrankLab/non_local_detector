@@ -80,7 +80,7 @@ This package produces scientific results, so a change that alters numbers needs 
 
 - A refactor must leave outputs unchanged (to floating-point noise, about 1e-14). Compare outputs before and after.
 - A deliberate algorithm change should stay within about 1e-10 of the old results, or come with a justification for the larger difference.
-- After touching the HMM algorithms, likelihoods, transitions or initial conditions, check the invariants: posteriors sum to one, transition matrices are row-stochastic, log-probabilities are finite, covariances are positive semi-definite, and likelihoods are non-negative. The property tests under `tests/properties/` check these.
+- After touching the HMM algorithms, likelihoods, transitions or initial conditions, check the invariants: posteriors sum to one, transition matrices are row-stochastic, log-probabilities are finite, covariances are positive semi-definite, and likelihoods are non-negative.
 - The golden regression tests (`tests/test_golden_regression.py`, pickled data in `tests/golden_data/`) pin known-good outputs. Do not regenerate their data to make a failing test pass. If a difference is intended, explain in the pull request what changed, by how much, why it is correct, and which invariants still hold, and a maintainer will approve updating the data.
 - Do not loosen tolerances or convergence criteria without the same explanation.
 - After changing JAX code, check for unexpected recompilation, NaN/Inf in outputs, and unchanged shapes. If you changed GPU-specific paths, run the relevant tests on a CUDA machine.

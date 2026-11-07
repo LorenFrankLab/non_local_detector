@@ -23,7 +23,6 @@ dependencies:
 - pytest
 - pytest-cov
 - pytest-timeout
-- hypothesis
 - psutil
 - netcdf4
 - ruff
