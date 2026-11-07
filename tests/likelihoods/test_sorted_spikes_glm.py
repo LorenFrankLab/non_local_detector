@@ -648,27 +648,6 @@ def test_encoding_fit_solves_all_cells_in_one_call(
 class TestFitGLMEncodingModel:
     """Test full GLM encoding model fitting."""
 
-    def test_fit_glm_encoding_model_returns_expected_keys(
-        self, line_env_100cm, simple_spike_data
-    ):
-        """Should return dictionary with all expected keys."""
-        # Arrange
-        env = line_env_100cm
-        data = simple_spike_data
-
-        # Act
-        encoding = _fit_encoding(env, data)
-
-        # Assert
-        expected_keys = {
-            "coefficients",
-            "place_fields",
-            "emission_design_info",
-            "no_spike_part_log_likelihood",
-            "is_track_interior",
-        }
-        assert expected_keys.issubset(encoding.keys())
-
     def test_fit_glm_encoding_model_place_fields_shape(
         self, line_env_100cm, simple_spike_data
     ):

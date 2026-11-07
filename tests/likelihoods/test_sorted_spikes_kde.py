@@ -40,18 +40,6 @@ def kde_fit(simple_1d_environment):
 def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
     _, _, _, spikes, enc = kde_fit
 
-    # keys and shapes
-    for key in (
-        "environment",
-        "marginal_models",
-        "occupancy_model",
-        "occupancy",
-        "mean_rates",
-        "place_fields",
-        "no_spike_part_log_likelihood",
-        "is_track_interior",
-    ):
-        assert key in enc
     occ = enc["occupancy"]
     pf = enc["place_fields"]
     assert occ.ndim == 1

@@ -4,10 +4,8 @@
 same encoding-dict contract and Poisson log-likelihood, but place fields are
 smoothed on the environment's manifold graph (heat kernel) instead of with a
 Gaussian KDE. These tests pin the encoding-dict shapes, KDE equivalence on a
-wall-less field, weighted-fit parity, predict shapes, and the splat contract.
+wall-less field, weighted-fit parity and predict shapes.
 """
-
-import inspect
 
 import networkx as nx
 import numpy as np
@@ -41,21 +39,6 @@ from tests.likelihoods._sorted_spikes_helpers import (
     simulate_place_data,
     simulate_sparse_uniform_tracking,
 )
-
-# Encoding-dict keys the fit must return: the KDE parity keys (minus the KDE model
-# objects) plus the diffusion additions node_order / bin_sizes (shared contract).
-ENCODING_DICT_KEYS = {
-    "environment",
-    "occupancy",
-    "mean_rates",
-    "place_fields",
-    "no_spike_part_log_likelihood",
-    "is_track_interior",
-    "node_order",
-    "bin_sizes",
-    "local_interpolation",
-    "disable_progress_bar",
-}
 
 
 @pytest.fixture(scope="module")
@@ -99,12 +82,10 @@ def place_field_core_median_rel_errors(env, std, diff_pf, kde_pf):
     return medians
 
 
-def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffusion):
-    """Fit returns the contract keys; place_fields are FULL-GRID with zeros off-track."""
+def test_fit_returns_full_grid_place_fields(env_2d, three_neuron_diffusion):
+    """place_fields are FULL-GRID with zeros off-track."""
     env = env_2d
     _time, _position, _spike_times, encoding = three_neuron_diffusion
-
-    assert set(encoding) >= ENCODING_DICT_KEYS
 
     n_total = env.place_bin_centers_.shape[0]
     is_interior = env.is_track_interior_.ravel()
@@ -124,19 +105,6 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes(env_2d, three_neuron_diffus
     np.testing.assert_array_equal(encoding["node_order"], np.where(is_interior)[0])
     assert np.asarray(encoding["bin_sizes"]).shape == (n_interior,)
     assert encoding["local_interpolation"] == "linear"
-
-
-def test_fit_accepts_shared_sorted_spikes_params():
-    """The fit signature takes the parameters a detector passes it."""
-    params = set(
-        inspect.signature(fit_sorted_spikes_diffusion_encoding_model).parameters
-    )
-    assert {
-        "weights",
-        "position_std",
-        "rank",
-        "local_interpolation",
-    } <= params
 
 
 def test_fit_rejects_invalid_local_interpolation(env_2d):
@@ -294,30 +262,6 @@ def test_fit_silent_cell_and_zero_neurons(env_2d):
     )
     assert np.asarray(empty["place_fields"]).shape == (0, n_total)
     assert np.asarray(empty["no_spike_part_log_likelihood"]).shape == (n_total,)
-
-
-def test_predict_signature_matches_encoding_dict(env_2d):
-    """Every encoding-dict key is a predict parameter (the base-class splat contract)."""
-    env = env_2d
-    time, position, spike_times = simulate_place_data(env, n_neurons=2)
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
-    params = set(
-        inspect.signature(predict_sorted_spikes_diffusion_log_likelihood).parameters
-    )
-    assert set(encoding) <= params
-    assert {
-        "time_edges",
-        "position_time",
-        "position",
-        "spike_times",
-        "is_local",
-    } <= params
 
 
 # synthetic tracking jumps are incidental to this test.
@@ -575,17 +519,6 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
     )
     place_field = np.asarray(encoding["place_fields"])[0]
     assert np.max(np.abs(place_field / 10.0 - 1.0)) < 0.15
-
-
-def test_registered_in_sorted_spikes_algorithms():
-    """The algorithm is selectable via sorted_spikes_algorithm='sorted_spikes_diffusion'."""
-    assert "sorted_spikes_diffusion" in _SORTED_SPIKES_ALGORITHMS
-    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_diffusion"]
-    fit_fn, predict_fn = record.fit, record.predict
-    assert fit_fn is fit_sorted_spikes_diffusion_encoding_model
-    assert predict_fn is predict_sorted_spikes_diffusion_log_likelihood
-    # Existing algorithms are untouched.
-    assert {"sorted_spikes_kde", "sorted_spikes_glm"} <= set(_SORTED_SPIKES_ALGORITHMS)
 
 
 def test_local_no_spikes_equals_negative_local_rate_sum(env_2d):

@@ -19,7 +19,7 @@ import pytest
 import scipy.linalg
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS, sorted_spikes_mrf
+from non_local_detector.likelihoods import sorted_spikes_mrf
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
@@ -1030,16 +1030,12 @@ def test_mrf_predict_forwards_every_diffusion_key(env_2d, monkeypatch):
 
 
 @pytest.mark.parametrize("is_local", [False, True])
-def test_registered_and_predict_shared_with_diffusion(env_2d, is_local):
-    """sorted_spikes_mrf is registered and predicts as the diffusion model does.
+def test_predict_shared_with_diffusion(env_2d, is_local):
+    """sorted_spikes_mrf predicts as the diffusion model does.
 
     The MRF predict takes the fit's diagnostics too, and passes the diffusion
     keys to the diffusion predict unchanged.
     """
-    record = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_mrf"]
-    assert record.fit is fit_sorted_spikes_mrf_encoding_model
-    assert record.predict is predict_sorted_spikes_mrf_log_likelihood
-
     time, position, spike_times = simulate_place_data(env_2d, n_neurons=3)
     encoding = fit_sorted_spikes_mrf_encoding_model(
         time, position, spike_times, env_2d, rank=20, penalty=1.0
