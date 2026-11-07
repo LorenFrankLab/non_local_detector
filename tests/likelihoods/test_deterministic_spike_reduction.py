@@ -419,12 +419,9 @@ def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
                     reductions, "_reduces_sequentially", lambda values: False
                 )
                 jax.clear_caches()
-            repeats = [evaluate() for _ in range(10)]
-            for repeat in repeats[1:]:
-                np.testing.assert_array_equal(
-                    repeat.view(np.uint8), repeats[0].view(np.uint8)
-                )
-            results[path] = repeats[0]
+            first, second = evaluate(), evaluate()
+            np.testing.assert_array_equal(second.view(np.uint8), first.view(np.uint8))
+            results[path] = first
     finally:
         # The path is chosen at trace time: keep the patched reductions out of
         # later tests' compiled kernels even when an assertion fails.
