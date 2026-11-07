@@ -39,6 +39,11 @@ from non_local_detector.likelihoods.encoding_model import (
     ClusterlessEncodingModel,
     SortedSpikesEncodingModel,
 )
+from non_local_detector.likelihoods.sorted_spikes_kde import (
+    SortedSpikesKDEEncodingModel,
+    fit_sorted_spikes_kde_encoding_model,
+    predict_sorted_spikes_kde_log_likelihood,
+)
 from non_local_detector.model_format import read_model_summary
 from non_local_detector.models.base import ClusterlessDetector
 from tests.models._helpers import ALGORITHMS, _decoder, type_violations
@@ -242,6 +247,37 @@ def test_predict_takes_no_position_when_not_local(monkeypatch, recording, algori
         record.predict(*args, **{**kwargs, "is_local": True})
 
 
+def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
+    """A fit whose keys break each rule is caught, one message per rule."""
+
+    def broken_fit(*args, **kwargs):
+        model = fit_sorted_spikes_kde_encoding_model(*args, **kwargs)
+        del model["place_fields"], model["rate_units"]
+        return {**model, "row_slice": None, "unread": 0}
+
+    broken = LikelihoodAlgorithm(
+        broken_fit,
+        predict_sorted_spikes_kde_log_likelihood,
+        SortedSpikesKDEEncodingModel,
+    )
+    monkeypatch.setitem(_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_kde", broken)
+    decoder, _ = _fit("sorted_spikes_kde", recording)
+    (encoding_model,) = decoder.encoding_model_.values()
+
+    violations = contract_violations(
+        broken, encoding_model, _data_names(decoder), _PREDICT_KEYWORDS
+    )
+    assert violations == [
+        "keys the encoding model type omits: ['row_slice', 'unread']",
+        "declared keys the fit omits: ['place_fields', 'rate_units']",
+        "keys the detector also passes: ['row_slice']",
+        "required predict parameters not supplied: ['place_fields']",
+        "optional predict parameters not supplied: ['rate_units']",
+        "keys predict does not accept: ['unread']",
+        "common keys missing: ['rate_units']",
+    ]
+
+
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.filterwarnings(
     "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
@@ -315,6 +351,21 @@ def test_values_saved_with_their_old_types_load_unified(tmp_path, recording, alg
         if name in summary:  # the summary omits large arrays
             assert type(summary[name]) is np.ndarray, name
             np.testing.assert_array_equal(summary[name], fitted[name])
+
+
+def test_type_check_reports_a_wrong_value():
+    """A value of another type than declared is reported, element types too."""
+
+    class Model(typing.TypedDict):
+        rates: np.ndarray
+        counts: list[int]
+        scale: float | None
+
+    model = {"rates": [1.0], "counts": [1, 2.5], "scale": 3}
+    assert type_violations(model, Model) == [
+        "rates: declared <class 'numpy.ndarray'>, got list",
+        "counts: declared list[int], got list",
+    ]
 
 
 # Keys several algorithms store whose values mean different things, so each
@@ -590,6 +641,25 @@ def test_mark_reference_scale_defaults_match_the_fit(algorithm):
     np.testing.assert_array_equal(
         record.mark_reference_scale(), record.mark_reference_scale(**fit_defaults)
     )
+
+
+def test_mark_scale_check_reports_a_changed_default():
+    """A scale default that drifted from the fit's, or that names no fit
+    parameter, is caught."""
+
+    def drifted(waveform_std=12.0, **_fit_params):
+        return waveform_std
+
+    def misnamed(mark_std=24.0, **_fit_params):
+        return mark_std
+
+    record = _CLUSTERLESS_ALGORITHMS["clusterless_kde"]
+    assert mark_scale_default_mismatches(
+        replace(record, mark_reference_scale=drifted)
+    ) == ["waveform_std: scale default 12.0, fit default 24.0"]
+    assert mark_scale_default_mismatches(
+        replace(record, mark_reference_scale=misnamed)
+    ) == ["mark_std: not a fit parameter"]
 
 
 @pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
