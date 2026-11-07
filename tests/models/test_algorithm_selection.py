@@ -327,6 +327,12 @@ def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
     }
     for key in set(entry) - _PRE_ALGORITHM_ENCODING_KEYS[algorithm]:
         del entry[key]
+    # The diffusion and MRF fits then also stored their log interior fields.
+    if "interior_log_place_fields" in _PRE_ALGORITHM_ENCODING_KEYS[algorithm]:
+        interior = np.asarray(entry["is_track_interior"])
+        entry["interior_log_place_fields"] = np.log(
+            np.asarray(entry["place_fields"])[:, interior]
+        )
 
     restored = pickle.loads(pickle.dumps(detector))
 

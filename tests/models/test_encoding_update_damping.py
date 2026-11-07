@@ -2,9 +2,8 @@
 
 Damping blended only ``place_fields`` and the no-spike term. No backend keeps
 every fitted quantity consistent under that blend: GLM/KDE local paths read
-other fitted state, diffusion/MRF read ``interior_log_place_fields`` for the
-spike term, and every clusterless backend has no ``place_fields`` at all, so
-the blend was a silent no-op there. Any nonzero value is therefore rejected,
+other fitted state, and every clusterless backend has no ``place_fields`` at
+all, so the blend was a silent no-op there. Any nonzero value is therefore rejected,
 and it must be rejected before the wrapper's initial ``fit`` replaces the
 encoding model.
 """
