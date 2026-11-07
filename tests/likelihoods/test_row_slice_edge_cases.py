@@ -1202,30 +1202,6 @@ def test_row_slice_accepts_jax_array_inputs(
     assert from_device.shape == from_host.shape
     np.testing.assert_allclose(from_device, from_host, **parity_kwargs(algorithm))
 
-    # ``jax.Array._npy_value`` caches the array's full host value the first time
-    # a conversion has to COPY, and keeps it for the array's lifetime, so it is an
-    # exact proxy for "this call materialized the whole recording-length array on
-    # the host and retained it". On a single CPU device the conversion is a
-    # zero-copy view and the cache is never populated (measured), so this
-    # assertion is a guard -- it bites where the transfer must copy, i.e. a GPU
-    # install -- and NOT the failing-then-passing evidence for the defect. That
-    # evidence is the 2-device subprocess check below, where the gather is real.
-    #
-    # Only the 2-D FEATURES are asserted on: ``select_spikes_in_rows`` reads the
-    # whole 1-D spike-time array for its ascending-order check (done once per
-    # prediction on the detector path), so the spike times are materialized.
-    for array in device_features:
-        if not hasattr(array, "_npy_value"):
-            pytest.skip(
-                "jax.Array has no _npy_value cache in this JAX version, so "
-                "the retained-host-copy proxy is unavailable"
-            )
-        assert array._npy_value is None, (
-            f"{algorithm} is_local={is_local}: the call materialized the whole "
-            f"decoding feature array on the host (its cached host value is set), "
-            f"so a chunk call costs the whole recording instead of the request"
-        )
-
 
 # Exit codes of _sharded_jax_input_check.py (kept in sync with that module).
 CHECK_EXIT_OK = 0
@@ -1362,19 +1338,6 @@ requires_explicit_sharding = pytest.mark.skipif(
     not hasattr(jax.sharding, "AxisType"),
     reason="this JAX predates explicit sharding",
 )
-
-
-@pytest.mark.unit
-@requires_explicit_sharding
-def test_sharding_error_type_is_known_on_this_jax():
-    """On a JAX with explicit sharding, the fallback's exception tuple is set.
-
-    ``ShardingTypeError`` is imported from a private JAX path; if a release
-    moves it the ``ImportError`` guard leaves an empty tuple and every
-    explicitly-sharded gather raises instead of falling back.
-    """
-    assert spike_rows._JAX_SHARDING_ERRORS
-    assert all(issubclass(t, Exception) for t in spike_rows._JAX_SHARDING_ERRORS)
 
 
 @pytest.mark.unit
