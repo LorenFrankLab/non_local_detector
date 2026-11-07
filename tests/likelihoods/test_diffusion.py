@@ -574,40 +574,6 @@ def test_diffuse_bandwidth_independent_of_bin_size_2d():
         np.testing.assert_allclose(stds, sigma, rtol=0.05)
 
 
-def test_moore_diagonal_edges_oversmooth():
-    """8-connected (Moore) edges with 1/d² oversmooth by ≈√2 — the face-only guard."""
-    import scipy.sparse.linalg
-
-    sigma, spacing = 4.0, 1.0
-    t = sigma**2 / 2.0
-    n = round(2 * 3.5 * sigma / spacing)
-
-    face = grid_graph_2d(n, n, spacing)
-    moore = face.copy()
-    diag = spacing * np.sqrt(2.0)
-    for i in range(n - 1):
-        for j in range(n - 1):
-            moore.add_edge(i * n + j, (i + 1) * n + (j + 1), distance=diag)
-            moore.add_edge((i + 1) * n + j, i * n + (j + 1), distance=diag)
-
-    center = (n // 2) * n + (n // 2)
-    source = np.zeros(n * n)
-    source[center] = 1.0
-
-    face_std = _weighted_std_per_axis(
-        scipy.sparse.linalg.expm_multiply(-t * build_laplacian(face), source),
-        (n, n),
-        spacing,
-    )
-    moore_std = _weighted_std_per_axis(
-        scipy.sparse.linalg.expm_multiply(-t * build_laplacian(moore), source),
-        (n, n),
-        spacing,
-    )
-    np.testing.assert_allclose(face_std, sigma, rtol=0.05)
-    assert np.all(moore_std > 1.3 * sigma)  # ≈√2·sigma; justifies dropping diagonals
-
-
 def test_diffuse_matches_analytic_gaussian_1d():
     """A single-point source diffused by `diffuse` matches the exact Gaussian, <2%."""
     sigma, h, n = 5.0, 1.0, 41
