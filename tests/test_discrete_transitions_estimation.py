@@ -1183,13 +1183,17 @@ class TestExpandedTransitionMstepEndToEnd:
         ("formula", "n_terms"),
         [
             ("1 + quantile_bs(covariate, n_knots=6)", 1),
-            # A cyclic covariate the transitions do not depend on.
-            (
+            # A cyclic covariate the transitions do not depend on. REML drives
+            # one row's smoothness for it to ~6e5 (a near-singular penalized
+            # problem), so the transition optimizer takes ~1100 inner iterations
+            # and the case runs ~20 s against ~2 s without the term.
+            pytest.param(
                 (
                     "1 + quantile_bs(covariate, n_knots=6)"
                     " + cyclic_bs(phase, lower=0.0, upper=6.283185307179586)"
                 ),
                 2,
+                marks=pytest.mark.slow,
             ),
         ],
     )
