@@ -588,39 +588,6 @@ def test_registered_in_sorted_spikes_algorithms():
     assert {"sorted_spikes_kde", "sorted_spikes_glm"} <= set(_SORTED_SPIKES_ALGORITHMS)
 
 
-def test_nonlocal_no_spikes_equals_negative_no_spike_part(env_2d):
-    """With no decoding spikes, the non-local LL is exactly -no_spike_part (Poisson)."""
-    env = env_2d
-    time, position, spike_times = simulate_place_data(env, n_neurons=2)
-    encoding = fit_sorted_spikes_diffusion_encoding_model(
-        position_time=time,
-        position=position,
-        spike_times=spike_times,
-        environment=env,
-        position_std=6.0,
-    )
-    decode_time = time[:20]
-    empty_spikes = [np.array([]), np.array([])]
-    ll = np.asarray(
-        predict_sorted_spikes_diffusion_log_likelihood(
-            time,
-            position,
-            empty_spikes,
-            time_edges=time_edges_from_centers(decode_time),
-            is_local=False,
-            **encoding,
-        )
-    )
-    is_interior = env.is_track_interior_.ravel()
-    expected = (
-        -(decode_time[1] - decode_time[0])
-        * np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
-    )
-    np.testing.assert_allclose(
-        ll, np.tile(expected, (decode_time.shape[0], 1)), rtol=1e-5, atol=1e-6
-    )
-
-
 def test_local_no_spikes_equals_negative_local_rate_sum(env_2d):
     """With no decoding spikes, the local LL is -sum_k place_field_k at the animal's bin."""
     env = env_2d

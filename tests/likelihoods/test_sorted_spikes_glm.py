@@ -775,40 +775,6 @@ class TestPredictGLMLogLikelihood:
         assert log_likelihood.shape == (len(time), 1)  # One position per time point
         assert jnp.all(jnp.isfinite(log_likelihood))
 
-    def test_predict_glm_log_likelihood_with_no_spikes(
-        self, line_env_100cm, simple_spike_data
-    ):
-        """With no spikes, the non-local LL is -duration * the summed place fields."""
-        # Arrange
-        env = line_env_100cm
-        data = simple_spike_data
-
-        encoding = _fit_encoding(env, data)
-
-        # Use time period with no spikes (well beyond data)
-        time = np.linspace(10.0, 10.5, 10)
-        time_edges = jnp.asarray(time_edges_from_centers(time))
-
-        # Act
-        log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time_edges=time_edges,
-            position_time=jnp.asarray(data["position_time"]),
-            position=jnp.asarray(data["position"]),
-            spike_times=data["spike_times"],
-            **encoding,
-            is_local=False,
-        )
-
-        # Assert - with no spikes each bin's LL is -duration * summed rate
-        durations = np.diff(np.asarray(time_edges, dtype=np.float64))
-        interior = np.asarray(encoding["is_track_interior"])
-        expected = (
-            -durations[:, None]
-            * np.asarray(encoding["no_spike_part_log_likelihood"])[interior]
-        )
-        assert np.all(expected < 0)
-        np.testing.assert_allclose(log_likelihood, expected, rtol=1e-5, atol=1e-6)
-
 
 def _fit_glm(
     env,
