@@ -22,7 +22,7 @@ uv run pre-commit install
 ## Running the tests
 
 ```bash
-uv run pytest tests/test_version_import.py          # one file
+uv run pytest tests/test_public_api.py              # one file
 uv run pytest tests/core -m "not slow"              # one directory, skipping slow tests
 uv run pytest -k "random_walk"                      # by name
 uv run pytest -m unit                               # by marker

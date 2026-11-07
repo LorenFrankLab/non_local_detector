@@ -60,7 +60,7 @@ environment from the lock file:
 git clone https://github.com/LorenFrankLab/non_local_detector.git
 cd non_local_detector
 uv sync
-uv run pytest tests/test_version_import.py
+uv run pytest tests/test_public_api.py
 ```
 
 See [CONTRIBUTING.md](https://github.com/LorenFrankLab/non_local_detector/blob/main/CONTRIBUTING.md)

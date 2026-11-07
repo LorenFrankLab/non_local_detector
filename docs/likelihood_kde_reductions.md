@@ -12,10 +12,10 @@ the GEMM path evaluates that sum, what it guarantees, and what it costs.
 
 ## Contract
 
-- Both paths (`use_gemm=True` and the `use_gemm=False` reference) return values
-  floored at `LOG_EPS`. Every caller already floored them; the GEMM path now
-  floors before returning, so `block_estimate_log_joint_mark_intensity` and the
-  default predict path no longer clamp again.
+- The joint intensity returns values floored at `LOG_EPS`. Every caller already
+  floored them; the GEMM path now floors before returning, so
+  `block_estimate_log_joint_mark_intensity` and the default predict path no longer
+  clamp again.
 - Above the floor, the result matches a float64 brute-force logsumexp to float32
   roundoff, whatever the other decoding spikes in the call, the number of mark
   features, or the encoding and position tile sizes.

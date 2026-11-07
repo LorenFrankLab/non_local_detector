@@ -127,7 +127,7 @@ rate (`log_rate_prior_std`, 2 nats by default) and penalizes the total log
 likelihood, so it no longer grows with recording length.
 
 Stored `mean_rates`, `place_fields`, and `summed_ground_process_intensity` are
-Hz; `interior_log_place_fields` is log-Hz. The historical
+Hz. The historical
 `no_spike_part_log_likelihood` key holds the **sum of Hz rates across neurons**,
 not a log likelihood. Predictors multiply it by duration and subtract it.
 Direct predictors default to `rate_units="Hz"`: callers supplying rate arrays

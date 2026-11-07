@@ -355,7 +355,6 @@ jobs:
         working-directory: source
         run: >-
           pytest -p no:cacheprovider
-          tests/test_version_import.py
           tests/test_golden_regression.py
 
   publish:

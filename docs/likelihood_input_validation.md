@@ -45,8 +45,6 @@ knots, and constant axes, are unchanged.
   a zero rate keeps its exposure gradient of -1 in empty bins (it was NaN).
 - Sorted KDE and GLM fits with no neurons return place fields of shape
   `(0, n_bins)` and a zero summed rate instead of failing to stack.
-- Sorted diffusion and MRF prediction rebuilds `interior_log_place_fields` from
-  `place_fields` when it is omitted, as its signature documents.
 - Clusterless GMM fits keep their all-interior fallback for grids without an
   interior mask; an unconditional `is_track_interior_.ravel()` overwrote it.
 

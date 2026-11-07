@@ -1,4 +1,4 @@
-# The package floors below mirror pyproject.toml; tests/test_environment_files.py
+# The package floors below mirror pyproject.toml; tests/test_conda_environment_files.py
 # fails when they drift apart.
 name: non_local_detector
 channels:
