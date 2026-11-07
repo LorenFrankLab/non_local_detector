@@ -4,20 +4,22 @@
   is minus the rate times the bin width.
 - Every backend keeps its units and decode results through ``save_model`` /
   ``load_model``.
-- An encoding entry with missing or unknown units is rejected, before any
-  likelihood work, with a hint to refit; ``estimate_parameters`` refits such a
-  model from the original recording.
+- A saved model with missing or unknown encoding units, a legacy or unknown
+  time contract, or invalid transition-clock provenance is rejected, before
+  any likelihood work, with a hint to refit; ``estimate_parameters`` refits
+  such a model from the original recording.
 """
 
 import copy
 import functools
+import pickle
 
 import numpy as np
 import pytest
 import xarray as xr
 
 from non_local_detector.exceptions import ValidationError
-from tests.models._helpers import ALGORITHMS, _decoder
+from tests.models._helpers import ALGORITHMS, _assert_unchanged, _decoder, _snapshot
 
 
 @pytest.mark.integration
@@ -115,30 +117,83 @@ def contract_recording(request):
     return _decoder(request.param).fit(time, position, *args), time, position, args
 
 
+def _set_transition_clock(width, tolerance):
+    def corrupt(detector):
+        detector.transition_time_bin_width_ = width
+        detector._transition_time_bin_width_tolerance = tolerance
+
+    return corrupt
+
+
+def _delete_entry_units(detector):
+    (encoding,) = detector.encoding_model_.values()
+    del encoding["rate_units"]
+
+
+def _set_entry_units(detector):
+    (encoding,) = detector.encoding_model_.values()
+    encoding["rate_units"] = "per_position_sample"
+
+
+def _set_contract_version(detector):
+    detector.time_contract_["version"] = 999
+
+
+def _set_contract_rate_units(detector):
+    detector.time_contract_ = {**detector.time_contract_, "rate_units": "per_bin"}
+
+
+def _delete_time_contract(detector):
+    del detector.time_contract_
+
+
+def _delete_transition_clock(detector):
+    del detector.transition_time_bin_width_
+
+
+_UNKNOWN_UNITS = "Encoding entry .* is missing or has unknown rate units"
+_UNKNOWN_CONTRACT = "Saved model has a legacy or unknown time contract"
+_INVALID_CLOCK = "Saved model has invalid transition clock provenance"
+
+# Each corruption of a fitted model, and the cause its refit error names.
+_CORRUPTIONS = {
+    "missing-entry-units": (_delete_entry_units, _UNKNOWN_UNITS),
+    "unknown-entry-units": (_set_entry_units, _UNKNOWN_UNITS),
+    "unknown-contract-version": (_set_contract_version, _UNKNOWN_CONTRACT),
+    "unknown-contract-rate-units": (_set_contract_rate_units, _UNKNOWN_CONTRACT),
+    "missing-time-contract": (_delete_time_contract, _UNKNOWN_CONTRACT),
+    "missing-transition-clock": (_delete_transition_clock, _UNKNOWN_CONTRACT),
+    # Unknown provenance cannot disable the learned-width comparison.
+    "nan-clock": (_set_transition_clock(np.nan, 0.0), _INVALID_CLOCK),
+    "infinite-clock": (_set_transition_clock(np.inf, 0.0), _INVALID_CLOCK),
+    "negative-clock": (_set_transition_clock(-0.002, 0.0), _INVALID_CLOCK),
+    "infinite-tolerance": (_set_transition_clock(0.002, np.inf), _INVALID_CLOCK),
+    "negative-tolerance": (_set_transition_clock(0.002, -1.0), _INVALID_CLOCK),
+    "tolerance-above-bound": (_set_transition_clock(0.002, 1.0), _INVALID_CLOCK),
+}
+
+
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "corruption", ["missing_entry_units", "unknown_entry_units", "unknown_version"]
-)
+@pytest.mark.parametrize("corruption", list(_CORRUPTIONS))
 @pytest.mark.parametrize("entry_point", ["predict", "viterbi", "likelihood", "cached"])
-def test_unknown_contract_is_rejected_before_likelihood(
+def test_stale_or_unknown_contract_is_rejected_before_likelihood(
     contract_recording, corruption, entry_point, monkeypatch
 ):
-    """An apparently current model cannot hide an incompatible encoding entry."""
+    """A saved model whose units or transition clock cannot be trusted is
+    refused, naming the cause, before any likelihood work and without changing
+    the model. It is pickled after the corruption, as a stored model would be,
+    so unpickling must not repair it."""
     fitted, time, position, args = contract_recording
-    detector = copy.deepcopy(fitted)
-    (encoding,) = detector.encoding_model_.values()
-    if corruption == "missing_entry_units":
-        del encoding["rate_units"]
-    elif corruption == "unknown_entry_units":
-        encoding["rate_units"] = "per_position_sample"
-    else:
-        detector.time_contract_["version"] = 999
+    corrupt, message = _CORRUPTIONS[corruption]
+    corrupted = copy.deepcopy(fitted)
+    corrupt(corrupted)
+    detector = pickle.loads(pickle.dumps(corrupted))
     edges = np.arange(6) * 0.002
 
     if entry_point != "likelihood":
 
         def unexpected_likelihood(*args, **kwargs):
-            pytest.fail("Unknown units must fail before evaluating likelihoods")
+            pytest.fail("An untrusted model must fail before evaluating likelihoods")
 
         monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_likelihood)
 
@@ -156,8 +211,10 @@ def test_unknown_contract_is_rejected_before_likelihood(
             edges,
             log_likelihoods=np.zeros((5, detector.is_track_interior_state_bins_.sum())),
         )
-    with pytest.raises(ValidationError, match="refit"):
+    snapshot = _snapshot(detector)
+    with pytest.raises(ValidationError, match=f"{message}; refit before decoding"):
         call()
+    _assert_unchanged(detector, snapshot)
 
 
 @pytest.mark.integration
