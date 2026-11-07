@@ -118,7 +118,6 @@ class TestValidateInitialConditions:
         decoder = _two_state_decoder(two_state_environment)
 
         # Assert: Model was created successfully
-        assert decoder is not None
         assert len(decoder.discrete_initial_conditions) == 2
 
 
@@ -372,7 +371,6 @@ class TestValidateDiscreteTransitionType:
         )
 
         # Assert: Model created successfully
-        assert decoder is not None
         assert isinstance(decoder.discrete_transition_type, DiscreteStationaryCustom)
 
     def test_diagonal_transition_type_passes(self, two_state_environment):
@@ -386,7 +384,6 @@ class TestValidateDiscreteTransitionType:
         )
 
         # Assert: Model created successfully
-        assert decoder is not None
         assert isinstance(decoder.discrete_transition_type, DiscreteStationaryDiagonal)
 
     def test_diagonal_size_must_match_number_of_states(self, two_state_environment):

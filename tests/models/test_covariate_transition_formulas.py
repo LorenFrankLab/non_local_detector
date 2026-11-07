@@ -54,9 +54,12 @@ def _data(names, n):
     return {name: covariates[name] for name in names}
 
 
-@pytest.fixture(params=list(FORMULAS))
+@pytest.fixture(scope="module", params=list(FORMULAS))
 def fitted(request, checkpoint_recording):
-    """A small detector fitted with a covariate transition, and decode inputs."""
+    """A small detector fitted with a covariate transition, and decode inputs.
+
+    Shared by the module's tests; a test that changes the detector uses a copy.
+    """
     formula, names = FORMULAS[request.param]
     model, fit, predict = checkpoint_recording("sorted")
     model.discrete_transition_type = DiscreteNonStationaryDiagonal(
@@ -82,6 +85,7 @@ def test_formula_fits_and_decodes(fitted):
 
 def test_formula_gives_intervals_and_plots(fitted):
     model, _, names = fitted
+    model = model.copy()
     covariates = _data(names, 5)
     n_states = len(model.state_names)
     n_parameters = model.discrete_transition_coefficients_[:, 0, :].size
