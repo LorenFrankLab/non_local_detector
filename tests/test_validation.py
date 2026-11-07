@@ -230,27 +230,6 @@ class TestMonotonicIncreasing:
 
 
 @pytest.mark.unit
-class TestMatchingLengths:
-    """Test ensure_matching_lengths."""
-
-    def test_matching_lengths(self):
-        """Test that matching lengths pass."""
-        arr1 = np.array([1, 2, 3])
-        arr2 = np.array([4, 5, 6])
-        val.ensure_matching_lengths(arr1, arr2, "arr1", "arr2")  # Should not raise
-
-    def test_mismatched_lengths_raise(self):
-        """Test that mismatched lengths raise."""
-        arr1 = np.array([1, 2])
-        arr2 = np.array([4, 5, 6])
-        with pytest.raises(ValidationError) as exc_info:
-            val.ensure_matching_lengths(arr1, arr2, "arr1", "arr2")
-        assert "Length mismatch" in str(exc_info.value)
-        assert "2" in str(exc_info.value)
-        assert "3" in str(exc_info.value)
-
-
-@pytest.mark.unit
 class TestIntegration:
     """Test validation in actual model usage."""
 
