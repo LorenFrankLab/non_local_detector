@@ -508,16 +508,28 @@ _CHANGED_FIT_PARAMETER = {
     "clusterless_diffusion": {"position_std": 0.3},
     "clusterless_mark_glm": {"n_mark_components": 2},
 }
-# An invalid value of each algorithm's execution settings.
+# An invalid value of each algorithm's execution settings, and the start of
+# the message it raises.
 _INVALID_SETTINGS = {
     "clusterless_kde": [
-        {"block_size": 0},
-        {"enc_tile_size": -1},
-        {"use_streaming": True, "enc_tile_size": None},
+        ({"block_size": 0}, "block_size must be a positive integer"),
+        ({"enc_tile_size": -1}, "enc_tile_size must be None or a positive integer"),
+        (
+            {"use_streaming": True, "enc_tile_size": None},
+            "use_streaming=True requires enc_tile_size",
+        ),
     ],
-    "clusterless_gmm": [{"spike_block_size": 0}, {"bin_tile_size": 0}],
-    "clusterless_diffusion": [{"block_size": 0}, {"memory_budget": 0}],
-    "clusterless_mark_glm": [{"spike_block_size": 0}],
+    "clusterless_gmm": [
+        ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
+        ({"bin_tile_size": 0}, "bin_tile_size must be None or a positive integer"),
+    ],
+    "clusterless_diffusion": [
+        ({"block_size": 0}, "block_size must be a positive integer"),
+        ({"memory_budget": 0}, "memory_budget must be a positive integer"),
+    ],
+    "clusterless_mark_glm": [
+        ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
+    ],
 }
 
 
@@ -588,15 +600,15 @@ def test_predict_reads_execution_settings_changed_after_fitting(
 
 
 @pytest.mark.parametrize(
-    ("algorithm", "invalid"),
+    ("algorithm", "invalid", "message"),
     [
-        (algorithm, invalid)
+        (algorithm, invalid, message)
         for algorithm, cases in _INVALID_SETTINGS.items()
-        for invalid in cases
+        for invalid, message in cases
     ],
 )
 def test_invalid_execution_settings_are_rejected_at_fit_and_after_it(
-    recording, algorithm, invalid
+    recording, algorithm, invalid, message
 ):
     """The fit's checks also apply to settings changed after fitting, so a bad
     value raises ValidationError instead of failing deep in predict."""
@@ -604,14 +616,14 @@ def test_invalid_execution_settings_are_rejected_at_fit_and_after_it(
     params = decoder.clusterless_algorithm_params
     decoder.clusterless_algorithm_params = {**params, **invalid}
     time, position, *_ = recording
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         decoder.predict(
             *spike_data,
             time_edges=time_edges_from_centers(time[_DECODE_SAMPLES]),
             position_time=time,
             position=position,
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         decoder.fit(time, position, *spike_data)
 
 

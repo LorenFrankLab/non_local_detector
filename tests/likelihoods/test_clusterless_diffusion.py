@@ -985,7 +985,7 @@ def test_validation_fit():
 
     # heat_kernel_rank: float, bool, zero, negative.
     for bad_rank in (3.0, True, 0, -1):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="heat_kernel_rank must be"):
             _fit(s, heat_kernel_rank=bad_rank)
 
     # heat_kernel_rank < n_components: a disconnected (>= 2 component) environment,
@@ -994,7 +994,7 @@ def test_validation_fit():
     disconnected_env = make_two_arm_track()
     n_components = n_connected_components(disconnected_env)
     assert n_components >= 2, "fixture must be graph-disconnected to test this path"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="rank is too small"):
         fit_clusterless_diffusion_encoding_model(
             np.linspace(0.0, 1.0, 10),
             np.zeros((10, 1)),
@@ -1007,33 +1007,43 @@ def test_validation_fit():
 
     # memory_budget: non-finite, zero, negative, non-int.
     for bad_budget in (float("inf"), 0, -1, 1.5):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="memory_budget must be a positive integer"
+        ):
             _fit(s, memory_budget=bad_budget)
 
     # block_size: non-positive, non-int, bool.
     for bad_block in (0, -1, 1.5, True):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="block_size must be a positive integer"
+        ):
             _fit(s, block_size=bad_block)
 
     # position_std / waveform_std: non-positive OR non-finite (inf position_std makes
     # exp(-t*lambda) hit inf*0 = NaN on the null mode -> a non-finite model).
     for bad_std in (0.0, -1.0, np.inf):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="position_std must be a finite positive"
+        ):
             _fit(s, position_std=bad_std)
     # position_std must be a scalar: the graph heat kernel is isotropic in graph
     # distance, so a per-dimension array (which clusterless_kde accepts) is rejected
     # rather than silently mis-broadcast -- a realistic port-from-kde mistake.
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="position_std must be a scalar"):
         _fit(s, position_std=[POSITION_STD, POSITION_STD])
     for bad_std in (0.0, np.inf):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="waveform_std must be finite and positive"
+        ):
             _fit(s, waveform_std=bad_std)
 
     # waveform_std dimensionality: fit never evaluates the mark kernel, so an
     # ill-shaped bandwidth must be caught here (not later in kde_distance). The
     # fixture has 2-feature marks; an empty array and a length-3 vector are wrong.
     for bad_std in ([], [1.0, 2.0, 3.0]):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="waveform_std must be a scalar or a 1-D array"
+        ):
             _fit(s, waveform_std=bad_std)
     # A matching (n_features,) vector and a scalar are both accepted.
     _fit(s, waveform_std=[24.0, 24.0])
@@ -1041,15 +1051,15 @@ def test_validation_fit():
 
     # weights (via common.validate_weights): wrong length, non-finite, negative.
     n_pos = s["position"].shape[0]
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=r"weights must have shape \(200,\)"):
         _fit(s, weights=np.ones(n_pos + 1))
     bad_weights = np.ones(n_pos)
     bad_weights[0] = np.nan
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="weights must contain only finite"):
         _fit(s, weights=bad_weights)
     bad_weights = np.ones(n_pos)
     bad_weights[0] = -1.0
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="weights must be non-negative"):
         _fit(s, weights=bad_weights)
 
     # non-finite position.
@@ -1057,7 +1067,7 @@ def test_validation_fit():
     bad_position[0, 0] = np.inf
     s_bad_position = dict(s)
     s_bad_position["position"] = bad_position
-    with pytest.raises(DataError):
+    with pytest.raises(DataError, match="position contains infinite values"):
         _fit(s_bad_position)
 
     # Non-finite IN-window encoding spike_waveform_features raises; a non-finite
@@ -1066,7 +1076,9 @@ def test_validation_fit():
     position_time = np.linspace(0.0, 4.0, 101)
     position = np.linspace(0.0, 8.0, 101)[:, None]
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="spike_waveform_features must contain only finite"
+    ):
         fit_clusterless_diffusion_encoding_model(
             position_time,
             position,
@@ -1114,7 +1126,7 @@ def test_validation_predict():
     # the non-local path never reads position (see the positionless case below).
     bad_position = np.array(s["position"], copy=True)
     bad_position[0, 0] = np.inf
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="position must contain only finite"):
         _predict(dict(s, position=bad_position), enc, is_local=True)
 
     # Non-local decoding accepts position/position_time = None (the documented
@@ -1133,7 +1145,9 @@ def test_validation_predict():
     # electrode raises.
     bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
     bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within the time edges
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="non-finite waveform features for electrode 0"
+    ):
         _predict(dict(s, dec_f=bad_feats), enc)
 
     # A non-finite feature on an OUT-of-window decode spike must not raise.
@@ -1167,7 +1181,9 @@ def test_validation_predict_local():
     # electrode raises.
     bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
     bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within the time edges
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="non-finite waveform features for electrode 0"
+    ):
         _predict(dict(s, dec_f=bad_feats), enc, is_local=True)
 
     # A non-finite feature on an OUT-of-window decode spike must not raise.
@@ -1238,7 +1254,9 @@ def test_validation_predict_zero_rate_precedence(is_local):
         np.zeros((0, 2), dtype=np.float32),
         np.array([[np.nan, -1.0]], dtype=np.float32),
     ]
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="non-finite waveform features for electrode 1"
+    ):
         predict_clusterless_diffusion_log_likelihood(
             position_time,
             position,
