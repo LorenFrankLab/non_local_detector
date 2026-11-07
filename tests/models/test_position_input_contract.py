@@ -149,13 +149,15 @@ def test_decode_position_far_outside_the_grid_warns(fitted, method):
 )
 def test_fit_position_outside_the_position_range_warns(family, position):
     """Fitting positions that miss the configured position_range (another
-    origin or other units) warns once the grid is fit."""
+    origin or other units) warns, once, after the grid is fit."""
     detector = DETECTORS[family](
         environments=Environment(place_bin_size=2, position_range=((0, 10), (0, 10))),
         infer_track_interior=False,
     )
-    with pytest.warns(DataQualityWarning, match="outside the fitted grid"):
+    message = "outside the fitted grid"
+    with pytest.warns(DataQualityWarning, match=message) as record:
         detector.fit(TIME, position, **SPIKE_DATA[family])
+    assert sum(message in str(warning.message) for warning in record) == 1
 
 
 @pytest.mark.parametrize("method", DECODE_METHODS)

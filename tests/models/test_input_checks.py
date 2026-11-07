@@ -302,17 +302,6 @@ class TestFitEncodingModelChecksPosition:
 
         assert len(messages) == 1
 
-    def test_fit_warns_about_the_grid_once(self, recording):
-        time, position, spikes, _ = recording
-        grid = Environment(place_bin_size=5.0, position_range=[(0.0, 50.0)])
-
-        _, messages = _quality_warnings(
-            lambda: _sorted(environments=grid).fit(time, position, spikes),
-            "outside the fitted grid",
-        )
-
-        assert len(messages) == 1
-
     @pytest.mark.parametrize("family", FAMILIES)
     def test_position_with_other_columns_than_the_grid_raises(
         self, family, recording, fitted
