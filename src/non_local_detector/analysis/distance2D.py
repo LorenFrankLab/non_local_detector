@@ -20,7 +20,7 @@ __all__ = [
     "get_map_estimate_direction_from_track_graph",
     "get_speed",
     "get_velocity",
-    "head_direction_simliarity",
+    "head_direction_similarity",
     "make_2D_track_graph_from_environment",
 ]
 
@@ -326,7 +326,7 @@ def get_2D_distance(
     return cast("np.ndarray", distance)
 
 
-def head_direction_simliarity(
+def head_direction_similarity(
     head_position: np.ndarray,
     head_direction: np.ndarray,
     map_estimate: np.ndarray,
@@ -445,7 +445,7 @@ def get_ahead_behind_distance2D(
         precomputed_distance=precomputed_distance,
     )
 
-    direction_similarity = head_direction_simliarity(
+    direction_similarity = head_direction_similarity(
         head_position,
         head_direction,
         map_position,

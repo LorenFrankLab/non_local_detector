@@ -11,7 +11,7 @@ from non_local_detector.analysis.distance2D import (
     get_map_estimate_direction_from_track_graph,
     get_speed,
     get_velocity,
-    head_direction_simliarity,
+    head_direction_similarity,
     make_2D_track_graph_from_environment,
 )
 from non_local_detector.analysis.posterior import (
@@ -34,7 +34,7 @@ __all__ = [
     "get_speed",
     "get_trajectory_data",
     "get_velocity",
-    "head_direction_simliarity",
+    "head_direction_similarity",
     "make_2D_track_graph_from_environment",
     "maximum_a_posteriori_estimate",
     "sample_posterior",

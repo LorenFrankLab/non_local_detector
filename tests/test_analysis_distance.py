@@ -14,7 +14,7 @@ from non_local_detector.analysis.distance2D import (
     get_map_estimate_direction_from_track_graph,
     get_speed,
     get_velocity,
-    head_direction_simliarity,
+    head_direction_similarity,
     make_2D_track_graph_from_environment,
 )
 from non_local_detector.analysis.posterior import get_spatial_posterior
@@ -230,7 +230,7 @@ class TestHeadDirectionSimilarity:
         head_dir = np.array([0.0])  # pointing right (0 radians)
         map_est = np.array([[5.0, 0.0]])
 
-        sim = head_direction_simliarity(head_pos, head_dir, map_est)
+        sim = head_direction_similarity(head_pos, head_dir, map_est)
 
         assert sim[0] == pytest.approx(1.0, abs=0.01)
 
@@ -240,7 +240,7 @@ class TestHeadDirectionSimilarity:
         head_dir = np.array([np.pi])  # pointing left (pi radians)
         map_est = np.array([[5.0, 0.0]])  # MAP is to the right
 
-        sim = head_direction_simliarity(head_pos, head_dir, map_est)
+        sim = head_direction_similarity(head_pos, head_dir, map_est)
 
         assert sim[0] == pytest.approx(-1.0, abs=0.01)
 
@@ -250,7 +250,7 @@ class TestHeadDirectionSimilarity:
         head_dir = np.array([np.pi / 2])  # pointing up (pi/2 radians)
         map_est = np.array([[5.0, 0.0]])  # MAP is to the right
 
-        sim = head_direction_simliarity(head_pos, head_dir, map_est)
+        sim = head_direction_similarity(head_pos, head_dir, map_est)
 
         assert sim[0] == pytest.approx(0.0, abs=0.01)
 
@@ -576,12 +576,12 @@ class TestAheadBehindDistance2DTrackGraph:
         "call",
         [
             lambda head, direction, map_pos, **kw: get_2D_distance(head, map_pos, **kw),
-            lambda head, direction, map_pos, **kw: head_direction_simliarity(
+            lambda head, direction, map_pos, **kw: head_direction_similarity(
                 head, direction, map_pos, **kw
             ),
             get_ahead_behind_distance2D,
         ],
-        ids=["get_2D_distance", "head_direction_simliarity", "ahead_behind"],
+        ids=["get_2D_distance", "head_direction_similarity", "ahead_behind"],
     )
     def test_track_graph_without_edges_raises(self, env_2d, call, precomputed_distance):
         """The track graph's nodes are indexed by the environment's bin grid,
