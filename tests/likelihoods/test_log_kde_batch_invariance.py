@@ -186,16 +186,32 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("group_size", [None, 5], ids=["tile-sized", "small-groups"])
-@pytest.mark.parametrize("enc_tile_size", [None, 64])
-def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(
-    enc_tile_size, group_size, monkeypatch
+@pytest.mark.parametrize(
+    ("n_dec", "enc_tile_size", "group_size"),
+    [
+        (8, None, None),
+        (90, None, None),
+        (90, 64, None),
+        (90, None, 5),
+        (90, 64, 5),
+    ],
+    ids=[
+        "within-slots",
+        "beyond-slots",
+        "beyond-slots-encoding-tiles",
+        "beyond-slots-small-groups",
+        "beyond-slots-encoding-tiles-small-groups",
+    ],
+)
+def test_every_spike_flagged_for_exact_repair_matches_reference(
+    n_dec, enc_tile_size, group_size, monkeypatch
 ):
     """Backgrounds far below every intensity flag all spikes for the exact path.
 
-    With more flagged spikes than any repair group or slot count, each one must
-    still match the float64 reduction. Groups of 5, as larger encoding and
-    position tiles get, split the 32 slots over several groups.
+    Eight flagged spikes fit the 32 repair slots; ninety exceed every repair
+    group and the slots, and each one must still match the float64 reduction.
+    Groups of 5, as larger encoding and position tiles get, split the 32 slots
+    over several groups.
     """
     if group_size is not None:
         repair = clusterless_kde._repair_flagged_in_groups
@@ -206,7 +222,7 @@ def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(
                 values, needs_exact, exact_rows, group_size
             ),
         )
-    decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=90)
+    decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=n_dec)
     log_background = np.full(decoding.shape[0], -400.0, np.float32)
     jax.clear_caches()
     try:
@@ -230,8 +246,10 @@ def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(
     )
     expected = np.logaddexp(reference, np.asarray(log_background, np.float64)[:, None])
     above = expected > -300
-    # More spikes with entries to check than the 32 slots, twice over.
-    assert (above.sum(axis=1) > 0).sum() > 64
+    # Every spike has entries to check within the slots; beyond them, more
+    # spikes than the 32 slots, twice over.
+    n_checked = above.any(axis=1).sum()
+    assert n_checked == n_dec if n_dec <= 32 else n_checked > 64
     np.testing.assert_allclose(out[above], expected[above], atol=1e-4, rtol=0)
 
 
@@ -454,37 +472,6 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
             log_background=jnp.asarray(log_background, jnp.float64),
         )
     np.testing.assert_allclose(np.asarray(out)[0, 0], expected, atol=1e-4, rtol=1e-5)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("n_dec", [8, 100], ids=["flagged-rows-only", "every-row"])
-def test_every_spike_flagged_for_exact_repair_matches_reference(n_dec):
-    """A background far below the kernels flags every spike for exact repair.
-
-    Eight spikes fit the bounded slots; a hundred exceed them and are repaired
-    group by group. Both must match the float64 reference.
-    """
-    decoding, encoding, stds, occupancy, log_position = _place_field_tile(
-        n_dec=n_dec, waveform_std=1.0
-    )
-    log_background = jnp.full(n_dec, -1e4, jnp.float32)
-    out = np.asarray(
-        estimate_log_joint_mark_intensity(
-            decoding,
-            encoding,
-            stds,
-            occupancy,
-            1.0,
-            log_position,
-            log_background=log_background,
-        )
-    )
-    reference = reference_log_joint_mark_intensity(
-        decoding, encoding, stds, occupancy, 1.0, log_position
-    )
-    expected = np.logaddexp(reference, -1e4)
-    assert (reference > -1e4).mean() > 0.5  # most terms are intensity-dominated
-    np.testing.assert_allclose(out, expected, atol=1e-3, rtol=1e-5)
 
 
 @pytest.mark.unit
