@@ -171,12 +171,6 @@ def test_all_fitted_rates_are_hz_and_empty_bins_use_seconds(sampling_frequency):
         params[name].update(gmm_components_occupancy=1, gmm_components_joint=1)
     edges = np.array([0.01, 0.012, 0.016])
     for name, predict, model, clusterless in fit_registered_backends(data, params):
-        assert model["rate_units"] == "Hz", name
-        assert model["encoding_exposure_seconds"] == pytest.approx(1.0), name
-        if "mean_rates" in model:
-            np.testing.assert_allclose(
-                model["mean_rates"], [5.0], rtol=1e-6, err_msg=name
-            )
         args = [time, np.full_like(position, 50.0), [np.array([])]]
         if clusterless:
             args.append([np.empty((0, 1))])

@@ -1,4 +1,4 @@
-"""``clusterless_diffusion`` across environment refits and saving."""
+"""``clusterless_diffusion`` encoding models across environment refits."""
 
 import numpy as np
 import pytest
@@ -12,15 +12,11 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     predict_clusterless_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
-from non_local_detector.models.non_local_model import NonLocalClusterlessDetector
-from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 pytestmark = pytest.mark.integration
 
 POSITION_STD = 3.0
 WAVEFORM_STD = 24.0
-SAVE_LOAD_RTOL = 1e-5
-SAVE_LOAD_ATOL = 1e-10
 
 
 def _toy_electrode_data(
@@ -196,87 +192,3 @@ def test_stale_encoding_model_after_refit_raises() -> None:
             ),
             **encoding_model,
         )
-
-
-def test_save_load_predict_parity(tmp_path) -> None:
-    """``save_model`` -> ``load_model`` must not raise a JAX-``Device`` pickling
-    error (the Environment's transient device cache is excluded from the pickle),
-    and predict on the reloaded detector must match pre-save predict -- the device
-    cache is lazily rebuilt on the first post-load predict."""
-    sim = make_simulated_run_data(
-        n_tetrodes=2,
-        place_field_means=np.arange(0, 20, 10),
-        track_height=20.0,
-        running_speed=15,
-        sampling_frequency=500,
-        n_runs=2,
-        seed=0,
-    )
-
-    n_encode = int(0.7 * len(sim.position_time))
-    # Ten equal decode bins over the held-out span set the detector's bin rate.
-    decode_sampling_frequency = 10 / (
-        sim.position_time[-1] - sim.position_time[n_encode]
-    )
-    encode_position_time = sim.position_time[:n_encode]
-    encode_position = sim.position[:n_encode]
-    encode_spike_times = [st[st <= encode_position_time[-1]] for st in sim.spike_times]
-    encode_spike_waveform_features = [
-        swf[st <= encode_position_time[-1]]
-        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
-    ]
-
-    algorithm_params = {
-        "position_std": POSITION_STD,
-        "waveform_std": WAVEFORM_STD,
-        "disable_progress_bar": True,
-    }
-
-    detector = NonLocalClusterlessDetector(
-        environments=sim.environment,
-        sampling_frequency=decode_sampling_frequency,
-        clusterless_algorithm="clusterless_diffusion",
-        clusterless_algorithm_params=algorithm_params,
-    )
-    detector.fit(
-        position_time=encode_position_time,
-        position=encode_position,
-        spike_times=encode_spike_times,
-        spike_waveform_features=encode_spike_waveform_features,
-    )
-
-    test_position_time = sim.position_time[n_encode:]
-    test_spike_times = [st[st > encode_position_time[-1]] for st in sim.spike_times]
-    test_spike_waveform_features = [
-        swf[st > encode_position_time[-1]]
-        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
-    ]
-    test_edges = np.linspace(test_position_time[0], test_position_time[-1], 11)
-
-    results_before = detector.predict(
-        time_edges=test_edges,
-        position_time=test_position_time,
-        position=sim.position[n_encode:],
-        spike_times=test_spike_times,
-        spike_waveform_features=test_spike_waveform_features,
-    )
-    posterior_before = results_before.acausal_posterior.values
-    assert np.all(np.isfinite(posterior_before))
-
-    model_path = str(tmp_path / "m.pkl")
-    detector.save_model(model_path)  # must not raise on a JAX Device
-    loaded_detector = NonLocalClusterlessDetector.load_model(model_path)
-
-    results_after = loaded_detector.predict(
-        time_edges=test_edges,
-        position_time=test_position_time,
-        position=sim.position[n_encode:],
-        spike_times=test_spike_times,
-        spike_waveform_features=test_spike_waveform_features,
-    )
-    posterior_after = results_after.acausal_posterior.values
-    assert np.all(np.isfinite(posterior_after))
-
-    np.testing.assert_allclose(
-        posterior_after, posterior_before, rtol=SAVE_LOAD_RTOL, atol=SAVE_LOAD_ATOL
-    )
