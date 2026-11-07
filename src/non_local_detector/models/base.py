@@ -75,8 +75,8 @@ from non_local_detector.likelihoods import (
     _execution_settings,
     _resolve_fit_params,
 )
+from non_local_detector.likelihoods.common import SpikeTimeOrder as _SpikeTimeOrder
 from non_local_detector.likelihoods.common import (
-    _SpikeTimeOrder,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
