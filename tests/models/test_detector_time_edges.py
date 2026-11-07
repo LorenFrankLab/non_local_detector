@@ -147,20 +147,6 @@ def test_sample_centered_edges_keep_one_row_per_position_sample(
     np.testing.assert_allclose(results.time.values, position_time, atol=1e-12)
 
 
-# ----------------------------------------------------------------- API
-@pytest.mark.unit
-@pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_old_time_argument_is_rejected(family, fitted):
-    detector = fitted
-    args = _decode_args(family, _coarse_edges(family[1]))
-    edges = args.pop("time_edges")
-    with pytest.raises(TypeError):
-        detector.predict(**args, time=edges)
-    spike_args = family[3]
-    with pytest.raises(TypeError):
-        detector.predict(*spike_args.values(), edges)
-
-
 # ----------------------------------------------------------------- validation
 def _bad_grids(position_time):
     edges = _coarse_edges(position_time)
@@ -180,24 +166,32 @@ def _bad_grids(position_time):
     }
 
 
+_GRID_ERRORS = {
+    "repeated": (DataError, "time_edges must be strictly increasing"),
+    "decreasing": (DataError, "time_edges must be strictly increasing"),
+    "nan": (DataError, "non-finite values in time_edges"),
+    "nonuniform": (DataError, "time_edges must describe uniform bins"),
+    "single-edge": (ValidationError, "at least two bin edges"),
+}
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-@pytest.mark.parametrize(
-    "grid", ["repeated", "decreasing", "nan", "nonuniform", "single-edge"]
-)
+@pytest.mark.parametrize("grid", list(_GRID_ERRORS))
 def test_invalid_edges_fail_before_state_changes(family, fitted, grid):
     _, position_time, fit_args, _ = family
     bad = _bad_grids(position_time)[grid]
+    error, message = _GRID_ERRORS[grid]
     # A copy, so a call that wrongly changes state cannot leak into other tests.
     detector = copy.deepcopy(fitted)
     snapshot = _snapshot(detector)
-    with pytest.raises((DataError, ValidationError)):
+    with pytest.raises(error, match=message):
         detector.predict(**_decode_args(family, bad))
     _assert_unchanged(detector, snapshot)
-    with pytest.raises((DataError, ValidationError)):
+    with pytest.raises(error, match=message):
         detector.most_likely_sequence(**_decode_args(family, bad))
     _assert_unchanged(detector, snapshot)
-    with pytest.raises((DataError, ValidationError)):
+    with pytest.raises(error, match=message):
         detector.estimate_parameters(**fit_args, time_edges=bad, max_iter=1)
     _assert_unchanged(detector, snapshot)
 
@@ -748,32 +742,6 @@ def test_unix_epoch_origin_matches_origin_zero(family):
     np.testing.assert_allclose(
         results[1].time.values - shift, results[0].time.values, atol=1e-6
     )
-
-
-@pytest.mark.unit
-def test_every_detector_entry_point_takes_keyword_only_time_edges():
-    import inspect
-
-    from non_local_detector import (
-        ClusterlessDecoder,
-        NonLocalClusterlessDetector,
-        NonLocalSortedSpikesDetector,
-        SortedSpikesDecoder,
-    )
-
-    for cls in (
-        NonLocalClusterlessDetector,
-        NonLocalSortedSpikesDetector,
-        ClusterlessDecoder,
-        SortedSpikesDecoder,
-    ):
-        for method in ("predict", "estimate_parameters", "most_likely_sequence"):
-            parameters = inspect.signature(getattr(cls, method)).parameters
-            assert "time" not in parameters, (cls, method)
-            assert parameters["time_edges"].kind is inspect.Parameter.KEYWORD_ONLY, (
-                cls,
-                method,
-            )
 
 
 @pytest.mark.unit

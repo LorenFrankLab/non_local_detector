@@ -21,7 +21,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -115,51 +115,38 @@ def _refit_changes_state(fit_args):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("bad_arguments", "error"),
+    ("bad_arguments", "message"),
     [
-        ({"min_encoding_local_mass": -1.0}, ValueError),
-        ({"min_encoding_local_ess": -1.0}, ValueError),
-        ({"return_outputs": "not_an_output"}, ValueError),
-        ({"n_chunks": "more_than_time"}, ValueError),
-        ({"time_edges": "decreasing"}, DataError),
-        ({"time_edges": "repeated"}, DataError),
-        ({"time_edges": "nonuniform"}, DataError),
-        ({"encoding_update_damping": 0.5}, ValidationError),
+        ({"min_encoding_local_mass": -1.0}, "min_encoding_local_mass must be >= 0"),
+        ({"min_encoding_local_ess": -1.0}, "min_encoding_local_ess must be >= 0"),
+        ({"return_outputs": "not_an_output"}, "Invalid return_outputs"),
+        ({"n_chunks": "more_than_time"}, "cannot exceed n_bins"),
+        ({"encoding_update_damping": 0.5}, "encoding_update_damping is not supported"),
     ],
     ids=[
         "negative-mass",
         "negative-ess",
         "unknown-output",
         "too-many-chunks",
-        "decreasing-edges",
-        "repeated-edges",
-        "nonuniform-edges",
         "damping",
     ],
 )
 def test_invalid_estimation_arguments_fail_before_fitting(
-    family_data, fitted, bad_arguments, error
+    family_data, fitted, bad_arguments, message
 ):
+    """Invalid time edges are covered for every entry point in
+    test_detector_time_edges.py."""
     reference, posterior_before = fitted
     detector = copy.deepcopy(reference)
     snapshot = _snapshot(detector)
     _, fit_args, _ = family_data
     refit_args, is_training = _refit_changes_state(fit_args)
     time_edges = time_edges_from_centers(fit_args["position_time"])
-    bad_edges = time_edges.copy()
-    if bad_arguments.get("time_edges") == "decreasing":
-        bad_edges = time_edges[::-1]
-    elif bad_arguments.get("time_edges") == "repeated":
-        bad_edges[5] = bad_edges[4]
-    elif bad_arguments.get("time_edges") == "nonuniform":
-        bad_edges[5] += 0.25 * (time_edges[6] - time_edges[5])
-    if "time_edges" in bad_arguments:
-        bad_arguments = {**bad_arguments, "time_edges": bad_edges}
     if bad_arguments.get("n_chunks") == "more_than_time":
         n_bins = time_edges.shape[0] - 1
         bad_arguments = {**bad_arguments, "n_chunks": n_bins + 1}
 
-    with pytest.raises(error):
+    with pytest.raises(ValidationError, match=message):
         detector.estimate_parameters(
             **refit_args,
             is_training=is_training,
