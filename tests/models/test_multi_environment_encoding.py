@@ -20,7 +20,13 @@ from non_local_detector import (
     Uniform,
     UniformInitialConditions,
 )
+from non_local_detector.analysis import (
+    get_position_posterior,
+    get_spatial_posterior,
+    maximum_a_posteriori_estimate,
+)
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.time_edges import time_edges_from_centers
 
 pytestmark = [
     pytest.mark.integration,
@@ -187,3 +193,38 @@ def test_each_environment_matches_a_fit_on_its_samples_alone(
                 atol=0.0,
                 err_msg=f"{name}: {key}",
             )
+
+
+def test_position_is_read_one_environment_at_a_time(two_environment_recording):
+    """Environments A and B share no grid, and their bins must not be pooled."""
+    data = two_environment_recording
+    detector = _detector(
+        SortedSpikesDecoder, "sorted_spikes_algorithm", "sorted_spikes_kde", NAMES
+    )
+    detector.fit(
+        data["time"],
+        data["position"],
+        data["spike_times"],
+        environment_labels=data["labels"],
+    )
+    detector.set_params(sampling_frequency=SAMPLING_FREQUENCY)
+    time = data["time"][:100]
+    results = detector.predict(
+        spike_times=data["spike_times"],
+        time_edges=time_edges_from_centers(time),
+        position_time=time,
+        position=data["position"][:100],
+    )
+
+    with pytest.raises(ValueError, match="environments"):
+        get_position_posterior(results.acausal_posterior)
+
+    in_a = results.isel(state_bins=results.environment == "A")
+    position = maximum_a_posteriori_estimate(in_a.acausal_posterior)
+    assert np.isin(position, detector.environments_[0].place_bin_centers_[:, 0]).all()
+    np.testing.assert_array_equal(
+        position,
+        maximum_a_posteriori_estimate(
+            get_spatial_posterior(results.acausal_posterior, states=["A"])
+        ),
+    )

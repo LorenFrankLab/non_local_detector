@@ -399,10 +399,75 @@ class TestGetPositionPosterior:
 
         np.testing.assert_allclose(total, 1 - local_mass)
 
+    def test_results_saved_before_bins_named_their_environment_are_summed(self):
+        raw = self._two_environments().drop_vars("environment")
+
+        result = get_position_posterior(raw)
+
+        np.testing.assert_allclose(result.values, [[0.3, 0.1, 0.5]])
+
     def test_layout_without_position_is_refused(self):
         posterior = xr.DataArray(np.ones((2, 3)), dims=["time", "states"])
         with pytest.raises(ValueError, match="position"):
             get_position_posterior(posterior)
+
+    @staticmethod
+    def _two_environments():
+        """Local without a position, then A and B on one grid, as ``predict`` labels."""
+        grid = np.arange(3.0)
+        states = ["Local", *["A"] * grid.size, *["B"] * grid.size]
+        index = pd.MultiIndex.from_arrays(
+            [states, [np.nan, *grid, *grid]], names=["state", "position"]
+        )
+        values = np.array([[0.1, 0.3, 0.1, 0.0, 0.0, 0.0, 0.5]])
+        return xr.DataArray(
+            values,
+            dims=["time", "state_bins"],
+            coords={
+                "time": [0.0],
+                "state_bins": index,
+                "environment": ("state_bins", ["A", *["A"] * 3, *["B"] * 3]),
+            },
+        )
+
+    def test_two_environments_are_refused(self):
+        raw = self._two_environments()
+        with pytest.raises(ValueError, match=r"environments \['A', 'B'\]"):
+            get_position_posterior(raw)
+
+    def test_a_state_grid_of_two_environments_is_refused(self):
+        spatial = get_spatial_posterior(self._two_environments())
+        with pytest.raises(ValueError, match="environments"):
+            get_position_posterior(spatial)
+
+    def test_selecting_one_environment_is_accepted(self):
+        spatial = get_spatial_posterior(self._two_environments(), states=["A"])
+
+        result = get_position_posterior(spatial)
+
+        np.testing.assert_allclose(result.values, [[0.3, 0.1, 0.0]])
+
+    def test_a_position_less_state_does_not_count_as_an_environment(self):
+        spatial = self._two_environments().isel(state_bins=[0, 1, 2, 3])
+        raw = spatial.assign_coords(
+            environment=("state_bins", ["other", "A", "A", "A"])
+        )
+
+        result = get_position_posterior(raw)
+
+        np.testing.assert_allclose(result.values, [[0.3, 0.1, 0.0]])
+
+    def test_each_state_keeps_its_environment_on_the_grids(self):
+        spatial = get_spatial_posterior(self._two_environments())
+
+        assert spatial.coords["environment"].dims == ("state",)
+        assert dict(
+            zip(spatial["state"].values, spatial["environment"].values, strict=True)
+        ) == {"A": "A", "B": "B"}
+
+    def test_map_estimate_refuses_two_environments(self):
+        with pytest.raises(ValueError, match="environments"):
+            maximum_a_posteriori_estimate(self._two_environments())
 
 
 def _one_hot_posterior(n_time, peak, grids, position_dims):

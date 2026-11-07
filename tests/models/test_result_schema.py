@@ -21,7 +21,11 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
 )
-from non_local_detector.analysis import get_spatial_posterior
+from non_local_detector.analysis import (
+    get_position_posterior,
+    get_spatial_posterior,
+    maximum_a_posteriori_estimate,
+)
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models._results import state_bin_positions
 
@@ -115,6 +119,22 @@ def test_state_ind_is_a_state_bins_coordinate(fitted, result):
     )
 
 
+def test_each_state_bin_names_its_environment(fitted, result):
+    environments = np.atleast_1d(result.coords["environments"].values)
+
+    assert result.coords["environment"].dims == ("state_bins",)
+    np.testing.assert_array_equal(
+        result.coords["environment"].values, environments[fitted.state_ind_]
+    )
+
+
+def test_an_unstacked_posterior_reduces_to_position(dense):
+    posterior = dense.acausal_posterior.unstack("state_bins")
+
+    assert get_position_posterior(posterior).dims[0] == "time"
+    assert maximum_a_posteriori_estimate(posterior).shape[0] == dense.time.size
+
+
 def test_state_bin_positions_follow_the_state_index(fitted, result):
     """One block per state, NaN for states without place bins, as in results."""
     positions = state_bin_positions(fitted)
@@ -177,6 +197,7 @@ def test_netcdf_round_trip_keeps_state_ind(fitted, result, tmp_path):
     assert restored.coords["state_ind"].dims == ("state_bins",)
     np.testing.assert_array_equal(restored.state_ind, fitted.state_ind_)
     assert restored.state_ind.dtype == result.state_ind.dtype
+    np.testing.assert_array_equal(restored.environment, result.environment)
     for name in result.data_vars:
         np.testing.assert_array_equal(restored[name].values, result[name].values)
 

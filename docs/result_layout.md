@@ -38,6 +38,7 @@ array for any model.
 | `encoding_groups` | `states` | All | Each state's encoding group |
 | `state_bins` | `state_bins` | With `state_bins` | A MultiIndex with levels `state` and the position dimensions: `position` in 1-D; `x_position`, `y_position` in 2-D; `z_position`, ... beyond |
 | `state_ind` | `state_bins` | With `state_bins` | Each bin's index into `states` (the detector's `state_ind_`) |
+| `environment` | `state_bins` | With `state_bins` | Each bin's environment name: `environments` at the bin's `state_ind` |
 
 "With `state_bins`" means dense results and checkpointed spatial results.
 
@@ -53,12 +54,22 @@ leaves those states out, and `get_position_posterior` also sums over the states
 that remain. `maximum_a_posteriori_estimate` and `get_map_speed` accept any of
 these layouts.
 
-`state_ind` is a plain (non-index) coordinate along `state_bins`, so
-`results.acausal_posterior.unstack("state_bins")` keeps it as a float
-coordinate over `(state, *position)`, NaN where a state has no bin. Drop it
-first if you do not want it:
-`results.acausal_posterior.drop_vars("state_ind").unstack("state_bins")`.
-`get_spatial_posterior` drops it.
+A position means nothing in another environment, so `get_position_posterior`,
+everything that reduces to position through it, and
+`get_conditional_non_local_posterior` refuse a posterior whose
+states with a position are in more than one environment. Select one first:
+`results.isel(state_bins=results.environment == "A")` works on results or a
+posterior. `get_spatial_posterior` gives each state's `environment` along
+`state`, so its per-state grids are refused the same way until you select with
+`.sel(state=[...])`. Results saved before `environment` existed cannot be told
+apart and are summed, as they were.
+
+`state_ind` and `environment` are plain (non-index) coordinates along
+`state_bins`, so `results.acausal_posterior.unstack("state_bins")` keeps them
+as coordinates over `(state, *position)`, NaN where a state has no bin. Drop
+them first if you do not want them:
+`results.acausal_posterior.drop_vars(["state_ind", "environment"]).unstack("state_bins")`.
+`get_spatial_posterior` drops them, keeping each state's `environment` along `state`.
 
 Bins follow the `time_bin_convention` attribute: each bin is closed on the left
 and open on the right, except the final bin of the decode grid, which is closed
