@@ -1,0 +1,37 @@
+rs58: 1211 s, running 555 s, 11 electrodes, mark dims [26, 28, 30, 31, 32], spikes/electrode [27220, 63386, 72658, 26676, 99098, 186348, 38684, 218417, 22553, 73971, 205666]
+
+waveform_std = 12, position_std = 3.54
+  all spikes: own-kernel share mean 0.902, median 0.995, p90 1.000, p99 1.000, share>0.5: 0.924
+    log intensity   in-own: +6.165 nats/spike (median +5.236, p90 +12.010); +4626.1 nats/s over electrodes
+    log intensity  own-win: +0.161 nats/spike (median -0.007, p90 +0.041); +86.9 nats/s over electrodes
+    log intensity own-fold: +0.285 nats/spike (median -0.023, p90 +0.584); +165.0 nats/s over electrodes
+    log intensity  in-fold: +6.450 nats/spike (median +5.337, p90 +12.465); +4791.1 nats/s over electrodes
+  running spikes: own-kernel share mean 0.947, median 0.998, p90 1.000, p99 1.000, share>0.5: 0.966
+    log intensity   in-own: +7.173 nats/spike (median +6.261, p90 +13.013); +7831.0 nats/s over electrodes
+    log intensity  own-win: +0.153 nats/spike (median -0.007, p90 +0.041); +144.1 nats/s over electrodes
+    log intensity own-fold: +0.279 nats/spike (median -0.038, p90 +0.669); +262.6 nats/s over electrodes
+    log intensity  in-fold: +7.452 nats/spike (median +6.427, p90 +13.521); +8093.6 nats/s over electrodes
+
+waveform_std = 16, position_std = 3.54
+  all spikes: own-kernel share mean 0.663, median 0.826, p90 0.998, p99 1.000, share>0.5: 0.673
+    log intensity   in-own: +2.670 nats/spike (median +1.751, p90 +6.330); +1878.0 nats/s over electrodes
+    log intensity  own-win: +0.098 nats/spike (median -0.003, p90 +0.042); +51.6 nats/s over electrodes
+    log intensity own-fold: +0.159 nats/spike (median -0.002, p90 +0.300); +87.9 nats/s over electrodes
+    log intensity  in-fold: +2.830 nats/spike (median +1.829, p90 +6.570); +1965.8 nats/s over electrodes
+  running spikes: own-kernel share mean 0.759, median 0.917, p90 0.999, p99 1.000, share>0.5: 0.786
+    log intensity   in-own: +3.255 nats/spike (median +2.494, p90 +6.947); +3354.8 nats/s over electrodes
+    log intensity  own-win: +0.089 nats/spike (median -0.004, p90 +0.045); +83.9 nats/s over electrodes
+    log intensity own-fold: +0.143 nats/spike (median -0.007, p90 +0.332); +133.6 nats/s over electrodes
+    log intensity  in-fold: +3.398 nats/spike (median +2.577, p90 +7.240); +3488.4 nats/s over electrodes
+
+waveform_std = 24, position_std = 3.54
+  all spikes: own-kernel share mean 0.273, median 0.123, p90 0.823, p99 0.996, share>0.5: 0.238
+    log intensity   in-own: +0.608 nats/spike (median +0.132, p90 +1.729); +386.6 nats/s over electrodes
+    log intensity  own-win: +0.047 nats/spike (median +0.000, p90 +0.033); +24.3 nats/s over electrodes
+    log intensity own-fold: +0.074 nats/spike (median +0.005, p90 +0.155); +40.0 nats/s over electrodes
+    log intensity  in-fold: +0.682 nats/spike (median +0.156, p90 +1.846); +426.6 nats/s over electrodes
+  running spikes: own-kernel share mean 0.343, median 0.223, p90 0.879, p99 0.998, share>0.5: 0.313
+    log intensity   in-own: +0.774 nats/spike (median +0.252, p90 +2.113); +716.6 nats/s over electrodes
+    log intensity  own-win: +0.040 nats/spike (median +0.000, p90 +0.036); +39.2 nats/s over electrodes
+    log intensity own-fold: +0.059 nats/spike (median +0.004, p90 +0.160); +57.1 nats/s over electrodes
+    log intensity  in-fold: +0.834 nats/spike (median +0.279, p90 +2.230); +773.7 nats/s over electrodes
