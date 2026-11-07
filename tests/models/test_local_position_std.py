@@ -4,7 +4,7 @@ Tests cover:
 - Parameter acceptance (None default, positive values)
 - Validation rejection (zero, negative values)
 - Parameter storage on instance
-- Backward compatibility (None preserves legacy behavior)
+- The default (None: a one-bin Local state)
 - State index allocation (multi-bin vs single-bin local)
 - Initial conditions (uniform over all bins for multi-bin local)
 - Continuous transitions (auto-upgrade Discrete, n-bin to 1-bin)
@@ -78,7 +78,7 @@ class TestLocalPositionStdValidation:
 
     @pytest.mark.parametrize("detector_cls", DETECTOR_CLASSES, ids=DETECTOR_IDS)
     def test_default_is_none(self, detector_cls):
-        """Default local_position_std is None (legacy behavior)."""
+        """Default local_position_std is None (a one-bin Local state)."""
         detector = detector_cls()
         assert detector.local_position_std is None
 
@@ -136,8 +136,8 @@ class TestLocalPositionStdValidation:
 class TestMultiBinLocalStateIndex:
     """Test the fitted state bins with multi-bin local."""
 
-    def test_legacy_local_gets_one_bin(self):
-        """Legacy local_position_std=None gives local state 1 bin."""
+    def test_default_local_gets_one_bin(self):
+        """The default local_position_std=None gives the Local state 1 bin."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         _fit_state_space(detector, position)
@@ -187,8 +187,9 @@ class TestMultiBinLocalStateIndex:
 class TestMultiBinLocalInitialConditions:
     """Test the fitted initial conditions with multi-bin local."""
 
-    def test_legacy_local_initial_conditions_unchanged(self):
-        """Legacy local_position_std=None gives the Local state initial condition [1.0]."""
+    def test_default_local_initial_condition_is_one(self):
+        """The default local_position_std=None gives the Local state initial
+        condition [1.0]."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         _fit_state_space(detector, position)
@@ -256,11 +257,11 @@ class TestMultiBinLocalContinuousTransitions:
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
         _fit_state_space(detector, position)
-        legacy = NonLocalSortedSpikesDetector()
-        _fit_state_space(legacy, position)
+        default = NonLocalSortedSpikesDetector()
+        _fit_state_space(default, position)
 
         # States 1 (No-Spike), 2 and 3 (Non-Local) do not involve the Local
-        # state, so every block among them matches the legacy detector.
+        # state, so every block among them matches the default detector.
         def block(model, from_state, to_state):
             return model.continuous_state_transitions_[
                 np.ix_(model.state_ind_ == from_state, model.state_ind_ == to_state)
@@ -271,12 +272,12 @@ class TestMultiBinLocalContinuousTransitions:
             for to_state in (1, 2, 3):
                 np.testing.assert_array_equal(
                     block(detector, from_state, to_state),
-                    block(legacy, from_state, to_state),
+                    block(default, from_state, to_state),
                     err_msg=f"block ({from_state}, {to_state})",
                 )
 
-    def test_legacy_discrete_transition_unchanged(self):
-        """Legacy local_position_std=None keeps Discrete() as 1x1 identity."""
+    def test_default_local_transition_is_one_by_one_identity(self):
+        """The default local_position_std=None keeps Discrete() as 1x1 identity."""
         detector = NonLocalSortedSpikesDetector()
         position = np.linspace(0, 10, 11)[:, np.newaxis]
         _fit_state_space(detector, position)
@@ -601,7 +602,8 @@ class TestDeltaKernel:
         return detector, detector.environments_[0]
 
     def test_kernel_is_one_hot_at_animal_bin(self):
-        """At σ=0 the kernel is log(n_bins) at one bin and -inf elsewhere."""
+        """At σ=0 the kernel is log(n_bins) at the animal's bin and -inf
+        elsewhere."""
         import jax.numpy as jnp
 
         detector, env = self._make_detector_and_env()
@@ -619,44 +621,15 @@ class TestDeltaKernel:
         )
         log_kernel_np = np.asarray(log_kernel)
 
-        n_interior = int(env.is_track_interior_.sum())
-        # One entry equals log(n_bins); all others are -inf.
-        finite_mask = np.isfinite(log_kernel_np[0])
-        assert finite_mask.sum() == 1, "Delta kernel must be non-inf at exactly one bin"
-        np.testing.assert_allclose(
-            log_kernel_np[0][finite_mask],
-            np.log(n_interior),
-            rtol=1e-6,
-        )
-        # -inf elsewhere
-        assert np.all(log_kernel_np[0][~finite_mask] == -np.inf)
-
-    def test_kernel_peak_at_animal_bin(self):
-        """The single finite bin is the one containing the animal."""
-        import jax.numpy as jnp
-
-        detector, env = self._make_detector_and_env()
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[50.0], [50.0]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-            detector.local_position_std,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        # Find which interior bin contains animal position 50
+        # Interior-bin index (column of log_kernel) of the bin holding 50.
         interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
         expected_bin_ind = env.get_bin_ind(np.array([[50.0]]))[0]
-        # Convert full-bin index to interior-bin index (column index in log_kernel)
         expected_col = int(np.where(interior_bin_indices == expected_bin_ind)[0][0])
+        n_interior = int(env.is_track_interior_.sum())
+        expected = np.full(n_interior, -np.inf)
+        expected[expected_col] = np.log(n_interior)
 
-        peak_col = int(np.argmax(log_kernel_np[0]))
-        assert peak_col == expected_col
+        np.testing.assert_allclose(log_kernel_np[0], expected, rtol=1e-6)
 
     def test_kernel_sums_to_n_bins_in_prob_space(self):
         """exp(log_kernel) sums to n_bins per time step — same invariant as σ>0."""
