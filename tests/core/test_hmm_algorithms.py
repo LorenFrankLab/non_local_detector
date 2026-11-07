@@ -819,22 +819,22 @@ class TestViterbiDegenerateTimestepWarning:
 
 
 def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
-    """Run one decoding path on a two-state stationary HMM."""
+    """Run one decoding path on a two-state stationary HMM; return its result."""
     init = np.array([0.5, 0.5])
     trans = np.array([[0.9, 0.1], [0.1, 0.9]])
     n_time = log_likes.shape[0]
     if path == "filter":
-        filter(init, trans, log_likes)
-    elif path == "filter_covariate":
-        filter_covariate_dependent(
+        return filter(init, trans, log_likes)
+    if path == "filter_covariate":
+        return filter_covariate_dependent(
             init,
             np.broadcast_to(trans, (n_time, 2, 2)),
             np.eye(2),
             np.array([0, 1]),
             log_likes,
         )
-    elif path == "chunked_filter_smoother":
-        chunked_filter_smoother(
+    if path == "chunked_filter_smoother":
+        return chunked_filter_smoother(
             time_edges=np.arange(float(n_time) + 1),
             state_ind=np.array([0, 1]),
             initial_distribution=init,
@@ -845,8 +845,8 @@ def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
             log_likelihoods=log_likes,
             is_missing=is_missing,
         )
-    elif path == "chunked_covariate":
-        chunked_filter_smoother_covariate_dependent(
+    if path == "chunked_covariate":
+        return chunked_filter_smoother_covariate_dependent(
             time_edges=np.arange(float(n_time) + 1),
             state_ind=np.array([0, 1]),
             initial_distribution=init,
@@ -858,8 +858,8 @@ def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
             log_likelihoods=log_likes,
             is_missing=is_missing,
         )
-    elif path == "most_likely_sequence_covariate":
-        most_likely_sequence_covariate_dependent(
+    if path == "most_likely_sequence_covariate":
+        return most_likely_sequence_covariate_dependent(
             time_edges=np.arange(float(n_time) + 1),
             state_ind=np.array([0, 1]),
             initial_distribution=init,
@@ -870,26 +870,25 @@ def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
             log_likelihoods=log_likes,
             is_missing=is_missing,
         )
-    elif path == "viterbi":
-        viterbi(init, trans, log_likes)
-    elif path == "viterbi_covariate":
-        viterbi_covariate_dependent(
+    if path == "viterbi":
+        return viterbi(init, trans, log_likes)
+    if path == "viterbi_covariate":
+        return viterbi_covariate_dependent(
             init,
             np.broadcast_to(trans, (n_time, 2, 2)),
             np.eye(2),
             np.array([0, 1]),
             log_likes,
         )
-    else:
-        most_likely_sequence(
-            time_edges=np.arange(n_time + 1),
-            initial_distribution=init,
-            transition_matrix=trans,
-            log_likelihood_func=None,
-            log_likelihood_args=(),
-            log_likelihoods=log_likes,
-            is_missing=is_missing,
-        )
+    return most_likely_sequence(
+        time_edges=np.arange(n_time + 1),
+        initial_distribution=init,
+        transition_matrix=trans,
+        log_likelihood_func=None,
+        log_likelihood_args=(),
+        log_likelihoods=log_likes,
+        is_missing=is_missing,
+    )
 
 
 @pytest.mark.unit
@@ -903,12 +902,26 @@ def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
     ],
 )
 def test_a_missing_row_has_no_likelihood_to_refuse(path):
-    """The drivers neutralize it, as ``checkpointed_forward_backward`` does."""
-    log_likes = np.array([[0.0, -1.0], [np.nan, 0.0], [0.0, -1.0], [0.0, -1.0]])
+    """The drivers neutralize it, as ``checkpointed_forward_backward`` does:
+    the result equals a decode of the same rows with the missing row set to 0
+    (no evidence), and the NaN in that row is not refused."""
+    is_missing = np.array([False, True, False, False])
+    # The path stays in state 1 when the missing row carries no evidence, but
+    # the row's finite entry (-6 against a switching cost of 2 log 0.1 = -4.6)
+    # would move it to state 0 at row 1 if a driver used the row.
+    log_likes = np.array([[-1.0, 0.0], [np.nan, -6.0], [-1.0, 0.0], [-1.0, 0.0]])
+    without_evidence = log_likes.copy()
+    without_evidence[is_missing] = 0.0
 
-    _decode_with_log_likelihoods(
-        path, log_likes, is_missing=np.array([False, True, False, False])
-    )
+    actual = _decode_with_log_likelihoods(path, log_likes, is_missing=is_missing)
+    expected = _decode_with_log_likelihoods(path, without_evidence)
+
+    if path.startswith("most_likely_sequence"):
+        np.testing.assert_array_equal(actual[0], expected[0])
+    else:
+        acausal, _, marginal, *_ = actual
+        np.testing.assert_array_equal(acausal, expected[0])
+        assert marginal == expected[2]
 
 
 @pytest.mark.unit
