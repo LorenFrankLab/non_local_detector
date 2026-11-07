@@ -40,7 +40,11 @@ def _log_terms(
     log_position_distance: ArrayLike,
     encoding_weights: ArrayLike | None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Log mark kernels, weighted log position kernels and normalized marks."""
+    """Log mark kernels, weighted log position kernels and ``(m_e - m) / std**2``.
+
+    Shapes ``(n_encoding, n_decoding)``, ``(n_encoding, n_bins)`` and
+    ``(n_encoding, n_decoding, n_features)``.
+    """
     decoding = np.asarray(decoding_features, np.float64)
     encoding = np.asarray(encoding_features, np.float64)
     stds = np.asarray(waveform_stds, np.float64)
