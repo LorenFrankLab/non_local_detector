@@ -40,6 +40,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.likelihoods.common import DEFAULT_WAVEFORM_STD
+from tests.likelihoods._sorted_spikes_helpers import poisson_log_likelihood_reference
 
 pytestmark = [
     pytest.mark.integration,
@@ -175,15 +176,6 @@ def recording_2d():
 def fits():
     """Fitted detectors shared by the recovery and likelihood tests."""
     return {}
-
-
-def _exact_sorted(rates, spike_times, edges):
-    """Exact non-local log likelihood, (n_rows, n_bins), without log(n!) terms.
-
-    ``rates`` are the true rates at the bins, shape (n_bins, n_cells), Hz.
-    """
-    counts = np.stack([np.histogram(s, edges)[0] for s in spike_times], axis=1)
-    return counts @ np.log(rates * DECODE_BIN).T - rates.sum(1) * DECODE_BIN
 
 
 def _exact_clusterless(
@@ -334,8 +326,12 @@ def _score_nonlocal(model, algorithm, test, edges, centers, true_rates, radii):
             true_rates, times, marks, edges, identity, mark_sd=smoothed_sd
         )
     else:
-        exact = _exact_sorted(true_rates, test["spike_times"], edges)
-        wrong = _exact_sorted(true_rates, test["spike_times"][::-1], edges)
+        exact = poisson_log_likelihood_reference(
+            true_rates.T, test["spike_times"], edges
+        )
+        wrong = poisson_log_likelihood_reference(
+            true_rates.T, test["spike_times"][::-1], edges
+        )
         level_reference = exact
 
     agreement = _agreement(nonlocal_ll[rows], exact[rows], centers, radii)

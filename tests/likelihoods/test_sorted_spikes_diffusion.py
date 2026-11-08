@@ -33,6 +33,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
 from tests.likelihoods._sorted_spikes_helpers import (
+    binned_spike_counts_reference,
     make_linear_track_env,
     make_two_room_env,
     poisson_log_likelihood_reference,
@@ -1027,7 +1028,6 @@ def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_fit):
     assert np.all(place_fields >= 0.0)
     assert np.all(np.isfinite(place_fields))
 
-    # Edges halfway between samples: no spike (all at sample times) sits on an edge.
     edges = time_edges_from_centers(time[:1000])
     ll = np.asarray(
         predict(
@@ -1040,10 +1040,10 @@ def test_invariants_place_fields_and_likelihood(env_2d, three_neuron_fit):
         )
     )
     expected = poisson_log_likelihood_reference(
-        place_fields, env.is_track_interior_.ravel(), spike_times, edges
+        place_fields[:, env.is_track_interior_.ravel()], spike_times, edges
     )
     # The window holds spikes, so the count term is exercised, not just -dt * rate.
-    assert sum(np.histogram(spikes, edges)[0].sum() for spikes in spike_times) > 20
+    assert binned_spike_counts_reference(spike_times, edges).sum() > 20
     np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)
 
 

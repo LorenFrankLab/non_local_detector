@@ -50,6 +50,10 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 from non_local_detector.likelihoods.sorted_spikes_glm import make_spline_predict_matrix
+from tests.likelihoods._sorted_spikes_helpers import (
+    binned_spike_counts_reference,
+    poisson_log_likelihood_reference,
+)
 from tests.likelihoods.conftest import (
     ALGORITHMS,
     EXACT,
@@ -844,14 +848,9 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, edge_case_dat
     rates = np.maximum(np.exp(design.astype(np.float64) @ coefficients.T), RATE_EPS_HZ)
 
     # Derive full-timeline counts independently of the selection/count helpers.
-    counts = np.zeros((N_BINS, len(spikes)), dtype=int)
-    for neuron, unit_times in enumerate(spikes):
-        in_range = unit_times[(unit_times >= time[0]) & (unit_times <= time[-1])]
-        rows = np.minimum(np.searchsorted(time, in_range, side="right") - 1, N_BINS - 1)
-        np.add.at(counts[:, neuron], rows, 1)
+    counts = binned_spike_counts_reference(spikes, time)
     assert np.all(counts[-1] > 0)  # the final bin owns its spikes on the last edge
-    rates = rates * np.diff(time)[:, None]
-    expected = np.sum(counts * np.log(rates) - rates, axis=1, keepdims=True)
+    expected = poisson_log_likelihood_reference(rates[:, :, np.newaxis], spikes, time)
 
     partitions = [
         slice(int(chunk[0]), int(chunk[-1]) + 1)

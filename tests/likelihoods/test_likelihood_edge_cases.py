@@ -698,11 +698,8 @@ def test_sorted_kde_many_neurons_few_spikes():
     assert enc["place_fields"].shape[0] == 10
     ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
     assert jnp.all(jnp.isfinite(ll))
-    # The decode edges (multiples of 2 s) hold no spike time, so np.histogram's
-    # closed last bin bins as the package does.
     expected = poisson_log_likelihood_reference(
-        enc["place_fields"],
-        env.is_track_interior_.ravel(),
+        np.asarray(enc["place_fields"])[:, env.is_track_interior_.ravel()],
         [np.asarray(spikes) for spikes in spike_times],
         np.linspace(0.0, 10.0, 6),
     )
