@@ -3,7 +3,6 @@
 import copy
 import functools
 import pickle
-from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -29,9 +28,15 @@ from non_local_detector.models.cont_frag_model import (
 )
 from non_local_detector.observation_models import ObservationModel
 from tests.models._helpers import (
+    ENTRY_POINTS,
     _assert_unchanged,
     _snapshot,
+    call_entry_point,
+    forbid_likelihood_and_hmm_work,
 )
+
+# Twenty 2 ms decode bins within the 0.2 s recording.
+_EDGES = np.arange(21) * 0.002
 
 
 @pytest.fixture(
@@ -96,25 +101,8 @@ def multi_entry_recording(request):
     )
 
 
-def _call_model(detector, entry, time, position, spike_args):
-    edges = np.arange(21) * 0.002
-    if entry == "likelihood":
-        return detector.compute_log_likelihood(
-            time, position, *spike_args, time_edges=edges
-        )
-    if entry == "cached":
-        return detector._predict(
-            edges,
-            log_likelihoods=np.zeros(
-                (20, detector.is_track_interior_state_bins_.sum())
-            ),
-        )
-    method = detector.predict if entry == "predict" else detector.most_likely_sequence
-    return method(*spike_args, time_edges=edges, position_time=time, position=position)
-
-
 @pytest.mark.integration
-@pytest.mark.parametrize("entry", ["predict", "viterbi", "likelihood", "cached"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
 @pytest.mark.parametrize(
     "corruption",
     [
@@ -128,8 +116,6 @@ def _call_model(detector, entry, time, position, spike_args):
 def test_later_active_entry_rejected_before_any_backend_or_hmm_work(
     multi_entry_recording, monkeypatch, entry, corruption
 ):
-    from non_local_detector.models import base
-
     fitted, time, position, spike_args, _, later_key, _ = multi_entry_recording
     detector = copy.deepcopy(fitted)
     if corruption == "missing_entry":
@@ -143,28 +129,12 @@ def test_later_active_entry_rejected_before_any_backend_or_hmm_work(
     else:
         detector.encoding_model_[later_key] = None
     snapshot = _snapshot(detector)
-
-    def unexpected_work(*args, **kwargs):
-        pytest.fail(
-            "All required encoding entries must be checked before likelihood/HMM work"
-        )
-
-    if hasattr(detector, "clusterless_algorithm"):
-        registry, algorithm = _CLUSTERLESS_ALGORITHMS, detector.clusterless_algorithm
-    else:
-        registry, algorithm = (
-            _SORTED_SPIKES_ALGORITHMS,
-            detector.sorted_spikes_algorithm,
-        )
-    monkeypatch.setitem(
-        registry, algorithm, replace(registry[algorithm], predict=unexpected_work)
-    )
-    monkeypatch.setattr(base, "chunked_filter_smoother", unexpected_work)
+    forbid_likelihood_and_hmm_work(monkeypatch, detector)
     with pytest.raises(
         ValidationError,
         match=r"Encoding entry .* is missing or has unknown rate units; refit",
     ):
-        _call_model(detector, entry, time, position, spike_args)
+        call_entry_point(detector, entry, time, position, spike_args, _EDGES)
     _assert_unchanged(detector, snapshot)
 
 
@@ -246,7 +216,7 @@ def test_fitted_units_stay_out_of_constructor_parameters(multi_entry_recording):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("entry", ["predict", "viterbi", "likelihood", "cached"])
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
 def test_legacy_file_loads_for_inspection_without_running_constructor(
     multi_entry_recording, tmp_path, monkeypatch, entry
 ):
@@ -285,7 +255,7 @@ def test_legacy_file_loads_for_inspection_without_running_constructor(
             restored.encoding_model_[key]["mean_rates"], model["mean_rates"]
         )
     with pytest.raises(ValidationError, match="legacy or unknown time contract; refit"):
-        _call_model(restored, entry, time, position, spike_args)
+        call_entry_point(restored, entry, time, position, spike_args, _EDGES)
 
 
 @pytest.mark.integration
