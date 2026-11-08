@@ -10,25 +10,13 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.likelihoods.common import SpikeTimeOrder
+from tests.conftest import tiny_fixture_warnings
 from tests.models._helpers import (
     ALGORITHMS,
     _decoder,
 )
 
-pytestmark = [
-    # The shared all-backend fixtures fit tiny synthetic data: a small
-    # position_std and zero-rate electrodes are fixture properties, not under test.
-    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
-    # k-means seeding finds fewer distinct points than components on the tiny fixtures.
-    pytest.mark.filterwarnings(
-        "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-    ),
-    pytest.mark.filterwarnings(
-        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
-    ),
-]
+pytestmark = tiny_fixture_warnings
 
 
 @pytest.fixture(scope="module", params=ALGORITHMS)

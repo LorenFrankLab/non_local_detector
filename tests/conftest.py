@@ -53,6 +53,23 @@ em_stops_at_max_iter = pytest.mark.filterwarnings(
     "ignore:EM did not converge after max_iter=:UserWarning"
 )
 
+# For modules that fit every registered algorithm on the shared tiny synthetic
+# fixtures: a small position_std, zero-rate electrodes and k-means seeding that
+# finds fewer distinct points than components are properties of the fixture,
+# not under test. Use as ``pytestmark = tiny_fixture_warnings``, or unpack it
+# beside other marks: ``pytestmark = [pytest.mark.unit, *tiny_fixture_warnings]``.
+tiny_fixture_warnings = [
+    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    pytest.mark.filterwarnings(
+        "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+    ),
+]
+
 
 def pytest_collection_modifyitems(items):
     """Mark tests without a category marker as unit tests.
@@ -187,6 +204,36 @@ def simple_1d_environment():
     env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
     assert env.place_bin_centers_ is not None
     return env
+
+
+# ==============================================================================
+# SIMULATION HELPERS
+# ==============================================================================
+
+
+def spread_over_sample_bins(rng, time, counts, sampling_frequency):
+    """Spike times for per-sample spike counts, unsorted.
+
+    Each sample's spikes fall uniformly within its decode bin, which
+    ``time_edges_from_centers`` centres on the sample; putting them all on the
+    sample time instead would bias recovered quantities by half a bin.
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+    time : np.ndarray, shape (n_time,)
+        Sample times in seconds.
+    counts : np.ndarray, shape (n_time,)
+        Spike count per sample.
+    sampling_frequency : float
+        Samples per second.
+
+    Returns
+    -------
+    spike_times : np.ndarray, shape (counts.sum(),)
+    """
+    jitter = rng.uniform(-0.5, 0.5, counts.sum()) / sampling_frequency
+    return np.repeat(time, counts) + jitter
 
 
 # ==============================================================================
