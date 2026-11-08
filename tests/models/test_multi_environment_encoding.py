@@ -30,7 +30,7 @@ from non_local_detector.analysis import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import time_edges_from_centers
-from tests.conftest import em_stops_at_max_iter
+from tests.conftest import em_stops_at_max_iter, spread_over_sample_bins
 from tests.models._helpers import record_refit_weights
 
 pytestmark = [
@@ -72,10 +72,7 @@ def two_environment_recording():
     switch = time[n_samples]
     spike_times = []
     for cell in range(rates.shape[1]):
-        times = (
-            np.repeat(time, counts[:, cell])
-            + rng.uniform(-0.5, 0.5, counts[:, cell].sum()) / SAMPLING_FREQUENCY
-        )
+        times = spread_over_sample_bins(rng, time, counts[:, cell], SAMPLING_FREQUENCY)
         keep = (
             (times >= 0)
             & (times <= time[-1])

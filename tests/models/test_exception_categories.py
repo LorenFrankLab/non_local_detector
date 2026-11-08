@@ -12,8 +12,6 @@ import xarray as xr
 from non_local_detector import (
     ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,
-    Environment,
-    SortedSpikesDecoder,
     time_edges_from_centers,
 )
 from non_local_detector.exceptions import (
@@ -27,30 +25,13 @@ from non_local_detector.models._input_validation import (
     _normalize_return_outputs,
     _validate_covariate_time_length,
 )
-
-N_TIME = 100
-
-
-def _recording():
-    time = np.arange(N_TIME) * 0.002
-    position = (50 + 8 * np.sin(time * 40))[:, None]
-    spike_times = [np.array([0.021, 0.067, 0.121, 0.167])]
-    return time, position, spike_times
-
-
-def _decoder():
-    return SortedSpikesDecoder(
-        environments=Environment(place_bin_size=5, position_range=((40, 60),)),
-        infer_track_interior=False,
-        sorted_spikes_algorithm="sorted_spikes_kde",
-        sorted_spikes_algorithm_params={"disable_progress_bar": True},
-    )
+from tests.models._helpers import toy_recording, toy_sorted_decoder
 
 
 @pytest.fixture(scope="module")
 def fitted():
-    time, position, spike_times = _recording()
-    return _decoder().fit(time, position, spike_times), time, spike_times
+    time, position, spike_times = toy_recording()
+    return toy_sorted_decoder().fit(time, position, spike_times), time, spike_times
 
 
 # -- unfitted state ----------------------------------------------------------
@@ -58,9 +39,11 @@ def fitted():
 
 @pytest.mark.unit
 def test_predict_before_fit_raises_not_fitted_error():
-    time, _, spike_times = _recording()
+    time, _, spike_times = toy_recording()
     with pytest.raises(NotFittedError, match="not fitted") as info:
-        _decoder().predict(spike_times, time_edges=time_edges_from_centers(time))
+        toy_sorted_decoder().predict(
+            spike_times, time_edges=time_edges_from_centers(time)
+        )
     assert isinstance(info.value, ConfigurationError)
 
 

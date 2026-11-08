@@ -15,6 +15,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     time_edges_from_centers,
 )
+from tests.conftest import spread_over_sample_bins
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
@@ -77,9 +78,7 @@ def simulate_non_local_recording(
     counts = rng.poisson(rates / SAMPLING_FREQUENCY)
     spike_times = [
         np.sort(
-            # Spread over each decode bin, which is centred on its sample.
-            np.repeat(time, counts[:, neuron])
-            + rng.uniform(-0.5, 0.5, counts[:, neuron].sum()) / SAMPLING_FREQUENCY
+            spread_over_sample_bins(rng, time, counts[:, neuron], SAMPLING_FREQUENCY)
         )
         for neuron in range(n_neurons)
     ]

@@ -25,6 +25,7 @@ from tests.models._helpers import (
     _assert_unchanged,
     _decoder,
     _snapshot,
+    call_entry_point,
 )
 
 # The population fixtures fit diffusion with the default position_std; the
@@ -98,27 +99,8 @@ def test_missing_tracking_cannot_hide_a_dropped_population(
     dropped_args = tuple([] for _ in args)
     edges = np.arange(21) * 0.002
     snapshot = _snapshot(detector)
-    if path == "likelihood":
-        call = functools.partial(
-            detector.compute_log_likelihood,
-            time,
-            position,
-            *dropped_args,
-            time_edges=edges,
-        )
-    else:
-        method = (
-            detector.predict if path == "predict" else detector.most_likely_sequence
-        )
-        call = functools.partial(
-            method,
-            *dropped_args,
-            time_edges=edges,
-            position_time=time,
-            position=position,
-        )
     with pytest.raises(ValidationError, match="population lengths"):
-        call()
+        call_entry_point(detector, path, time, position, dropped_args, edges)
     _assert_unchanged(detector, snapshot)
 
 
@@ -186,27 +168,8 @@ def test_missing_tracking_cannot_hide_changed_waveform_features(
     changed_args = (args[0], [np.repeat(args[1][0], 2, axis=1)])
     edges = np.arange(21) * 0.002
     snapshot = _snapshot(detector)
-    if path == "likelihood":
-        call = functools.partial(
-            detector.compute_log_likelihood,
-            time,
-            position,
-            *changed_args,
-            time_edges=edges,
-        )
-    else:
-        method = (
-            detector.predict if path == "predict" else detector.most_likely_sequence
-        )
-        call = functools.partial(
-            method,
-            *changed_args,
-            time_edges=edges,
-            position_time=time,
-            position=position,
-        )
     with pytest.raises(ValidationError, match="Waveform-feature dimensionality"):
-        call()
+        call_entry_point(detector, path, time, position, changed_args, edges)
     _assert_unchanged(detector, snapshot)
 
 

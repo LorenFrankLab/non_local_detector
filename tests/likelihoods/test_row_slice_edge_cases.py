@@ -50,6 +50,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 from non_local_detector.likelihoods.sorted_spikes_glm import make_spline_predict_matrix
+from tests.conftest import tiny_fixture_warnings
 from tests.likelihoods._sorted_spikes_helpers import (
     binned_spike_counts_reference,
     poisson_log_likelihood_reference,
@@ -63,16 +64,7 @@ from tests.likelihoods.conftest import (
     training_mark_references,
 )
 
-pytestmark = [
-    # The shared all-backend fixtures fit tiny synthetic data: a small
-    # position_std and zero-rate electrodes are fixture properties, not under test.
-    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
-    pytest.mark.filterwarnings(
-        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
-    ),
-]
+pytestmark = tiny_fixture_warnings
 
 # A relative tolerance is only a meaningful guard if the values it is applied to
 # have a sane magnitude. Losing or misplacing one decoding spike changes an

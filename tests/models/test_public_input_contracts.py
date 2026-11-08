@@ -14,7 +14,6 @@ from non_local_detector import (
     ClusterlessDecoder,
     Environment,
     NonLocalSortedSpikesDetector,
-    SortedSpikesDecoder,
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models.base import (
@@ -22,26 +21,15 @@ from non_local_detector.models.base import (
     _validate_inference_arguments,
 )
 from tests.conftest import em_stops_at_max_iter
-from tests.models._helpers import _assert_unchanged, _snapshot
+from tests.models._helpers import (
+    TOY_N_TIME,
+    _assert_unchanged,
+    _snapshot,
+    toy_recording,
+    toy_sorted_decoder,
+)
 
-N_TIME = 100
 EDGES = np.arange(41) * 0.002
-
-
-def _recording():
-    time = np.arange(N_TIME) * 0.002
-    position = (50 + 8 * np.sin(time * 40))[:, None]
-    spike_times = [np.array([0.021, 0.067, 0.121, 0.167])]
-    return time, position, spike_times
-
-
-def _decoder():
-    return SortedSpikesDecoder(
-        environments=Environment(place_bin_size=5, position_range=((40, 60),)),
-        infer_track_interior=False,
-        sorted_spikes_algorithm="sorted_spikes_kde",
-        sorted_spikes_algorithm_params={"disable_progress_bar": True},
-    )
 
 
 def _local_detector():
@@ -56,7 +44,7 @@ def _local_detector():
 
 @pytest.fixture(scope="module")
 def fitted_local():
-    time, position, spike_times = _recording()
+    time, position, spike_times = toy_recording()
     return _local_detector().fit(time, position, spike_times), time, position
 
 
@@ -66,17 +54,17 @@ def fitted_local():
     "is_training",
     [
         np.array([True]),  # would broadcast to every sample
-        np.ones((N_TIME, 1), dtype=bool),  # not one entry per sample
-        np.ones(N_TIME - 1, dtype=bool),
-        np.full(N_TIME, 2),  # 2 & True is False
-        np.arange(N_TIME) % 3,  # some 0/1, some 2
-        np.ones(N_TIME),  # floats are not a mask
+        np.ones((TOY_N_TIME, 1), dtype=bool),  # not one entry per sample
+        np.ones(TOY_N_TIME - 1, dtype=bool),
+        np.full(TOY_N_TIME, 2),  # 2 & True is False
+        np.arange(TOY_N_TIME) % 3,  # some 0/1, some 2
+        np.ones(TOY_N_TIME),  # floats are not a mask
     ],
     ids=["length_one", "column", "short", "integer_two", "integer_mixed", "float"],
 )
 def test_malformed_is_training_is_rejected(method, is_training):
-    time, position, spike_times = _recording()
-    detector = _decoder()
+    time, position, spike_times = toy_recording()
+    detector = toy_sorted_decoder()
     if method == "fit_encoding_model":
         detector.fit(time, position, spike_times)
     with pytest.raises(ValidationError, match="is_training"):
@@ -85,20 +73,23 @@ def test_malformed_is_training_is_rejected(method, is_training):
 
 @pytest.mark.unit
 def test_column_is_training_hint_suggests_ravel():
-    time, position, spike_times = _recording()
+    time, position, spike_times = toy_recording()
     with pytest.raises(ValidationError, match=r"ravel"):
-        _decoder().fit(
-            time, position, spike_times, is_training=np.ones((N_TIME, 1), dtype=bool)
+        toy_sorted_decoder().fit(
+            time,
+            position,
+            spike_times,
+            is_training=np.ones((TOY_N_TIME, 1), dtype=bool),
         )
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dtype", [np.int64, np.uint8])
 def test_zero_one_integer_is_training_matches_boolean(dtype):
-    time, position, spike_times = _recording()
-    mask = np.arange(N_TIME) < N_TIME // 2
-    from_bool = _decoder().fit(time, position, spike_times, is_training=mask)
-    from_int = _decoder().fit(
+    time, position, spike_times = toy_recording()
+    mask = np.arange(TOY_N_TIME) < TOY_N_TIME // 2
+    from_bool = toy_sorted_decoder().fit(time, position, spike_times, is_training=mask)
+    from_int = toy_sorted_decoder().fit(
         time, position, spike_times, is_training=mask.astype(dtype)
     )
     (bool_model,) = from_bool.encoding_model_.values()
@@ -108,10 +99,12 @@ def test_zero_one_integer_is_training_matches_boolean(dtype):
 
 @pytest.mark.unit
 def test_list_is_training_matches_array():
-    time, position, spike_times = _recording()
-    mask = np.arange(N_TIME) < N_TIME // 2
-    from_array = _decoder().fit(time, position, spike_times, is_training=mask)
-    from_list = _decoder().fit(time, position, spike_times, is_training=mask.tolist())
+    time, position, spike_times = toy_recording()
+    mask = np.arange(TOY_N_TIME) < TOY_N_TIME // 2
+    from_array = toy_sorted_decoder().fit(time, position, spike_times, is_training=mask)
+    from_list = toy_sorted_decoder().fit(
+        time, position, spike_times, is_training=mask.tolist()
+    )
     (array_model,) = from_array.encoding_model_.values()
     (list_model,) = from_list.encoding_model_.values()
     np.testing.assert_array_equal(
@@ -123,17 +116,21 @@ def test_list_is_training_matches_array():
 @pytest.mark.parametrize(
     ("name", "labels", "match"),
     [
-        ("environment_labels", np.array([""] * (N_TIME - 1)), "environment_labels"),
-        ("environment_labels", np.zeros(N_TIME), "environment_labels"),
-        ("encoding_group_labels", np.zeros(N_TIME - 1, dtype=int), "encoding_group"),
-        ("encoding_group_labels", np.zeros(N_TIME), "encoding_group"),
-        ("encoding_group_labels", np.zeros(N_TIME, dtype=bool), "encoding_group"),
+        ("environment_labels", np.array([""] * (TOY_N_TIME - 1)), "environment_labels"),
+        ("environment_labels", np.zeros(TOY_N_TIME), "environment_labels"),
+        (
+            "encoding_group_labels",
+            np.zeros(TOY_N_TIME - 1, dtype=int),
+            "encoding_group",
+        ),
+        ("encoding_group_labels", np.zeros(TOY_N_TIME), "encoding_group"),
+        ("encoding_group_labels", np.zeros(TOY_N_TIME, dtype=bool), "encoding_group"),
     ],
     ids=["env_short", "env_numeric", "group_short", "group_float", "group_bool"],
 )
 def test_malformed_labels_are_rejected_before_fitting(name, labels, match):
-    time, position, spike_times = _recording()
-    detector = _decoder().fit(time, position, spike_times)
+    time, position, spike_times = toy_recording()
+    detector = toy_sorted_decoder().fit(time, position, spike_times)
     snapshot = _snapshot(detector)
     with pytest.raises(ValidationError, match=match):
         detector.fit(time, position, spike_times, **{name: labels})
@@ -142,12 +139,14 @@ def test_malformed_labels_are_rejected_before_fitting(name, labels, match):
 
 @pytest.mark.unit
 def test_list_environment_labels_match_array():
-    time, position, spike_times = _recording()
-    labels = [""] * N_TIME
-    from_array = _decoder().fit(
+    time, position, spike_times = toy_recording()
+    labels = [""] * TOY_N_TIME
+    from_array = toy_sorted_decoder().fit(
         time, position, spike_times, environment_labels=np.asarray(labels)
     )
-    from_list = _decoder().fit(time, position, spike_times, environment_labels=labels)
+    from_list = toy_sorted_decoder().fit(
+        time, position, spike_times, environment_labels=labels
+    )
     (array_model,) = from_array.encoding_model_.values()
     (list_model,) = from_list.encoding_model_.values()
     np.testing.assert_array_equal(
@@ -157,16 +156,16 @@ def test_list_environment_labels_match_array():
 
 @pytest.mark.unit
 def test_fit_rejects_position_without_one_row_per_sample():
-    time, position, spike_times = _recording()
+    time, position, spike_times = toy_recording()
     with pytest.raises(ValidationError, match="one row per position_time sample"):
-        _decoder().fit(time, position[:-1], spike_times)
+        toy_sorted_decoder().fit(time, position[:-1], spike_times)
 
 
 @pytest.mark.unit
 def test_fit_accepts_list_position():
-    time, position, spike_times = _recording()
-    from_array = _decoder().fit(time, position, spike_times)
-    from_list = _decoder().fit(time.tolist(), position.tolist(), spike_times)
+    time, position, spike_times = toy_recording()
+    from_array = toy_sorted_decoder().fit(time, position, spike_times)
+    from_list = toy_sorted_decoder().fit(time.tolist(), position.tolist(), spike_times)
     (array_model,) = from_array.encoding_model_.values()
     (list_model,) = from_list.encoding_model_.values()
     np.testing.assert_array_equal(
@@ -178,7 +177,7 @@ def test_fit_accepts_list_position():
 @pytest.mark.parametrize("method", ["predict", "most_likely_sequence"])
 def test_decode_accepts_list_position(fitted_local, method):
     detector, time, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     decode = getattr(detector, method)
     expected = decode(
         spike_times, time_edges=EDGES, position=position, position_time=time
@@ -201,7 +200,7 @@ def test_decode_accepts_list_position(fitted_local, method):
 @pytest.mark.parametrize("method", ["predict", "most_likely_sequence"])
 def test_decode_requires_position_time_with_position(fitted_local, method):
     detector, _, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     with pytest.raises(ValidationError, match="position_time is required"):
         getattr(detector, method)(spike_times, time_edges=EDGES, position=position)
 
@@ -210,7 +209,7 @@ def test_decode_requires_position_time_with_position(fitted_local, method):
 @pytest.mark.parametrize("method", ["predict", "most_likely_sequence"])
 def test_decode_rejects_position_without_one_row_per_sample(fitted_local, method):
     detector, time, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     with pytest.raises(ValidationError, match="one row per position_time sample"):
         getattr(detector, method)(
             spike_times, time_edges=EDGES, position=position[:-1], position_time=time
@@ -277,7 +276,7 @@ def test_inference_argument_conflicts_raise_validation_error(arguments, message)
 @pytest.mark.unit
 def test_direct_log_likelihood_accepts_list_position(fitted_local):
     detector, time, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     expected = detector.compute_log_likelihood(
         time, position, spike_times, time_edges=EDGES
     )
@@ -290,13 +289,13 @@ def test_direct_log_likelihood_accepts_list_position(fitted_local):
 @pytest.mark.unit
 def test_direct_log_likelihood_rejects_position_without_position_time(fitted_local):
     detector, _, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     with pytest.raises(ValidationError, match="position_time is required"):
         detector.compute_log_likelihood(None, position, spike_times, time_edges=EDGES)
 
 
 def _clusterless_recording():
-    time, position, spike_times = _recording()
+    time, position, spike_times = toy_recording()
     features = [np.array([[0.1], [-0.1], [0.2], [-0.2]])]
     return time, position, spike_times, features
 
@@ -316,9 +315,13 @@ def _clusterless_decoder():
     ("name", "value", "match"),
     [
         ("is_training", np.array([True]), "is_training"),
-        ("is_training", np.full(N_TIME, 2), "is_training"),
-        ("environment_labels", np.zeros(N_TIME), "environment_labels"),
-        ("encoding_group_labels", np.zeros(N_TIME - 1, dtype=int), "encoding_group"),
+        ("is_training", np.full(TOY_N_TIME, 2), "is_training"),
+        ("environment_labels", np.zeros(TOY_N_TIME), "environment_labels"),
+        (
+            "encoding_group_labels",
+            np.zeros(TOY_N_TIME - 1, dtype=int),
+            "encoding_group",
+        ),
     ],
     ids=["mask_length_one", "mask_integer_two", "env_numeric", "group_short"],
 )
@@ -337,7 +340,7 @@ def test_clusterless_fit_rejects_malformed_inputs(method, name, value, match):
 @pytest.mark.unit
 def test_clusterless_fit_accepts_list_inputs():
     time, position, spike_times, features = _clusterless_recording()
-    mask = np.arange(N_TIME) < N_TIME // 2
+    mask = np.arange(TOY_N_TIME) < TOY_N_TIME // 2
     from_array = _clusterless_decoder().fit(
         time, position, spike_times, features, is_training=mask
     )
@@ -347,7 +350,7 @@ def test_clusterless_fit_accepts_list_inputs():
         spike_times,
         features,
         is_training=mask.astype(int).tolist(),
-        environment_labels=[""] * N_TIME,
+        environment_labels=[""] * TOY_N_TIME,
     )
     edges = EDGES
     np.testing.assert_array_equal(
@@ -358,8 +361,8 @@ def test_clusterless_fit_accepts_list_inputs():
 
 @pytest.mark.unit
 def test_estimate_parameters_rejects_malformed_inputs_before_fitting(monkeypatch):
-    time, position, spike_times = _recording()
-    detector = _decoder().fit(time, position, spike_times)
+    time, position, spike_times = toy_recording()
+    detector = toy_sorted_decoder().fit(time, position, spike_times)
     snapshot = _snapshot(detector)
 
     def unexpected_fit(*args, **kwargs):
@@ -384,14 +387,16 @@ def test_estimate_parameters_rejects_malformed_inputs_before_fitting(monkeypatch
 # max_iter=1 is a speed cap, so EM stops before convergence.
 @em_stops_at_max_iter
 def test_estimate_parameters_accepts_list_inputs():
-    time, position, spike_times = _recording()
+    time, position, spike_times = toy_recording()
     options = {
         "time_edges": EDGES,
         "max_iter": 1,
         "estimate_discrete_transition": False,
     }
-    expected = _decoder().estimate_parameters(time, position, spike_times, **options)
-    actual = _decoder().estimate_parameters(
+    expected = toy_sorted_decoder().estimate_parameters(
+        time, position, spike_times, **options
+    )
+    actual = toy_sorted_decoder().estimate_parameters(
         time.tolist(), position.tolist(), spike_times, **options
     )
     np.testing.assert_array_equal(actual.acausal_posterior, expected.acausal_posterior)
@@ -425,7 +430,7 @@ def test_malformed_is_missing_is_rejected(fitted_local, method, is_missing):
     """``is_missing`` is checked like ``is_training``: a bool cast read 0.5,
     2 and NaN as True."""
     detector, time, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     arguments = {"time_edges": EDGES, "is_missing": is_missing}
     if method == "estimate_parameters":
         detector = detector.copy()
@@ -445,7 +450,7 @@ def test_malformed_is_missing_is_rejected(fitted_local, method, is_missing):
 @pytest.mark.parametrize("method", ["predict", "compute_log_likelihood"])
 def test_zero_one_integer_is_missing_matches_boolean(fitted_local, method):
     detector, time, position = fitted_local
-    _, _, spike_times = _recording()
+    _, _, spike_times = toy_recording()
     mask = np.arange(N_BINS) % 4 == 0
     if method == "predict":
 
