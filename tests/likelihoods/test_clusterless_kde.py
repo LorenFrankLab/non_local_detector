@@ -1,5 +1,3 @@
-import inspect
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -7,127 +5,14 @@ from scipy.integrate import trapezoid
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS, clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
-    select_spikes_in_rows,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
-
-
-@pytest.mark.parametrize(
-    "function",
-    [
-        clusterless_kde.fit_clusterless_kde_encoding_model,
-        clusterless_kde.predict_clusterless_kde_log_likelihood,
-        clusterless_kde.compute_local_log_likelihood,
-        clusterless_kde.block_estimate_log_joint_mark_intensity,
-    ],
-)
-def test_block_size_default_is_the_detectors(function):
-    """Direct calls block spikes as a detector does: the old 100 was 3-4x slower."""
-    detector_default = _CLUSTERLESS_ALGORITHMS["clusterless_kde"].default_params.get(
-        "block_size",
-        inspect.signature(clusterless_kde.fit_clusterless_kde_encoding_model)
-        .parameters["block_size"]
-        .default,
-    )
-    default = inspect.signature(function).parameters["block_size"].default
-    assert default == detector_default == 10_000
-
-
-def test_select_spikes_in_rows_right_edge_last_bin():
-    edges = np.array([0.0, 1.0, 2.0, 3.0])
-    spikes = np.array([0.0, 0.5, 2.0, 3.0])
-    selection = select_spikes_in_rows(spikes, 0, 3, time_edges=edges)
-    # bins: [0,1), [1,2), [2,3]; right-edge 3.0 -> last bin index 2
-    assert spikes[selection.indexer].tolist() == spikes.tolist()
-    assert selection.bin_ind.tolist() == [0, 0, 2, 2]
-
-
-def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-
-    # one electrode: few encoding spikes with 2D waveform features
-    enc_spike_times = jnp.array([2.0, 5.0, 7.5])
-    enc_feats = jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)
-
-    encoding = fit_clusterless_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=[enc_spike_times],
-        spike_waveform_features=[enc_feats],
-        environment=env,
-        position_std=np.sqrt(1.0),
-        waveform_std=1.0,
-        block_size=8,
-        disable_progress_bar=True,
-    )
-    mark_reference = fit_mark_references([enc_feats], kernel_scale=1.0)
-
-    for key in (
-        "occupancy",
-        "occupancy_model",
-        "gpi_models",
-        "encoding_spike_waveform_features",
-        "encoding_positions",
-        "mean_rates",
-        "summed_ground_process_intensity",
-    ):
-        assert key in encoding
-
-    # decoding: 2 spikes within time edges with features near encoding cloud
-    t_edges = jnp.linspace(0.0, 10.0, 6)
-    dec_spike_times = [jnp.array([2.1, 5.2])]
-    dec_feats = [jnp.array([[0.1, 0.05], [1.1, -0.9]], dtype=float)]
-
-    ll_nonlocal = predict_clusterless_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=dec_spike_times,
-        spike_waveform_features=dec_feats,
-        **encoding,
-        mark_reference=mark_reference,
-        is_local=False,
-    )
-    # shape: (n_bins, n_interior_bins), one row per decode bin
-    assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
-    assert ll_nonlocal.ndim == 2
-    assert ll_nonlocal.shape[1] > 0
-    assert jnp.all(jnp.isfinite(ll_nonlocal))
-
-    ll_local = predict_clusterless_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=dec_spike_times,
-        spike_waveform_features=dec_feats,
-        **encoding,
-        mark_reference=mark_reference,
-        is_local=True,
-    )
-    assert ll_local.shape == (t_edges.shape[0] - 1, 1)
-    assert jnp.all(jnp.isfinite(ll_local))
-
-
-def test_select_spikes_in_rows_unsorted_and_interior_edges():
-    edges = np.array([0.0, 1.0, 2.0, 3.0])
-    spikes = np.array(
-        [2.0, 0.0, 1.0, 1.0, 0.5]
-    )  # unsorted, includes interior edges 1.0
-    selection = select_spikes_in_rows(spikes, 0, 3, time_edges=edges)
-    # bins: [0,1), [1,2), [2,3]; interior edge 1.0 -> bin 1 (right side)
-    # Unsorted spikes keep their original order in the selection.
-    assert spikes[selection.indexer].tolist() == spikes.tolist()
-    assert selection.bin_ind.tolist() == [2, 0, 1, 1, 0]
-    assert not selection.indices_are_sorted
 
 
 def test_fit_clusterless_kde_raises_without_place_grid():

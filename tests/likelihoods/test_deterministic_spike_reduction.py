@@ -399,39 +399,37 @@ def clusterless_log_likelihood(algorithm):
     return evaluate
 
 
+CLUSTERLESS_ALGORITHMS = [
+    "clusterless_kde",
+    "clusterless_gmm",
+    "clusterless_diffusion",
+    "clusterless_mark_glm",
+]
+
+
+@pytest.fixture(scope="module")
+def sequential_clusterless_log_likelihoods():
+    """Each algorithm's evaluation, fit once, with its result on the sequential path.
+
+    Built before any test of the module patches the reduction path, as a
+    module fixture is set up before a test's ``reduction_path``.
+    """
+    evaluations = {}
+    for algorithm in CLUSTERLESS_ALGORITHMS:
+        evaluate = clusterless_log_likelihood(algorithm)
+        evaluations[algorithm] = (evaluate, evaluate())
+    return evaluations
+
+
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "algorithm",
-    [
-        "clusterless_kde",
-        "clusterless_gmm",
-        "clusterless_diffusion",
-        "clusterless_mark_glm",
-    ],
-)
-def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
-    evaluate = clusterless_log_likelihood(algorithm)
-    results = {}
-    try:
-        for path in ("sequential", "segmented_scan"):
-            if path == "segmented_scan":
-                monkeypatch.setattr(
-                    reductions, "_reduces_sequentially", lambda values: False
-                )
-                jax.clear_caches()
-            repeats = [evaluate() for _ in range(10)]
-            for repeat in repeats[1:]:
-                np.testing.assert_array_equal(
-                    repeat.view(np.uint8), repeats[0].view(np.uint8)
-                )
-            results[path] = repeats[0]
-    finally:
-        # The path is chosen at trace time: keep the patched reductions out of
-        # later tests' compiled kernels even when an assertion fails.
-        jax.clear_caches()
-    np.testing.assert_allclose(
-        results["segmented_scan"], results["sequential"], **FLOAT32_ROUNDING
-    )
+@pytest.mark.parametrize("algorithm", CLUSTERLESS_ALGORITHMS)
+def test_clusterless_likelihoods_are_bitwise_repeatable(
+    algorithm, sequential_clusterless_log_likelihoods, reduction_path
+):
+    evaluate, sequential = sequential_clusterless_log_likelihoods[algorithm]
+    first, second = evaluate(), evaluate()
+    np.testing.assert_array_equal(second.view(np.uint8), first.view(np.uint8))
+    np.testing.assert_allclose(first, sequential, **FLOAT32_ROUNDING)
 
 
 @pytest.mark.parametrize("id_dtype", [np.uint8, np.uint32, np.int8, np.int16])

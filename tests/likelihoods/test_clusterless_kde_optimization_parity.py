@@ -1,21 +1,20 @@
 """Clusterless KDE joint mark intensity agrees across its computation paths.
 
-Decode-spike blocking (including a padded final block), the reference linear
-path, the GEMM path, encoding chunking and streaming give the same intensity,
-also with non-uniform encoding weights; fitting rejects non-positive bandwidths.
+Decode-spike blocking (including a padded final block), the GEMM path,
+encoding chunking and streaming give the same intensity, also with non-uniform
+encoding weights.
 """
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
-    fit_clusterless_kde_encoding_model,
     log_kde_distance,
 )
+from tests.likelihoods._kde_reference import reference_log_joint_mark_intensity
 from tests.likelihoods.conftest import realistic_log_background
 
 
@@ -93,52 +92,15 @@ def test_multi_block_matches_single_block():
     assert jnp.allclose(single, multi, rtol=1e-4, atol=1e-4)
 
 
-def _fit_kwargs(env, **overrides):
-    kwargs = {
-        "position_time": np.linspace(0.0, 10.0, 101),
-        "position": np.linspace(0.0, 10.0, 101)[:, None],
-        "spike_times": [np.array([2.0, 5.0, 7.5])],
-        "spike_waveform_features": [
-            np.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)
-        ],
-        "environment": env,
-        "position_std": np.sqrt(1.0),
-        "waveform_std": 1.0,
-        "block_size": 8,
-        "disable_progress_bar": True,
-    }
-    kwargs.update(overrides)
-    return kwargs
-
-
-@pytest.mark.parametrize("bad_std", [0.0, -1.0])
-def test_fit_rejects_nonpositive_position_std(simple_1d_environment, bad_std):
-    """A zero/negative bandwidth is a config error and must raise at fit time
-    (loudly), not be silently clamped to a near-delta kernel inside the kernel."""
-    with pytest.raises(ValidationError, match="position_std"):
-        fit_clusterless_kde_encoding_model(
-            **_fit_kwargs(simple_1d_environment, position_std=bad_std)
-        )
-
-
-@pytest.mark.parametrize("bad_std", [0.0, -1.0])
-def test_fit_rejects_nonpositive_waveform_std(simple_1d_environment, bad_std):
-    with pytest.raises(ValidationError, match="waveform_std"):
-        fit_clusterless_kde_encoding_model(
-            **_fit_kwargs(simple_1d_environment, waveform_std=bad_std)
-        )
-
-
 @pytest.mark.parametrize("n_features", [4, 10])
 def test_encoding_weights_consistent_across_paths(n_features):
     """Non-uniform ``encoding_weights`` must give the same joint mark intensity
     on every numerical path.
 
-    ``n_features=4`` exercises the compensated-linear matmul paths, ``n_features=10``
-    (> the compensated-linear feature cap) the logsumexp paths. For each, the
-    reference linear path (``use_gemm=False``), the non-chunked GEMM path, the
-    encoding-chunked path, and the streaming-chunked path must all match. The
-    weight vector includes a zero, which drops that spike out of the reduction --
+    At 4 and 10 mark features, the non-chunked GEMM path, the encoding-chunked
+    path, and the streaming-chunked path must all match a float64 logsumexp
+    reference. The weight vector includes a zero, which drops that spike out of
+    the reduction --
     a case that would produce NaN if the weight were folded into the mark kernel's
     row-max stabilization rather than added as a separate log term.
     """
@@ -161,29 +123,21 @@ def test_encoding_weights_consistent_across_paths(n_features):
     # Non-uniform weights with a zero (spike index 3 drops out entirely).
     w = jnp.asarray(rng.random(n_enc) * 2.0 + 0.5).at[3].set(0.0)
 
-    reference = estimate_log_joint_mark_intensity(
+    ref = reference_log_joint_mark_intensity(
         dec,
         enc,
         wf_std,
         occ,
         mean_rate,
         log_pos,
-        use_gemm=False,
         encoding_weights=w,
         log_background=log_background,
     )
-    unweighted = estimate_log_joint_mark_intensity(
-        dec,
-        enc,
-        wf_std,
-        occ,
-        mean_rate,
-        log_pos,
-        use_gemm=False,
-        log_background=log_background,
+    unweighted = reference_log_joint_mark_intensity(
+        dec, enc, wf_std, occ, mean_rate, log_pos, log_background=log_background
     )
     # The weights must actually change the result (else they are ignored).
-    assert not np.allclose(np.asarray(reference), np.asarray(unweighted))
+    assert not np.allclose(ref, unweighted, rtol=1e-4, atol=1e-4)
 
     non_chunked = estimate_log_joint_mark_intensity(
         dec,
@@ -192,7 +146,6 @@ def test_encoding_weights_consistent_across_paths(n_features):
         occ,
         mean_rate,
         log_pos,
-        use_gemm=True,
         encoding_weights=w,
         log_background=log_background,
     )
@@ -203,7 +156,6 @@ def test_encoding_weights_consistent_across_paths(n_features):
         occ,
         mean_rate,
         log_pos,
-        use_gemm=True,
         enc_tile_size=8,
         encoding_weights=w,
         log_background=log_background,
@@ -215,7 +167,6 @@ def test_encoding_weights_consistent_across_paths(n_features):
         occ,
         mean_rate,
         None,
-        use_gemm=True,
         enc_tile_size=8,
         use_streaming=True,
         encoding_positions=enc_pos,
@@ -225,7 +176,6 @@ def test_encoding_weights_consistent_across_paths(n_features):
         log_background=log_background,
     )
 
-    ref = np.asarray(reference)
     for name, out in [
         ("non_chunked", non_chunked),
         ("chunked", chunked),

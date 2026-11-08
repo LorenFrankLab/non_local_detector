@@ -55,58 +55,87 @@ EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
 FLOAT32_ROUNDING: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
 
 
-class _SegmentedScanKernels:
-    """Whether the JAX caches may hold kernels traced on the segmented scan.
+class _PatchedKernels:
+    """The patch, if any, that the JAX caches may hold kernels traced under.
 
-    The reduction path is chosen at trace time, so a kernel traced on one path
-    must never run on the other.
+    A patch that changes a trace-time decision reaches only kernels traced
+    after it, and a kernel traced under it must never run once it is undone.
     """
 
-    cached = False
+    key: object = None
 
 
-def _on_segmented_scan(item: pytest.Item) -> bool:
+_SEGMENTED_SCAN = "segmented_scan"
+
+
+def _retrace_under(key: object) -> None:
+    """Clear the JAX caches unless they hold only kernels traced under ``key``."""
+    if _PatchedKernels.key != key:
+        jax.clear_caches()
+        _PatchedKernels.key = key
+
+
+def _shared_patch(item: pytest.Item) -> object:
+    """The patch that consecutive tests may share: the segmented scan, or none."""
     callspec = getattr(item, "callspec", None)
-    return callspec is not None and (
-        callspec.params.get("reduction_path") == "segmented_scan"
-    )
+    if (
+        callspec is not None
+        and callspec.params.get("reduction_path") == _SEGMENTED_SCAN
+    ):
+        return _SEGMENTED_SCAN
+    return None
 
 
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
-    """Drop the segmented-scan kernels unless the next test reuses them as is.
+    """Drop the patched kernels unless the next test reuses them as is.
 
     Kept only when the next test is also on the segmented scan, in the same
     module or class, and requests no fixture this test did not: then nothing
     runs unpatched in between (no shared fixture is built) to trace kernels on
     the sequential path or to run the segmented ones. Every other test, here or
-    in any later module, starts without them.
+    in any later module, starts without them. Kernels traced under a
+    ``patch_and_retrace`` patch are always dropped.
     """
-    if not _SegmentedScanKernels.cached:
+    if _PatchedKernels.key is None:
         return
     if (
         nextitem is not None
-        and _on_segmented_scan(nextitem)
+        and _shared_patch(nextitem) == _PatchedKernels.key
         and nextitem.parent is item.parent
         and set(nextitem.fixturenames) <= set(item.fixturenames)
     ):
         return
     jax.clear_caches()
-    _SegmentedScanKernels.cached = False
+    _PatchedKernels.key = None
 
 
-@pytest.fixture(params=["sequential", "segmented_scan"])
+@pytest.fixture
+def patch_and_retrace(monkeypatch):
+    """Patch a trace-time decision of the compiled kernels, then retrace them.
+
+    Returns ``patch(target, name, value)``: ``monkeypatch.setattr`` followed by
+    clearing the JAX caches, so no kernel traced before it bypasses the patch.
+    The caches are cleared again after the test, so no kernel traced under the
+    patch outlives it.
+    """
+
+    def patch(target: object, name: str, value: object) -> None:
+        monkeypatch.setattr(target, name, value)
+        _retrace_under(object())
+
+    return patch
+
+
+@pytest.fixture(params=["sequential", _SEGMENTED_SCAN])
 def reduction_path(request, monkeypatch):
     """Run on CPU's sequential scatter and on the off-CPU segmented scan.
 
     Consecutive segmented-scan cases share their compiled kernels (see
     ``pytest_runtest_teardown``) instead of each clearing every JAX cache.
     """
-    if request.param == "segmented_scan":
+    if request.param == _SEGMENTED_SCAN:
         monkeypatch.setattr(reductions, "_reduces_sequentially", lambda values: False)
-        if not _SegmentedScanKernels.cached:
-            # Kernels traced on the sequential path would bypass the patch.
-            jax.clear_caches()
-            _SegmentedScanKernels.cached = True
+        _retrace_under(_SEGMENTED_SCAN)
     return request.param
 
 
@@ -180,9 +209,14 @@ def env_2d():
 
 
 def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]:
-    """Likelihood parity: fixed-rate sorted paths are exact; others may round."""
+    """Likelihood parity: fixed-rate sorted paths are exact; others may round.
+
+    Local GLM and KDE rates are evaluated at each row's position, compiled for
+    the chunk's row count, so XLA may round them differently per chunk shape
+    (4 float32 ulps measured for the local KDE on JAX 0.12).
+    """
     if algorithm in _SORTED_SPIKES_ALGORITHMS and not (
-        algorithm == "sorted_spikes_glm" and is_local
+        algorithm in ("sorted_spikes_glm", "sorted_spikes_kde") and is_local
     ):
         return EXACT
     return FLOAT32_ROUNDING

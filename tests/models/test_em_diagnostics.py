@@ -25,11 +25,12 @@ from non_local_detector.models.base import (
     SortedSpikesDetector,
     _ModelUnpickler,
 )
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import SORTED_SIM_RATE, _assert_unchanged, _snapshot
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning"),
+    em_stops_at_max_iter,
 ]
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"

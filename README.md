@@ -64,7 +64,7 @@ For development and contributing (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 git clone https://github.com/LorenFrankLab/non_local_detector.git
 cd non_local_detector
 uv sync
-uv run pytest tests/test_version_import.py
+uv run pytest tests/test_public_api.py
 ```
 
 A conda environment is also available (`environment.yml`, or `environment_gpu.yml` for GPU).

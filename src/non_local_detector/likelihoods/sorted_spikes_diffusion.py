@@ -366,11 +366,11 @@ def pixellate_interior_fields(
 
 def assemble_place_fields(
     rate_interior: np.ndarray, node_order: np.ndarray, n_total_bins: int
-) -> tuple[jax.Array, jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array]:
     """Scatter per-neuron interior rates onto FULL-GRID place fields (0 off-track).
 
-    Shared by the diffusion and MRF fits so the EPS floor, node-order scatter, no-spike
-    term, and interior log-fields are computed once.
+    Shared by the diffusion and MRF fits so the EPS floor, node-order scatter and
+    no-spike term are computed once.
 
     Parameters
     ----------
@@ -387,10 +387,6 @@ def assemble_place_fields(
         Floored at ``RATE_EPS_HZ`` on interior bins, exactly 0 off-track.
     no_spike_part_log_likelihood : jax.Array, shape (n_total_bins,)
         Sum of Hz rates across neurons; multiply by duration before scoring.
-    interior_log_place_fields : jax.Array, shape (n_neurons, n_interior)
-        ``log`` of the interior place fields, in ``node_order`` (== interior-flat-bin)
-        order. Stored in the encoding model; prediction takes the log of
-        ``place_fields`` itself and checks only this array's length.
     """
     clipped_interior = np.clip(
         rate_interior.T, RATE_EPS_HZ, None
@@ -400,11 +396,7 @@ def assemble_place_fields(
     )
     place_fields[:, node_order] = clipped_interior
     place_fields = jnp.asarray(place_fields)
-    # clipped_interior IS place_fields[:, node_order] (node_order == np.where(interior)[0],
-    # the columns the non-local predict slices), so log it directly instead of scattering
-    # to the full grid and gathering the same columns back out.
-    interior_log_place_fields = jnp.log(jnp.asarray(clipped_interior))
-    return place_fields, jnp.sum(place_fields, axis=0), interior_log_place_fields
+    return place_fields, jnp.sum(place_fields, axis=0)
 
 
 class SortedSpikesDiffusionEncodingModel(SortedSpikesEncodingModel):
@@ -417,7 +409,6 @@ class SortedSpikesDiffusionEncodingModel(SortedSpikesEncodingModel):
     occupancy: np.ndarray
     mean_rates: np.ndarray
     no_spike_part_log_likelihood: jax.Array
-    interior_log_place_fields: jax.Array
     is_track_interior: np.ndarray
     node_order: np.ndarray
     bin_sizes: np.ndarray
@@ -499,8 +490,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'mean_rates': mean firing rate per neuron
         - 'place_fields': FULL-GRID place fields, shape (n_neurons, n_total_bins)
         - 'no_spike_part_log_likelihood': summed place fields, shape (n_total_bins,)
-        - 'interior_log_place_fields': log of interior place fields, shape
-          (n_neurons, n_interior)
         - 'is_track_interior': interior-bin mask, shape (n_total_bins,)
         - 'node_order': interior flat-bin indices in graph order, shape (n_interior,)
         - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
@@ -595,8 +584,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
     rate_interior = np.asarray(mean_rates)[np.newaxis, :] * np.where(
         occupied[:, np.newaxis], marginals / safe_occupancy[:, np.newaxis], EPS
     )
-    place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
-        assemble_place_fields(rate_interior, node_order, n_total_bins)
+    place_fields, no_spike_part_log_likelihood = assemble_place_fields(
+        rate_interior, node_order, n_total_bins
     )
 
     return {
@@ -607,7 +596,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
         "mean_rates": np.asarray(mean_rates),
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "interior_log_place_fields": interior_log_place_fields,
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
@@ -635,7 +623,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
     is_local: bool = False,
-    interior_log_place_fields: jax.Array | None = None,
     row_slice: slice | None = None,
     time_edges: np.ndarray,
     algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
@@ -690,10 +677,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         Turn off the progress bar, by default False.
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.
-    interior_log_place_fields : jax.Array, shape (n_neurons, n_interior), optional
-        ``log`` of the interior place fields, supplied by the encoding dict (both
-        the diffusion and MRF fits produce it), by default None. Only its length is
-        checked: the non-local emission takes the log of ``place_fields`` itself.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges, so spikes are binned
@@ -740,7 +723,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         spike_times=spike_times,
         mean_rates=mean_rates,
         place_fields=place_fields,
-        interior_log_place_fields=interior_log_place_fields,
     )
     durations = jnp.asarray(rows.durations())
     if is_local:

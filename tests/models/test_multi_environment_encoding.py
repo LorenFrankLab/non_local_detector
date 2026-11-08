@@ -3,10 +3,11 @@
 A detector fit on a recording that spans two environments must give each
 environment the encoding model a detector fit on that environment's samples
 alone would give: same grid, occupancy, place fields or ground intensity, and
-mean rates. The environments differ in extent and the cells remap between
-them, so occupancy from the other environment, or a grid fit on its
-positions, changes the fit. (A spike from the other environment carries zero
-interpolated exposure weight, so it cannot leak in.)
+mean rates, also after an EM encoding refit. The environments differ in
+extent and the cells remap between them, so occupancy from the other
+environment, or a grid fit on its positions, changes the fit. (A spike from
+the other environment carries zero interpolated exposure weight, so it cannot
+leak in.) Decoding then attributes each environment's spikes to it.
 """
 
 import numpy as np
@@ -14,8 +15,10 @@ import pytest
 
 from non_local_detector import (
     ClusterlessDecoder,
+    Discrete,
     DiscreteStationaryDiagonal,
     Environment,
+    RandomWalk,
     SortedSpikesDecoder,
     Uniform,
     UniformInitialConditions,
@@ -27,6 +30,8 @@ from non_local_detector.analysis import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import time_edges_from_centers
+from tests.conftest import em_stops_at_max_iter
+from tests.models._helpers import record_refit_weights
 
 pytestmark = [
     pytest.mark.integration,
@@ -126,6 +131,13 @@ def _within(times, start, stop):
     return times[(times >= start) & (times <= stop)]
 
 
+def _spikes(data, cls):
+    """The recording's spike arguments for detector class ``cls``."""
+    if cls is ClusterlessDecoder:
+        return data["electrode_times"], data["electrode_marks"]
+    return (data["spike_times"],)
+
+
 @pytest.mark.parametrize(
     ("cls", "algorithm_key", "algorithm", "compared"),
     [
@@ -148,11 +160,7 @@ def test_each_environment_matches_a_fit_on_its_samples_alone(
 ):
     data = two_environment_recording
     clusterless = cls is ClusterlessDecoder
-    spikes = (
-        (data["electrode_times"], data["electrode_marks"])
-        if clusterless
-        else (data["spike_times"],)
-    )
+    spikes = _spikes(data, cls)
     both = _detector(cls, algorithm_key, algorithm, NAMES)
     both.fit(data["time"], data["position"], *spikes, environment_labels=data["labels"])
 
@@ -228,3 +236,147 @@ def test_position_is_read_one_environment_at_a_time(two_environment_recording):
             get_spatial_posterior(results.acausal_posterior, states=["A"])
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("cls", "algorithm_key", "algorithm"),
+    [
+        pytest.param(
+            SortedSpikesDecoder,
+            "sorted_spikes_algorithm",
+            "sorted_spikes_kde",
+            id="sorted",
+        ),
+        pytest.param(
+            ClusterlessDecoder,
+            "clusterless_algorithm",
+            "clusterless_kde",
+            id="clusterless",
+        ),
+    ],
+)
+def test_decoding_favors_the_environment_the_spikes_came_from(
+    cls, algorithm_key, algorithm, two_environment_recording
+):
+    """A 10 s window recorded in A is decoded as A, and one in B as B.
+
+    Within an environment the represented position follows a random walk and
+    the environment is sticky (0.999 per 10 ms bin), as when the animal stays
+    in one environment for minutes. The mean posterior of the true
+    environment over the window was at least 0.91 (B, sorted; A reached
+    0.998). Fit with the environment labels swapped, the same windows give
+    the true environment at most 0.085.
+    """
+    data = two_environment_recording
+    spikes = _spikes(data, cls)
+    detector = _detector(cls, algorithm_key, algorithm, NAMES)
+    detector.set_params(
+        sampling_frequency=SAMPLING_FREQUENCY,
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            diagonal_values=np.full(len(NAMES), 0.999)
+        ),
+        continuous_transition_types=[
+            [
+                RandomWalk(source)
+                if source == destination
+                else Uniform(source, destination)
+                for destination in NAMES
+            ]
+            for source in NAMES
+        ],
+    )
+    detector.fit(
+        data["time"], data["position"], *spikes, environment_labels=data["labels"]
+    )
+
+    for name, start in (("A", 20.0), ("B", 80.0)):
+        edges = start + np.arange(1001) / SAMPLING_FREQUENCY
+        results = detector.predict(*spikes, time_edges=edges)
+        probability = results.acausal_state_probabilities.sel(states=name)
+        assert float(probability.mean()) > 0.8, name
+
+
+@em_stops_at_max_iter
+def test_em_encoding_refit_keeps_each_environment_on_its_own_samples(
+    two_environment_recording, monkeypatch
+):
+    """``estimate_parameters`` forwards ``environment_labels`` to the EM
+    encoding refit: each environment's refit model equals a fit on its own
+    samples alone with the same posterior weights.
+
+    The match is exact (largest relative difference 2e-16). If the refit
+    dropped the labels, every sample would train environment A and B none:
+    a no-training-samples warning for B, and relative differences of 0.66 to
+    3e4.
+    """
+    data = two_environment_recording
+    # A Local and a non-local state per environment: the refit weights are
+    # the Local posterior.
+    states = [("A", True), ("B", True), ("A", False), ("B", False)]
+    detector = SortedSpikesDecoder(
+        environments=[
+            Environment(environment_name=name, place_bin_size=4.0) for name in NAMES
+        ],
+        observation_models=[
+            ObservationModel(environment_name=name, is_local=is_local)
+            for name, is_local in states
+        ],
+        continuous_transition_types=[
+            [
+                Discrete()
+                if source_is_local and destination_is_local
+                else Uniform(source, destination)
+                for destination, destination_is_local in states
+            ]
+            for source, source_is_local in states
+        ],
+        discrete_initial_conditions=np.full(len(states), 1.0 / len(states)),
+        continuous_initial_conditions_types=[
+            UniformInitialConditions() for _ in states
+        ],
+        discrete_transition_type=DiscreteStationaryDiagonal(
+            diagonal_values=np.full(len(states), 0.98)
+        ),
+        discrete_transition_stickiness=np.zeros(len(states)),
+        state_names=["A local", "B local", "A non-local", "B non-local"],
+        sampling_frequency=SAMPLING_FREQUENCY,
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    )
+    refit_weights = record_refit_weights(monkeypatch, detector)
+    detector.estimate_parameters(
+        data["time"],
+        data["position"],
+        data["spike_times"],
+        time_edges=time_edges_from_centers(data["time"]),
+        environment_labels=data["labels"],
+        max_iter=1,
+        estimate_discrete_transition=False,
+        estimate_encoding_model=True,
+    )
+    (weights,) = refit_weights
+    # Weighting changes the fit (0.046 to 1 measured), so matching the
+    # weighted fit below is not matching an unweighted one.
+    assert weights.min() < 0.5
+
+    for name in NAMES:
+        is_here = data["labels"] == name
+        time = data["time"][is_here]
+        position = data["position"][is_here]
+        alone_spikes = [_within(t, time[0], time[-1]) for t in data["spike_times"]]
+        alone = _detector(
+            SortedSpikesDecoder, "sorted_spikes_algorithm", "sorted_spikes_kde", (name,)
+        )
+        alone.fit(time, position, alone_spikes)
+        alone.fit_encoding_model(time, position, alone_spikes, weights=weights[is_here])
+
+        joint_model = detector.encoding_model_[(name, 0)]
+        alone_model = alone.encoding_model_[(name, 0)]
+        for key in ("occupancy", "place_fields", "mean_rates"):
+            np.testing.assert_allclose(
+                np.asarray(joint_model[key]),
+                np.asarray(alone_model[key]),
+                rtol=1e-5,
+                atol=0.0,
+                err_msg=f"{name}: {key}",
+            )

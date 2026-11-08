@@ -16,11 +16,12 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
     SortedSpikesDecoder,
 )
-from non_local_detector.exceptions import NotFittedError, ValidationError
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.models.base import (
     _normalize_return_outputs,
     _validate_inference_arguments,
 )
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import _assert_unchanged, _snapshot
 
 N_TIME = 100
@@ -238,15 +239,27 @@ def test_return_outputs_string_and_list_forms_agree(string, expected):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "arguments",
+    ("arguments", "message"),
     [
-        {"inference_mode": "checkpointed", "cache_likelihood": True},
-        {"inference_mode": "checkpointed", "n_chunks": 2},
-        {"inference_mode": "dense", "output_mode": "compact"},
-        {"inference_mode": "dense", "chunk_size": 10},
+        (
+            {"inference_mode": "checkpointed", "cache_likelihood": True},
+            "leave cache_likelihood=False and n_chunks=1",
+        ),
+        (
+            {"inference_mode": "checkpointed", "n_chunks": 2},
+            "leave cache_likelihood=False and n_chunks=1",
+        ),
+        (
+            {"inference_mode": "dense", "output_mode": "compact"},
+            "options require inference_mode='checkpointed'",
+        ),
+        (
+            {"inference_mode": "dense", "chunk_size": 10},
+            "options require inference_mode='checkpointed'",
+        ),
     ],
 )
-def test_inference_argument_conflicts_raise_validation_error(arguments):
+def test_inference_argument_conflicts_raise_validation_error(arguments, message):
     settings = {
         "inference_mode": "dense",
         "output_mode": "spatial",
@@ -257,23 +270,8 @@ def test_inference_argument_conflicts_raise_validation_error(arguments):
         "checkpoint_dir": None,
         "selected_intervals": None,
     } | arguments
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         _validate_inference_arguments(**settings)
-
-
-@pytest.mark.unit
-def test_base_time_contract_check_fails_closed():
-    """A subclass that does not override the hook still gets the encoding check."""
-    from non_local_detector.models.base import _DetectorBase
-
-    with pytest.raises(NotFittedError, match="not fitted"):
-        _DetectorBase._validate_time_contract(_decoder())
-    time, position, spike_times = _recording()
-    detector = _decoder().fit(time, position, spike_times)
-    _DetectorBase._validate_time_contract(detector)
-    detector.time_contract_ = {**detector.time_contract_, "rate_units": "per_bin"}
-    with pytest.raises(ValidationError, match="refit"):
-        _DetectorBase._validate_time_contract(detector)
 
 
 @pytest.mark.unit
@@ -384,7 +382,7 @@ def test_estimate_parameters_rejects_malformed_inputs_before_fitting(monkeypatch
 
 @pytest.mark.unit
 # max_iter=1 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_estimate_parameters_accepts_list_inputs():
     time, position, spike_times = _recording()
     options = {

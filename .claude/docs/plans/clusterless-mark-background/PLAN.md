@@ -155,7 +155,7 @@
 ### 7. Tests that pin old floors
 
 - **Update** these to the new contract. Each update states the new expected value from the formula, not from re-running the code:
-  - `tests/test_clusterless_gmm_optimization.py:745-870`
+  - `tests/likelihoods/test_clusterless_gmm_optimization.py`, `test_gmm_zero_weight_electrode_penalizes_decode_spikes`
   - `tests/likelihoods/test_clusterless_gmm_padding.py:115-174`
   - `test_clusterless_kde_padding.py:185-247`
   - `test_clusterless_kde_log_padding.py:122-182`

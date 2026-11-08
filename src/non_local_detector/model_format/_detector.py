@@ -1064,9 +1064,18 @@ def _required_state(config: Any, covariate_data: Any) -> dict[str, str]:
 
 
 def _readable_encoding_model(entry: Any) -> dict[str, Any]:
-    """Return a stored ``encoding_models`` entry with only the model's type's keys."""
+    """Return a stored ``encoding_models`` entry with only the model's type's keys.
+
+    A key that earlier versions stored and this one no longer reads
+    (``_REMOVED_ENCODING_KEYS``) is dropped without a warning.
+    """
+    from non_local_detector.likelihoods import _REMOVED_ENCODING_KEYS
+
     model = entry["model"]
     keys = encoding_model_keys(model)
+    model = {
+        key: node for key, node in model.items() if key not in _REMOVED_ENCODING_KEYS
+    }
     return {
         **entry,
         "model": readable_names(f"{model['algorithm']} encoding model", model, keys),

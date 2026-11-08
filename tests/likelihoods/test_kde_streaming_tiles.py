@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.stats import norm
 
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -12,6 +11,11 @@ from non_local_detector.likelihoods.clusterless_kde import (
     log_kde_distance,
 )
 from tests.conftest import precision_mode
+from tests.likelihoods._kde_reference import (
+    reference_log_joint_mark_intensity,
+    reference_log_joint_mark_intensity_gradient,
+    reference_log_position_kernel,
+)
 from tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
     realistic_log_background,
@@ -31,16 +35,20 @@ def weights_for(n_samples, kind):
     )
 
 
-def joint_inputs(n_decoding, n_encoding, n_positions, weight_kind):
+def joint_inputs(n_decoding, n_encoding, n_positions, weight_kind, n_position_dims=2):
     rng = np.random.default_rng(7423)
     decoding_features = jnp.asarray(rng.normal(size=(n_decoding, 3)))
     return {
         "decoding_features": decoding_features,
         "encoding_features": jnp.asarray(rng.normal(size=(n_encoding, 3))),
-        "encoding_positions": jnp.asarray(rng.normal(size=(n_encoding, 2))),
-        "place_bin_centers": jnp.asarray(rng.normal(size=(n_positions, 2))),
+        "encoding_positions": jnp.asarray(
+            rng.normal(size=(n_encoding, n_position_dims))
+        ),
+        "place_bin_centers": jnp.asarray(
+            rng.normal(size=(n_positions, n_position_dims))
+        ),
         "waveform_stds": jnp.asarray([0.7, 1.1, 1.3]),
-        "position_std": jnp.asarray([0.8, 1.2]),
+        "position_std": jnp.asarray([0.8, 1.2][:n_position_dims]),
         "occupancy": jnp.asarray(
             np.where(np.arange(n_positions) == 1, 0.0, rng.uniform(0.2, 1, n_positions))
         ),
@@ -50,39 +58,29 @@ def joint_inputs(n_decoding, n_encoding, n_positions, weight_kind):
     }
 
 
+def _reference_arguments(values):
+    """``values`` in the float64 references' positional order."""
+    return (
+        values["decoding_features"],
+        values["encoding_features"],
+        values["waveform_stds"],
+        values["occupancy"],
+        values["mean_rate"],
+        reference_log_position_kernel(
+            values["place_bin_centers"],
+            values["encoding_positions"],
+            values["position_std"],
+        ),
+    )
+
+
 def joint_oracle(values):
-    dec, enc, positions, centers = [
-        np.asarray(values[k], np.float64)
-        for k in (
-            "decoding_features",
-            "encoding_features",
-            "encoding_positions",
-            "place_bin_centers",
-        )
-    ]
-    mark = norm.pdf(
-        dec[None], loc=enc[:, None], scale=np.asarray(values["waveform_stds"])
-    ).prod(axis=-1)
-    position = norm.pdf(
-        centers[None], loc=positions[:, None], scale=np.asarray(values["position_std"])
-    ).prod(axis=-1)
-    weights = values["encoding_weights"]
-    weights = np.ones(len(enc)) if weights is None else np.asarray(weights, np.float64)
-    numerator = mark.T @ (weights[:, None] * position)
-    density = (
-        numerator / weights.sum() if weights.sum() > 0 else np.zeros_like(numerator)
+    """Float64 finished terms ``logaddexp(log intensity, log background)``."""
+    return reference_log_joint_mark_intensity(
+        *_reference_arguments(values),
+        encoding_weights=values["encoding_weights"],
+        log_background=values["log_background"],
     )
-    intensity = np.zeros_like(density)
-    np.divide(
-        density, values["occupancy"], out=intensity, where=values["occupancy"] > 0
-    )
-    intensity *= values["mean_rate"]
-    with np.errstate(divide="ignore"):
-        log_intensity = np.log(intensity)  # -inf where the intensity is zero
-    terms = np.logaddexp(
-        log_intensity, np.asarray(values["log_background"], np.float64)[:, None]
-    )
-    return terms, (mark, position, numerator, weights, log_intensity)
 
 
 def _estimate(values, **options):
@@ -133,36 +131,55 @@ def test_joint_tiles_match_finished_oracle(x64, shape, weight_kind):
     with precision_mode(x64):
         values = joint_inputs(*shape, weight_kind)
         actual = streamed_joint(values)
-        oracle, _ = joint_oracle(values)
+        oracle = joint_oracle(values)
         assert actual.shape == (shape[0], shape[2])
         np.testing.assert_allclose(actual, oracle, **tolerance(x64))
         np.testing.assert_allclose(actual, baseline_joint(values), **tolerance(x64))
+
+
+@pytest.mark.parametrize("n_position_dims", [1, 2])
+@pytest.mark.parametrize(
+    ("encoding_tile_size", "position_tile_size", "block_size"),
+    [
+        # Partial last encoding, position and decoding blocks.
+        (4, 3, 5),
+        # Tiles that divide the 9 encoding spikes; one decoding block.
+        (3, None, 16),
+        # One encoding spike per tile.
+        (1, None, 16),
+        # A tile as large as the encoding set cannot be chunked; streaming
+        # falls back to one materialized kernel instead of raising.
+        (9, None, 16),
+    ],
+)
+def test_streamed_tilings_match_finished_oracle(
+    n_position_dims, encoding_tile_size, position_tile_size, block_size
+):
+    """Every encoding, position and decoding tiling gives the finished terms."""
+    values = joint_inputs(13, 9, 7, "weighted", n_position_dims)
+    actual = streamed_joint(values, encoding_tile_size, position_tile_size, block_size)
+    oracle = joint_oracle(values)
+    # Away from the zero-occupancy bin the background must not mask the
+    # intensity, or the comparison is vacuous.
+    supported = np.asarray(values["occupancy"]) > 0
+    background = np.asarray(values["log_background"])[:, None]
+    assert np.all(oracle[:, supported] > background + 1.0)
+    # Measured at most 1.1e-5 absolute on terms of order 5-40 (an eighth of
+    # this bound); dropping one encoding spike moves terms by 0.24 or more.
+    tile_tolerance = {"rtol": 1e-5, "atol": 1e-5}
+    np.testing.assert_allclose(actual, oracle, **tile_tolerance)
+    np.testing.assert_allclose(actual, baseline_joint(values), **tile_tolerance)
 
 
 @pytest.mark.parametrize("x64", [False, True])
 def test_finished_joint_gradients_match_independent_oracle(x64):
     with precision_mode(x64):
         values = joint_inputs(13, 9, 7, "weighted")
-        oracle, (mark, position, numerator, weights, log_intensity) = joint_oracle(
-            values
+        expected = reference_log_joint_mark_intensity_gradient(
+            *_reference_arguments(values),
+            log_background=values["log_background"],
+            encoding_weights=values["encoding_weights"],
         )
-        derivative = (
-            np.asarray(values["encoding_features"])[:, None]
-            - np.asarray(values["decoding_features"])[None]
-        ) / np.asarray(values["waveform_stds"]) ** 2
-        raw_derivative = np.einsum(
-            "ed,ep,edf->dpf", mark, weights[:, None] * position, derivative
-        )
-        ratio = np.zeros_like(raw_derivative)
-        np.divide(
-            raw_derivative,
-            numerator[:, :, None],
-            out=ratio,
-            where=numerator[:, :, None] > 0,
-        )
-        # d logaddexp(log I, b) / dx = I / (I + B) * d log I / dx.
-        share = np.exp(log_intensity - oracle)
-        expected = (share[:, :, None] * ratio).sum(axis=1)
         marks = values.pop("decoding_features")
         actual = jax.grad(
             lambda x: streamed_joint({"decoding_features": x, **values}).sum()

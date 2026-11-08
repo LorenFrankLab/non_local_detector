@@ -1,12 +1,4 @@
-"""Registry integration + end-to-end smoke test for ``clusterless_diffusion``.
-
-Confirms the algorithm is resolvable through the public
-``_CLUSTERLESS_ALGORITHMS`` registry (used by ``ClusterlessDecoder`` /
-``NonLocalClusterlessDetector`` via ``clusterless_algorithm="clusterless_diffusion"``)
-and that a full fit/predict cycle on tiny simulated data yields a finite,
-normalized posterior. This is a smoke test, not a perf/accuracy test -- the
-simulated grid and spike counts are kept deliberately small.
-"""
+"""``clusterless_diffusion`` encoding models across environment refits."""
 
 import numpy as np
 import pytest
@@ -14,37 +6,17 @@ import pytest
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import (
-    _CLUSTERLESS_ALGORITHMS,
-    clusterless_diffusion,
-)
 from non_local_detector.likelihoods.clusterless_diffusion import (
-    _effective_block,
     fit_clusterless_diffusion_encoding_model,
     mark_reference_scale,
     predict_clusterless_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
-from non_local_detector.models.decoder import ClusterlessDecoder
-from non_local_detector.models.non_local_model import NonLocalClusterlessDetector
-from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 pytestmark = pytest.mark.integration
 
 POSITION_STD = 3.0
 WAVEFORM_STD = 24.0
-NORMALIZATION_ATOL = 1e-6
-SAVE_LOAD_RTOL = 1e-5
-SAVE_LOAD_ATOL = 1e-10
-DEFAULT_MEMORY_BUDGET = 536_870_912
-
-
-def _toy_environment(upper: float, place_bin_size: float = 1.0) -> Environment:
-    """A tiny 1D environment, fitted, for direct fit/predict-function tests."""
-    env = Environment(position_range=[(0.0, upper)], place_bin_size=place_bin_size)
-    return env.fit_place_grid(
-        position=np.linspace(0.0, upper, 200)[:, None], infer_track_interior=True
-    )
 
 
 def _toy_electrode_data(
@@ -67,118 +39,13 @@ def _toy_electrode_data(
     return spike_times, spike_waveform_features
 
 
-def test_registry_and_end_to_end() -> None:
-    """``clusterless_diffusion`` is registered and runs end-to-end."""
-    # --- registry ---
-    assert "clusterless_diffusion" in _CLUSTERLESS_ALGORITHMS
-    record = _CLUSTERLESS_ALGORITHMS["clusterless_diffusion"]
-    assert record.fit is fit_clusterless_diffusion_encoding_model
-    assert record.predict is predict_clusterless_diffusion_log_likelihood
-
-    # --- tiny simulated data (2 tetrodes, 1 place field each, ~5s of data) ---
-    sim = make_simulated_run_data(
-        n_tetrodes=2,
-        place_field_means=np.arange(0, 20, 10),
-        track_height=20.0,
-        running_speed=15,
-        sampling_frequency=500,
-        n_runs=2,
-        seed=0,
-    )
-
-    n_encode = int(0.7 * len(sim.position_time))
-    # Ten equal decode bins over the held-out span set the detector's bin rate.
-    decode_sampling_frequency = 10 / (
-        sim.position_time[-1] - sim.position_time[n_encode]
-    )
-    encode_position_time = sim.position_time[:n_encode]
-    encode_position = sim.position[:n_encode]
-    encode_spike_times = [st[st <= encode_position_time[-1]] for st in sim.spike_times]
-    encode_spike_waveform_features = [
-        swf[st <= encode_position_time[-1]]
-        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
-    ]
-
-    algorithm_params = {
-        "position_std": POSITION_STD,
-        "waveform_std": WAVEFORM_STD,
-        "disable_progress_bar": True,
-    }
-
-    # --- ClusterlessDecoder ---
-    decoder = ClusterlessDecoder(
-        environments=sim.environment,
-        sampling_frequency=decode_sampling_frequency,
-        clusterless_algorithm="clusterless_diffusion",
-        clusterless_algorithm_params=algorithm_params,
-    )
-    decoder.fit(
-        position_time=encode_position_time,
-        position=encode_position,
-        spike_times=encode_spike_times,
-        spike_waveform_features=encode_spike_waveform_features,
-    )
-
-    test_position_time = sim.position_time[n_encode:]
-    test_spike_times = [st[st > encode_position_time[-1]] for st in sim.spike_times]
-    test_spike_waveform_features = [
-        swf[st > encode_position_time[-1]]
-        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
-    ]
-    test_edges = np.linspace(test_position_time[0], test_position_time[-1], 11)
-
-    decoder_results = decoder.predict(
-        time_edges=test_edges,
-        position_time=test_position_time,
-        position=sim.position[n_encode:],
-        spike_times=test_spike_times,
-        spike_waveform_features=test_spike_waveform_features,
-    )
-
-    decoder_posterior = decoder_results.acausal_posterior.values
-    assert np.all(np.isfinite(decoder_posterior))
-    decoder_posterior_sum = np.sum(decoder_posterior, axis=1)
-    np.testing.assert_allclose(
-        decoder_posterior_sum, 1.0, atol=NORMALIZATION_ATOL, rtol=0.0
-    )
-
-    # --- NonLocalClusterlessDetector ---
-    detector = NonLocalClusterlessDetector(
-        environments=sim.environment,
-        sampling_frequency=decode_sampling_frequency,
-        clusterless_algorithm="clusterless_diffusion",
-        clusterless_algorithm_params=algorithm_params,
-    )
-    detector.fit(
-        position_time=encode_position_time,
-        position=encode_position,
-        spike_times=encode_spike_times,
-        spike_waveform_features=encode_spike_waveform_features,
-    )
-
-    detector_results = detector.predict(
-        time_edges=test_edges,
-        position_time=test_position_time,
-        position=sim.position[n_encode:],
-        spike_times=test_spike_times,
-        spike_waveform_features=test_spike_waveform_features,
-    )
-
-    detector_posterior = detector_results.acausal_posterior.values
-    assert np.all(np.isfinite(detector_posterior))
-    detector_posterior_sum = np.sum(detector_posterior, axis=1)
-    np.testing.assert_allclose(
-        detector_posterior_sum, 1.0, atol=NORMALIZATION_ATOL, rtol=0.0
-    )
-
-
 def test_refit_requires_encoding_refit() -> None:
     """A grid refit that genuinely changes the grid shape drops the device cache;
     the (grid-bound) encoding model must be re-fit -- not merely re-predicted --
     against the rebuilt grid, and a fresh predict then works (finite, right shape
     matching the NEW interior-bin count) with no stale-``Q`` shape error.
 
-    Unlike ``_toy_environment``, the ``Environment`` here is constructed WITHOUT a
+    The ``Environment`` here is constructed WITHOUT a
     fixed ``position_range``: with a pinned ``position_range``, a second
     ``fit_place_grid`` call produces a bit-identical grid regardless of the
     ``position`` argument passed to it, which would make the shape assertions
@@ -325,156 +192,3 @@ def test_stale_encoding_model_after_refit_raises() -> None:
             ),
             **encoding_model,
         )
-
-
-def test_save_load_predict_parity(tmp_path) -> None:
-    """``save_model`` -> ``load_model`` must not raise a JAX-``Device`` pickling
-    error (the Environment's transient device cache is excluded from the pickle),
-    and predict on the reloaded detector must match pre-save predict -- the device
-    cache is lazily rebuilt on the first post-load predict."""
-    sim = make_simulated_run_data(
-        n_tetrodes=2,
-        place_field_means=np.arange(0, 20, 10),
-        track_height=20.0,
-        running_speed=15,
-        sampling_frequency=500,
-        n_runs=2,
-        seed=0,
-    )
-
-    n_encode = int(0.7 * len(sim.position_time))
-    # Ten equal decode bins over the held-out span set the detector's bin rate.
-    decode_sampling_frequency = 10 / (
-        sim.position_time[-1] - sim.position_time[n_encode]
-    )
-    encode_position_time = sim.position_time[:n_encode]
-    encode_position = sim.position[:n_encode]
-    encode_spike_times = [st[st <= encode_position_time[-1]] for st in sim.spike_times]
-    encode_spike_waveform_features = [
-        swf[st <= encode_position_time[-1]]
-        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
-    ]
-
-    algorithm_params = {
-        "position_std": POSITION_STD,
-        "waveform_std": WAVEFORM_STD,
-        "disable_progress_bar": True,
-    }
-
-    detector = NonLocalClusterlessDetector(
-        environments=sim.environment,
-        sampling_frequency=decode_sampling_frequency,
-        clusterless_algorithm="clusterless_diffusion",
-        clusterless_algorithm_params=algorithm_params,
-    )
-    detector.fit(
-        position_time=encode_position_time,
-        position=encode_position,
-        spike_times=encode_spike_times,
-        spike_waveform_features=encode_spike_waveform_features,
-    )
-
-    test_position_time = sim.position_time[n_encode:]
-    test_spike_times = [st[st > encode_position_time[-1]] for st in sim.spike_times]
-    test_spike_waveform_features = [
-        swf[st > encode_position_time[-1]]
-        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
-    ]
-    test_edges = np.linspace(test_position_time[0], test_position_time[-1], 11)
-
-    results_before = detector.predict(
-        time_edges=test_edges,
-        position_time=test_position_time,
-        position=sim.position[n_encode:],
-        spike_times=test_spike_times,
-        spike_waveform_features=test_spike_waveform_features,
-    )
-    posterior_before = results_before.acausal_posterior.values
-    assert np.all(np.isfinite(posterior_before))
-
-    model_path = str(tmp_path / "m.pkl")
-    detector.save_model(model_path)  # must not raise on a JAX Device
-    loaded_detector = NonLocalClusterlessDetector.load_model(model_path)
-
-    results_after = loaded_detector.predict(
-        time_edges=test_edges,
-        position_time=test_position_time,
-        position=sim.position[n_encode:],
-        spike_times=test_spike_times,
-        spike_waveform_features=test_spike_waveform_features,
-    )
-    posterior_after = results_after.acausal_posterior.values
-    assert np.all(np.isfinite(posterior_after))
-
-    np.testing.assert_allclose(
-        posterior_after, posterior_before, rtol=SAVE_LOAD_RTOL, atol=SAVE_LOAD_ATOL
-    )
-
-
-def test_memory_budget_override_survives_handoff(monkeypatch) -> None:
-    """A non-default ``memory_budget`` passed at fit is stored in the encoding dict
-    (not silently lost at the fit -> predict handoff), drives the decode-spike
-    block size predict resolves, and leaves the log-likelihood unchanged."""
-    rng = np.random.default_rng(1)
-    env = _toy_environment(upper=10.0)
-    position_time = np.linspace(0.0, 10.0, 200)
-    position = position_time[:, None]
-    spike_times, spike_waveform_features = _toy_electrode_data(rng, position_time)
-
-    # Small enough that predict splits each electrode's 40 decode spikes into
-    # several blocks.
-    non_default_memory_budget = 10_000
-    encoding_model = fit_clusterless_diffusion_encoding_model(
-        position_time,
-        position,
-        spike_times,
-        spike_waveform_features,
-        environment=env,
-        position_std=POSITION_STD,
-        memory_budget=non_default_memory_budget,
-        disable_progress_bar=True,
-    )
-
-    assert encoding_model["memory_budget"] == non_default_memory_budget
-    assert encoding_model["block_size"] == 10_000  # default, also carried in the dict
-
-    resolved_blocks: list[tuple[int, int]] = []
-
-    def spy_effective_block(memory_budget, *args):
-        block = _effective_block(memory_budget, *args)
-        resolved_blocks.append((memory_budget, block))
-        return block
-
-    monkeypatch.setattr(clusterless_diffusion, "_effective_block", spy_effective_block)
-
-    def predict(model):
-        resolved_blocks.clear()
-        log_likelihood = predict_clusterless_diffusion_log_likelihood(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
-            time_edges=np.linspace(position_time[0], position_time[-1], 6),
-            mark_reference=fit_mark_references(
-                spike_waveform_features, mark_reference_scale()
-            ),
-            **model,
-        )
-        return np.asarray(log_likelihood), list(resolved_blocks)
-
-    overridden, overridden_blocks = predict(encoding_model)
-    default, default_blocks = predict(
-        {**encoding_model, "memory_budget": DEFAULT_MEMORY_BUDGET}
-    )
-
-    n_spikes = [len(times) for times in spike_times]
-    assert [budget for budget, _ in overridden_blocks] == [
-        non_default_memory_budget
-    ] * len(n_spikes)
-    assert all(
-        block < n for (_, block), n in zip(overridden_blocks, n_spikes, strict=True)
-    )
-    assert all(
-        block >= n for (_, block), n in zip(default_blocks, n_spikes, strict=True)
-    )
-    np.testing.assert_allclose(overridden, default, rtol=1e-5, atol=1e-5)

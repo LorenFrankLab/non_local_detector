@@ -10,7 +10,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.special import logsumexp
 
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -22,6 +21,9 @@ from non_local_detector.likelihoods.common import (
     compute_log_mark_kernel_gemm,
 )
 from tests.conftest import precision_mode
+from tests.likelihoods._kde_reference import (
+    reference_log_joint_mark_intensity,
+)
 from tests.likelihoods.conftest import realistic_log_background
 
 # Below ``log_background + log(eps)`` an intensity cannot change a float32 term.
@@ -67,26 +69,6 @@ def _place_field_tile(
             jnp.asarray(bins, jnp.float32),
         )
     return tile
-
-
-def _reference_log_joint(decoding, encoding, stds, occupancy, mean_rate, log_position):
-    """float64 brute-force log(mean_rate * sum_e K_mark K_pos / n / occupancy)."""
-    decoding, encoding, stds, occupancy, log_position = (
-        np.asarray(a, np.float64)
-        for a in (decoding, encoding, stds, occupancy, log_position)
-    )
-    n_features = encoding.shape[1]
-    norm = -0.5 * (n_features * np.log(2 * np.pi) + 2 * np.sum(np.log(stds)))
-    log_mark = norm - 0.5 * np.sum(
-        ((encoding[:, None] - decoding[None]) / stds) ** 2, axis=-1
-    )
-    marginal = np.stack(
-        [
-            logsumexp(log_mark[:, q, None] + log_position, axis=0)
-            for q in range(len(decoding))
-        ]
-    ) - np.log(len(encoding))
-    return np.log(mean_rate) + marginal - np.log(occupancy)[None]
 
 
 @pytest.mark.unit
@@ -191,7 +173,7 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(
             log_background=log_background,
         )
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     background = np.asarray(log_background, np.float64)[:, None]
@@ -204,52 +186,143 @@ def test_estimates_are_exact_wherever_they_change_the_background_term(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("group_size", [None, 5], ids=["tile-sized", "small-groups"])
-@pytest.mark.parametrize("enc_tile_size", [None, 64])
-def test_every_spike_is_exact_when_more_spikes_need_repair_than_slots(
-    enc_tile_size, group_size, monkeypatch
+def test_gemm_matches_float64_reference_where_linear_kernels_underflow():
+    """Intensities below float32's range above a lower background stay exact.
+
+    When the decoding marks sit far from the encoding marks, most kernel
+    products underflow float32, so summing them in linear space would return
+    only the background there.
+    """
+    n_enc_spikes = 30
+    n_dec_spikes = 10
+    n_pos_bins = 20
+    n_features = 4
+
+    # Decoding and encoding marks are far apart: the largest log mark kernel
+    # is about -46 and most are below -100, beyond float32 range.
+    rng = np.random.default_rng(42)
+    dec_features = (rng.standard_normal((n_dec_spikes, n_features)) * 50 + 100).astype(
+        np.float32
+    )
+    enc_features = (rng.standard_normal((n_enc_spikes, n_features)) * 50 + 200).astype(
+        np.float32
+    )
+    waveform_stds = np.full(n_features, 10.0, dtype=np.float32)
+    occupancy = np.full(n_pos_bins, 0.1, dtype=np.float32)
+    mean_rate = 2.0
+
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)), jnp.float32)
+    interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins), jnp.float32)[:, None]
+    log_position_distance = log_kde_distance(
+        interior_bins, enc_positions, jnp.array([5.0])
+    )
+
+    log_intensity = reference_log_joint_mark_intensity(
+        dec_features,
+        enc_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        log_position_distance,
+    )  # (n_dec_spikes, n_pos_bins)
+    # A background 30 nats below each spike's smallest intensity: low enough
+    # that the result is the mark intensity, not the floor.
+    log_background = log_intensity.min(axis=1) - 30.0
+    expected = np.logaddexp(log_intensity, log_background[:, None])
+
+    # Premise: most intensities are below the smallest float32 subnormal
+    # (log 1.4e-45 = -103.3), where every kernel product underflows.
+    assert (log_intensity < -110.0).mean() > 0.5
+
+    result = np.asarray(
+        estimate_log_joint_mark_intensity(
+            jnp.asarray(dec_features),
+            jnp.asarray(enc_features),
+            jnp.asarray(waveform_stds),
+            jnp.asarray(occupancy),
+            mean_rate,
+            log_position_distance,
+            log_background=jnp.asarray(log_background, jnp.float32),
+        )
+    )
+    assert result.shape == (n_dec_spikes, n_pos_bins)
+    assert np.all(result - log_background[:, None] > 25.0)
+    np.testing.assert_allclose(result, expected, rtol=1e-6, atol=1e-4)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("n_dec", "enc_tile_size", "group_size"),
+    [
+        (8, None, None),
+        (90, None, None),
+        (90, 64, None),
+        (90, None, 5),
+        (90, 64, 5),
+    ],
+    ids=[
+        "within-slots",
+        "beyond-slots",
+        "beyond-slots-encoding-tiles",
+        "beyond-slots-small-groups",
+        "beyond-slots-encoding-tiles-small-groups",
+    ],
+)
+def test_every_spike_flagged_for_exact_repair_matches_reference(
+    n_dec, enc_tile_size, group_size, patch_and_retrace
 ):
     """Backgrounds far below every intensity flag all spikes for the exact path.
 
-    With more flagged spikes than any repair group or slot count, each one must
-    still match the float64 reduction. Groups of 5, as larger encoding and
-    position tiles get, split the 32 slots over several groups.
+    Eight flagged spikes fit the 32 repair slots; ninety exceed every repair
+    group and the slots, and each one must still match the float64 reduction.
+    Groups of 5, as larger encoding and position tiles get, split the 32 slots
+    over several groups.
     """
+    decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=n_dec)
     if group_size is not None:
-        repair = clusterless_kde._repair_flagged_in_groups
-        monkeypatch.setattr(
+        # Budget one repair temporary (encoding tile x group x position bins)
+        # at ``group_size`` spikes.
+        patch_and_retrace(
             clusterless_kde,
-            "_repair_flagged_in_groups",
-            lambda values, needs_exact, exact_rows, _: repair(
-                values, needs_exact, exact_rows, group_size
-            ),
+            "_EXACT_REPAIR_ELEMENTS",
+            group_size * (enc_tile_size or encoding.shape[0]) * occupancy.shape[0],
         )
-    decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=90)
+        traced_group_sizes = []
+
+        def record_group_size(*args):
+            traced_group_sizes.append(args[-1])
+            return _repair_flagged_in_groups(*args)
+
+        patch_and_retrace(
+            clusterless_kde, "_repair_flagged_in_groups", record_group_size
+        )
     log_background = np.full(decoding.shape[0], -400.0, np.float32)
-    jax.clear_caches()
-    try:
-        out = np.asarray(
-            estimate_log_joint_mark_intensity(
-                decoding,
-                encoding,
-                stds,
-                occupancy,
-                1.0,
-                log_position,
-                enc_tile_size=enc_tile_size,
-                log_background=log_background,
-            )
+    out = np.asarray(
+        estimate_log_joint_mark_intensity(
+            decoding,
+            encoding,
+            stds,
+            occupancy,
+            1.0,
+            log_position,
+            enc_tile_size=enc_tile_size,
+            log_background=log_background,
         )
-    finally:
-        # Keep the patched group size out of later tests' compiled reductions.
-        jax.clear_caches()
-    reference = _reference_log_joint(
+    )
+    if group_size is not None:
+        assert set(traced_group_sizes) == {group_size}
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     expected = np.logaddexp(reference, np.asarray(log_background, np.float64)[:, None])
     above = expected > -300
-    # More spikes with entries to check than the 32 slots, twice over.
-    assert (above.sum(axis=1) > 0).sum() > 64
+    # Every spike has entries to check within the slots; beyond them, more
+    # spikes than the 32 slots, twice over.
+    n_checked = above.any(axis=1).sum()
+    if n_dec <= 32:
+        assert n_checked == n_dec
+    else:
+        assert n_checked > 64
     np.testing.assert_allclose(out[above], expected[above], atol=1e-4, rtol=0)
 
 
@@ -421,7 +494,7 @@ def test_reduction_dtypes_stay_consistent_with_x64_enabled(dtype, use_streaming)
         -0.5 * np.log(2 * np.pi * 36.0)
         - 0.5 * ((bins[None, :, 0] - encoding_positions) / 6.0) ** 2
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     log_background = np.array(realistic_log_background(decoding))
@@ -475,37 +548,6 @@ def test_mixed_precision_exact_path_does_not_overflow(enc_tile_size):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("n_dec", [8, 100], ids=["flagged-rows-only", "every-row"])
-def test_every_spike_flagged_for_exact_repair_matches_reference(n_dec):
-    """A background far below the kernels flags every spike for exact repair.
-
-    Eight spikes fit the bounded slots; a hundred exceed them and are repaired
-    group by group. Both must match the float64 reference.
-    """
-    decoding, encoding, stds, occupancy, log_position = _place_field_tile(
-        n_dec=n_dec, waveform_std=1.0
-    )
-    log_background = jnp.full(n_dec, -1e4, jnp.float32)
-    out = np.asarray(
-        estimate_log_joint_mark_intensity(
-            decoding,
-            encoding,
-            stds,
-            occupancy,
-            1.0,
-            log_position,
-            log_background=log_background,
-        )
-    )
-    reference = _reference_log_joint(
-        decoding, encoding, stds, occupancy, 1.0, log_position
-    )
-    expected = np.logaddexp(reference, -1e4)
-    assert (reference > -1e4).mean() > 0.5  # most terms are intensity-dominated
-    np.testing.assert_allclose(out, expected, atol=1e-3, rtol=1e-5)
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize("n_flagged", [3, 40])
 @pytest.mark.parametrize(
     "tiling",
@@ -555,7 +597,7 @@ def test_only_flagged_spikes_take_the_exact_repair(n_flagged, tiling):
             **streaming,
         )
     )
-    reference = _reference_log_joint(
+    reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
     expected = np.logaddexp(reference, log_background[:, None])

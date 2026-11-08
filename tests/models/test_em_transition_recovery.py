@@ -93,16 +93,28 @@ def empirical_transition(states: np.ndarray) -> np.ndarray:
     return counts / counts.sum(axis=1, keepdims=True)
 
 
+def binomial_standard_error(states: np.ndarray) -> np.ndarray:
+    """Sampling standard error of each transition frequency, shape (4, 4).
+
+    Entry ``(i, j)`` is ``sqrt(p_ij (1 - p_ij) / n_i)`` for the true
+    probability ``p_ij`` and the ``n_i`` transitions out of state ``i``, so
+    the Local row's 0.002 off-diagonals get a tolerance their size allows.
+    """
+    n_from = np.bincount(states[:-1], minlength=4)
+    return np.sqrt(TRUE_TRANSITION * (1 - TRUE_TRANSITION) / n_from[:, None])
+
+
 def fit_transitions(
     recording: tuple[np.ndarray, np.ndarray, list[np.ndarray], np.ndarray],
     transition_representation: str = "dense",
+    tolerance: float = 1e-8,
     **model_kwargs,
 ) -> NonLocalSortedSpikesDetector:
     """Estimate the discrete transitions of a simulated recording by EM.
 
     The place fields are fit on the true Local bins and held fixed, so EM
     updates only the transitions and initial conditions; it runs until the
-    penalized log-likelihood changes by less than 1e-8 relative.
+    penalized log-likelihood changes by less than ``tolerance`` relative.
 
     Parameters
     ----------
@@ -111,6 +123,8 @@ def fit_transitions(
         :func:`simulate_non_local_recording`.
     transition_representation : {"dense", "structured"}, optional
         EM transition path, by default "dense".
+    tolerance : float, optional
+        EM convergence tolerance, by default 1e-8.
     **model_kwargs
         Passed to :class:`NonLocalSortedSpikesDetector`.
 
@@ -134,7 +148,7 @@ def fit_transitions(
         is_training=states == 0,
         estimate_encoding_model=False,
         max_iter=500,
-        tolerance=1e-8,
+        tolerance=tolerance,
         transition_representation=transition_representation,
     )
     return detector
@@ -151,11 +165,12 @@ MAXIMUM_LIKELIHOOD = {
     ),
 }
 
-# Over 12 simulated 120 s recordings (seeds 0-11), the largest entry error was
-# 0.0052 against the oracle and 0.0082 against the truth; EM's starting matrix
-# is 0.094 off. About twice the worst case:
-ORACLE_ATOL = 0.01
-TRUE_ATOL = 0.015
+# Entry errors in binomial standard errors (see binomial_standard_error). The
+# test recording (seed 0) reaches 1.4 against the oracle and 2.4 against the
+# truth; over 12 simulated 120 s recordings (seeds 0-11, dense) the worst were
+# 3.6 and 4.8. An estimate stuck in Local (row [1, 0, 0, 0]) is 16 and 15 off,
+# and EM's starting matrix more still.
+MAX_STANDARD_ERRORS = 6.0
 
 
 @pytest.fixture(scope="module")
@@ -186,23 +201,32 @@ def test_maximum_likelihood_em_recovers_true_transitions(
     the hidden state sequence (and so the true matrix)."""
     detector = maximum_likelihood_fit(transition_representation)
     estimate = np.asarray(detector.discrete_state_transitions_)
-    oracle = empirical_transition(recording[3])
+    states = recording[3]
+    tolerance = MAX_STANDARD_ERRORS * binomial_standard_error(states)
 
     assert detector.converged_
     assert detector.em_monotonicity_violations_ == []
-    np.testing.assert_allclose(estimate, oracle, atol=ORACLE_ATOL)
-    np.testing.assert_allclose(estimate, TRUE_TRANSITION, atol=TRUE_ATOL)
+    np.testing.assert_array_less(
+        np.abs(estimate - empirical_transition(states)), tolerance
+    )
+    np.testing.assert_array_less(np.abs(estimate - TRUE_TRANSITION), tolerance)
 
 
 def test_default_prior_shrinks_toward_its_stickiness(recording, maximum_likelihood_fit):
-    """The default prior and frozen No-Spike row move the estimate away from
-    the maximum-likelihood one in the documented direction."""
-    default = np.asarray(fit_transitions(recording).discrete_state_transitions_)
+    """The default prior moves the Local stay probability away from the
+    maximum-likelihood estimate in the documented direction.
+
+    Only the direction is checked, so EM stops at a 1e-4 tolerance (the
+    Local stay probability is then within 4e-7 of the 1e-8 fit's 0.9986,
+    against 0.9937 without the prior). The frozen No-Spike row is covered in
+    test_frozen_transition_rows.py.
+    """
+    default = np.asarray(
+        fit_transitions(recording, tolerance=1e-4).discrete_state_transitions_
+    )
     maximum_likelihood = np.asarray(
         maximum_likelihood_fit("dense").discrete_state_transitions_
     )
 
     # 1e5 pseudo-counts on the Local diagonal pull its stay probability up.
     assert default[0, 0] > maximum_likelihood[0, 0]
-    # The frozen No-Spike row keeps its initial 0.98 stay probability.
-    np.testing.assert_allclose(default[1, 1], 0.98, rtol=1e-6)

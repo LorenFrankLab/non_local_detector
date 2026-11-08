@@ -37,7 +37,7 @@ def sorted_sim():
     return time[:n], position[:n], [st[st <= time[n - 1]] for st in spike_times]
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def checkpoint_recording():
     """Builder for a small 2-D detector recording.
 

@@ -3,15 +3,13 @@
 This module provides:
 1. A builder for synthetic decoder results and a JAX precision context manager
 2. Environment fixtures for common test scenarios
-3. Assertion helpers for validating probability distributions and stochastic
-   matrices
-4. Posterior and design-matrix fixtures for transition-estimation tests
+3. An assertion helper for stochastic matrices
 
 Usage:
-    pytest automatically discovers fixtures in conftest.py. Import assertion
-    helpers explicitly if needed:
+    pytest automatically discovers fixtures in conftest.py. Import helpers
+    explicitly if needed:
 
-    from conftest import assert_probability_distribution
+    from tests.conftest import assert_stochastic_matrix
 """
 
 import dataclasses
@@ -20,21 +18,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from hypothesis import settings
 
 from non_local_detector.environment import Environment, PlaceGrid
-
-# No per-example deadline: the first example of a test includes JAX compilation.
-# CI sets HYPOTHESIS_PROFILE=ci, which also derandomizes examples so a CI
-# failure reproduces on rerun.
-settings.register_profile("dev", deadline=None)
-settings.register_profile("ci", deadline=None, derandomize=True, print_blob=True)
-settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
 # Persistent JAX compilation cache. Many tests clear JAX's caches or rebuild
 # identical functions, and the suite is mostly XLA compile time: on the six
@@ -56,7 +45,13 @@ if os.environ.get("NLD_TEST_JAX_CACHE", "1") != "0":
 else:
     jax.config.update("jax_enable_compilation_cache", False)
 
-TEST_CATEGORIES = {"unit", "integration", "property"}
+TEST_CATEGORIES = {"unit", "integration"}
+
+# For tests that cap EM's max_iter for speed: EM stops before converging and
+# says so, which is expected there, not a failure.
+em_stops_at_max_iter = pytest.mark.filterwarnings(
+    "ignore:EM did not converge after max_iter=:UserWarning"
+)
 
 
 def pytest_collection_modifyitems(items):
@@ -199,36 +194,6 @@ def simple_1d_environment():
 # ==============================================================================
 
 
-def assert_probability_distribution(arr, axis=-1, rtol=1e-5, atol=1e-6):
-    """Assert array is a valid probability distribution.
-
-    Checks that all values are non-negative, <= 1, and sum to 1.0
-    along the given axis.
-
-    Parameters
-    ----------
-    arr : array-like
-        Array to validate (numpy or jax array).
-    axis : int, optional
-        Axis along which to sum (default: -1).
-    rtol : float, optional
-        Relative tolerance for sum check.
-    atol : float, optional
-        Absolute tolerance for sum check.
-
-    Raises
-    ------
-    AssertionError
-        If any validation fails.
-    """
-    assert np.all(arr >= 0), "Probabilities must be non-negative"
-    assert np.all(arr <= 1), "Probabilities must be <= 1"
-    sums = arr.sum(axis=axis)
-    assert np.allclose(sums, 1.0, rtol=rtol, atol=atol), (
-        f"Probabilities must sum to 1 along axis {axis}, got sums: {sums}"
-    )
-
-
 def assert_stochastic_matrix(matrix, rtol=1e-5, atol=1e-6):
     """Assert matrix is row-stochastic (each row sums to 1).
 
@@ -254,104 +219,3 @@ def assert_stochastic_matrix(matrix, rtol=1e-5, atol=1e-6):
     assert np.allclose(row_sums, 1.0, rtol=rtol, atol=atol), (
         f"Rows must sum to 1, got row sums: {row_sums}"
     )
-
-
-# ==============================================================================
-# DISCRETE STATE TRANSITION TEST FIXTURES
-# ==============================================================================
-
-
-@pytest.fixture
-def posterior_data():
-    """Filtered, predictive and smoothed posteriors of a small sticky HMM.
-
-    A 4-state hidden sequence of 50 steps is sampled from ``transition_matrix``
-    (0.7 on the diagonal) and observed through noisy categorical emissions
-    (the true state is reported with probability 0.6). The posteriors are the
-    float64 outputs of :func:`non_local_detector.core.filter` and
-    :func:`non_local_detector.core.smoother` for that model, so they satisfy
-    ``predictive_distribution[t] = causal_posterior[t - 1] @ transition_matrix``
-    (``predictive_distribution[0]`` is the uniform initial distribution) and
-    ``acausal_posterior`` is the matching smoothed posterior.
-
-    Returns
-    -------
-    dict
-        ``causal_posterior``, ``predictive_distribution``,
-        ``acausal_posterior`` : ndarray, shape (n_time, n_states)
-        ``transition_matrix`` : ndarray, shape (n_states, n_states)
-        ``n_time``, ``n_states`` : int
-    """
-    from non_local_detector.core import filter as hmm_filter
-    from non_local_detector.core import smoother
-
-    rng = np.random.default_rng(42)
-    n_time, n_states = 50, 4
-    transition_matrix = np.full((n_states, n_states), 0.1)
-    np.fill_diagonal(transition_matrix, 0.7)
-    initial_distribution = np.full(n_states, 1.0 / n_states)
-    emission = np.full((n_states, n_states), 0.4 / (n_states - 1))
-    np.fill_diagonal(emission, 0.6)
-
-    states = np.empty(n_time, dtype=int)
-    states[0] = rng.choice(n_states, p=initial_distribution)
-    for t in range(1, n_time):
-        states[t] = rng.choice(n_states, p=transition_matrix[states[t - 1]])
-    observations = np.array([rng.choice(n_states, p=emission[s]) for s in states])
-    # log P(observation_t | state_t = k), shape (n_time, n_states)
-    log_likelihoods = np.log(emission[:, observations].T)
-
-    with precision_mode(True):
-        _, (causal_posterior, predictive_distribution) = hmm_filter(
-            jnp.asarray(initial_distribution),
-            jnp.asarray(transition_matrix),
-            jnp.asarray(log_likelihoods),
-        )
-        acausal_posterior = smoother(jnp.asarray(transition_matrix), causal_posterior)
-        causal_posterior = np.asarray(causal_posterior, dtype=np.float64)
-        predictive_distribution = np.asarray(predictive_distribution, dtype=np.float64)
-        acausal_posterior = np.asarray(acausal_posterior, dtype=np.float64)
-
-    return {
-        "causal_posterior": causal_posterior,
-        "acausal_posterior": acausal_posterior,
-        "predictive_distribution": predictive_distribution,
-        "transition_matrix": transition_matrix,
-        "n_time": n_time,
-        "n_states": n_states,
-    }
-
-
-@pytest.fixture
-def design_matrix_data():
-    """Generate design matrix for non-stationary transition testing.
-
-    Returns
-    -------
-    dict
-        Contains design_matrix, transition_coefficients for testing.
-    """
-    rng = np.random.default_rng(43)
-    n_time, n_coefficients, n_states = 50, 3, 4
-
-    # Create design matrix with intercept and two covariates
-    design_matrix = np.column_stack(
-        [
-            np.ones(n_time),
-            np.linspace(0, 1, n_time),
-            np.sin(np.linspace(0, 2 * np.pi, n_time)),
-        ]
-    )
-
-    # Initialize coefficients (small values to avoid extreme probabilities)
-    transition_coefficients = (
-        rng.standard_normal((n_coefficients, n_states, n_states - 1)) * 0.1
-    )
-
-    return {
-        "design_matrix": design_matrix,
-        "transition_coefficients": transition_coefficients,
-        "n_time": n_time,
-        "n_coefficients": n_coefficients,
-        "n_states": n_states,
-    }

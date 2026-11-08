@@ -2,8 +2,6 @@
 
 import numpy as np
 import pytest
-from scipy.integrate import cumulative_trapezoid
-from scipy.stats import expon
 
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -149,16 +147,25 @@ def test_time_rescaling_trials_do_not_integrate_across_other_trials():
 
 
 @pytest.mark.unit
-def test_legacy_sorted_expected_counts_retains_existing_numerics():
-    counts = np.array([0.2, 0.5, 0.3, 0.8])
-    spikes = np.array([False, True, False, True])
-    cumulative = cumulative_trapezoid(counts, initial=0)
-    expected = expon.cdf(np.diff(np.r_[0.0, cumulative[spikes]]))
-    np.testing.assert_array_equal(
-        uniform_rescaled_ISIs(counts, spikes, adjust_for_short_trials=False), expected
+def test_expected_counts_integrate_a_linear_count_exactly():
+    """Per-bin expected counts ``a + b * i`` integrate analytically: the
+    trapezoid integral from bin 0 to bin ``i`` is ``a * i + b * i**2 / 2``,
+    and the residuals subtract the running sum ``a * (i + 1) + b * i * (i + 1) / 2``.
+    """
+    a, b = 0.2, 0.1
+    bins = np.arange(6)
+    counts = a + b * bins
+    spikes = np.isin(bins, [2, 5])
+    integral = a * bins + b * bins**2 / 2
+    expected_isi = np.diff(np.r_[0.0, integral[spikes]])  # 0.6, 1.65
+
+    np.testing.assert_allclose(
+        uniform_rescaled_ISIs(counts, spikes, adjust_for_short_trials=False),
+        -np.expm1(-expected_isi),
     )
-    np.testing.assert_array_equal(
-        point_process_residuals(counts, spikes), np.cumsum(spikes - counts)
+    np.testing.assert_allclose(
+        point_process_residuals(counts, spikes),
+        np.cumsum(spikes) - (a * (bins + 1) + b * bins * (bins + 1) / 2),
     )
 
 

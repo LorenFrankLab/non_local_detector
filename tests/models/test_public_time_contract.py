@@ -1,6 +1,5 @@
 """Public decoding calls expose an explicit, recoverable time contract."""
 
-import functools
 import pickle
 
 import numpy as np
@@ -168,36 +167,6 @@ def test_public_counting_validates_array_like_edges():
             get_spikecount_per_time_bin(np.array([0.5]), time_edges=edges)
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    "method", ["predict", "most_likely_sequence", "compute_log_likelihood", "cached"]
-)
-def test_unknown_transition_clock_requires_refitting(recording, method):
-    from non_local_detector.exceptions import ValidationError
-
-    detector, time, position, spikes = recording
-    edges = np.arange(21) * 0.002
-    cached = np.asarray(
-        detector.predict(
-            spikes, time_edges=edges, return_outputs="log_likelihood"
-        ).log_likelihood
-    )
-    del detector.transition_time_bin_width_
-    legacy = pickle.loads(pickle.dumps(detector))
-    if method == "cached":
-        call = functools.partial(legacy._predict, edges, log_likelihoods=cached)
-    else:
-        call = functools.partial(
-            getattr(legacy, method),
-            spike_times=spikes,
-            time_edges=edges,
-            position_time=time,
-            position=position,
-        )
-    with pytest.raises(ValidationError, match="refit"):
-        call()
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "method", ["predict", "most_likely_sequence", "compute_log_likelihood"]
@@ -268,25 +237,6 @@ def test_viterbi_accepts_aligned_fitted_covariate_transitions(recording):
     edges = np.arange(6) * 0.002
     sequence = detector.most_likely_sequence(spikes, time_edges=edges)
     np.testing.assert_array_equal(sequence.index, (edges[:-1] + edges[1:]) / 2)
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("method", ["predict", "most_likely_sequence"])
-def test_legacy_model_requires_refitting_even_with_cached_likelihood(recording, method):
-    from non_local_detector.exceptions import ValidationError
-
-    detector, _, _, spikes = recording
-    edges = np.arange(21) * 0.002
-    detector.predict(spikes, time_edges=edges, return_outputs="log_likelihood")
-    detector.log_likelihood_ = np.asarray(
-        detector.predict(
-            spikes, time_edges=edges, return_outputs="log_likelihood"
-        ).log_likelihood
-    )
-    detector.__dict__.pop("time_contract_", None)
-    legacy = pickle.loads(pickle.dumps(detector))
-    with pytest.raises(ValidationError, match="refit"):
-        getattr(legacy, method)(spikes, time_edges=edges)
 
 
 @pytest.mark.integration

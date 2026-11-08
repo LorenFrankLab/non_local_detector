@@ -30,6 +30,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.observation_models import ObservationModel
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import (
     ALGORITHMS,
     CLUSTERLESS_SIM_RATE,
@@ -124,10 +125,12 @@ def test_switching_the_algorithm_after_fit_raises(sorted_sim, fitted, switched):
     expected = _predict_sorted(detector, sorted_sim)
 
     detector.set_params(sorted_spikes_algorithm=switched)
-    with pytest.raises(ValidationError, match="refit") as error:
+    with pytest.raises(
+        ValidationError,
+        match=f"was fitted by '{fitted}', but sorted_spikes_algorithm is now "
+        f"'{switched}'; refit",
+    ):
         _predict_sorted(detector, sorted_sim)
-    assert fitted in str(error.value)
-    assert switched in str(error.value)
 
     detector.set_params(sorted_spikes_algorithm=fitted)
     restored = _predict_sorted(detector, sorted_sim)
@@ -233,12 +236,14 @@ def test_encoding_model_without_a_recorded_algorithm_raises(sorted_sim):
     detector = _fit_sorted("sorted_spikes_kde", sorted_sim)
     (encoding_model,) = detector.encoding_model_.values()
     del encoding_model["algorithm"]
-    with pytest.raises(ValidationError, match="refit") as error:
+    with pytest.raises(
+        ValidationError, match="does not record the algorithm that fitted it; refit"
+    ) as error:
         _predict_sorted(detector, sorted_sim)
     assert "=None" not in str(error.value)
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_em_refit_does_not_go_through_the_public_fit_encoding_model(
     family, sorted_sim, clusterless_sim, monkeypatch
@@ -323,6 +328,12 @@ def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
     }
     for key in set(entry) - _PRE_ALGORITHM_ENCODING_KEYS[algorithm]:
         del entry[key]
+    # The diffusion and MRF fits then also stored their log interior fields.
+    if "interior_log_place_fields" in _PRE_ALGORITHM_ENCODING_KEYS[algorithm]:
+        interior = np.asarray(entry["is_track_interior"])
+        entry["interior_log_place_fields"] = np.log(
+            np.asarray(entry["place_fields"])[:, interior]
+        )
 
     restored = pickle.loads(pickle.dumps(detector))
 

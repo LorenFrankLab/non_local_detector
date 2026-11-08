@@ -1,9 +1,11 @@
-"""Declared tracking endpoints are independent of samples outside the segment."""
+"""Every backend recovers the declared rate when tracking is NaN outside the
+declared segment.
+
+The ``EncodingSupport`` cases are in ``tests/test_encoding_time.py``.
+"""
 
 import numpy as np
 import pytest
-
-from non_local_detector.encoding_time import EncodingSupport
 
 pytestmark = [
     # Tiny synthetic fixtures: a small position_std and zero-rate electrodes are
@@ -19,50 +21,6 @@ pytestmark = [
         "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
     ),
 ]
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("side", ["left", "right", "both"])
-def test_outside_nan_does_not_shorten_declared_tracking_support(side):
-    time = np.arange(-1.0, 4.0)
-    position = np.zeros((5, 1))
-    if side in ("left", "both"):
-        position[0] = np.nan
-    if side in ("right", "both"):
-        position[-1] = np.nan
-    support = EncodingSupport(time, position, valid_position_intervals=[[-0.75, 2.75]])
-    np.testing.assert_allclose(support.exposure, [0.0, 1.25, 1.0, 1.25, 0.0])
-    events = np.array([-0.6, 0.0, 1.0, 2.0, 2.6])
-    np.testing.assert_array_equal(support.contains(events), np.ones(5, dtype=bool))
-    assert support.event_counts(events, np.ones(5)).sum() == 5.0
-
-
-@pytest.mark.unit
-def test_declared_interval_still_splits_at_internal_nan_samples():
-    time = np.arange(5.0)
-    position = np.zeros((5, 1))
-    position[2] = np.nan
-    support = EncodingSupport(time, position, valid_position_intervals=[[-0.5, 4.5]])
-    np.testing.assert_allclose(support.exposure, [1.0, 1.0, 0.0, 1.0, 1.0])
-    np.testing.assert_array_equal(
-        support.contains(np.array([1.25, 1.6, 2.4, 2.75])),
-        [True, False, False, True],
-    )
-
-
-@pytest.mark.unit
-def test_acquisition_clip_keeps_original_basis_inside_declared_interval():
-    support = EncodingSupport(
-        np.array([0.0, 1.0, 2.0]),
-        np.array([[0.0], [1.0], [np.nan]]),
-        valid_position_intervals=[[-0.5, 1.5]],
-        encoding_time_range=[0.0, 0.25],
-    )
-    np.testing.assert_allclose(support.exposure, [0.21875, 0.03125, 0.0])
-    np.testing.assert_allclose(
-        support.interpolate(np.array([0.0, 1.0, np.nan]), np.array([0.125])),
-        [0.125],
-    )
 
 
 @pytest.mark.integration

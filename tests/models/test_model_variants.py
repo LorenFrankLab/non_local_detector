@@ -1,12 +1,11 @@
-"""Tests for model variant classes (MultiEnvironment, NoSpikeContFrag).
+"""Tests for model variant classes (MultiEnvironment, ContFrag).
 
-These are thin wrappers around base detector classes. Tests focus on
-correct default parameter initialization since the fitting/predicting
-logic is tested via the base class tests.
+These are thin wrappers around base detector classes; their defaults are
+pinned in test_constructor_contract.py and fitting/predicting is tested via
+the base classes. These tests cover the variants' own behavior.
 """
 
 import numpy as np
-import pandas as pd
 import pytest
 import xarray as xr
 
@@ -15,12 +14,7 @@ from non_local_detector.models.cont_frag_model import (
     ContFragSortedSpikesClassifier,
 )
 from non_local_detector.models.multienvironment_model import (
-    MultiEnvironmentClusterlessClassifier,
     MultiEnvironmentSortedSpikesClassifier,
-)
-from non_local_detector.models.nospike_cont_frag_model import (
-    NoSpikeContFragClusterlessClassifier,
-    NoSpikeContFragSortedSpikesClassifier,
 )
 from tests.conftest import make_state_bins_results
 
@@ -66,78 +60,13 @@ def _make_cont_frag_results(
 
 
 @pytest.mark.unit
-class TestMultiEnvironmentDefaults:
-    """Test default parameter construction for multi-environment models."""
-
-    def test_sorted_spikes_default_state_names(self):
-        """Should have 2 environment states by default."""
-        model = MultiEnvironmentSortedSpikesClassifier()
-        assert len(model.state_names) == 2
-
-    def test_sorted_spikes_observation_models_have_environment_names(self):
-        """Each observation model should reference an environment."""
-        model = MultiEnvironmentSortedSpikesClassifier()
-        env_names = {obs.environment_name for obs in model.observation_models}
-        assert env_names == {"env1", "env2"}
-
-    def test_custom_initial_conditions_override(self):
-        """Custom initial conditions should override defaults."""
-        ic = np.array([0.5, 0.5])
-        model = MultiEnvironmentSortedSpikesClassifier(
-            discrete_initial_conditions=ic,
-        )
-        np.testing.assert_array_equal(model.discrete_initial_conditions, ic)
-
-
-@pytest.mark.unit
-class TestNoSpikeContFragDefaults:
-    """Test default parameter construction for no-spike cont-frag models."""
-
-    def test_sorted_spikes_three_states(self):
-        """Should have 3 states: No-Spike, Continuous, Fragmented."""
-        model = NoSpikeContFragSortedSpikesClassifier()
-        assert len(model.state_names) == 3
-
-    def test_sorted_spikes_has_no_spike_observation(self):
-        """Should have at least one no-spike observation model."""
-        model = NoSpikeContFragSortedSpikesClassifier()
-        assert any(obs.is_no_spike for obs in model.observation_models)
-
-    def test_clusterless_has_no_spike_observation(self):
-        """Clusterless variant should also have a no-spike observation."""
-        model = NoSpikeContFragClusterlessClassifier()
-        assert any(obs.is_no_spike for obs in model.observation_models)
-
-
-@pytest.mark.unit
-class TestVariantSharedDefaults:
-    """Default checks shared by the multi-environment and no-spike variants."""
-
-    @pytest.mark.parametrize(
-        "model_cls",
-        [MultiEnvironmentSortedSpikesClassifier, NoSpikeContFragSortedSpikesClassifier],
-        ids=lambda cls: cls.__name__,
+def test_custom_initial_conditions_override():
+    """Custom initial conditions override the variant's defaults."""
+    ic = np.array([0.5, 0.5])
+    model = MultiEnvironmentSortedSpikesClassifier(
+        discrete_initial_conditions=ic,
     )
-    def test_sorted_spikes_initial_conditions_valid(self, model_cls):
-        """Initial conditions must be a valid probability distribution."""
-        model = model_cls()
-        ic = model.discrete_initial_conditions
-        assert np.all(ic >= 0)
-        assert np.isclose(ic.sum(), 1.0)
-
-    @pytest.mark.parametrize(
-        ("model_cls", "n_states"),
-        [
-            (MultiEnvironmentClusterlessClassifier, 2),
-            (NoSpikeContFragClusterlessClassifier, 3),
-        ],
-        ids=lambda v: v.__name__ if isinstance(v, type) else str(v),
-    )
-    def test_clusterless_default_construction(self, model_cls, n_states):
-        """Clusterless variant should construct with correct defaults."""
-        model = model_cls()
-        assert len(model.state_names) == n_states
-        assert np.isclose(model.discrete_initial_conditions.sum(), 1.0)
+    np.testing.assert_array_equal(model.discrete_initial_conditions, ic)
 
 
 @pytest.mark.unit
@@ -190,29 +119,3 @@ class TestContFragGetPosterior:
             np.testing.assert_allclose(state_probs.sum("state").values, 1.0, atol=1e-10)
             # The documented selection API keeps working.
             assert state_probs.sel(state="Continuous").shape == (n_time,)
-
-    def test_cont_frag_get_posterior_raises_without_position_dim(self):
-        """If no dim names a position, the marginalization target is empty;
-        ``unstacked.sum([])`` would silently return the full per-bin array, so
-        the method must instead raise rather than produce a wrong-shaped result.
-        """
-        n_time = 4
-        # A MultiIndex over ("state", "foo") — "foo" is not a position dim.
-        mindex = pd.MultiIndex.from_arrays(
-            [
-                np.array(["Continuous", "Continuous", "Fragmented", "Fragmented"]),
-                np.array([0.0, 1.0, 0.0, 1.0]),
-            ],
-            names=("state", "foo"),
-        )
-        raw = np.random.default_rng(0).random((n_time, len(mindex)))
-        posterior = raw / raw.sum(axis=1, keepdims=True)
-        mindex_coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
-        results = xr.Dataset(
-            data_vars={"acausal_posterior": (("time", "state_bins"), posterior)},
-            coords={"time": np.arange(n_time), **mindex_coords},
-        )
-
-        for cls in (ContFragSortedSpikesClassifier, ContFragClusterlessClassifier):
-            with pytest.raises(ValueError, match="no position dimension"):
-                cls.get_posterior(results)

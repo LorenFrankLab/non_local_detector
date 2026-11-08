@@ -11,7 +11,6 @@ original. Covariates are stored as numeric or string ``.npy`` arrays
 
 import json
 import pickle
-import time
 import zipfile
 
 import numpy as np
@@ -391,21 +390,21 @@ def test_an_unfitted_model_with_a_trusted_formula_loads_without_warning(
 
 
 def test_a_stored_spline_size_beyond_the_caps_is_not_evaluated(
-    fitted, sorted_recording, tmp_path, no_patsy
+    fitted, sorted_recording, tmp_path, no_patsy, monkeypatch
 ):
     """A file cannot ask for an unbounded design: a spline of ten million
-    columns is refused before patsy builds it."""
+    columns is refused before patsy builds it, or its spline basis."""
     path = tmp_path / "model.nld"
     fitted.save_model(path)
-    _with_formula(path, "1 + bs(speed, df=10**7)")
+    _with_formula(path, "1 + bs(speed, df=10000000)")
+    monkeypatch.setattr(patsy.splines.BS, "memorize_chunk", _patsy_must_not_run)
+    monkeypatch.setattr(patsy.splines.BS, "transform", _patsy_must_not_run)
 
-    start = time.perf_counter()
     with pytest.warns(ParameterWarning, match="trust_formulas=True"):
         loaded = nld.NonLocalSortedSpikesDetector.load_model(path)
 
-    assert time.perf_counter() - start < 5.0
     assert loaded.discrete_transition_type.formula == UntrustedFormula(
-        "1 + bs(speed, df=10**7)"
+        "1 + bs(speed, df=10000000)"
     )
     with pytest.raises(ValidationError, match="trust_formulas=True"):
         _decode(loaded, sorted_recording)

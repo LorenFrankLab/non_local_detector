@@ -74,7 +74,9 @@ class TestSetParams:
     @pytest.mark.parametrize("sampling_frequency", [-1, 0.0, float("nan")])
     def test_invalid_value_raises_and_leaves_params(self, sampling_frequency):
         detector = NonLocalSortedSpikesDetector()
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="Invalid value for sampling_frequency"
+        ):
             detector.set_params(sampling_frequency=sampling_frequency)
         assert detector.sampling_frequency == 500.0
 
@@ -110,13 +112,15 @@ class TestSetParams:
     def test_changing_number_of_states_alone_raises_and_leaves_detector(self):
         detector = NonLocalSortedSpikesDetector()
         before = detector.get_params(deep=False)
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="Mismatch between discrete initial conditions"
+        ):
             detector.set_params(discrete_initial_conditions=np.array([1.0, 0.0]))
         for name, value in before.items():
             assert getattr(detector, name) is value
 
     def test_unknown_parameter_raises(self):
-        with pytest.raises(ValueError, match="Invalid parameter"):
+        with pytest.raises(ValidationError, match="Invalid parameter"):
             NonLocalSortedSpikesDetector().set_params(not_a_parameter=1)
 
     def test_fitted_attributes_are_untouched(self):

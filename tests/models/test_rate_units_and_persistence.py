@@ -4,20 +4,32 @@
   is minus the rate times the bin width.
 - Every backend keeps its units and decode results through ``save_model`` /
   ``load_model``.
-- An encoding entry with missing or unknown units is rejected, before any
-  likelihood work, with a hint to refit; ``estimate_parameters`` refits such a
-  model from the original recording.
+- A saved model with a legacy or unknown time contract or invalid
+  transition-clock provenance is rejected, before any likelihood work, with a
+  hint to refit; ``estimate_parameters`` refits such a model from the original
+  recording.
 """
 
 import copy
-import functools
+import pickle
 
 import numpy as np
 import pytest
 import xarray as xr
 
-from non_local_detector.exceptions import ValidationError
-from tests.models._helpers import ALGORITHMS, _decoder
+from non_local_detector.exceptions import NotFittedError, ValidationError
+from non_local_detector.models._input_validation import _decode_time_edges
+from non_local_detector.models.base import _DetectorBase
+from tests.conftest import em_stops_at_max_iter
+from tests.models._helpers import (
+    ALGORITHMS,
+    ENTRY_POINTS,
+    _assert_unchanged,
+    _decoder,
+    _snapshot,
+    call_entry_point,
+    forbid_likelihood_and_hmm_work,
+)
 
 
 @pytest.mark.integration
@@ -115,54 +127,101 @@ def contract_recording(request):
     return _decoder(request.param).fit(time, position, *args), time, position, args
 
 
+def _set_contract_version(detector):
+    detector.time_contract_ = {**detector.time_contract_, "version": 999}
+
+
+def _delete_transition_clock(detector):
+    del detector.transition_time_bin_width_
+
+
+def _set_nan_transition_clock(detector):
+    detector.transition_time_bin_width_ = np.nan
+
+
+_UNKNOWN_CONTRACT = "Saved model has a legacy or unknown time contract"
+_INVALID_CLOCK = "Saved model has invalid transition clock provenance"
+
+# One corruption of a fitted model per refusal, and the cause its refit error
+# names. A missing time contract, and missing or unknown encoding units, are
+# refused at every entry point in test_model_unit_compatibility.
+_CORRUPTIONS = {
+    "unknown-contract-version": (_set_contract_version, _UNKNOWN_CONTRACT),
+    "missing-transition-clock": (_delete_transition_clock, _UNKNOWN_CONTRACT),
+    # Unknown provenance cannot disable the learned-width comparison.
+    "nan-transition-clock": (_set_nan_transition_clock, _INVALID_CLOCK),
+}
+
+
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "corruption", ["missing_entry_units", "unknown_entry_units", "unknown_version"]
-)
-@pytest.mark.parametrize("entry_point", ["predict", "viterbi", "likelihood", "cached"])
-def test_unknown_contract_is_rejected_before_likelihood(
+@pytest.mark.parametrize("corruption", list(_CORRUPTIONS))
+@pytest.mark.parametrize("entry_point", ENTRY_POINTS)
+def test_stale_or_unknown_contract_is_rejected_before_likelihood(
     contract_recording, corruption, entry_point, monkeypatch
 ):
-    """An apparently current model cannot hide an incompatible encoding entry."""
+    """A saved model whose time contract or transition clock cannot be trusted
+    is refused, naming the cause, before any likelihood work and without
+    changing the model. It is pickled after the corruption, as a stored model
+    would be, so unpickling must not repair it."""
     fitted, time, position, args = contract_recording
+    corrupt, message = _CORRUPTIONS[corruption]
+    corrupted = copy.deepcopy(fitted)
+    corrupt(corrupted)
+    detector = pickle.loads(pickle.dumps(corrupted))
+    forbid_likelihood_and_hmm_work(monkeypatch, detector)
+    snapshot = _snapshot(detector)
+    with pytest.raises(ValidationError, match=f"{message}; refit before decoding"):
+        call_entry_point(
+            detector, entry_point, time, position, args, np.arange(6) * 0.002
+        )
+    _assert_unchanged(detector, snapshot)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("width", "tolerance"),
+    [
+        (np.nan, 0.0),
+        (np.inf, 0.0),
+        # A negative width would also exceed the tolerance bound; zero does not.
+        (0.0, 0.0),
+        # An infinite tolerance would also exceed the bound; NaN does not.
+        (0.002, np.nan),
+        (0.002, -1.0),
+        (0.002, 1.0),  # above the timestamp-precision bound for a 2 ms width
+    ],
+    ids=[
+        "nan-width",
+        "infinite-width",
+        "zero-width",
+        "nan-tolerance",
+        "negative-tolerance",
+        "tolerance-above-bound",
+    ],
+)
+def test_invalid_transition_clock_provenance_is_refused(width, tolerance):
+    """The learned bin width must be finite and positive, with a finite
+    nonnegative tolerance within the precision bound, for edges of that width."""
+    with pytest.raises(ValidationError, match=f"{_INVALID_CLOCK}; refit"):
+        _decode_time_edges(np.arange(6) * 0.002, width, tolerance)
+
+
+@pytest.mark.unit
+def test_base_time_contract_check_fails_closed(contract_recording):
+    """A subclass that does not override the hook still gets the contract check."""
+    fitted, *_ = contract_recording
+    with pytest.raises(NotFittedError, match="not fitted"):
+        _DetectorBase._validate_time_contract(_decoder("sorted_spikes_kde"))
     detector = copy.deepcopy(fitted)
-    (encoding,) = detector.encoding_model_.values()
-    if corruption == "missing_entry_units":
-        del encoding["rate_units"]
-    elif corruption == "unknown_entry_units":
-        encoding["rate_units"] = "per_position_sample"
-    else:
-        detector.time_contract_["version"] = 999
-    edges = np.arange(6) * 0.002
-
-    if entry_point != "likelihood":
-
-        def unexpected_likelihood(*args, **kwargs):
-            pytest.fail("Unknown units must fail before evaluating likelihoods")
-
-        monkeypatch.setattr(detector, "compute_log_likelihood", unexpected_likelihood)
-
-    if entry_point == "predict":
-        call = functools.partial(detector.predict, *args, time_edges=edges)
-    elif entry_point == "viterbi":
-        call = functools.partial(detector.most_likely_sequence, *args, time_edges=edges)
-    elif entry_point == "likelihood":
-        call = functools.partial(
-            detector.compute_log_likelihood, time, position, *args, time_edges=edges
-        )
-    else:
-        call = functools.partial(
-            detector._predict,
-            edges,
-            log_likelihoods=np.zeros((5, detector.is_track_interior_state_bins_.sum())),
-        )
-    with pytest.raises(ValidationError, match="refit"):
-        call()
+    _DetectorBase._validate_time_contract(detector)
+    detector.time_contract_ = {**detector.time_contract_, "rate_units": "per_bin"}
+    with pytest.raises(ValidationError, match=f"{_UNKNOWN_CONTRACT}; refit"):
+        _DetectorBase._validate_time_contract(detector)
 
 
 @pytest.mark.integration
 # max_iter=1 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_estimation_refits_legacy_contract_before_decoding(contract_recording):
     """The supported recovery path fits physical units from original recording."""
     fitted, time, position, args = contract_recording

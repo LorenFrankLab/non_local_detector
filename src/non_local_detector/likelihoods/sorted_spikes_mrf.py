@@ -923,7 +923,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     encoding_model : SortedSpikesMRFEncodingModel
         The same keys as ``sorted_spikes_diffusion`` -- ``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` (FULL-GRID), ``no_spike_part_log_likelihood``,
-        ``interior_log_place_fields``, ``is_track_interior``, ``node_order``,
+        ``is_track_interior``, ``node_order``,
         ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar``,
         ``rate_units``, ``encoding_exposure_seconds``, with ``algorithm``
         ``"sorted_spikes_mrf"`` -- plus MRF diagnostics:
@@ -1101,8 +1101,8 @@ def fit_sorted_spikes_mrf_encoding_model(
             rate_interior, coeffs = _floor_unoccupied_components(
                 rate_interior, coeffs, unoccupied_bins, basis
             )
-    place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
-        assemble_place_fields(rate_interior, node_order, n_total_bins)
+    place_fields, no_spike_part_log_likelihood = assemble_place_fields(
+        rate_interior, node_order, n_total_bins
     )
 
     return {
@@ -1113,7 +1113,6 @@ def fit_sorted_spikes_mrf_encoding_model(
         "mean_rates": np.asarray(mean_rates),
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "interior_log_place_fields": interior_log_place_fields,
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
@@ -1151,7 +1150,6 @@ def predict_sorted_spikes_mrf_log_likelihood(
     local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
     is_local: bool = False,
-    interior_log_place_fields: jax.Array | None = None,
     row_slice: slice | None = None,
     time_edges: np.ndarray,
     algorithm: str | None = None,
@@ -1211,8 +1209,6 @@ def predict_sorted_spikes_mrf_log_likelihood(
         Turn off the progress bar, by default False.
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.
-    interior_log_place_fields : jax.Array, shape (n_neurons, n_interior), optional
-        Log of the interior place fields, by default None.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
     time_edges : np.ndarray, shape (n_bins + 1,)
@@ -1260,7 +1256,6 @@ def predict_sorted_spikes_mrf_log_likelihood(
         local_interpolation=local_interpolation,
         disable_progress_bar=disable_progress_bar,
         is_local=is_local,
-        interior_log_place_fields=interior_log_place_fields,
         row_slice=row_slice,
         time_edges=time_edges,
         algorithm=algorithm,

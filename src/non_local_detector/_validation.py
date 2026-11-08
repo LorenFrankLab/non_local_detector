@@ -453,44 +453,6 @@ def ensure_monotonic_increasing(
             )
 
 
-def ensure_matching_lengths(arr1: Any, arr2: Any, name1: str, name2: str) -> None:
-    """Verify two arrays have matching lengths.
-
-    Parameters
-    ----------
-    arr1 : array-like
-        First array
-    arr2 : array-like
-        Second array
-    name1 : str
-        Name of first array for error messages
-    name2 : str
-        Name of second array for error messages
-
-    Raises
-    ------
-    ValidationError
-        If arrays have different lengths
-
-    Examples
-    --------
-    >>> ensure_matching_lengths(np.array([1, 2, 3]), np.array([4, 5, 6]), "pos", "time")  # OK
-    >>> ensure_matching_lengths(np.array([1, 2]), np.array([4, 5, 6]), "pos", "time")  # Raises
-    """
-    len1 = len(arr1)
-    len2 = len(arr2)
-
-    if len1 != len2:
-        msg = f"Length mismatch between {name1} and {name2}"
-        raise ValidationError(
-            msg,
-            expected=f"{name2} with length {len1}",
-            got=f"{name2} with length {len2}",
-            hint=f"Ensure {name1} and {name2} have the same number of time points",
-            example=f"    # Both should have same length\n    len({name1}) = {len1}\n    len({name2}) = {len2}  # Mismatch!",
-        )
-
-
 def ensure_networkx_graph(value: Any, name: str) -> None:
     """Verify value is a NetworkX Graph.
 

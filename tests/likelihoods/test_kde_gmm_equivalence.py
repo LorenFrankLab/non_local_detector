@@ -278,10 +278,12 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
     assert ll_kde.shape == ll_gmm.shape == expected_shape
     assert np.all(np.isfinite(ll_kde))
     assert np.all(np.isfinite(ll_gmm))
+    # Measured max|diff| 2.3e-5 non-local, 2.9e-6 local, at |ll| up to ~10; a
+    # mean-rate or normalization mismatch shifts ll by more than 1e-2.
     np.testing.assert_allclose(
         np.asarray(ll_gmm),
         np.asarray(ll_kde),
-        rtol=1e-3,
-        atol=1e-2,
+        rtol=1e-5,
+        atol=5e-4,
         err_msg="End-to-end KDE and bandwidth-matched GMM likelihoods diverge",
     )

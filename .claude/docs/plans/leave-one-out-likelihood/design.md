@@ -391,7 +391,8 @@ applied to its own models.
 - Switch on, overlapping data: each matched spike's log intensity equals a brute-force
   reference, on every path in constraint 3. Use the tolerance the existing path-parity
   tests use (`tests/likelihoods/test_clusterless_kde_streaming.py`,
-  `tests/integration/test_clusterless_kde_parity.py`); do not add a looser one.
+  `test_gemm_matches_float64_reference_where_linear_kernels_underflow` in
+  `tests/likelihoods/test_log_kde_batch_invariance.py`); do not add a looser one.
   - The reference is the same fitted model with that encoding spike's weight set to
     zero **and** the electrode's mean rate multiplied by
     `(sum_w - w_j) / sum_w`. Zeroing the weight alone renormalizes the density by the

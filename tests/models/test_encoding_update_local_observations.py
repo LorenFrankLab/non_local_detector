@@ -4,11 +4,12 @@ import numpy as np
 import pytest
 
 from non_local_detector import Environment, SortedSpikesDecoder
+from tests.conftest import em_stops_at_max_iter
+from tests.models._helpers import record_refit_weights
 
-# These tests cap max_iter for speed, so EM stops before convergence.
 pytestmark = [
     pytest.mark.unit,
-    pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning"),
+    em_stops_at_max_iter,
 ]
 
 
@@ -41,10 +42,8 @@ def test_encoding_update_uses_local_observation_posterior(
         ]
         model.discrete_initial_conditions = np.array([0.5, 0.5, 0, 0])
     posterior_rows = []
-    encoding_weights = []
     original_predict = model._predict
     original_checkpointed_e_step = model._checkpointed_e_step
-    original_refit_encoding = model._refit_encoding_model
 
     def record_prediction(*args, **kwargs):
         result = original_predict(*args, **kwargs)
@@ -56,13 +55,9 @@ def test_encoding_update_uses_local_observation_posterior(
         posterior_rows.append(result.dataset.acausal_state_probabilities.values)
         return result
 
-    def record_encoding(weights, encoding_fit_arguments):
-        encoding_weights.append(np.array(weights))
-        return original_refit_encoding(weights, encoding_fit_arguments)
-
     monkeypatch.setattr(model, "_predict", record_prediction)
     monkeypatch.setattr(model, "_checkpointed_e_step", record_checkpointed_e_step)
-    monkeypatch.setattr(model, "_refit_encoding_model", record_encoding)
+    encoding_weights = record_refit_weights(monkeypatch, model)
     edges = predict_kwargs["time_edges"]
     model.estimate_parameters(
         **fit_kwargs,
@@ -98,14 +93,7 @@ def test_encoding_update_skips_models_without_local_observations(monkeypatch):
         infer_track_interior=False,
         sampling_frequency=50.0,  # the decode edges below are 20 ms wide
     )
-    weights = []
-    original_refit_encoding = model._refit_encoding_model
-
-    def record_encoding(local_weights, encoding_fit_arguments):
-        weights.append(local_weights)
-        return original_refit_encoding(local_weights, encoding_fit_arguments)
-
-    monkeypatch.setattr(model, "_refit_encoding_model", record_encoding)
+    weights = record_refit_weights(monkeypatch, model)
     model.estimate_parameters(
         position_time=time,
         position=np.linspace(1, 9, len(time)),

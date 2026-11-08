@@ -1,4 +1,4 @@
-"""Test parity and performance of GEMM vs loop-based mark kernel computation."""
+"""Mark kernel GEMM and the GEMM joint mark intensity match loop and float64 references."""
 
 import jax.numpy as jnp
 import numpy as np
@@ -11,6 +11,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
 from non_local_detector.likelihoods.common import (
     compute_log_mark_kernel_gemm,
 )
+from tests.likelihoods._kde_reference import reference_log_joint_mark_intensity
 from tests.likelihoods.conftest import realistic_log_background
 
 pytestmark = pytest.mark.unit
@@ -83,41 +84,26 @@ def test_gemm_vs_loop_mark_kernel(synthetic_waveform_data):
     )
 
 
-def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
-    """Test that estimate_log_joint_mark_intensity produces same results with GEMM vs loop."""
-    log_background = realistic_log_background(
-        synthetic_waveform_data["decoding_features"]
+def test_estimate_intensity_gemm_matches_float64_reference(synthetic_waveform_data):
+    """The GEMM joint intensity matches a float64 logsumexp of the same kernels."""
+    args = (
+        synthetic_waveform_data["decoding_features"],
+        synthetic_waveform_data["encoding_features"],
+        synthetic_waveform_data["waveform_stds"],
+        synthetic_waveform_data["occupancy"],
+        synthetic_waveform_data["mean_rate"],
+        synthetic_waveform_data["log_position_distance"],
     )
-    # Compute with GEMM (default)
+    log_background = realistic_log_background(args[0])
     log_joint_gemm = estimate_log_joint_mark_intensity(
-        synthetic_waveform_data["decoding_features"],
-        synthetic_waveform_data["encoding_features"],
-        synthetic_waveform_data["waveform_stds"],
-        synthetic_waveform_data["occupancy"],
-        synthetic_waveform_data["mean_rate"],
-        synthetic_waveform_data["log_position_distance"],
-        use_gemm=True,
-        log_background=log_background,
+        *args, log_background=log_background
     )
+    reference = reference_log_joint_mark_intensity(*args, log_background=log_background)
 
-    # Compute with loop
-    log_joint_loop = estimate_log_joint_mark_intensity(
-        synthetic_waveform_data["decoding_features"],
-        synthetic_waveform_data["encoding_features"],
-        synthetic_waveform_data["waveform_stds"],
-        synthetic_waveform_data["occupancy"],
-        synthetic_waveform_data["mean_rate"],
-        synthetic_waveform_data["log_position_distance"],
-        use_gemm=False,
-        log_background=log_background,
-    )
-
-    # Should produce identical results
-    assert log_joint_gemm.shape == log_joint_loop.shape
-    assert np.allclose(log_joint_gemm, log_joint_loop, rtol=1e-5, atol=1e-6), (
-        f"GEMM and loop intensity estimates differ: "
-        f"max diff = {np.abs(log_joint_gemm - log_joint_loop).max()}, "
-        f"mean diff = {np.abs(log_joint_gemm - log_joint_loop).mean()}"
+    assert log_joint_gemm.shape == reference.shape
+    assert np.allclose(log_joint_gemm, reference, rtol=1e-5, atol=1e-6), (
+        f"GEMM and float64 reference differ: "
+        f"max diff = {np.abs(log_joint_gemm - reference).max()}"
     )
 
 

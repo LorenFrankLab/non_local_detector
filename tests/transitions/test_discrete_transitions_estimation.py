@@ -46,7 +46,107 @@ from tests._transition_statistics import (
     expanded_counts,
     expanded_responses,
 )
-from tests.conftest import assert_stochastic_matrix
+from tests.conftest import (
+    assert_stochastic_matrix,
+    em_stops_at_max_iter,
+    precision_mode,
+)
+
+
+@pytest.fixture
+def posterior_data():
+    """Filtered, predictive and smoothed posteriors of a small sticky HMM.
+
+    A 4-state hidden sequence of 50 steps is sampled from ``transition_matrix``
+    (0.7 on the diagonal) and observed through noisy categorical emissions
+    (the true state is reported with probability 0.6). The posteriors are the
+    float64 outputs of :func:`non_local_detector.core.filter` and
+    :func:`non_local_detector.core.smoother` for that model, so they satisfy
+    ``predictive_distribution[t] = causal_posterior[t - 1] @ transition_matrix``
+    (``predictive_distribution[0]`` is the uniform initial distribution) and
+    ``acausal_posterior`` is the matching smoothed posterior.
+
+    Returns
+    -------
+    dict
+        ``causal_posterior``, ``predictive_distribution``,
+        ``acausal_posterior`` : ndarray, shape (n_time, n_states)
+        ``transition_matrix`` : ndarray, shape (n_states, n_states)
+        ``n_time``, ``n_states`` : int
+    """
+    from non_local_detector.core import filter as hmm_filter
+    from non_local_detector.core import smoother
+
+    rng = np.random.default_rng(42)
+    n_time, n_states = 50, 4
+    transition_matrix = np.full((n_states, n_states), 0.1)
+    np.fill_diagonal(transition_matrix, 0.7)
+    initial_distribution = np.full(n_states, 1.0 / n_states)
+    emission = np.full((n_states, n_states), 0.4 / (n_states - 1))
+    np.fill_diagonal(emission, 0.6)
+
+    states = np.empty(n_time, dtype=int)
+    states[0] = rng.choice(n_states, p=initial_distribution)
+    for t in range(1, n_time):
+        states[t] = rng.choice(n_states, p=transition_matrix[states[t - 1]])
+    observations = np.array([rng.choice(n_states, p=emission[s]) for s in states])
+    # log P(observation_t | state_t = k), shape (n_time, n_states)
+    log_likelihoods = np.log(emission[:, observations].T)
+
+    with precision_mode(True):
+        _, (causal_posterior, predictive_distribution) = hmm_filter(
+            jnp.asarray(initial_distribution),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(log_likelihoods),
+        )
+        acausal_posterior = smoother(jnp.asarray(transition_matrix), causal_posterior)
+        causal_posterior = np.asarray(causal_posterior, dtype=np.float64)
+        predictive_distribution = np.asarray(predictive_distribution, dtype=np.float64)
+        acausal_posterior = np.asarray(acausal_posterior, dtype=np.float64)
+
+    return {
+        "causal_posterior": causal_posterior,
+        "acausal_posterior": acausal_posterior,
+        "predictive_distribution": predictive_distribution,
+        "transition_matrix": transition_matrix,
+        "n_time": n_time,
+        "n_states": n_states,
+    }
+
+
+@pytest.fixture
+def design_matrix_data():
+    """Generate design matrix for non-stationary transition testing.
+
+    Returns
+    -------
+    dict
+        Contains design_matrix, transition_coefficients for testing.
+    """
+    rng = np.random.default_rng(43)
+    n_time, n_coefficients, n_states = 50, 3, 4
+
+    # Create design matrix with intercept and two covariates
+    design_matrix = np.column_stack(
+        [
+            np.ones(n_time),
+            np.linspace(0, 1, n_time),
+            np.sin(np.linspace(0, 2 * np.pi, n_time)),
+        ]
+    )
+
+    # Initialize coefficients (small values to avoid extreme probabilities)
+    transition_coefficients = (
+        rng.standard_normal((n_coefficients, n_states, n_states - 1)) * 0.1
+    )
+
+    return {
+        "design_matrix": design_matrix,
+        "transition_coefficients": transition_coefficients,
+        "n_time": n_time,
+        "n_coefficients": n_coefficients,
+        "n_states": n_states,
+    }
 
 
 class _FixedTransition:
@@ -883,10 +983,7 @@ class TestExpandedDiscreteTransitionCounts:
 class TestExpandedTransitionMstepEndToEnd:
     """Detector-level tests for exact expanded-state transition learning."""
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_simulated_likelihoods_shift_learned_transition_to_matching_source(self):
         """The learned matrix should credit the source with matching target bins."""
         log_likelihoods = np.full((2, 6), -1000.0)
@@ -915,10 +1012,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert learned_transition[0, 2] < 0.5
         assert_stochastic_matrix(learned_transition)
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_simulated_hmm_recovers_stationary_discrete_transition(self):
         """With informative simulated emissions, the M-step recovers A."""
         learned_transition, empirical_transition, true_discrete_transition, _ = (
@@ -941,10 +1035,7 @@ class TestExpandedTransitionMstepEndToEnd:
             atol=0.04,
         )
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_recovery_improves_with_emission_strength_and_sample_size(self):
         """Recovery should improve as emissions and sample size become stronger."""
         emission_errors = []
@@ -978,10 +1069,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert long_error < short_error
         assert long_error < 0.02
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_exact_discrete_transition_em_is_monotonic(self):
         """Repeated exact transition M-steps should not decrease likelihood."""
         _, _, _, marginal_log_likelihoods = _estimate_simulated_discrete_transition(
@@ -997,10 +1085,7 @@ class TestExpandedTransitionMstepEndToEnd:
         # (LL magnitude ~700, float32 epsilon ~1e-7 → ~1e-4 noise).
         assert np.all(np.diff(marginal_log_likelihoods) >= -1e-3)
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_nonstationary_detector_recovers_covariate_direction(self):
         """Exact responses should learn a simple covariate-dependent transition."""
         n_time = 1_200
@@ -1027,10 +1112,7 @@ class TestExpandedTransitionMstepEndToEnd:
         # 1 EM iteration + 1 final E-step after the loop
         assert len(marginal_log_likelihoods) == 2
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_nonstationary_recovery_improves_with_emission_strength(self):
         """Nonstationary recovery should improve with more informative emissions."""
         weak_learned, weak_true, weak_covariate, _ = (
@@ -1062,10 +1144,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert strong_error < weak_error
         assert strong_error < 0.10
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_nonstationary_strong_emissions_do_not_freeze_rows(self):
         """Strong emissions should still recover rows that are nearly separated."""
         learned_transition, true_transition, covariate, _ = (
@@ -1087,20 +1166,21 @@ class TestExpandedTransitionMstepEndToEnd:
         ("formula", "n_terms"),
         [
             ("1 + quantile_bs(covariate, n_knots=6)", 1),
-            # A cyclic covariate the transitions do not depend on.
-            (
+            # A cyclic covariate the transitions do not depend on. REML drives
+            # one row's smoothness for it to ~6e5 (a near-singular penalized
+            # problem), so the transition optimizer takes ~1100 inner iterations
+            # and the case runs ~20 s against ~2 s without the term.
+            pytest.param(
                 (
                     "1 + quantile_bs(covariate, n_knots=6)"
                     " + cyclic_bs(phase, lower=0.0, upper=6.283185307179586)"
                 ),
                 2,
+                marks=pytest.mark.slow,
             ),
         ],
     )
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_reml_smoothed_detector_is_monotone_and_recovers_transitions(
         self, formula, n_terms
     ):
@@ -1185,10 +1265,7 @@ def _estimate_transitions(detector, **kwargs):
 class TestRemlInsideEM:
     """EM's bookkeeping when REML changes the prior inside each M-step."""
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     # The M-step is monkeypatched to jump, so EM's penalized objective decreases,
     # at an iteration and, depending on rounding, at the final E-step too.
     @pytest.mark.filterwarnings("ignore:EM iteration \\d+:UserWarning")
@@ -1316,10 +1393,7 @@ class TestTransitionIntervals:
         with pytest.raises(ValueError, match="do not depend on covariates"):
             detector.discrete_transition_intervals({"covariate": np.zeros(3)})
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_intervals_need_an_m_step(self):
         detector, _, _ = _reml_detector()
         _estimate_transitions(detector, max_iter=0)
@@ -1328,10 +1402,7 @@ class TestTransitionIntervals:
                 {"covariate": np.zeros(3), "phase": np.zeros(3)}
             )
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_frozen_rows_have_zero_width_intervals(self):
         detector, _, _ = _reml_detector(
             frozen_discrete_transition_rows=[False, True, False]
@@ -2275,26 +2346,6 @@ class TestEstimateStationaryStateTransition:
 @pytest.mark.unit
 class TestPriorWeightScaling:
     """Test data-adaptive prior weight for stationary transition estimation."""
-
-    def test_prior_weight_zero_uses_legacy_prior(self, posterior_data):
-        """prior_weight=0 should use the legacy fixed-count prior (unchanged behavior)."""
-        post = posterior_data
-        joint_sum = _joint_sum_from_post(post)
-
-        legacy_result = estimate_stationary_state_transition_from_counts(
-            joint_sum,
-            concentration=1.0,
-            stickiness=2.0,
-        )
-
-        pw_result = estimate_stationary_state_transition_from_counts(
-            joint_sum,
-            concentration=1.0,
-            stickiness=2.0,
-            prior_weight=0.0,
-        )
-
-        np.testing.assert_allclose(pw_result, legacy_result, atol=1e-12)
 
     def test_prior_weight_matches_closed_form_adaptive_prior(self, posterior_data):
         """prior_weight > 0 rescales the sticky pseudo-counts to

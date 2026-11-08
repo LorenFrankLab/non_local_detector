@@ -2,9 +2,8 @@
 
 Damping blended only ``place_fields`` and the no-spike term. No backend keeps
 every fitted quantity consistent under that blend: GLM/KDE local paths read
-other fitted state, diffusion/MRF read ``interior_log_place_fields`` for the
-spike term, and every clusterless backend has no ``place_fields`` at all, so
-the blend was a silent no-op there. Any nonzero value is therefore rejected,
+other fitted state, and every clusterless backend has no ``place_fields`` at
+all, so the blend was a silent no-op there. Any nonzero value is therefore rejected,
 and it must be rejected before the wrapper's initial ``fit`` replaces the
 encoding model.
 """
@@ -20,6 +19,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import SORTED_SIM_RATE
 
 # Every nonzero value takes the same branch. A negative value and NaN are kept
@@ -27,10 +27,7 @@ from tests.models._helpers import SORTED_SIM_RATE
 REJECTED_DAMPING = [0.5, -0.1, np.nan]
 
 
-# These tests cap max_iter for speed, so EM stops before convergence.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:EM did not converge after max_iter:UserWarning"
-)
+pytestmark = em_stops_at_max_iter
 
 
 @pytest.fixture(scope="module")

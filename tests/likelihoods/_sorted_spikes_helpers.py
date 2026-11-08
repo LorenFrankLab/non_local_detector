@@ -128,20 +128,16 @@ def simulate_sparse_uniform_tracking(
     return time, position, [spike_times], environment
 
 
-def poisson_log_likelihood_reference(place_fields, is_interior, spike_times, edges):
-    """Independent float64 non-local Poisson log likelihood (up to ``-log n!``).
+def binned_spike_counts_reference(spike_times, edges):
+    """Independent per-neuron spike counts in each time bin.
 
-    ``LL[t, j] = sum_k n_tk log(rate_kj dt_t) - dt_t sum_k rate_kj`` with ``rate``
-    the fitted Hz place fields on interior bins. ``edges`` must not coincide with
-    any spike time so ``np.histogram``'s closed last bin cannot differ from the
-    package's half-open bins.
+    ``np.histogram`` with explicit edges uses the package's ownership rule: bin
+    ``t`` owns ``edges[t] <= time < edges[t + 1]``, the final bin also owns a
+    spike on ``edges[-1]``, and spikes outside ``[edges[0], edges[-1]]`` are
+    dropped.
 
     Parameters
     ----------
-    place_fields : array, shape (n_neurons, n_total_bins)
-        Fitted full-grid rates in Hz.
-    is_interior : np.ndarray, shape (n_total_bins,)
-        Boolean interior mask; output columns follow its interior order.
     spike_times : list[np.ndarray]
         One spike-time array per neuron, in seconds.
     edges : np.ndarray, shape (n_time_bins + 1,)
@@ -149,15 +145,46 @@ def poisson_log_likelihood_reference(place_fields, is_interior, spike_times, edg
 
     Returns
     -------
-    log_likelihood : np.ndarray, shape (n_time_bins, n_interior_bins)
+    counts : np.ndarray, shape (n_time_bins, n_neurons)
     """
-    rates = np.asarray(place_fields, dtype=np.float64)[:, is_interior]
+    return np.stack([np.histogram(spikes, edges)[0] for spikes in spike_times]).T
+
+
+def poisson_log_likelihood_reference(rates_hz, spike_times, edges):
+    """Independent float64 Poisson log likelihood (up to ``-log n!``).
+
+    ``LL[t, j] = sum_k n_tk log(rate_tkj dt_t) - dt_t sum_k rate_tkj`` with
+    ``n_tk`` from ``binned_spike_counts_reference``.
+
+    Parameters
+    ----------
+    rates_hz : array, shape (n_neurons, n_positions) or (n_time_bins, n_neurons, n_positions)
+        Rates in Hz. Two dimensions give rates shared by every time bin, such
+        as non-local place fields on the interior bins; three give each time
+        bin its own rates, such as local rates at the animal's position
+        (``n_positions == 1``).
+    spike_times : list[np.ndarray]
+        One spike-time array per neuron, in seconds.
+    edges : np.ndarray, shape (n_time_bins + 1,)
+        Decoding time-bin edges in seconds.
+
+    Returns
+    -------
+    log_likelihood : np.ndarray, shape (n_time_bins, n_positions)
+    """
+    rates = np.asarray(rates_hz, dtype=np.float64)
     durations = np.diff(edges)
-    counts = np.stack([np.histogram(spikes, edges)[0] for spikes in spike_times])
+    counts = binned_spike_counts_reference(spike_times, edges)
+    if rates.ndim == 2:
+        spike_term = counts @ np.log(rates)
+        expected_count = durations[:, None] * rates.sum(axis=0)
+    else:
+        spike_term = np.einsum("tk,tkj->tj", counts, np.log(rates))
+        expected_count = durations[:, None] * rates.sum(axis=1)
     return (
-        counts.T @ np.log(rates)
-        + counts.sum(axis=0)[:, None] * np.log(durations)[:, None]
-        - durations[:, None] * rates.sum(axis=0)
+        spike_term
+        + counts.sum(axis=1)[:, None] * np.log(durations)[:, None]
+        - expected_count
     )
 
 

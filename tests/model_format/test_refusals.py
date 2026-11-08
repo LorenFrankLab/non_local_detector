@@ -6,6 +6,8 @@ their fingerprints each raise a clear error. A fingerprint mismatch refuses
 only decoding: the model still loads and its summary still reads.
 """
 
+import hashlib
+import io
 import json
 import pickle
 import warnings
@@ -130,6 +132,42 @@ def test_a_tampered_array_fails_its_checksum(saved):
         nld.NonLocalSortedSpikesDetector.load_model(saved)
     with pytest.raises(DataError, match="checksum"):
         read_model_summary(saved)
+
+
+# Every unpickling of a ``_Payload`` appends to this list.
+UNPICKLED: list[int] = []
+
+
+def _record():
+    UNPICKLED.append(1)
+    return 0
+
+
+class _Payload:
+    def __reduce__(self):
+        return (_record, ())
+
+
+def test_an_array_member_holding_a_pickle_is_refused_unread(saved):
+    """Arrays load with ``allow_pickle=False``: an object-dtype member whose
+    checksum matches is refused, and its pickle never runs."""
+    with zipfile.ZipFile(saved) as archive:
+        member = next(n for n in archive.namelist() if n.endswith("place_fields.npy"))
+    buffer = io.BytesIO()
+    np.save(buffer, np.array([_Payload()], dtype=object), allow_pickle=True)
+    payload = buffer.getvalue()
+    _rewrite(saved, member, lambda _: payload)
+
+    def match_checksum(manifest):
+        manifest["arrays"][member]["sha256"] = hashlib.sha256(payload).hexdigest()
+
+    _edit_json(saved, "manifest.json", match_checksum)
+    UNPICKLED.clear()
+
+    with pytest.raises(DataError, match="corrupt"):
+        nld.NonLocalSortedSpikesDetector.load_model(saved)
+
+    assert UNPICKLED == []
 
 
 @pytest.mark.parametrize("file_format", ["nld", "pickle"])

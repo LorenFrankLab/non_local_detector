@@ -852,6 +852,26 @@ class TestMultiStepEnumerationReference:
         np.testing.assert_allclose(predictive, ref["predicted"], atol=1e-5)
         assert marginal == pytest.approx(ref["log_evidence"], abs=1e-4)
 
+    def test_chunked_driver_on_a_single_row_matches_enumeration(self):
+        initial, transitions, ll = _tiny_model(n_time=1)
+        ref = enumerate_reference(initial, transitions[0], ll)
+
+        acausal, _, marginal, _, _, _, causal, predictive, *_ = chunked_filter_smoother(
+            time_edges=np.arange(2.0),
+            state_ind=np.arange(ll.shape[1]),
+            initial_distribution=initial,
+            transition_matrix=transitions[0],
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            n_chunks=1,
+            log_likelihoods=ll,
+        )
+
+        np.testing.assert_allclose(acausal, ref["smoothed"], atol=1e-5)
+        np.testing.assert_allclose(causal, ref["filtered"], atol=1e-5)
+        np.testing.assert_allclose(predictive, ref["predicted"], atol=1e-5)
+        assert marginal == pytest.approx(ref["log_evidence"], abs=1e-4)
+
 
 @pytest.mark.unit
 class TestViterbiEnumerationReference:
@@ -905,6 +925,53 @@ class TestViterbiEnumerationReference:
         )
 
         np.testing.assert_array_equal(np.asarray(path), expected)
+        np.testing.assert_array_equal(driver_path, expected)
+
+    @pytest.mark.parametrize("path", ["stationary", "covariate"])
+    def test_driver_with_a_missing_row_matches_enumeration(self, path):
+        """A missing row carries no evidence: the driver path equals the
+        enumerated best path with that row set to 0, whatever the row held."""
+        if path == "stationary":
+            initial, transitions, ll = _tiny_model(seed=1)
+            expanded = transitions[0]
+        else:
+            initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
+                seed=1
+            )
+        missing_row = 2
+        is_missing = np.zeros(len(ll), dtype=bool)
+        is_missing[missing_row] = True
+        ll[missing_row] = 0.0
+        expected, margin = enumerate_most_likely_path(initial, expanded, ll)
+        assert margin > 1e-3  # the optimum is unique
+        # The row the driver must ignore: a NaN, and a finite entry that moves
+        # the best path off its zero-evidence state if the row were used.
+        other_state = (expected[missing_row] + 1) % ll.shape[1]
+        ll[missing_row, expected[missing_row]] = -30.0
+        ll[missing_row, other_state] = np.nan
+        if_used, _ = enumerate_most_likely_path(
+            initial, expanded, np.nan_to_num(ll, nan=0.0)
+        )
+        assert if_used[missing_row] != expected[missing_row]
+
+        common = {
+            "time_edges": np.arange(len(ll) + 1),
+            "initial_distribution": initial,
+            "log_likelihood_func": None,
+            "log_likelihood_args": (),
+            "log_likelihoods": ll,
+            "is_missing": is_missing,
+        }
+        if path == "stationary":
+            driver_path, _ = most_likely_sequence(transition_matrix=expanded, **common)
+        else:
+            driver_path, _ = most_likely_sequence_covariate_dependent(
+                state_ind=state_ind,
+                discrete_transition_matrix=discrete,
+                continuous_transition_matrix=continuous,
+                **common,
+            )
+
         np.testing.assert_array_equal(driver_path, expected)
 
     def test_time_varying_transition_changes_the_optimal_path(self):

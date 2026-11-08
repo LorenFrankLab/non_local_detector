@@ -366,39 +366,6 @@ class TestInitializeEnvironmentsFitting:
         assert decoder.environments_[0].place_bin_centers_ is not None
         assert decoder.environments_[0].place_bin_centers_.shape[0] > 0
 
-    def test_initialize_environments_with_multiple_environments(
-        self, simple_1d_environment
-    ):
-        """Test initialize_environments with multiple environments."""
-        # Arrange
-        env1 = Environment(environment_name="env1")
-        env2 = Environment(environment_name="env2")
-        obs1 = ObservationModel(environment_name="env1", is_local=False)
-        obs2 = ObservationModel(environment_name="env2", is_local=False)
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.5]),
-            discrete_transition_type=DiscreteStationaryDiagonal(np.full(2, 0.9)),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            environments=(env1, env2),
-            observation_models=(obs1, obs2),
-            state_names=["state 0", "state 1"],
-        )
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        # Label first half as env1, second half as env2
-        environment_labels = np.array(["env1"] * 25 + ["env2"] * 25)
-
-        # Act
-        decoder.initialize_environments(position, environment_labels=environment_labels)
-
-        # Assert
-        assert decoder.environments_[0].place_bin_centers_ is not None
-        assert decoder.environments_[1].place_bin_centers_ is not None
-
     def test_initialize_environments_linearizes_2d_position_with_track_graph(
         self, monkeypatch
     ):

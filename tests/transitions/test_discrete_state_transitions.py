@@ -16,7 +16,6 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
-    DiscreteTransition,
     InitialDiscreteTransition,
     centered_softmax_forward,
     centered_softmax_inverse,
@@ -588,46 +587,6 @@ class TestDiscreteTransitionValidation:
             transition.make_state_transition().transition_matrix,
             make_transition_from_diag(np.array([0.9, 0.8])),
         )
-
-
-@pytest.mark.parametrize(
-    ("transition", "is_stationary", "smoothness"),
-    [
-        (DiscreteStationaryDiagonal(np.array([0.9, 0.8])), True, 0.0),
-        (DiscreteStationaryCustom(np.array([[0.7, 0.3], [0.2, 0.8]])), True, 0.0),
-        (
-            DiscreteNonStationaryDiagonal(np.array([0.9, 0.8]), smoothness="reml"),
-            False,
-            "reml",
-        ),
-        (
-            DiscreteNonStationaryCustom(
-                np.array([[0.7, 0.3], [0.2, 0.8]]), smoothness=2.0
-            ),
-            False,
-            2.0,
-        ),
-    ],
-    ids=[
-        "stationary-diagonal",
-        "stationary-custom",
-        "covariate-diagonal",
-        "covariate-custom",
-    ],
-)
-def test_transitions_declare_the_discrete_transition_contract(
-    transition, is_stationary, smoothness
-):
-    """Each package transition satisfies the DiscreteTransition protocol and
-    declares its stationarity, number of states and smoothness."""
-    assert isinstance(transition, DiscreteTransition)
-    assert transition.is_stationary is is_stationary
-    assert transition.n_states == 2
-    assert transition.smoothness == smoothness
-    # Declared properties are not instance attributes, so
-    # ``type(obj)(**vars(obj))`` still rebuilds the object.
-    rebuilt = type(transition)(**vars(transition))
-    assert set(vars(rebuilt)) == set(vars(transition))
 
 
 @pytest.mark.parametrize(

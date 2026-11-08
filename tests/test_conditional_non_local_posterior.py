@@ -209,14 +209,6 @@ class TestNonLocalStateSelection:
             ["Non-Local Continuous", "Non-Local Fragmented", "Hover"],
         )
 
-    @pytest.mark.parametrize("detector_cls", DETECTOR_CLASSES)
-    def test_class_level_call_raises_type_error(self, detector_cls):
-        """The method needs the detector's observation models, so calling it on
-        the class (the former staticmethod form) raises TypeError."""
-        results = _make_results_dataset_1d(DEFAULT_NAMES)
-        with pytest.raises(TypeError):
-            detector_cls.get_conditional_non_local_posterior(results)
-
     def test_no_non_local_states_raises(self):
         detector = NonLocalSortedSpikesDetector(
             observation_models=[

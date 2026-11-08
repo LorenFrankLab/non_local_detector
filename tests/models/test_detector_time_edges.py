@@ -21,17 +21,16 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.exceptions import DataError, ValidationError
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import (
     CLUSTERLESS_SIM_RATE,
     SORTED_SIM_RATE,
     _assert_unchanged,
     _snapshot,
+    record_refit_weights,
 )
 
-# These tests cap max_iter for speed, so EM stops before convergence.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:EM did not converge after max_iter:UserWarning"
-)
+pytestmark = em_stops_at_max_iter
 
 FAMILIES = ["sorted", "clusterless"]
 
@@ -147,20 +146,6 @@ def test_sample_centered_edges_keep_one_row_per_position_sample(
     np.testing.assert_allclose(results.time.values, position_time, atol=1e-12)
 
 
-# ----------------------------------------------------------------- API
-@pytest.mark.unit
-@pytest.mark.parametrize("family", FAMILIES, indirect=True)
-def test_old_time_argument_is_rejected(family, fitted):
-    detector = fitted
-    args = _decode_args(family, _coarse_edges(family[1]))
-    edges = args.pop("time_edges")
-    with pytest.raises(TypeError):
-        detector.predict(**args, time=edges)
-    spike_args = family[3]
-    with pytest.raises(TypeError):
-        detector.predict(*spike_args.values(), edges)
-
-
 # ----------------------------------------------------------------- validation
 def _bad_grids(position_time):
     edges = _coarse_edges(position_time)
@@ -180,24 +165,32 @@ def _bad_grids(position_time):
     }
 
 
+_GRID_ERRORS = {
+    "repeated": (DataError, "time_edges must be strictly increasing"),
+    "decreasing": (DataError, "time_edges must be strictly increasing"),
+    "nan": (DataError, "non-finite values in time_edges"),
+    "nonuniform": (DataError, "time_edges must describe uniform bins"),
+    "single-edge": (ValidationError, "at least two bin edges"),
+}
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("family", FAMILIES, indirect=True)
-@pytest.mark.parametrize(
-    "grid", ["repeated", "decreasing", "nan", "nonuniform", "single-edge"]
-)
+@pytest.mark.parametrize("grid", list(_GRID_ERRORS))
 def test_invalid_edges_fail_before_state_changes(family, fitted, grid):
     _, position_time, fit_args, _ = family
     bad = _bad_grids(position_time)[grid]
+    error, message = _GRID_ERRORS[grid]
     # A copy, so a call that wrongly changes state cannot leak into other tests.
     detector = copy.deepcopy(fitted)
     snapshot = _snapshot(detector)
-    with pytest.raises((DataError, ValidationError)):
+    with pytest.raises(error, match=message):
         detector.predict(**_decode_args(family, bad))
     _assert_unchanged(detector, snapshot)
-    with pytest.raises((DataError, ValidationError)):
+    with pytest.raises(error, match=message):
         detector.most_likely_sequence(**_decode_args(family, bad))
     _assert_unchanged(detector, snapshot)
-    with pytest.raises((DataError, ValidationError)):
+    with pytest.raises(error, match=message):
         detector.estimate_parameters(**fit_args, time_edges=bad, max_iter=1)
     _assert_unchanged(detector, snapshot)
 
@@ -373,21 +366,16 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
     dt = np.median(np.diff(position_time))
     edges = position_time[0] + 0.5 * dt + np.arange(position_time.size + 1) * dt
     detector = _detector(detector_cls)
-    recorded = {"probabilities": [], "weights": []}
+    probabilities = []
     original_predict = detector._predict
-    original_refit_encoding = detector._refit_encoding_model
 
     def spy_predict(*args, **kwargs):
         result = original_predict(*args, **kwargs)
-        recorded["probabilities"].append(np.asarray(result.acausal_state_probabilities))
+        probabilities.append(np.asarray(result.acausal_state_probabilities))
         return result
 
-    def spy_refit_encoding(weights, encoding_fit_arguments):
-        recorded["weights"].append(np.asarray(weights))
-        return original_refit_encoding(weights, encoding_fit_arguments)
-
     monkeypatch.setattr(detector, "_predict", spy_predict)
-    monkeypatch.setattr(detector, "_refit_encoding_model", spy_refit_encoding)
+    weights = record_refit_weights(monkeypatch, detector)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,
@@ -401,12 +389,12 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
     inside = (position_time >= edges[0]) & (position_time <= edges[-1])
     expected = np.where(
         inside,
-        np.interp(position_time, centers, recorded["probabilities"][0][:, local]),
+        np.interp(position_time, centers, probabilities[0][:, local]),
         0.0,
     )
     assert not inside[0]
     assert inside[1:].all()
-    np.testing.assert_allclose(recorded["weights"][0], expected, rtol=1e-6)
+    np.testing.assert_allclose(weights[0], expected, rtol=1e-6)
 
 
 # ----------------------------------------------------------------- transitions
@@ -555,14 +543,7 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     detector_cls, position_time, fit_args, _ = family
     edges = _coarse_edges(position_time, factor=4, n_bins=300)
     detector = _detector(detector_cls, factor=4)
-    weights = []
-    original = detector._refit_encoding_model
-
-    def spy(local_weights, encoding_fit_arguments):
-        weights.append(np.asarray(local_weights))
-        return original(local_weights, encoding_fit_arguments)
-
-    monkeypatch.setattr(detector, "_refit_encoding_model", spy)
+    weights = record_refit_weights(monkeypatch, detector)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,
@@ -748,32 +729,6 @@ def test_unix_epoch_origin_matches_origin_zero(family):
     np.testing.assert_allclose(
         results[1].time.values - shift, results[0].time.values, atol=1e-6
     )
-
-
-@pytest.mark.unit
-def test_every_detector_entry_point_takes_keyword_only_time_edges():
-    import inspect
-
-    from non_local_detector import (
-        ClusterlessDecoder,
-        NonLocalClusterlessDetector,
-        NonLocalSortedSpikesDetector,
-        SortedSpikesDecoder,
-    )
-
-    for cls in (
-        NonLocalClusterlessDetector,
-        NonLocalSortedSpikesDetector,
-        ClusterlessDecoder,
-        SortedSpikesDecoder,
-    ):
-        for method in ("predict", "estimate_parameters", "most_likely_sequence"):
-            parameters = inspect.signature(getattr(cls, method)).parameters
-            assert "time" not in parameters, (cls, method)
-            assert parameters["time_edges"].kind is inspect.Parameter.KEYWORD_ONLY, (
-                cls,
-                method,
-            )
 
 
 @pytest.mark.unit

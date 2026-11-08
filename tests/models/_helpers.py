@@ -5,13 +5,19 @@ detector and its environments untouched. ``_decoder`` builds a small one-state
 decoder for any registered likelihood algorithm, listed in ``ALGORITHMS``.
 ``make_two_arm_track`` builds a fitted environment with two disconnected arms.
 ``type_violations`` checks an encoding model's values against its declared types.
+``record_refit_weights`` records the weights of each EM encoding refit.
+``call_entry_point`` decodes through each of the ``ENTRY_POINTS`` that check a
+saved model; ``forbid_likelihood_and_hmm_work`` fails a test that reaches the
+likelihood backend or the filter-smoother.
 """
 
 import types
 import typing
+from dataclasses import replace
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from non_local_detector import (
     ClusterlessDecoder,
@@ -23,6 +29,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from non_local_detector.models import base
 from non_local_detector.simulate import clusterless_simulation, sorted_spikes_simulation
 
 # Every registered likelihood algorithm, so a new backend is covered without
@@ -105,6 +112,73 @@ def _decoder(algorithm, *, calibration=False, sampling_frequency=500.0):
         clusterless_algorithm_params=params,
         **options,
     )
+
+
+def record_refit_weights(monkeypatch, detector) -> list[np.ndarray]:
+    """Record the position-sample weights of each EM encoding refit.
+
+    The refit still runs; a copy of its weights is appended to the returned
+    list on every call.
+    """
+    weights = []
+    refit = detector._refit_encoding_model
+
+    def record(local_weights, encoding_fit_arguments):
+        weights.append(np.array(local_weights))
+        return refit(local_weights, encoding_fit_arguments)
+
+    monkeypatch.setattr(detector, "_refit_encoding_model", record)
+    return weights
+
+
+# Public decoding calls, and prediction from cached log likelihoods, each of
+# which must check a saved model before decoding.
+ENTRY_POINTS = ["predict", "viterbi", "likelihood", "cached"]
+
+
+def call_entry_point(detector, entry_point, time, position, spike_args, time_edges):
+    """Decode ``time_edges`` through one of ``ENTRY_POINTS``.
+
+    ``"cached"`` predicts from all-zero log likelihoods, shape
+    (n_bins, n_interior_state_bins), so no spike data are read.
+    """
+    if entry_point == "likelihood":
+        return detector.compute_log_likelihood(
+            time, position, *spike_args, time_edges=time_edges
+        )
+    if entry_point == "cached":
+        n_bins = len(time_edges) - 1
+        return detector._predict(
+            time_edges,
+            log_likelihoods=np.zeros(
+                (n_bins, detector.is_track_interior_state_bins_.sum())
+            ),
+        )
+    method = (
+        detector.predict if entry_point == "predict" else detector.most_likely_sequence
+    )
+    return method(
+        *spike_args, time_edges=time_edges, position_time=time, position=position
+    )
+
+
+def forbid_likelihood_and_hmm_work(monkeypatch, detector):
+    """Fail the test if ``detector`` runs its likelihood backend or the HMM."""
+
+    def unexpected_work(*args, **kwargs):
+        pytest.fail("A saved model must be checked before likelihood or HMM work")
+
+    if hasattr(detector, "clusterless_algorithm"):
+        registry, algorithm = _CLUSTERLESS_ALGORITHMS, detector.clusterless_algorithm
+    else:
+        registry, algorithm = (
+            _SORTED_SPIKES_ALGORITHMS,
+            detector.sorted_spikes_algorithm,
+        )
+    monkeypatch.setitem(
+        registry, algorithm, replace(registry[algorithm], predict=unexpected_work)
+    )
+    monkeypatch.setattr(base, "chunked_filter_smoother", unexpected_work)
 
 
 def make_two_arm_track():

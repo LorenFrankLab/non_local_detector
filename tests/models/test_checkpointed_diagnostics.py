@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.models._em import _EMDiagnostics
+from tests.conftest import em_stops_at_max_iter
 
 pytestmark = pytest.mark.integration
 
@@ -69,7 +70,7 @@ def test_native_diagnostics_keep_rows_outside_selected_outputs(
 
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 # max_iter=0 runs only the final E-step, which never converges.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter=0:UserWarning")
+@em_stops_at_max_iter
 def test_dense_chunked_estimation_records_degenerate_rows_of_every_chunk(
     checkpoint_recording, monkeypatch, family
 ):

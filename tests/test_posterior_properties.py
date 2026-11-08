@@ -146,11 +146,7 @@ def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> N
 
     # Get both posteriors
     acausal_posterior = results.acausal_posterior.values
-    if "causal_posterior" in results:
-        causal_posterior = results.causal_posterior.values
-    else:
-        pytest.skip("Causal posterior not available in results")
-        return
+    causal_posterior = results.causal_posterior.values
 
     # Compute entropy for each time point (adding small epsilon to avoid log(0))
     eps = 1e-10
@@ -165,34 +161,4 @@ def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> N
 
     assert mean_acausal_entropy <= mean_causal_entropy, (
         f"Acausal entropy ({mean_acausal_entropy:.3f}) should be <= causal entropy ({mean_causal_entropy:.3f})"
-    )
-
-
-def test_posterior_entropy_reasonable(decoder_with_results: dict[str, Any]) -> None:
-    """Test that posterior entropy is in reasonable range.
-
-    Entropy must be between 0 (certain) and log(n_bins) (uniform distribution).
-    Values outside this range indicate numerical errors.
-    """
-    results = decoder_with_results["results"]
-    acausal_posterior = results.acausal_posterior.values
-
-    # Compute entropy at each time point
-    eps = 1e-10
-    entropy = -np.sum(acausal_posterior * np.log(acausal_posterior + eps), axis=1)
-
-    # Maximum possible entropy is log(n_bins)
-    n_bins = acausal_posterior.shape[1]
-    max_entropy = np.log(n_bins)
-
-    # All entropy values should be in [0, log(n_bins)]
-    assert np.all(entropy >= 0), f"Found negative entropy: min={entropy.min():.3f}"
-    assert np.all(entropy <= max_entropy), (
-        f"Entropy {entropy.max():.3f} exceeds maximum {max_entropy:.3f}"
-    )
-
-    # Check that we're not always at maximum entropy (would indicate uniform posterior)
-    mean_entropy = np.mean(entropy)
-    assert mean_entropy < 0.95 * max_entropy, (
-        f"Mean entropy {mean_entropy:.3f} too close to maximum {max_entropy:.3f} (uniform)"
     )

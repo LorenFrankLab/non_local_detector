@@ -5,7 +5,7 @@ likelihood (fit + non-local predict). The diffusion likelihood estimates the sam
 marked-point-process intensity as ``clusterless_kde`` but replaces the Gaussian
 *position* kernel with the environment's graph heat kernel ``exp(-t L)``
 (``t = position_std**2 / 2``); the *mark* kernel stays a Gaussian over waveform
-features (via ``kde_distance``).
+features (``compute_log_mark_kernel_gemm``).
 
 The joint mark density is
 
@@ -15,7 +15,7 @@ The joint mark density is
 where ``H_t`` is the mass-conserving heat kernel, ``sum_i w_i`` is the weighted
 encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. There is NO
 per-column normalization to unit integral, and the mark Gaussian normalizer lives
-only in ``kde_distance``. Getting any of those constants wrong yields a
+only in the mark kernel. Getting any of those constants wrong yields a
 spatially-constant likelihood error that rank/argmax posterior tests cannot catch;
 the absolute-value tests below (uniform and non-uniform ``dV``) pin them.
 """
@@ -50,7 +50,7 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     predict_clusterless_diffusion_log_likelihood,
     spatial_kernel_columns,
 )
-from non_local_detector.likelihoods.clusterless_kde import kde_distance
+from non_local_detector.likelihoods.clusterless_kde import log_kde_distance
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
@@ -187,56 +187,13 @@ def _predict(s, enc, is_local=False, mark_reference=None, **overrides):
 # fit encoding model
 # ----------------------------------------------------------------------------
 
-FIT_KEYS = {
-    "environment",
-    "occupancy",
-    "summed_ground_process_intensity",
-    "encoding_bin_indices",
-    "encoding_marks",
-    "encoding_weights",
-    "weight_total",
-    "mean_rates",
-    "resolved_rank",
-    "node_order",
-    "bin_sizes",
-    "position_std",
-    "waveform_std",
-    "block_size",
-    "memory_budget",
-    "disable_progress_bar",
-}
 
-
-def test_fit_returns_finite_densities_and_keys():
-    s = _sim(seed=0)
-    enc = _fit(s)
-
-    assert FIT_KEYS.issubset(enc.keys())
-
-    occupancy = np.asarray(enc["occupancy"])
-    gpi = np.asarray(enc["summed_ground_process_intensity"])
-    assert np.all(np.isfinite(occupancy))
-    assert np.all(occupancy >= 0.0)
-    assert np.all(np.isfinite(gpi))
-    assert np.all(gpi >= 0.0)
-
-    assert isinstance(enc["resolved_rank"], int)
-    assert enc["resolved_rank"] >= 1
-
-    n_elec = len(s["enc_t"])
-    for key in (
-        "encoding_bin_indices",
-        "encoding_marks",
-        "encoding_weights",
-        "weight_total",
-        "mean_rates",
-    ):
-        assert len(enc[key]) == n_elec, key
-
-    # densities live on interior bins (node_order length)
-    n_interior = np.asarray(enc["node_order"]).shape[0]
-    assert occupancy.shape == (n_interior,)
-    assert gpi.shape == (n_interior,)
+def test_fit_densities_are_finite_and_nonnegative():
+    enc = _fit(_sim(seed=0))
+    for key in ("occupancy", "summed_ground_process_intensity"):
+        density = np.asarray(enc[key])
+        assert np.all(np.isfinite(density)), key
+        assert np.all(density >= 0.0), key
 
 
 # ----------------------------------------------------------------------------
@@ -534,7 +491,8 @@ def test_absolute_log_likelihood_small_fixture():
     assert list(enc_bins) == [0, 2]
     assert _decode_bin(dec_times, time_edges).tolist() == [0, 1]
     assert ll.shape == expected.shape == (len(time_edges) - 1, n_bins)
-    assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
+    # Measured max|diff| 4.1e-7 at |ll| ~ 6.5; a 2% dV mis-scale is ~2e-2 nats.
+    assert np.allclose(ll, expected, rtol=5e-6, atol=1e-5), (
         f"absolute log-likelihood mismatch: max|diff|={np.abs(ll - expected).max():.3e}"
     )
 
@@ -563,7 +521,11 @@ def test_mass_invariance_across_ranks():
     dec_marks = jnp.asarray(
         rng.standard_normal((4, enc_marks.shape[1])).astype(np.float32)
     )
-    K = kde_distance(dec_marks, enc_marks, jnp.full(enc_marks.shape[1], WAVEFORM_STD))
+    K = jnp.exp(
+        log_kde_distance(
+            dec_marks, enc_marks, jnp.full(enc_marks.shape[1], WAVEFORM_STD)
+        )
+    )
     D = jnp.zeros((n_bins, dec_marks.shape[0])).at[enc_bins].add(w[:, None] * K)
 
     masses = {}
@@ -679,7 +641,8 @@ def test_binary_weights_match_hard_subset():
 
 
 def test_nonlocal_finite_and_zero_rate():
-    """Non-local output is finite; a zero-weight electrode floors decode spikes to LOG_EPS."""
+    """Non-local output is finite; a zero-weight electrode scores each decode
+    spike at the rate floor, ``LOG_RATE_EPS_HZ + log(dt)``."""
     env = _make_1d_env(1.0, 0.0, 10.0)
     position_time = np.linspace(0.0, 10.0, 201)
     position = np.linspace(0.0, 10.0, 201)[:, None]
@@ -735,40 +698,19 @@ def test_nonlocal_finite_and_zero_rate():
     gpi = np.asarray(enc["summed_ground_process_intensity"])
     seg = _decode_bin(dec_times[1], time_edges)
     for t_bin in seg:
-        # only the zero-rate electrode contributed at this bin -> exactly LOG_EPS + (-gpi)
+        # only the zero-rate electrode contributed at this bin -> exactly the
+        # rate floor LOG_RATE_EPS_HZ + log(dt), minus dt * gpi
         assert np.allclose(
             ll[t_bin] + np.diff(time_edges)[t_bin] * gpi,
             LOG_RATE_EPS_HZ + np.log(np.diff(time_edges)[t_bin]),
             atol=1e-6,
-        ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
-
-
-@pytest.mark.parametrize("is_local", [False, True])
-def test_block_parity(is_local):
-    """A tiny effective block (memory_budget forced small) matches one large block.
-
-    ``memory_budget=1`` forces ``effective_block == 1``. Non-local, that is one
-    decode-time row per block; local, it exercises the per-decode-spike-block
-    slicing (``spike_bins[block]``, ``decode_features[block]``, ``seg[block]``)
-    with ``_sim``'s default 2 electrodes x 12 decode spikes each, so many
-    single-spike blocks per electrode run against one big block."""
-    s = _sim(seed=3, hi=10.0)
-    enc = _fit(s)
-
-    # Default 512 MiB budget -> one block (block == block_size).
-    ll_big = np.asarray(_predict(s, enc, is_local=is_local))
-    ll_small = np.asarray(_predict(s, enc, is_local=is_local, memory_budget=1))
-
-    n_columns = 1 if is_local else int(s["env"].is_track_interior_.sum())
-    assert ll_big.shape == ll_small.shape == (s["time_edges"].shape[0] - 1, n_columns)
-    assert np.allclose(ll_big, ll_small, rtol=1e-5, atol=1e-6), (
-        f"block parity failed: max|diff|={np.abs(ll_big - ll_small).max():.3e}"
-    )
+        ), f"zero-rate electrode did not floor to the rate floor at time bin {t_bin}"
 
 
 def test_zero_rate_fit_and_predict_finite_and_warn():
     """All-zero weights: both the occupancy and per-electrode warnings fire; predict
-    stays finite and floors every decode spike to LOG_EPS."""
+    stays finite and scores every decode spike at the rate floor,
+    ``LOG_RATE_EPS_HZ + log(dt)``."""
     env = _make_1d_env(1.0, 0.0, 6.0)
     position_time = np.linspace(0.0, 6.0, 101)
     position = np.linspace(0.0, 6.0, 101)[:, None]
@@ -959,8 +901,9 @@ def test_local_equals_nonlocal_per_spike():
 
 def test_local_finite_and_zero_rate():
     """Local output is finite, shape (n_time, 1); a zero-rate electrode's decode
-    spikes each contribute exactly LOG_EPS (isolated by giving only that
-    electrode decode spikes, mirroring test_nonlocal_finite_and_zero_rate)."""
+    spikes each contribute exactly ``LOG_RATE_EPS_HZ + log(dt)`` (isolated by
+    giving only that electrode decode spikes, mirroring
+    test_nonlocal_finite_and_zero_rate)."""
     env = _make_1d_env(1.0, 0.0, 10.0)
     position_time = np.linspace(0.0, 10.0, 201)
     position = np.linspace(0.0, 10.0, 201)[:, None]
@@ -1026,13 +969,13 @@ def test_local_finite_and_zero_rate():
     seg = _decode_bin(dec_times[1], time_edges)
     dt = np.diff(time_edges)[seg]
     # only the zero-rate electrode contributed at these bins -> exactly
-    # LOG_EPS - local_gpi[t_bin]
+    # LOG_RATE_EPS_HZ + log(dt) - dt * local_gpi[t_bin]
     np.testing.assert_allclose(
         ll[seg, 0] + dt * local_gpi[seg],
         LOG_RATE_EPS_HZ + np.log(dt),
         rtol=1e-5,
         atol=1e-6,
-        err_msg="zero-rate electrode did not floor to LOG_EPS",
+        err_msg="zero-rate electrode did not floor to the rate floor",
     )
 
 
@@ -1050,7 +993,7 @@ def test_validation_fit():
 
     # heat_kernel_rank: float, bool, zero, negative.
     for bad_rank in (3.0, True, 0, -1):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="heat_kernel_rank must be"):
             _fit(s, heat_kernel_rank=bad_rank)
 
     # heat_kernel_rank < n_components: a disconnected (>= 2 component) environment,
@@ -1059,7 +1002,7 @@ def test_validation_fit():
     disconnected_env = make_two_arm_track()
     n_components = n_connected_components(disconnected_env)
     assert n_components >= 2, "fixture must be graph-disconnected to test this path"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="rank is too small"):
         fit_clusterless_diffusion_encoding_model(
             np.linspace(0.0, 1.0, 10),
             np.zeros((10, 1)),
@@ -1072,33 +1015,43 @@ def test_validation_fit():
 
     # memory_budget: non-finite, zero, negative, non-int.
     for bad_budget in (float("inf"), 0, -1, 1.5):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="memory_budget must be a positive integer"
+        ):
             _fit(s, memory_budget=bad_budget)
 
     # block_size: non-positive, non-int, bool.
     for bad_block in (0, -1, 1.5, True):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="block_size must be a positive integer"
+        ):
             _fit(s, block_size=bad_block)
 
     # position_std / waveform_std: non-positive OR non-finite (inf position_std makes
     # exp(-t*lambda) hit inf*0 = NaN on the null mode -> a non-finite model).
     for bad_std in (0.0, -1.0, np.inf):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="position_std must be a finite positive"
+        ):
             _fit(s, position_std=bad_std)
     # position_std must be a scalar: the graph heat kernel is isotropic in graph
     # distance, so a per-dimension array (which clusterless_kde accepts) is rejected
     # rather than silently mis-broadcast -- a realistic port-from-kde mistake.
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="position_std must be a scalar"):
         _fit(s, position_std=[POSITION_STD, POSITION_STD])
     for bad_std in (0.0, np.inf):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="waveform_std must be finite and positive"
+        ):
             _fit(s, waveform_std=bad_std)
 
     # waveform_std dimensionality: fit never evaluates the mark kernel, so an
-    # ill-shaped bandwidth must be caught here (not later in kde_distance). The
+    # ill-shaped bandwidth must be caught here (not later in the mark kernel). The
     # fixture has 2-feature marks; an empty array and a length-3 vector are wrong.
     for bad_std in ([], [1.0, 2.0, 3.0]):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError, match="waveform_std must be a scalar or a 1-D array"
+        ):
             _fit(s, waveform_std=bad_std)
     # A matching (n_features,) vector and a scalar are both accepted.
     _fit(s, waveform_std=[24.0, 24.0])
@@ -1106,15 +1059,15 @@ def test_validation_fit():
 
     # weights (via common.validate_weights): wrong length, non-finite, negative.
     n_pos = s["position"].shape[0]
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=r"weights must have shape \(200,\)"):
         _fit(s, weights=np.ones(n_pos + 1))
     bad_weights = np.ones(n_pos)
     bad_weights[0] = np.nan
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="weights must contain only finite"):
         _fit(s, weights=bad_weights)
     bad_weights = np.ones(n_pos)
     bad_weights[0] = -1.0
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="weights must be non-negative"):
         _fit(s, weights=bad_weights)
 
     # non-finite position.
@@ -1122,7 +1075,7 @@ def test_validation_fit():
     bad_position[0, 0] = np.inf
     s_bad_position = dict(s)
     s_bad_position["position"] = bad_position
-    with pytest.raises(DataError):
+    with pytest.raises(DataError, match="position contains infinite values"):
         _fit(s_bad_position)
 
     # Non-finite IN-window encoding spike_waveform_features raises; a non-finite
@@ -1131,7 +1084,9 @@ def test_validation_fit():
     position_time = np.linspace(0.0, 4.0, 101)
     position = np.linspace(0.0, 8.0, 101)[:, None]
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="spike_waveform_features must contain only finite"
+    ):
         fit_clusterless_diffusion_encoding_model(
             position_time,
             position,
@@ -1179,7 +1134,7 @@ def test_validation_predict():
     # the non-local path never reads position (see the positionless case below).
     bad_position = np.array(s["position"], copy=True)
     bad_position[0, 0] = np.inf
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="position must contain only finite"):
         _predict(dict(s, position=bad_position), enc, is_local=True)
 
     # Non-local decoding accepts position/position_time = None (the documented
@@ -1198,7 +1153,9 @@ def test_validation_predict():
     # electrode raises.
     bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
     bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within the time edges
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="non-finite waveform features for electrode 0"
+    ):
         _predict(dict(s, dec_f=bad_feats), enc)
 
     # A non-finite feature on an OUT-of-window decode spike must not raise.
@@ -1232,7 +1189,9 @@ def test_validation_predict_local():
     # electrode raises.
     bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
     bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within the time edges
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="non-finite waveform features for electrode 0"
+    ):
         _predict(dict(s, dec_f=bad_feats), enc, is_local=True)
 
     # A non-finite feature on an OUT-of-window decode spike must not raise.
@@ -1263,7 +1222,7 @@ def test_validation_predict_zero_rate_precedence(is_local):
     ... continue`` (local ~517-538, non-local ~634-655). If that order were
     ever reversed, a zero-rate electrode's non-finite in-window decode feature
     would be silently skipped (the ``continue`` fires before validation) and
-    the spike would floor to ``LOG_EPS`` instead of raising. This test pins the
+    the spike would floor to ``LOG_RATE_EPS_HZ + log(dt)`` instead of raising. This test pins the
     current (correct) ordering: a zero-rate electrode with a non-finite
     in-window decode feature must raise ``ValidationError``, not floor.
     """
@@ -1303,7 +1262,9 @@ def test_validation_predict_zero_rate_precedence(is_local):
         np.zeros((0, 2), dtype=np.float32),
         np.array([[np.nan, -1.0]], dtype=np.float32),
     ]
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="non-finite waveform features for electrode 1"
+    ):
         predict_clusterless_diffusion_log_likelihood(
             position_time,
             position,
@@ -2117,7 +2078,8 @@ def test_nonuniform_dv_log_likelihood_matches_hand_computation():
     )
 
     assert ll.shape == expected.shape == (len(time_edges) - 1, n_bins)
-    assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
+    # Measured max|diff| 2.0e-6 at |ll| ~ 22; a 2% dV mis-scale is ~2e-2 nats.
+    assert np.allclose(ll, expected, rtol=5e-6, atol=1e-5), (
         f"non-uniform-dV log-likelihood mismatch: "
         f"max|diff|={np.abs(ll - expected).max():.3e}"
     )

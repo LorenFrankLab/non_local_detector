@@ -16,6 +16,7 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
 )
 from non_local_detector.exceptions import ParameterWarning
+from tests.conftest import em_stops_at_max_iter
 
 pytestmark = pytest.mark.integration
 
@@ -60,7 +61,7 @@ def test_fit_writes_environments_and_leaves_the_parameter(recording):
 
 
 # One EM iteration is enough to run the M-step.
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
+@em_stops_at_max_iter
 def test_predict_and_em_leave_the_parameter(recording):
     time, position, spike_times = recording
     environment = Environment(place_bin_size=5.0)

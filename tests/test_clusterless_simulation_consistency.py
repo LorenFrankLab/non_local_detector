@@ -32,20 +32,6 @@ def default_run():
     return make_simulated_run_data(n_runs=2, seed=0)
 
 
-def test_default_mark_spacing_is_shared() -> None:
-    """Run data and every replay function share one default mark spacing."""
-    import inspect
-
-    for fn in (make_continuous_replay, make_hover_replay, make_fragmented_replay):
-        assert inspect.signature(fn).parameters["mark_spacing"].default == (
-            cs.MARK_SPACING
-        )
-    assert (
-        inspect.signature(make_simulated_run_data).parameters["mark_spacing"].default
-        == cs.MARK_SPACING
-    )
-
-
 def test_default_replay_marks_land_on_run_data_mark_clusters(default_run) -> None:
     """Each replay mark is within a few SD of a mark cluster seen in run data."""
     n_tetrodes = len(default_run.spike_times)

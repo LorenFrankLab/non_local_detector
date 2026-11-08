@@ -23,8 +23,8 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 POSITION_STD = 6.0
 WAVEFORM_STD = 24.0
 POSITION_TOLERANCE = 10.0
-TOP1_ACCURACY_THRESHOLD = 0.80
-TOP3_ACCURACY_THRESHOLD = 0.90
+# Measured top-1 accuracy is 0.98; decoding against shuffled time gives 0.12.
+TOP1_ACCURACY_THRESHOLD = 0.90
 
 pytestmark = pytest.mark.integration
 
@@ -168,7 +168,7 @@ def kde_decoding_setup() -> dict[str, Any]:
 
 
 def test_nonlocal_kde_top1_accuracy_high(kde_decoding_setup: dict[str, Any]) -> None:
-    """Test that KDE can decode position with >80% top-1 accuracy on simulated data.
+    """Test that KDE can decode position with >90% top-1 accuracy on simulated data.
 
     This is an oracle test: we simulate data where we know the true position,
     fit an encoding model, and verify we can accurately decode that position.
@@ -185,22 +185,4 @@ def test_nonlocal_kde_top1_accuracy_high(kde_decoding_setup: dict[str, Any]) -> 
     assert accuracy >= TOP1_ACCURACY_THRESHOLD, (
         f"Top-1 accuracy {accuracy:.2%} is below threshold {TOP1_ACCURACY_THRESHOLD:.0%}. "
         f"Decoding should accurately recover true position from simulated data."
-    )
-
-
-def test_nonlocal_kde_top3_accuracy_very_high(
-    kde_decoding_setup: dict[str, Any],
-) -> None:
-    """Test that true position is in top-3 decoded positions >90% of the time."""
-    # Compute top-3 accuracy using shared fixture
-    accuracy = compute_top_k_accuracy(
-        kde_decoding_setup["true_positions"],
-        kde_decoding_setup["log_likelihood"],
-        kde_decoding_setup["place_bin_centers"],
-        k=3,
-    )
-
-    assert accuracy >= TOP3_ACCURACY_THRESHOLD, (
-        f"Top-3 accuracy {accuracy:.2%} is below threshold {TOP3_ACCURACY_THRESHOLD:.0%}. "
-        f"True position should be in top-3 decoded bins most of the time."
     )

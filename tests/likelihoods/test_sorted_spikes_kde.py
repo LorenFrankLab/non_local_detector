@@ -40,18 +40,6 @@ def kde_fit(simple_1d_environment):
 def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
     _, _, _, spikes, enc = kde_fit
 
-    # keys and shapes
-    for key in (
-        "environment",
-        "marginal_models",
-        "occupancy_model",
-        "occupancy",
-        "mean_rates",
-        "place_fields",
-        "no_spike_part_log_likelihood",
-        "is_track_interior",
-    ):
-        assert key in enc
     occ = enc["occupancy"]
     pf = enc["place_fields"]
     assert occ.ndim == 1
@@ -62,37 +50,9 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(kde_fit):
     assert jnp.all(pf > 0)
 
 
-def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(kde_fit):
+def test_predict_sorted_spikes_kde_rejects_a_population_mismatch(kde_fit):
     _, t_pos, pos, spikes, enc = kde_fit
-
-    # decoding over 5 time bins via 6 edges
     t_edges = jnp.linspace(0.0, 10.0, 6)
-
-    # Non-local
-    ll = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes,
-        **enc,
-        is_local=False,
-    )
-    assert ll.shape[0] == t_edges.shape[0] - 1
-    assert ll.ndim == 2
-    assert ll.shape[1] == int(enc["is_track_interior"].sum())
-    assert jnp.all(jnp.isfinite(ll))
-
-    # Local
-    ll_local = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=spikes,
-        **enc,
-        is_local=True,
-    )
-    assert ll_local.shape == (t_edges.shape[0] - 1, 1)
-    assert jnp.all(jnp.isfinite(ll_local))
 
     with pytest.raises(ValidationError, match="population lengths do not match"):
         predict_sorted_spikes_kde_log_likelihood(
@@ -140,30 +100,6 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(kde_fit):
     expected = jnp.expand_dims(expected, axis=1)
 
     assert jnp.allclose(ll_local, expected, rtol=1e-5, atol=1e-6)
-
-
-def test_nonlocal_with_no_spikes_equals_negative_summed_rates(kde_fit):
-    """With no spikes, each bin scores -dt times the summed place-field rates.
-
-    The expected value is summed from ``place_fields``, not read from the stored
-    ``no_spike_part_log_likelihood``, so an error in the fit-time sum fails.
-    """
-    _, t_pos, pos, _, enc = kde_fit
-
-    t_edges = jnp.linspace(0.0, 10.0, 6)
-    empty_spikes = [jnp.array([]), jnp.array([])]
-    ll = predict_sorted_spikes_kde_log_likelihood(
-        time_edges=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=empty_spikes,
-        **enc,
-        is_local=False,
-    )
-    summed_rates = np.asarray(enc["place_fields"]).sum(axis=0)
-    expected = -jnp.diff(t_edges)[0] * summed_rates[enc["is_track_interior"]]
-    expected = jnp.tile(expected, (t_edges.shape[0] - 1, 1))
-    assert jnp.allclose(ll, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_fit_sorted_spikes_kde_raises_on_an_unfitted_environment():

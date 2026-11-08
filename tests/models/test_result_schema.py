@@ -28,6 +28,7 @@ from non_local_detector.analysis import (
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models._results import state_bin_positions
+from tests.conftest import em_stops_at_max_iter
 
 pytestmark = pytest.mark.integration
 
@@ -640,7 +641,7 @@ def test_docs_tables_match_checkpointed_spatial_results(fitted, checkpointed):
     assert _attr_type_mismatches(checkpointed.attrs) == {}
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 @pytest.mark.parametrize(
     ("representation", "stored", "present_in"),
     [

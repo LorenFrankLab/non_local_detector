@@ -35,19 +35,9 @@ from non_local_detector.likelihoods import (
     ClusterlessLikelihoodAlgorithm,
     LikelihoodAlgorithm,
 )
-from non_local_detector.likelihoods.clusterless_kde import (
-    ClusterlessKDEEncodingModel,
-    fit_clusterless_kde_encoding_model,
-    predict_clusterless_kde_log_likelihood,
-)
 from non_local_detector.likelihoods.encoding_model import (
     ClusterlessEncodingModel,
     SortedSpikesEncodingModel,
-)
-from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-    SortedSpikesDiffusionEncodingModel,
-    fit_sorted_spikes_diffusion_encoding_model,
-    predict_sorted_spikes_diffusion_log_likelihood,
 )
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     SortedSpikesKDEEncodingModel,
@@ -288,34 +278,6 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
     ]
 
 
-def test_contract_check_reports_a_renamed_key(monkeypatch, recording):
-    """A renamed fit key breaks the type, and predict neither takes nor gets it."""
-
-    def renamed_fit(*args, **kwargs):
-        model = fit_sorted_spikes_diffusion_encoding_model(*args, **kwargs)
-        model["interior_log_place_field"] = model.pop("interior_log_place_fields")
-        return model
-
-    renamed = LikelihoodAlgorithm(
-        renamed_fit,
-        predict_sorted_spikes_diffusion_log_likelihood,
-        SortedSpikesDiffusionEncodingModel,
-    )
-    monkeypatch.setitem(_SORTED_SPIKES_ALGORITHMS, "sorted_spikes_diffusion", renamed)
-    decoder, _ = _fit("sorted_spikes_diffusion", recording)
-    (encoding_model,) = decoder.encoding_model_.values()
-
-    violations = contract_violations(
-        renamed, encoding_model, _data_names(decoder), _PREDICT_KEYWORDS
-    )
-    assert violations == [
-        "keys the encoding model type omits: ['interior_log_place_field']",
-        "declared keys the fit omits: ['interior_log_place_fields']",
-        "optional predict parameters not supplied: ['interior_log_place_fields']",
-        "keys predict does not accept: ['interior_log_place_field']",
-    ]
-
-
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.filterwarnings(
     "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
@@ -513,16 +475,28 @@ _CHANGED_FIT_PARAMETER = {
     "clusterless_diffusion": {"position_std": 0.3},
     "clusterless_mark_glm": {"n_mark_components": 2},
 }
-# An invalid value of each algorithm's execution settings.
+# An invalid value of each algorithm's execution settings, and the start of
+# the message it raises.
 _INVALID_SETTINGS = {
     "clusterless_kde": [
-        {"block_size": 0},
-        {"enc_tile_size": -1},
-        {"use_streaming": True, "enc_tile_size": None},
+        ({"block_size": 0}, "block_size must be a positive integer"),
+        ({"enc_tile_size": -1}, "enc_tile_size must be None or a positive integer"),
+        (
+            {"use_streaming": True, "enc_tile_size": None},
+            "use_streaming=True requires enc_tile_size",
+        ),
     ],
-    "clusterless_gmm": [{"spike_block_size": 0}, {"bin_tile_size": 0}],
-    "clusterless_diffusion": [{"block_size": 0}, {"memory_budget": 0}],
-    "clusterless_mark_glm": [{"spike_block_size": 0}],
+    "clusterless_gmm": [
+        ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
+        ({"bin_tile_size": 0}, "bin_tile_size must be None or a positive integer"),
+    ],
+    "clusterless_diffusion": [
+        ({"block_size": 0}, "block_size must be a positive integer"),
+        ({"memory_budget": 0}, "memory_budget must be a positive integer"),
+    ],
+    "clusterless_mark_glm": [
+        ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
+    ],
 }
 
 
@@ -593,15 +567,15 @@ def test_predict_reads_execution_settings_changed_after_fitting(
 
 
 @pytest.mark.parametrize(
-    ("algorithm", "invalid"),
+    ("algorithm", "invalid", "message"),
     [
-        (algorithm, invalid)
+        (algorithm, invalid, message)
         for algorithm, cases in _INVALID_SETTINGS.items()
-        for invalid in cases
+        for invalid, message in cases
     ],
 )
 def test_invalid_execution_settings_are_rejected_at_fit_and_after_it(
-    recording, algorithm, invalid
+    recording, algorithm, invalid, message
 ):
     """The fit's checks also apply to settings changed after fitting, so a bad
     value raises ValidationError instead of failing deep in predict."""
@@ -609,14 +583,14 @@ def test_invalid_execution_settings_are_rejected_at_fit_and_after_it(
     params = decoder.clusterless_algorithm_params
     decoder.clusterless_algorithm_params = {**params, **invalid}
     time, position, *_ = recording
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         decoder.predict(
             *spike_data,
             time_edges=time_edges_from_centers(time[_DECODE_SAMPLES]),
             position_time=time,
             position=position,
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         decoder.fit(time, position, *spike_data)
 
 
@@ -628,16 +602,6 @@ def test_records_pickle_and_copy(algorithm):
         assert restored == record
         with pytest.raises(TypeError):
             restored.default_params["block_size"] = 5  # type: ignore[index]
-
-
-def test_clusterless_record_requires_a_mark_scale():
-    """A clusterless record cannot be registered without its mark-kernel width."""
-    with pytest.raises(TypeError, match="mark_reference_scale"):
-        ClusterlessLikelihoodAlgorithm(  # type: ignore[call-arg]
-            fit_clusterless_kde_encoding_model,
-            predict_clusterless_kde_log_likelihood,
-            ClusterlessKDEEncodingModel,
-        )
 
 
 def mark_scale_default_mismatches(record: ClusterlessLikelihoodAlgorithm) -> list[str]:

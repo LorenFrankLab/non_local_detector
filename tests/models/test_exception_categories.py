@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 
 from non_local_detector import (
+    ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,
     Environment,
     SortedSpikesDecoder,
@@ -21,7 +22,6 @@ from non_local_detector.exceptions import (
     NotFittedError,
     ValidationError,
 )
-from non_local_detector.models._em import _validate_estimation_arguments
 from non_local_detector.models._input_validation import (
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
@@ -108,43 +108,21 @@ def test_covariate_data_without_coefficients_raises_configuration_error(fitted):
 # -- bad option values -------------------------------------------------------
 
 
-def _estimation_arguments(**overrides):
-    arguments = {
-        "time_edges": np.arange(11) * 0.002,
-        "n_chunks": 1,
-        "return_outputs": None,
-        "min_encoding_local_mass": 0.0,
-        "min_encoding_local_ess": 0.0,
-    }
-    return arguments | overrides
-
-
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("overrides", "category"),
+    ("frozen_rows", "message"),
     [
-        ({"n_chunks": 11}, ValidationError),
-        ({"min_encoding_local_mass": -1.0}, ValidationError),
-        ({"min_encoding_local_ess": -1.0}, ValidationError),
+        ("other", "must be 'no_spike', row indices"),
+        (np.array([True, False]), r"boolean mask must have shape \(4,\)"),
+        ([0, 9], r"indices must be in \[0, 4\)"),
+        ([-1], r"indices must be in \[0, 4\)"),
+        ([0.5], "must be integer indices or a boolean mask"),
+        (np.zeros((2, 2), int), "index array must be 1D"),
     ],
-    ids=["n_chunks", "local_mass", "local_ess"],
-)
-def test_estimation_argument_errors_are_categorized(overrides, category):
-    time_edges = _estimation_arguments()["time_edges"]
-    arguments = _estimation_arguments(**overrides)
-    arguments.pop("time_edges")
-    with pytest.raises(category):
-        _validate_estimation_arguments(time_edges, **arguments)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "frozen_rows",
-    ["other", np.array([True, False]), [0, 9], [-1], [0.5], np.zeros((2, 2), int)],
     ids=["string", "mask_shape", "high", "negative", "dtype", "ndim"],
 )
-def test_frozen_rows_errors_are_validation_errors(frozen_rows):
-    with pytest.raises(ValidationError):
+def test_frozen_rows_errors_are_validation_errors(frozen_rows, message):
+    with pytest.raises(ValidationError, match=message):
         _normalize_frozen_discrete_transition_rows(
             frozen_rows, np.array([False, True, False, False])
         )
@@ -157,13 +135,12 @@ def test_covariate_length_mismatch_is_a_validation_error():
 
 
 @pytest.mark.unit
-def test_unknown_set_params_key_is_a_validation_error():
-    with pytest.raises(ValidationError, match="Invalid parameter"):
-        _decoder().set_params(not_a_parameter=1)
-
-
-@pytest.mark.unit
-def test_cont_frag_posterior_without_position_dim_is_a_data_error():
+@pytest.mark.parametrize(
+    "classifier", [ContFragSortedSpikesClassifier, ContFragClusterlessClassifier]
+)
+def test_cont_frag_posterior_without_position_dim_is_a_data_error(classifier):
+    """With no position dim to marginalize, ``unstacked.sum([])`` would return
+    the per-bin array unchanged, so ``get_posterior`` raises instead."""
     import pandas as pd
 
     mindex = pd.MultiIndex.from_product([["a", "b"], [0, 1]], names=("state", "foo"))
@@ -173,7 +150,7 @@ def test_cont_frag_posterior_without_position_dim_is_a_data_error():
         coords={"time": np.arange(3), **mindex_coords},
     )
     with pytest.raises(DataError, match="no position dimension"):
-        ContFragSortedSpikesClassifier.get_posterior(results)
+        classifier.get_posterior(results)
 
 
 # -- return_outputs collections ---------------------------------------------
@@ -191,8 +168,16 @@ def test_return_outputs_accepts_any_collection(container):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "bad", [3, 1.5, {"filter": 1}, ["filter", 3], ("filter", None)], ids=repr
+    ("bad", "message"),
+    [
+        (3, "must be a string, a collection of strings, or None"),
+        (1.5, "must be a string, a collection of strings, or None"),
+        ({"filter": 1}, "must be a string, a collection of strings, or None"),
+        (["filter", 3], "entries must be strings"),
+        (("filter", None), "entries must be strings"),
+    ],
+    ids=repr,
 )
-def test_return_outputs_bad_types_are_validation_errors(bad):
-    with pytest.raises(ValidationError):
+def test_return_outputs_bad_types_are_validation_errors(bad, message):
+    with pytest.raises(ValidationError, match=message):
         _normalize_return_outputs(bad)

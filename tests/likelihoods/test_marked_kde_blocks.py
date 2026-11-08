@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.stats import norm
 
 import non_local_detector.likelihoods.clusterless_kde as marked_kde
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -12,6 +11,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
 )
 from non_local_detector.likelihoods.common import padded_spike_count
+from tests.likelihoods._kde_reference import (
+    reference_log_joint_mark_intensity,
+    reference_log_joint_mark_intensity_gradient,
+)
 from tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
     realistic_log_background,
@@ -37,48 +40,16 @@ def arguments(n_dec, n_enc, weight_kind):
     return values
 
 
-def independent_finished_intensity_and_gradient(values, log_background):
-    """Host float64 Gaussian mixture oracle, independent of JAX dot policy.
-
-    Each finished term is ``logaddexp(log intensity, log_background)``.
-    """
-    decoding = np.asarray(values["decoding_spike_waveform_features"], dtype=np.float64)
-    encoding = np.asarray(values["encoding_spike_waveform_features"], dtype=np.float64)
-    std = np.asarray(values["waveform_stds"], dtype=np.float64)
-    occupancy = np.asarray(values["occupancy"], dtype=np.float64)
-    weights = values["encoding_weights"]
-    weights = (
-        np.ones(len(encoding))
-        if weights is None
-        else np.asarray(weights, dtype=np.float64)
+def _reference_arguments(values):
+    """``values`` in the float64 references' positional order."""
+    return (
+        values["decoding_spike_waveform_features"],
+        values["encoding_spike_waveform_features"],
+        values["waveform_stds"],
+        values["occupancy"],
+        values["mean_rate"],
+        values["log_position_distance"],
     )
-    position = np.exp(np.asarray(values["log_position_distance"], dtype=np.float64))
-    kernel = norm.pdf(decoding[None, :, :], loc=encoding[:, None, :], scale=std).prod(
-        axis=-1
-    )
-    weighted_position = weights[:, None] * position
-    numerator = kernel.T @ weighted_position
-    density = (
-        numerator / weights.sum() if weights.sum() > 0 else np.zeros_like(numerator)
-    )
-    intensity = np.zeros_like(density)
-    np.divide(density, occupancy, out=intensity, where=occupancy > 0)
-    intensity *= values["mean_rate"]
-    with np.errstate(divide="ignore"):
-        log_intensity = np.log(intensity)  # -inf where the intensity is zero
-    log_background = np.asarray(log_background, dtype=np.float64)[:, None]
-    finished = np.logaddexp(log_intensity, log_background)
-
-    derivative = (encoding[:, None, :] - decoding[None, :, :]) / std**2
-    derivative = np.einsum("er,ep,erd->rpd", kernel, weighted_position, derivative)
-    ratio = np.zeros_like(derivative)
-    np.divide(
-        derivative, numerator[:, :, None], out=ratio, where=numerator[:, :, None] > 0
-    )
-    # d logaddexp(log I, b) / dx = I / (I + B) * d log I / dx; zero where I == 0.
-    share = np.exp(log_intensity - finished)
-    gradient = (share[:, :, None] * ratio).sum(axis=1)
-    return finished, gradient, intensity
 
 
 def unblocked_finished(values, log_background):
@@ -96,8 +67,10 @@ def test_marked_blocks_match_finished_unblocked_intensity(n_dec, n_enc, weight_k
     actual = block_estimate_log_joint_mark_intensity(
         **values, block_size=4, log_background=log_background
     )
-    oracle, _, _intensity = independent_finished_intensity_and_gradient(
-        values, log_background
+    oracle = reference_log_joint_mark_intensity(
+        *_reference_arguments(values),
+        encoding_weights=values["encoding_weights"],
+        log_background=log_background,
     )
     expected = unblocked_finished(values, log_background)
     assert actual.shape == (n_dec, 4)
@@ -168,8 +141,10 @@ def test_marked_block_gradients_match_unblocked_kernel():
     log_background = realistic_log_background(
         values["decoding_spike_waveform_features"]
     )
-    _, oracle, _intensity = independent_finished_intensity_and_gradient(
-        values, log_background
+    oracle = reference_log_joint_mark_intensity_gradient(
+        *_reference_arguments(values),
+        log_background=log_background,
+        encoding_weights=values["encoding_weights"],
     )
     marks = values.pop("decoding_spike_waveform_features")
     expected = jax.grad(

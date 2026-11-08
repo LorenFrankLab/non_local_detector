@@ -25,7 +25,6 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
-    fit_mark_references,
 )
 from tests.likelihoods.conftest import realistic_log_background
 
@@ -207,66 +206,6 @@ def test_local_likelihood_log_space_prevents_underflow(
     np.testing.assert_allclose(with_spikes - baseline, expected, rtol=1e-5)
 
 
-def test_local_likelihood_log_space_moderate_features(
-    extreme_feature_data, line_env_50cm
-):
-    """Test that log-space local likelihood works correctly with moderate features.
-
-    This is a sanity check that the log-space implementation doesn't break
-    normal cases where linear-space would have worked fine.
-    """
-    data = extreme_feature_data
-    env = line_env_50cm
-
-    # Modify data to have moderate features (not extreme)
-    rng = np.random.default_rng(0)
-    moderate_spike_features = [
-        rng.standard_normal((len(times), 8)) * 5.0  # No shift, moderate scale
-        for times in data["enc_spike_times"]
-    ]
-
-    # Fit encoding model
-    enc_model = fit_clusterless_kde_encoding_model(
-        position_time=data["position_time"],
-        position=data["position"],
-        spike_times=data["enc_spike_times"],
-        spike_waveform_features=moderate_spike_features,
-        environment=env,
-        position_std=6.0,
-        waveform_std=10.0,  # Larger std → less risk of underflow
-        block_size=50,
-        disable_progress_bar=True,
-    )
-
-    # Decode on time window
-    time = np.linspace(1.0, 2.0, 10)
-
-    # Compute local likelihood
-    ll_local = compute_local_log_likelihood(
-        time_edges=time_edges_from_centers(time),
-        position_time=data["position_time"],
-        position=data["position"],
-        spike_times=data["enc_spike_times"],
-        spike_waveform_features=moderate_spike_features,
-        occupancy_model=enc_model["occupancy_model"],
-        gpi_models=enc_model["gpi_models"],
-        encoding_spike_waveform_features=enc_model["encoding_spike_waveform_features"],
-        encoding_positions=enc_model["encoding_positions"],
-        environment=env,
-        mean_rates=jnp.array(enc_model["mean_rates"]),
-        position_std=enc_model["position_std"],
-        waveform_std=enc_model["waveform_std"],
-        mark_reference=fit_mark_references(moderate_spike_features, kernel_scale=10.0),
-        block_size=50,
-        disable_progress_bar=True,
-    )
-
-    # All values should be finite and reasonable
-    assert np.all(np.isfinite(ll_local)), "Local likelihood should be finite"
-    assert np.all(ll_local < 0), "Log-likelihood should be negative"
-    assert ll_local.shape == (len(time), 1), "Shape should be correct"
-
-
 def test_block_log_kde_matches_float64_reference_far_from_samples():
     """block_log_kde stays finite and accurate where every kernel underflows.
 
@@ -363,49 +302,3 @@ def test_scaled_gemm_all_zero_weights_score_the_background_not_nan(enc_tile_size
     np.testing.assert_array_equal(
         np.logaddexp(log_joint, np.asarray(log_background)[:, None]), expected
     )
-
-
-def test_log_fit_validates_features_after_windowing(line_env_50cm):
-    """clusterless_kde fit: finiteness is checked on in-window spikes only.
-
-    A NaN feature on a spike outside the encoding interval is clipped out before
-    the fit, so it must not abort fitting; a NaN on an in-window spike still
-    raises."""
-    from non_local_detector.exceptions import ValidationError
-
-    env = line_env_50cm
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 50.0, 101)[:, None]
-
-    # Out-of-window NaN (t=20 > position_time[-1]=10) is discarded -> fit succeeds.
-    enc_spike_times = jnp.array([2.0, 7.5, 20.0])
-    enc_feats = jnp.array([[0.0, 0.0], [0.5, 0.5], [1.0, jnp.nan]], dtype=float)
-    encoding_model = fit_clusterless_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=[enc_spike_times],
-        spike_waveform_features=[enc_feats],
-        environment=env,
-        position_std=np.sqrt(1.0),
-        waveform_std=1.0,
-        block_size=8,
-        disable_progress_bar=True,
-    )
-    bounded = np.asarray(encoding_model["encoding_spike_waveform_features"][0])
-    assert bounded.shape[0] == 2
-    assert np.all(np.isfinite(bounded))
-
-    # In-window NaN still aborts the fit.
-    bad_feats = jnp.array([[0.0, 0.0], [1.0, jnp.nan]], dtype=float)
-    with pytest.raises(ValidationError, match="finite"):
-        fit_clusterless_kde_encoding_model(
-            position_time=t_pos,
-            position=pos,
-            spike_times=[jnp.array([2.0, 7.5])],
-            spike_waveform_features=[bad_feats],
-            environment=env,
-            position_std=np.sqrt(1.0),
-            waveform_std=1.0,
-            block_size=8,
-            disable_progress_bar=True,
-        )

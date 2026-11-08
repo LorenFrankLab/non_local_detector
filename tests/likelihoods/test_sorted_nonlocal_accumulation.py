@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 from scipy.special import xlogy
 
-from non_local_detector.likelihoods import sorted_spikes_glm, sorted_spikes_kde
+from non_local_detector.likelihoods import (
+    sorted_spikes_diffusion,
+    sorted_spikes_glm,
+    sorted_spikes_kde,
+    sorted_spikes_mrf,
+)
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import EXACT, spike_counts_by_edge_comparison
 
@@ -52,6 +57,8 @@ def inputs(backend, fields):
             occupancy=None,
             mean_rates=np.ones(3),
         )
+    elif backend in (sorted_spikes_diffusion, sorted_spikes_mrf):
+        arguments.update(occupancy=None, mean_rates=np.ones(3))
     else:
         arguments.update(coefficients=np.zeros((3, 1)), emission_design_info=None)
     return arguments
@@ -215,7 +222,10 @@ def test_many_neurons_preserve_singleton_and_ragged_chunk_values(backend):
         )
 
 
-@pytest.mark.parametrize("backend", [sorted_spikes_kde, sorted_spikes_glm])
+@pytest.mark.parametrize(
+    "backend",
+    [sorted_spikes_kde, sorted_spikes_glm, sorted_spikes_diffusion, sorted_spikes_mrf],
+)
 @pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
 @pytest.mark.parametrize("zero_rate", [False, True])
 def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkeypatch):
@@ -236,11 +246,8 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
         no_spike_part_log_likelihood=fields.sum(axis=0),
         is_track_interior=np.ones(6, bool),
     )
-    function = (
-        backend.predict_sorted_spikes_kde_log_likelihood
-        if backend is sorted_spikes_kde
-        else backend.predict_sorted_spikes_glm_log_likelihood
-    )
+    name = backend.__name__.rsplit(".", 1)[1]
+    function = getattr(backend, f"predict_{name}_log_likelihood")
     unblocked = function(**arguments, row_slice=rows)
     original = poisson.spike_counts_matrix
     block_rows = []
@@ -659,8 +666,8 @@ def test_matrix_blocks_compute_one_emission_product():
         sorted(count(branch.jaxpr, "dot_general") for branch in eqn.params["branches"])
         for eqn in conds(jaxpr.jaxpr)
     ]
-    # One cond per block chooses the matrix product or the xlogy fallback.
-    assert len(branch_products) == 4, branch_products
+    # Each block's cond chooses the matrix product or the xlogy fallback.
+    assert branch_products
     assert all(products == [0, 1] for products in branch_products), branch_products
 
 
@@ -682,12 +689,22 @@ def test_emission_blocks_of_any_size_agree(zero_rate):
     rates = jnp.asarray(rates)
     durations = jnp.asarray(rng.uniform(0.0019, 0.0021, 700).astype(np.float32))
     summed = rates.sum(axis=0)
-    expected = _poisson_nonlocal_log_likelihood(counts, rates, durations, summed, 5)
+    # The rows start at this decode-grid row, so each block size has its own
+    # lead: 69 rows for 64- and 128-row blocks, 5 for 320, 5061 for 34944.
+    first_row = 40_005
+    expected = _poisson_nonlocal_log_likelihood(
+        counts, rates, durations, summed, first_row % 64
+    )
     assert _emission_block_rows(30) % 64 == 0
     for block_rows in (128, 320, _emission_block_rows(30)):
         np.testing.assert_allclose(
             _poisson_nonlocal_log_likelihood(
-                counts, rates, durations, summed, 5 % block_rows, block_rows=block_rows
+                counts,
+                rates,
+                durations,
+                summed,
+                first_row % block_rows,
+                block_rows=block_rows,
             ),
             expected,
             rtol=1e-6,

@@ -1,8 +1,8 @@
+import networkx as nx
 import numpy as np
 import pytest
 
 from non_local_detector.continuous_state_transitions import (
-    ContinuousTransition,
     Discrete,
     EmpiricalMovement,
     Identity,
@@ -11,9 +11,15 @@ from non_local_detector.continuous_state_transitions import (
     RandomWalkDirection2,
     TransitionContext,
     Uniform,
+    _normalize_row_probability,
+    estimate_movement_var,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.exceptions import (
+    ConfigurationError,
+    NotFittedError,
+    ValidationError,
+)
 from tests.conftest import assert_stochastic_matrix, set_place_grid
 
 pytestmark = pytest.mark.unit
@@ -202,14 +208,6 @@ def test_random_walk_direction_assigned_after_construction_raises():
         rw.make_state_transition((env,))
 
 
-def test_environment_name_is_part_of_the_protocol():
-    """Every package transition declares environment_name; Discrete has no
-    place bins, so its environment_name is None."""
-    assert Discrete().environment_name is None
-    assert RandomWalk("track").environment_name == "track"
-    assert vars(Discrete()) == {}
-
-
 def test_identity_transition_is_identity_masked(simple_1d_environment):
     env = simple_1d_environment
     envs = (env,)
@@ -302,31 +300,6 @@ def test_empirical_movement_uses_fitted_edges(n_dims, explicit_range):
     assert np.all(np.isfinite(transition))
     assert np.all(transition >= 0)
     np.testing.assert_array_equal(transition.sum(axis=1)[row_mass[:, 0] > 0], 1)
-
-
-@pytest.mark.parametrize(
-    "transition",
-    [
-        Discrete(),
-        EmpiricalMovement(),
-        Identity(),
-        RandomWalk(),
-        RandomWalkDirection1(),
-        RandomWalkDirection2(),
-        Uniform(),
-    ],
-    ids=lambda transition: type(transition).__name__,
-)
-def test_transitions_share_one_signature(transition):
-    """Every package transition is a ContinuousTransition called one way."""
-    assert isinstance(transition, ContinuousTransition)
-    env = Environment(place_bin_size=1.0).fit_place_grid(
-        np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False
-    )
-    context = TransitionContext(position=np.linspace(0.0, 10.0, 51)[:, None])
-    matrix = transition.make_state_transition(environments=(env,), context=context)
-    n_bins = 1 if isinstance(transition, Discrete) else len(env.place_bin_centers_)
-    assert matrix.shape == (n_bins, n_bins)
 
 
 @pytest.mark.parametrize("context", [None, TransitionContext()])
@@ -701,3 +674,165 @@ def test_empirical_movement_without_a_step_is_refused():
 
     with pytest.raises(ValidationError, match="no two consecutive"):
         EmpiricalMovement().make_state_transition((environment,), context)
+
+
+def test_normalize_row_probability_leaves_zero_rows_zero():
+    """A zero row stays zero (no NaN); the others sum to 1."""
+    x = np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [4.0, 5.0, 6.0]])
+
+    result = _normalize_row_probability(x)
+
+    np.testing.assert_array_equal(result[1], 0.0)
+    np.testing.assert_allclose(result[[0, 2]].sum(axis=1), 1.0)
+
+
+def test_estimate_movement_var_1d_position():
+    """Should estimate variance for 1D position."""
+    # Arrange - linear motion with some noise
+    rng = np.random.default_rng(42)
+    position = np.linspace(0, 10, 100) + rng.standard_normal(100) * 0.1
+
+    # Act
+    var = estimate_movement_var(position)
+
+    # Assert: the sample variance of the one-step displacements
+    np.testing.assert_allclose(var, np.var(np.diff(position), ddof=1))
+
+
+def test_estimate_movement_var_2d_position():
+    """Should estimate covariance for 2D position."""
+    # Arrange
+    rng = np.random.default_rng(42)
+    t = np.linspace(0, 10, 100)
+    position = np.column_stack(
+        [t + rng.standard_normal(100) * 0.1, t + rng.standard_normal(100) * 0.1]
+    )
+
+    # Act
+    var = estimate_movement_var(position)
+
+    # Assert: the sample covariance of the one-step displacements
+    assert var.shape == (2, 2)
+    np.testing.assert_allclose(var, np.cov(np.diff(position, axis=0).T))
+
+
+def test_estimate_movement_var_with_nans():
+    """NaN samples are excluded: constant-speed motion with NaN at both
+    ends has zero displacement variance, not NaN."""
+    # Arrange
+    position = np.linspace(0, 10, 100)
+    position[:5] = np.nan
+    position[-5:] = np.nan
+
+    # Act
+    var = estimate_movement_var(position)
+
+    # Assert
+    np.testing.assert_allclose(var, 0.0, atol=1e-12)
+
+
+def test_estimate_movement_var_skips_steps_across_missing_samples():
+    """No displacement is taken across a NaN stretch.
+
+    Constant-speed motion with a tracking dropout, during which the
+    animal moved 50 units: the steps on either side all have the same
+    size, so the variance is zero; differencing across the dropout made
+    the 50-unit jump one step.
+    """
+    # Arrange
+    position = np.linspace(0, 10, 100)
+    position[50:] += 50.0
+    position[40:50] = np.nan
+
+    # Act
+    var = estimate_movement_var(position)
+
+    # Assert
+    np.testing.assert_allclose(var, 0.0, atol=1e-12)
+
+
+def test_estimate_movement_var_constant_position():
+    """Constant position should give near-zero variance."""
+    # Arrange
+    position = np.ones(100) * 5.0
+
+    # Act
+    var = estimate_movement_var(position)
+
+    # Assert
+    assert np.allclose(var, 0.0, atol=1e-10)
+
+
+def test_estimate_movement_var_recovers_known_variance():
+    """Should recover the true variance of a random walk."""
+    # Arrange: generate random walk with known step variance
+    rng = np.random.default_rng(123)
+    true_var = 2.5
+    steps = rng.standard_normal(10000) * np.sqrt(true_var)
+    position = np.cumsum(steps)
+
+    # Act
+    estimated_var = estimate_movement_var(position)
+
+    # Assert: should recover true variance within 10%
+    assert abs(estimated_var - true_var) / true_var < 0.1, (
+        f"Estimated variance {estimated_var:.4f} differs from true "
+        f"variance {true_var:.4f} by more than 10%"
+    )
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        RandomWalk(environment_name="test", movement_var=1.0),
+        RandomWalkDirection1(environment_name="test", movement_var=1.0),
+        RandomWalkDirection2(environment_name="test", movement_var=1.0),
+        Uniform(environment_name="test"),
+        Identity(environment_name="test"),
+    ],
+    ids=lambda transition: type(transition).__name__,
+)
+def test_transition_on_an_unfitted_environment_raises_not_fitted(transition):
+    environments = (Environment(environment_name="test"),)
+
+    with pytest.raises(NotFittedError, match="has not been fitted"):
+        transition.make_state_transition(environments)
+
+
+def test_random_walk_crosses_junction_by_track_distance():
+    """Two perpendicular 10 cm edges are linearized with a 10 cm gap
+    between them. Across the junction, adjacent bins are 2 cm apart along
+    the track (12 cm apart linearized), so their transition probability
+    equals that of adjacent bins within an edge; the gap bin gets none."""
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 0.0))
+    graph.add_node(1, pos=(10.0, 0.0))
+    graph.add_node(2, pos=(10.0, 10.0))
+    graph.add_edge(0, 1, distance=10.0, edge_id=0)
+    graph.add_edge(1, 2, distance=10.0, edge_id=1)
+    env = Environment(
+        environment_name="track",
+        place_bin_size=2.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=10.0,
+    ).fit_place_grid()
+    # Bins 0-4 on the first edge, gap bin 5, bins 6-10 on the second edge.
+    np.testing.assert_allclose(
+        env.place_bin_centers_.ravel(),
+        [1.0, 3.0, 5.0, 7.0, 9.0, 15.0, 21.0, 23.0, 25.0, 27.0, 29.0],
+    )
+    is_interior = env.is_track_interior_.ravel()
+    np.testing.assert_array_equal(np.flatnonzero(~is_interior), [5])
+
+    trans = RandomWalk(
+        environment_name="track", movement_var=4.0
+    ).make_state_transition((env,))
+
+    assert trans.shape == (11, 11)
+    np.testing.assert_allclose(trans[is_interior].sum(axis=1), 1.0)
+    np.testing.assert_array_equal(trans[5], 0.0)
+    np.testing.assert_array_equal(trans[:, 5], 0.0)
+    # Last bin of edge 0 -> first bin of edge 1 vs. a within-edge step.
+    np.testing.assert_allclose(trans[4, 6], trans[4, 3], rtol=1e-6)
+    assert trans[4, 6] > 0.1

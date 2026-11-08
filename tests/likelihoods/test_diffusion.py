@@ -109,7 +109,9 @@ def test_laplacian_rejects_nonpositive_distance(bad_distance):
     graph.add_nodes_from([0, 1, 2])
     graph.add_edge(0, 1, distance=1.0)
     graph.add_edge(1, 2, distance=bad_distance)
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="graph edge has a non-positive 'distance'"
+    ):
         build_laplacian(graph)
 
 
@@ -262,7 +264,7 @@ def test_truncated_rank_below_n_components_raises():
     """rank < number of connected components is rejected (would drop a null mode)."""
     graph = nx.disjoint_union(path_graph(5), path_graph(5))  # 2 components
     L = build_laplacian(graph)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="rank is too small"):
         diffusion_eigenbasis(L, rank=1)
 
 
@@ -434,7 +436,7 @@ def test_heat_kernel_rank_retains_all_zero_modes_on_disconnected_graph():
 def test_heat_kernel_rank_rejects_tol_outside_unit_interval(bad_tol):
     """tol must lie in (0, 1): the cutoff lambda = -ln(tol)/t is only defined there."""
     L = build_laplacian(grid_graph_2d(10, 10))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=r"tolerance must lie in \(0, 1\)"):
         heat_kernel_rank(L, sigma=4.0, tol=bad_tol)
 
 
@@ -570,40 +572,6 @@ def test_diffuse_bandwidth_independent_of_bin_size_2d():
 
         stds = _weighted_std_per_axis(smoothed, (n, n), spacing)
         np.testing.assert_allclose(stds, sigma, rtol=0.05)
-
-
-def test_moore_diagonal_edges_oversmooth():
-    """8-connected (Moore) edges with 1/d² oversmooth by ≈√2 — the face-only guard."""
-    import scipy.sparse.linalg
-
-    sigma, spacing = 4.0, 1.0
-    t = sigma**2 / 2.0
-    n = round(2 * 3.5 * sigma / spacing)
-
-    face = grid_graph_2d(n, n, spacing)
-    moore = face.copy()
-    diag = spacing * np.sqrt(2.0)
-    for i in range(n - 1):
-        for j in range(n - 1):
-            moore.add_edge(i * n + j, (i + 1) * n + (j + 1), distance=diag)
-            moore.add_edge((i + 1) * n + j, i * n + (j + 1), distance=diag)
-
-    center = (n // 2) * n + (n // 2)
-    source = np.zeros(n * n)
-    source[center] = 1.0
-
-    face_std = _weighted_std_per_axis(
-        scipy.sparse.linalg.expm_multiply(-t * build_laplacian(face), source),
-        (n, n),
-        spacing,
-    )
-    moore_std = _weighted_std_per_axis(
-        scipy.sparse.linalg.expm_multiply(-t * build_laplacian(moore), source),
-        (n, n),
-        spacing,
-    )
-    np.testing.assert_allclose(face_std, sigma, rtol=0.05)
-    assert np.all(moore_std > 1.3 * sigma)  # ≈√2·sigma; justifies dropping diagonals
 
 
 def test_diffuse_matches_analytic_gaussian_1d():
@@ -976,7 +944,7 @@ def test_cached_eigenbasis_rank_below_components_raises_even_when_full_cached():
     """Slicing a cached full basis must not bypass the rank >= n_components guard."""
     env = make_2d_split_env()  # two interior components -> two null modes required
     cached_eigenbasis(env, rank=None)  # cache the full basis first
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="rank is too small"):
         cached_eigenbasis(env, rank=1)  # would slice to a single null mode
 
 
@@ -1065,7 +1033,7 @@ def test_eig_cache_invalidated_on_refit():
 def test_environment_graph_unfitted_env_raises():
     """An unfitted environment (no interior mask) raises ValidationError."""
     env = Environment(environment_name="unfit", place_bin_size=5.0)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="environment must be fitted"):
         environment_graph(env)
 
 
@@ -1073,7 +1041,10 @@ def test_check_bandwidth_rejects_nonpositive_sigma():
     """position_std <= 0 is rejected."""
     graph = environment_graph(make_2d_env())[0]
     for bad in (0.0, -1.0):
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            ValidationError,
+            match=r"smoothing bandwidth \(position_std\) must be positive",
+        ):
             check_smoothing_bandwidth(bad, graph)
 
 

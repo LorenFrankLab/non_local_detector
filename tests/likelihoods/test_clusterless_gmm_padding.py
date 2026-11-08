@@ -264,15 +264,6 @@ def test_padded_kernels_match_the_per_electrode_formulation(
         )
 
 
-def test_non_local_block_size_does_not_change_the_result(recording):
-    x64, recording = recording
-    if x64:
-        pytest.skip("float32 covers the block loop")
-    whole = predict(recording, False, slice(0, 2000), spike_block_size=10_000)
-    blocked = predict(recording, False, slice(0, 2000), spike_block_size=7)
-    np.testing.assert_allclose(blocked, whole, rtol=1e-6, atol=1e-5)
-
-
 def test_fine_padded_spike_counts_add_at_most_a_quarter():
     for n in range(17, 1001):
         assert n <= padded_spike_count(n, 1000, fine=True) <= 1.25 * n

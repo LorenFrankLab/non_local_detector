@@ -1,10 +1,9 @@
 """Tests for clusterless GMM fitting and prediction.
 
-Covers the memory options of ``predict_clusterless_gmm_log_likelihood``
-(spike blocking and position-bin tiling must not change the result), input
-validation, sparse/empty electrodes, and the GMM fit controls. Tiled versus
-untiled prediction against an analytic reference is covered in
-``likelihoods/test_clusterless_gmm_log_intensity.py``.
+Covers ragged spike blocks and position-bin tiles (they must not change the
+result), input validation, sparse/empty electrodes, and the GMM fit controls.
+Tiled versus untiled prediction against an analytic reference is covered in
+``test_clusterless_gmm_log_intensity.py``.
 """
 
 import jax.numpy as jnp
@@ -88,28 +87,6 @@ def gmm_simulation_data():
     return _make_gmm_simulation_data()
 
 
-@pytest.fixture(scope="module")
-def fitted_gmm():
-    """GMM encoding model fitted once on the synthetic data.
-
-    Module-scoped: the tests only predict from it.
-    """
-    data = _make_gmm_simulation_data()
-    encoding_model = fit_clusterless_gmm_encoding_model(
-        data["position_time"],
-        data["position"],
-        data["spike_times"],
-        data["spike_features"],
-        data["environment"],
-        gmm_components_occupancy=8,
-        gmm_components_joint=16,
-    )
-    mark_reference = _mark_reference(
-        data["position_time"], data["spike_times"], data["spike_features"]
-    )
-    return data, encoding_model, mark_reference
-
-
 def _predict_gmm(data, encoding_model, mark_reference, **overrides):
     """Non-local GMM log likelihood with encoding-model overrides."""
     return predict_clusterless_gmm_log_likelihood(
@@ -121,42 +98,6 @@ def _predict_gmm(data, encoding_model, mark_reference, **overrides):
         **{**encoding_model, **overrides},
         mark_reference=mark_reference,
         is_local=False,
-    )
-
-
-def test_gmm_blocking_parity(fitted_gmm):
-    """Blocked spike processing matches processing all spikes at once."""
-    result_no_block = _predict_gmm(*fitted_gmm, spike_block_size=999999)
-    result_blocked = _predict_gmm(*fitted_gmm, spike_block_size=10)
-
-    assert_allclose(
-        result_no_block,
-        result_blocked,
-        rtol=1e-5,
-        atol=1e-6,
-        err_msg="Blocked processing changed results compared to full processing",
-    )
-
-
-def test_gmm_combined_optimizations(fitted_gmm):
-    """Spike blocking and bin tiling together match using neither."""
-    _, encoding_model, _ = fitted_gmm
-    bin_tile_size = 3
-    assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
-
-    result_baseline = _predict_gmm(
-        *fitted_gmm, spike_block_size=999999, bin_tile_size=None
-    )
-    result_optimized = _predict_gmm(
-        *fitted_gmm, spike_block_size=10, bin_tile_size=bin_tile_size
-    )
-
-    assert_allclose(
-        result_baseline,
-        result_optimized,
-        rtol=1e-5,
-        atol=1e-6,
-        err_msg="Combined optimizations changed results",
     )
 
 

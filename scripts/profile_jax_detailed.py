@@ -23,7 +23,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
-    kde_distance,
+    log_kde_distance,
 )
 
 
@@ -63,7 +63,7 @@ def create_test_data(n_encoding=100, n_decoding=50, n_positions=200):
     is_track_interior = env.is_track_interior_.ravel()
     interior_place_bin_centers = env.place_bin_centers_[is_track_interior]
 
-    position_distance = kde_distance(
+    position_distance = log_kde_distance(
         interior_place_bin_centers,
         encoding["encoding_positions"][0],
         std=encoding["position_std"],

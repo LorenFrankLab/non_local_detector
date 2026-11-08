@@ -40,6 +40,7 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     make_spline_predict_matrix,
 )
+from tests.conftest import em_stops_at_max_iter
 from tests.likelihoods.conftest import training_mark_references
 
 DT = 0.002
@@ -151,8 +152,6 @@ def _component_log_density(mixture, marks):
 @pytest.mark.unit
 def test_registered_with_its_mark_reference_scale():
     record = _CLUSTERLESS_ALGORITHMS["clusterless_mark_glm"]
-    assert record.fit is fit_clusterless_mark_glm_encoding_model
-    assert record.predict is predict_clusterless_mark_glm_log_likelihood
     assert record.mark_reference_scale is not None
     assert record.mark_reference_scale(mark_reg_covar=4.0) == pytest.approx(2.0)
 
@@ -217,8 +216,10 @@ def test_integer_weights_equal_replicated_spikes():
     np.testing.assert_allclose(
         weighted.weights[order_w], replicated.weights[order_r], atol=2e-3
     )
+    # Measured max|diff| 6.5e-7 on means up to 60; ignoring the weights moves
+    # the means by a sizable fraction of MARK_STD.
     np.testing.assert_allclose(
-        weighted.means[order_w], replicated.means[order_r], atol=2e-2
+        weighted.means[order_w], replicated.means[order_r], atol=5e-5
     )
 
 
@@ -609,7 +610,9 @@ def test_2d_rate_maps_match_a_sorted_fit_with_the_true_units():
     for estimate, expected in zip(
         _unit_rate_maps(encoding, 0, means), sorted_maps, strict=True
     ):
-        np.testing.assert_allclose(estimate, expected, rtol=0.02, atol=0.02)
+        # Measured max rel diff 1.1e-7 (abs 1.9e-6 on rates up to 23 Hz); a
+        # 1% rate mis-scale is a 1e-2 rel diff.
+        np.testing.assert_allclose(estimate, expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.integration
@@ -705,7 +708,7 @@ def test_decoder_decodes_a_simulated_run():
 
 
 # max_iter is capped for speed.
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.integration
 def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
     from non_local_detector.models import NonLocalClusterlessDetector

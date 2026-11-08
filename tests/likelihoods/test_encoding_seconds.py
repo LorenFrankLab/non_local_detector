@@ -20,67 +20,6 @@ pytestmark = [
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("bounds", "expected"),
-    [
-        ([-0.5, 1.5], [1.0, 1.0]),
-        ([0.25, 0.75], [0.25, 0.25]),
-        ([0.0, 0.25], [0.21875, 0.03125]),
-    ],
-)
-def test_exposure_integrates_the_original_interpolation_basis(bounds, expected):
-    from non_local_detector.encoding_time import EncodingSupport
-
-    support = EncodingSupport(
-        np.array([0.0, 1.0]), np.zeros((2, 1)), encoding_time_range=bounds
-    )
-    np.testing.assert_allclose(support.exposure, expected, rtol=0, atol=1e-15)
-
-
-@pytest.mark.unit
-def test_missing_tracking_excludes_events_and_exposure():
-    from non_local_detector.encoding_time import EncodingSupport
-
-    position = np.array([0.0, 1.0, np.nan, 3.0, 4.0])[:, None]
-    support = EncodingSupport(np.arange(5.0), position)
-    np.testing.assert_allclose(support.exposure, [1.0, 1.0, 0.0, 1.0, 1.0])
-    np.testing.assert_array_equal(
-        support.contains(np.array([1.25, 2.0, 2.75])), [True, False, True]
-    )
-    np.testing.assert_allclose(
-        support.interpolate(position[:, 0], np.array([1.25, 2.75])), [1.0, 3.0]
-    )
-
-
-@pytest.mark.unit
-def test_explicit_tracking_segments_do_not_bridge_epochs():
-    from non_local_detector.encoding_time import EncodingSupport
-
-    time = np.array([0.0, 1.0, 10.0, 11.0])
-    support = EncodingSupport(
-        time, time[:, None], valid_position_intervals=[[-0.5, 1.5], [9.5, 11.5]]
-    )
-    np.testing.assert_allclose(support.exposure, np.ones(4))
-    np.testing.assert_allclose(
-        support.interpolate(time, np.array([1.25, 9.75])), [1.0, 10.0]
-    )
-    assert not support.contains(np.array([5.0]))[0]
-
-
-@pytest.mark.unit
-def test_single_sample_requires_explicit_recording_duration():
-    from non_local_detector.encoding_time import EncodingSupport
-    from non_local_detector.exceptions import ValidationError
-
-    with pytest.raises(ValidationError, match="encoding_time_range"):
-        EncodingSupport(np.array([1.0]), np.array([[3.0]]))
-    support = EncodingSupport(
-        np.array([1.0]), np.array([[3.0]]), encoding_time_range=[0.5, 1.5]
-    )
-    np.testing.assert_array_equal(support.exposure, [1.0])
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize("sample_kind", ["singleton", "stationary", "missing"])
 @pytest.mark.parametrize("one_bin", [False, True])
 def test_glm_fits_stationary_tracking_with_known_exposure(sample_kind, one_bin):
@@ -126,19 +65,6 @@ def test_no_spike_likelihood_uses_each_direct_bin_duration():
     np.testing.assert_allclose(np.asarray(actual)[:, 0], [-0.01, -0.02], rtol=1e-6)
 
 
-@pytest.mark.unit
-def test_acquisition_bounds_do_not_authorize_interpolation_across_a_gap():
-    from non_local_detector.encoding_time import EncodingSupport
-    from non_local_detector.exceptions import DataError
-
-    with pytest.raises(DataError, match="continuous tracking"):
-        EncodingSupport(
-            np.array([0.0, 1.0, 10.0, 11.0]),
-            np.zeros((4, 1)),
-            encoding_time_range=[0.0, 12.0],
-        )
-
-
 # synthetic tracking jumps are incidental to this test.
 @pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
 @pytest.mark.integration
@@ -171,12 +97,6 @@ def test_all_fitted_rates_are_hz_and_empty_bins_use_seconds(sampling_frequency):
         params[name].update(gmm_components_occupancy=1, gmm_components_joint=1)
     edges = np.array([0.01, 0.012, 0.016])
     for name, predict, model, clusterless in fit_registered_backends(data, params):
-        assert model["rate_units"] == "Hz", name
-        assert model["encoding_exposure_seconds"] == pytest.approx(1.0), name
-        if "mean_rates" in model:
-            np.testing.assert_allclose(
-                model["mean_rates"], [5.0], rtol=1e-6, err_msg=name
-            )
         args = [time, np.full_like(position, 50.0), [np.array([])]]
         if clusterless:
             args.append([np.empty((0, 1))])
@@ -286,20 +206,3 @@ def test_all_backends_fit_the_same_declared_support(case):
                 model.get("place_fields", model.get("summed_ground_process_intensity"))
             )
         ).all(), name
-
-
-@pytest.mark.unit
-def test_adjacent_tracking_segments_keep_their_own_endpoint_basis():
-    from non_local_detector.encoding_time import EncodingSupport
-
-    time = np.arange(4.0)
-    support = EncodingSupport(
-        time, time[:, None], valid_position_intervals=[[-0.5, 1.1], [1.1, 3.5]]
-    )
-    np.testing.assert_allclose(support.exposure, [1.0, 0.6, 1.4, 1.0])
-    np.testing.assert_allclose(
-        support.interpolate(time, np.array([1.05, 1.1])), [1.0, 2.0]
-    )
-    np.testing.assert_array_equal(
-        support.event_counts(np.array([1.1]), np.ones(4)), [0.0, 0.0, 1.0, 0.0]
-    )

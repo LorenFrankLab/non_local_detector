@@ -242,7 +242,9 @@ def test_2d_column_support_includes_positions_between_bin_centers(monkeypatch):
     )
     in_field = distance < 1.0
     assert every_column[in_field].mean() > 10.0
-    np.testing.assert_allclose(pruned[in_field], every_column[in_field], rtol=0.05)
+    # Measured max rel diff 2.8e-6; checking support only at bin centers drops
+    # in-field columns and gives a max rel diff of 0.86.
+    np.testing.assert_allclose(pruned[in_field], every_column[in_field], rtol=2e-4)
 
 
 def test_fit_cells_are_narrower_than_the_actual_knot_intervals():

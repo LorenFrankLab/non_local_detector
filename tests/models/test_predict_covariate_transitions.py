@@ -18,6 +18,7 @@ from non_local_detector.discrete_state_transitions import (
     predict_discrete_state_transitions,
 )
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import em_stops_at_max_iter
 
 
 @pytest.fixture
@@ -236,7 +237,7 @@ def test_a_restored_model_finds_the_same_sequence(
 
 
 @pytest.mark.unit
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")  # max_iter=1
+@em_stops_at_max_iter  # max_iter=1
 def test_estimating_ignores_a_covariate_the_formula_does_not_read(
     checkpoint_recording,
 ):

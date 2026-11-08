@@ -13,9 +13,9 @@ Submodules by responsibility, each depending only on those listed before it:
 - ``poisson``: Poisson emission terms of sorted spike counts.
 - ``kernel_density``: weighted Gaussian kernel density estimation.
 
-This package re-exports the names of the former ``likelihoods.common`` module,
-so imports and pickles that name ``non_local_detector.likelihoods.common``
-(for example ``KDEModel``) keep working.
+This package re-exports the submodules' helpers, so imports and pickles that
+name ``non_local_detector.likelihoods.common`` (for example ``KDEModel``) keep
+working.
 """
 
 from non_local_detector._validation import validate_weights
@@ -158,25 +158,6 @@ from non_local_detector.time_edges import (
     validate_time_edges,
 )
 
-# The former module's private names of the helpers above, which the
-# likelihood modules now import by their public names.
-_SpikeTimeOrder = SpikeTimeOrder
-_blocked_nonlocal_poisson_log_likelihood = blocked_nonlocal_poisson_log_likelihood
-_concatenate_row_blocks = concatenate_row_blocks
-_kde_log_densities = kde_log_densities
-_log_space_kde_log_density = log_space_kde_log_density
-_pad_rows = pad_rows
-_padded_index = padded_index
-_padded_occupancy_count = padded_occupancy_count
-_padded_sample_count = padded_sample_count
-_padded_samples = padded_samples
-_padded_spike_count = padded_spike_count
-_prepare_kde_local_inputs = prepare_kde_local_inputs
-_prepared_kde_log_density = prepared_kde_log_density
-_spike_counts_matrix = spike_counts_matrix
-_traced_block_kde = traced_block_kde
-_true_kde_log_density = true_kde_log_density
-
 __all__ = [
     "COUNT_BLOCK_BYTES",
     "DEFAULT_WAVEFORM_STD",
@@ -199,35 +180,22 @@ __all__ = [
     "SpikeTimeOrder",
     "ValidationError",
     "_DecodeTimeGrid",
-    "_SpikeTimeOrder",
     "_batched_kde_rows",
-    "_blocked_nonlocal_poisson_log_likelihood",
     "_bucketed_size",
     "_compiled_batched_scaled_kde_log_density",
     "_compiled_block_kde",
     "_compiled_block_log_kde",
     "_compiled_log_space_kde_log_density",
     "_compiled_scaled_kde_log_density",
-    "_concatenate_row_blocks",
     "_count_block_rows",
     "_kde_block_rows",
-    "_kde_log_densities",
     "_kde_log_scale",
     "_log_kernel_matrix",
-    "_log_space_kde_log_density",
     "_matrix_emission_is_safe",
     "_nearest_sample_log_kernel",
     "_normalized_row_ids",
     "_octave_size",
-    "_pad_rows",
-    "_padded_index",
-    "_padded_occupancy_count",
-    "_padded_sample_count",
-    "_padded_samples",
-    "_padded_spike_count",
     "_poisson_nonlocal_log_likelihood",
-    "_prepare_kde_local_inputs",
-    "_prepared_kde_log_density",
     "_quarter_octave",
     "_reduces_sequentially",
     "_relative_weights",
@@ -238,12 +206,9 @@ __all__ = [
     "_segment_totals",
     "_segmented_inclusive_sum",
     "_sorted_sample_keys",
-    "_spike_counts_matrix",
     "_spikes_are_ascending",
-    "_traced_block_kde",
     "_traced_block_log_kde",
     "_traced_blocks",
-    "_true_kde_log_density",
     "as_array",
     "as_arrays",
     "as_std_array",

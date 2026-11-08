@@ -19,6 +19,7 @@ from non_local_detector import (
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.models import base
 from non_local_detector.observation_models import ObservationModel
+from tests.conftest import em_stops_at_max_iter
 
 pytestmark = pytest.mark.unit
 
@@ -149,13 +150,15 @@ def test_decode_position_far_outside_the_grid_warns(fitted, method):
 )
 def test_fit_position_outside_the_position_range_warns(family, position):
     """Fitting positions that miss the configured position_range (another
-    origin or other units) warns once the grid is fit."""
+    origin or other units) warns, once, after the grid is fit."""
     detector = DETECTORS[family](
         environments=Environment(place_bin_size=2, position_range=((0, 10), (0, 10))),
         infer_track_interior=False,
     )
-    with pytest.warns(DataQualityWarning, match="outside the fitted grid"):
+    message = "outside the fitted grid"
+    with pytest.warns(DataQualityWarning, match=message) as record:
         detector.fit(TIME, position, **SPIKE_DATA[family])
+    assert sum(message in str(warning.message) for warning in record) == 1
 
 
 @pytest.mark.parametrize("method", DECODE_METHODS)
@@ -316,7 +319,7 @@ def test_position_a_decoder_ignores_is_not_checked(method):
 
 
 # One EM iteration is enough to run both fits; convergence is not checked.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_estimation_falling_back_to_dense_warns_once(monkeypatch):
     """When EM's "auto" fit cannot build structured transitions and refits
     dense, the off-grid warning of the abandoned fit is not repeated."""

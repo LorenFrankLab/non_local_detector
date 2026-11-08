@@ -7,14 +7,13 @@ indicates a bug in the E-step or M-step.
 Tests cover:
 - A four-state sorted-spikes detector with discrete-transition updates
 - The local-mass/ESS guard that skips encoding-model refits
-- Sorted spikes (GLM) encoding refit end-to-end smoke test
+- Sorted spikes (GLM) encoding refit: finite recorded likelihoods, refit fields
 - Surfacing of monotonicity violations and max-iter exits via
   warnings and model attributes (``converged_``, ``n_iter_``,
   ``em_monotonicity_violations_``).
 """
 
 import dataclasses
-import inspect
 import itertools
 import warnings
 from types import SimpleNamespace
@@ -32,6 +31,7 @@ from non_local_detector._transition_estimation import _transition_log_prior
 from non_local_detector.core import EM_MONOTONICITY_SLACK, check_converged
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 
@@ -114,25 +114,6 @@ def _assert_monotonic(lls, label=""):
             f"{lls[i]:.6f} < {lls[i - 1]:.6f} "
             f"(diff={lls[i] - lls[i - 1]:.2e})"
         )
-
-
-@pytest.mark.unit
-def test_encoding_refit_is_opt_in():
-    """The encoding refit is not an exact M-step, so neither the EM engine nor
-    any ``estimate_parameters`` runs it by default."""
-    from non_local_detector.models.base import (
-        ClusterlessDetector,
-        SortedSpikesDetector,
-        _DetectorBase,
-    )
-
-    for method in (
-        _DetectorBase._run_em,
-        ClusterlessDetector.estimate_parameters,
-        SortedSpikesDetector.estimate_parameters,
-    ):
-        parameters = inspect.signature(method).parameters
-        assert parameters["estimate_encoding_model"].default is False, method
 
 
 @pytest.mark.slow
@@ -295,28 +276,35 @@ class TestEncodingUpdateGuards:
             f"{[str(w.message) for w in unexpected]}"
         )
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
-    def test_sorted_spikes_glm_encoding_runs_end_to_end(self, sorted_sim):
-        """NonLocalSortedSpikesDetector with GLM encoding updates should
-        run to completion without errors."""
-        detector = NonLocalSortedSpikesDetector(
-            sampling_frequency=SORTED_SIM_RATE,
-            sorted_spikes_algorithm="sorted_spikes_glm",
-            sorted_spikes_algorithm_params={},
+    @em_stops_at_max_iter
+    def test_sorted_spikes_glm_encoding_refit_records_finite_likelihoods_and_moves_fields(
+        self, sorted_sim
+    ):
+        """With ``estimate_encoding_model=True`` the refit is not an exact
+        M-step, so EM need not be monotone; it must still record one finite
+        marginal log-likelihood per E-step and replace the initial place fields."""
+        fit = {
+            "sampling_frequency": SORTED_SIM_RATE,
+            "sorted_spikes_algorithm": "sorted_spikes_glm",
+            "sorted_spikes_algorithm_params": {},
+        }
+        refit = NonLocalSortedSpikesDetector(**fit)
+        results = refit.estimate_parameters(
+            **sorted_sim.fit_args, max_iter=3, estimate_encoding_model=True
         )
-        results = detector.estimate_parameters(
-            **sorted_sim.fit_args,
-            max_iter=3,
-            estimate_encoding_model=True,
-        )
+        # EM starts from this fit (identical fields), without its time_edges.
+        fit_args = {k: v for k, v in sorted_sim.fit_args.items() if k != "time_edges"}
+        initial = NonLocalSortedSpikesDetector(**fit).fit(**fit_args)
 
-        lls = results.attrs["marginal_log_likelihoods"]
-        assert len(lls) >= 2, f"Expected at least 2 EM iterations, got {len(lls)}"
-        assert "acausal_posterior" in results
-        assert "acausal_state_probabilities" in results
+        lls = np.asarray(results.attrs["marginal_log_likelihoods"])
+        assert lls.shape == (refit.n_iter_ + 1,)
+        assert np.all(np.isfinite(lls))
+        refit_fields = np.asarray(refit.encoding_model_[("", 0)]["place_fields"])
+        initial_fields = np.asarray(initial.encoding_model_[("", 0)]["place_fields"])
+        assert refit_fields.shape == initial_fields.shape
+        # Measured max |difference| is 0.049 Hz (peak rate 16.6 Hz); an EM that
+        # skipped the refit leaves the fields identical (difference 0).
+        assert np.abs(refit_fields - initial_fields).max() > 1e-3
 
 
 @pytest.mark.unit

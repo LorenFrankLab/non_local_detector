@@ -843,39 +843,6 @@ def test_large_finite_backward_values_do_not_overflow_before_normalization(kind)
     )
 
 
-def structured_hmm(operator, initial, likelihood, weights):
-    from non_local_detector.core import _condition_on, _divide_safe, _normalize
-
-    def forward(carry, observation):
-        evidence, prediction = carry
-        ll, discrete = observation
-        filtered, increment = _condition_on(prediction, ll)
-        return (evidence + increment, operator.forward(filtered, discrete)), (
-            filtered,
-            prediction,
-        )
-
-    final, (filtered, predictions) = jax.lax.scan(
-        forward, (0.0, initial), (likelihood, weights)
-    )
-    n_time = len(likelihood)
-
-    def backward(smoothed_next, observation):
-        filtered_t, discrete, time = observation
-        predicted_next = operator.forward(filtered_t, discrete)
-        smoothed = filtered_t * operator.backward(
-            _divide_safe(smoothed_next, predicted_next), discrete
-        )
-        smoothed = jnp.where(time == n_time - 1, filtered_t, smoothed)
-        smoothed, _ = _normalize(smoothed, axis=-1)
-        return smoothed, smoothed
-
-    _, smoothed = jax.lax.scan(
-        backward, filtered[-1], (filtered, weights, jnp.arange(n_time)), reverse=True
-    )
-    return final, filtered, predictions, smoothed
-
-
 @pytest.mark.integration
 @pytest.mark.parametrize("covariate", [False, True])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -889,8 +856,10 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
     from non_local_detector.core import (
         _filter_covariate_dependent_impl,
         _filter_impl,
+        _filter_scan,
         _smoother_covariate_dependent_impl,
         _smoother_impl,
+        _smoother_scan,
     )
 
     with precision_mode(dtype == np.float64):
@@ -945,7 +914,25 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
             )
             smoothed = _smoother_impl(joint, filtered)
             weights = jnp.broadcast_to(discrete[0], (n_time, 4, 4))
-        actual = jax.jit(structured_hmm)(operator, initial, likelihood, weights)
+
+        # The production scans, run with the structured operator.
+        @jax.jit
+        def production_scans(operator, initial, likelihood, weights):
+            final, (filtered, predicted, _) = _filter_scan(
+                initial,
+                0.0,
+                likelihood,
+                weights,
+                operator,
+                keep_rows=True,
+                keep_predictive=True,
+            )
+            _, smoothed = _smoother_scan(
+                filtered, weights, operator, filtered[-1], jnp.arange(n_time), n_time
+            )
+            return final, filtered, predicted, smoothed
+
+        actual = production_scans(operator, initial, likelihood, weights)
         expected = (expected_final, filtered, predicted, smoothed)
         tolerance = (
             {"rtol": 1e-6, "atol": 1e-6}
@@ -965,7 +952,7 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(
 def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_parameters(
     fused,
 ):
-    from non_local_detector.core import _filter_covariate_dependent_impl
+    from non_local_detector.core import _filter_covariate_dependent_impl, _filter_scan
 
     with precision_mode(True):
         env, observations, transitions, sizes, mask = default_layout()
@@ -986,7 +973,15 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
         def objective(prior, ll, parameters):
             probabilities = jax.nn.softmax(prior)
             transitions = jax.nn.softmax(parameters, axis=-1)
-            return structured_hmm(operator, probabilities, ll, transitions)[0][0]
+            return _filter_scan(
+                probabilities,
+                0.0,
+                ll,
+                transitions,
+                operator,
+                keep_rows=False,
+                keep_predictive=False,
+            )[0][0]
 
         def reference(prior, ll, parameters):
             return _filter_covariate_dependent_impl(
@@ -1007,7 +1002,7 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
 @pytest.mark.parametrize("all_impossible", [False, True])
 @pytest.mark.parametrize("fused", [False, True])
 def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):
-    from non_local_detector.core import _filter_covariate_dependent_impl
+    from non_local_detector.core import _filter_covariate_dependent_impl, _filter_scan
 
     with precision_mode(True):
         env, observations, transitions, sizes, mask = default_layout()
@@ -1029,7 +1024,15 @@ def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):
         weights = jnp.broadcast_to(jnp.eye(4), (3, 4, 4))
 
         def objective(initial, likelihood, discrete):
-            return structured_hmm(operator, initial, likelihood, discrete)[0][0]
+            return _filter_scan(
+                initial,
+                0.0,
+                likelihood,
+                discrete,
+                operator,
+                keep_rows=False,
+                keep_predictive=False,
+            )[0][0]
 
         def reference(initial, likelihood, discrete):
             return _filter_covariate_dependent_impl(
