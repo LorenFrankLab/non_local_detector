@@ -94,6 +94,9 @@ _REML_LOG10_TOLERANCE = 0.02
 # With several spline terms, REML then refines each term's strength in turn,
 # in at most this many sweeps over the terms.
 _REML_MAX_SWEEPS = 5
+# A row fit is converged when a Newton step would lower its loss by at most
+# this many nats (see :func:`_newton_decrement`).
+_CONVERGED_NEWTON_DECREMENT = 1e-6
 
 
 def estimate_non_stationary_state_transition_from_responses(
@@ -426,7 +429,7 @@ def _fit_covariate_transition(
                         _newton_decrement(
                             np.ravel(fitted), blocks, prior_per_bin, penalty(strength)
                         )
-                        > 1e-6
+                        > _CONVERGED_NEWTON_DECREMENT
                     ):
                         logger.warning(
                             "Transition optimization did not converge for state %d "
@@ -852,13 +855,21 @@ def _fit_covariate_row(
     -------
     coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
         The initial coefficients when there are no transitions or no
-        coefficients to fit (one state, whose only transition is certain), or
-        when the optimizer does not lower the loss.
+        coefficients to fit (one state, whose only transition is certain),
+        when they are already converged, or when the optimizer does not lower
+        the loss.
     """
     x0 = np.asarray(initial_coefficients, dtype=np.float64).ravel()
     if not blocks or x0.size == 0:
         return initial_coefficients
     args = (blocks, prior_per_bin, penalty)
+    # A start that is already converged is kept. REML's fits each start from
+    # a neighbouring strength's fit; at strengths near its 1e6 ceiling the
+    # Hessian's condition number reaches 1e10, the gradient cannot fall to
+    # scipy's tolerance, and the optimizer would spend all of ``maxiter``
+    # lowering the loss by under 1e-6 nats.
+    if _newton_decrement(x0, *args) <= _CONVERGED_NEWTON_DECREMENT:
+        return initial_coefficients
     minimize_kwargs = {
         "fun": _blocked_loss_and_gradient,
         "x0": x0,
@@ -919,7 +930,11 @@ def _fit_covariate_row(
             result.message,
         )
         return initial_coefficients
-    if warn and not result.success and _newton_decrement(result.x, *args) > 1e-6:
+    if (
+        warn
+        and not result.success
+        and _newton_decrement(result.x, *args) > _CONVERGED_NEWTON_DECREMENT
+    ):
         logger.warning(
             "Transition optimization did not report convergence for state %d: "
             "%s. Using improved coefficients.",

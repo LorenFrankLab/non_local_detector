@@ -485,6 +485,31 @@ class TestSmoothedRowObjective:
                 atol=1e-6,
             )
 
+    def test_converged_start_is_kept_without_optimizing(self, monkeypatch):
+        """A fit started at its own optimum returns the start without running
+        the optimizer, which at strong penalties cannot meet scipy's gradient
+        tolerance and would spend all of ``maxiter``."""
+        from non_local_detector import _transition_estimation
+
+        _, _, design, _, response = _row_problem(n_time=2_000)
+        design_matrix = np.asarray(design, dtype=float)
+        kwargs = {
+            "transition_regularization": 0.1,
+            "smoothness": 1e6,
+            "smoothness_matrix": _smoothness_matrix(design.design_info),
+        }
+        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+        fit = _fit_covariate_transition(start, design_matrix, response, **kwargs)
+
+        def unexpected_minimize(*args, **kwargs):
+            pytest.fail("The optimizer ran from a converged start")
+
+        monkeypatch.setattr(_transition_estimation, "minimize", unexpected_minimize)
+        refit = _fit_covariate_transition(
+            fit.coefficients, design_matrix, response, **kwargs
+        )
+        np.testing.assert_array_equal(refit.coefficients, fit.coefficients)
+
     def test_smoothness_adds_its_quadratic_form_per_logit(self):
         rng, _, design, _, response = _row_problem(n_time=300)
         design_matrix = np.asarray(design, dtype=float)
