@@ -824,10 +824,10 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, edge_case_dat
     predict, model, _ = fitted_backends["sorted_spikes_glm"]
     time = edge_case_data["time"]
     spikes, _ = edge_case_data["spike_cases"]["mixed"]
-    args = (edge_case_data["position_time"], edge_case_data["position"], spikes)
     # Independent 1-D interpolation and Patsy basis evaluation. Match the
     # predictor's working precision, then use float64 for reference arithmetic.
-    working_dtype = np.float64 if jax.config.jax_enable_x64 else np.float32
+    is_float32 = not jax.config.jax_enable_x64
+    working_dtype = np.float32 if is_float32 else np.float64
     centers = time[:-1] + 0.5 * np.diff(time)
     position = np.interp(
         centers, edge_case_data["position_time"], edge_case_data["position"][:, 0]
@@ -858,9 +858,7 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, edge_case_dat
         for chunk in np.array_split(np.arange(N_BINS), 5)
     ]
     reference_kwargs = (
-        FLOAT32_ROUNDING
-        if working_dtype == np.float32
-        else {"rtol": 1e-12, "atol": 1e-12}
+        FLOAT32_ROUNDING if is_float32 else {"rtol": 1e-12, "atol": 1e-12}
     )
     for rows in [slice(None), slice(3, 10), *partitions]:
         chunk_design = np.asarray(
@@ -868,7 +866,7 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, edge_case_dat
                 model["emission_design_info"], position[rows, None]
             )
         )
-        if working_dtype == np.float32:
+        if is_float32:
             np.testing.assert_array_equal(chunk_design, design[rows])
         else:
             # Patsy's float64 constraint projection itself can regroup its
@@ -884,11 +882,17 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, edge_case_dat
                 counts[rows, neuron],
             )
         actual = np.asarray(
-            predict(*args, **model, is_local=True, row_slice=rows, time_edges=time)
+            predict(
+                edge_case_data["position_time"],
+                edge_case_data["position"],
+                spikes,
+                **model,
+                is_local=True,
+                row_slice=rows,
+                time_edges=time,
+            )
         )
-        np.testing.assert_allclose(
-            actual, expected[rows], **reference_kwargs, equal_nan=False
-        )
+        np.testing.assert_allclose(actual, expected[rows], **reference_kwargs)
 
 
 def _assert_sorted_segment_ids(ids):

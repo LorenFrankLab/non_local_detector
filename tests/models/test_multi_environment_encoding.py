@@ -129,6 +129,13 @@ def _within(times, start, stop):
     return times[(times >= start) & (times <= stop)]
 
 
+def _spikes(data, cls):
+    """The recording's spike arguments for detector class ``cls``."""
+    if cls is ClusterlessDecoder:
+        return data["electrode_times"], data["electrode_marks"]
+    return (data["spike_times"],)
+
+
 @pytest.mark.parametrize(
     ("cls", "algorithm_key", "algorithm", "compared"),
     [
@@ -151,11 +158,7 @@ def test_each_environment_matches_a_fit_on_its_samples_alone(
 ):
     data = two_environment_recording
     clusterless = cls is ClusterlessDecoder
-    spikes = (
-        (data["electrode_times"], data["electrode_marks"])
-        if clusterless
-        else (data["spike_times"],)
-    )
+    spikes = _spikes(data, cls)
     both = _detector(cls, algorithm_key, algorithm, NAMES)
     both.fit(data["time"], data["position"], *spikes, environment_labels=data["labels"])
 
@@ -233,15 +236,25 @@ def test_position_is_read_one_environment_at_a_time(two_environment_recording):
     )
 
 
-_FAMILIES = [
-    pytest.param(SortedSpikesDecoder, "sorted_spikes_algorithm", id="sorted"),
-    pytest.param(ClusterlessDecoder, "clusterless_algorithm", id="clusterless"),
-]
-
-
-@pytest.mark.parametrize(("cls", "algorithm_key"), _FAMILIES)
+@pytest.mark.parametrize(
+    ("cls", "algorithm_key", "algorithm"),
+    [
+        pytest.param(
+            SortedSpikesDecoder,
+            "sorted_spikes_algorithm",
+            "sorted_spikes_kde",
+            id="sorted",
+        ),
+        pytest.param(
+            ClusterlessDecoder,
+            "clusterless_algorithm",
+            "clusterless_kde",
+            id="clusterless",
+        ),
+    ],
+)
 def test_decoding_favors_the_environment_the_spikes_came_from(
-    cls, algorithm_key, two_environment_recording
+    cls, algorithm_key, algorithm, two_environment_recording
 ):
     """A 10 s window recorded in A is decoded as A, and one in B as B.
 
@@ -253,13 +266,7 @@ def test_decoding_favors_the_environment_the_spikes_came_from(
     the true environment at most 0.085.
     """
     data = two_environment_recording
-    clusterless = cls is ClusterlessDecoder
-    spikes = (
-        (data["electrode_times"], data["electrode_marks"])
-        if clusterless
-        else (data["spike_times"],)
-    )
-    algorithm = "clusterless_kde" if clusterless else "sorted_spikes_kde"
+    spikes = _spikes(data, cls)
     detector = _detector(cls, algorithm_key, algorithm, NAMES)
     detector.set_params(
         sampling_frequency=SAMPLING_FREQUENCY,

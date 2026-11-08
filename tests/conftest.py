@@ -3,14 +3,13 @@
 This module provides:
 1. A builder for synthetic decoder results and a JAX precision context manager
 2. Environment fixtures for common test scenarios
-3. Assertion helpers for validating probability distributions and stochastic
-   matrices
+3. An assertion helper for stochastic matrices
 
 Usage:
-    pytest automatically discovers fixtures in conftest.py. Import assertion
-    helpers explicitly if needed:
+    pytest automatically discovers fixtures in conftest.py. Import helpers
+    explicitly if needed:
 
-    from tests.conftest import assert_probability_distribution
+    from tests.conftest import assert_stochastic_matrix
 """
 
 import dataclasses
@@ -187,36 +186,6 @@ def simple_1d_environment():
 # ==============================================================================
 # ASSERTION HELPERS
 # ==============================================================================
-
-
-def assert_probability_distribution(arr, axis=-1, rtol=1e-5, atol=1e-6):
-    """Assert array is a valid probability distribution.
-
-    Checks that all values are non-negative, <= 1, and sum to 1.0
-    along the given axis.
-
-    Parameters
-    ----------
-    arr : array-like
-        Array to validate (numpy or jax array).
-    axis : int, optional
-        Axis along which to sum (default: -1).
-    rtol : float, optional
-        Relative tolerance for sum check.
-    atol : float, optional
-        Absolute tolerance for sum check.
-
-    Raises
-    ------
-    AssertionError
-        If any validation fails.
-    """
-    assert np.all(arr >= 0), "Probabilities must be non-negative"
-    assert np.all(arr <= 1), "Probabilities must be <= 1"
-    sums = arr.sum(axis=axis)
-    assert np.allclose(sums, 1.0, rtol=rtol, atol=atol), (
-        f"Probabilities must sum to 1 along axis {axis}, got sums: {sums}"
-    )
 
 
 def assert_stochastic_matrix(matrix, rtol=1e-5, atol=1e-6):

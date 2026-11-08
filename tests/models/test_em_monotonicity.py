@@ -294,10 +294,9 @@ class TestEncodingUpdateGuards:
         results = refit.estimate_parameters(
             **sorted_sim.fit_args, max_iter=3, estimate_encoding_model=True
         )
-        initial = NonLocalSortedSpikesDetector(**fit)
-        initial.estimate_parameters(
-            **sorted_sim.fit_args, max_iter=3, estimate_encoding_model=False
-        )
+        # EM starts from this fit (identical fields), without its time_edges.
+        fit_args = {k: v for k, v in sorted_sim.fit_args.items() if k != "time_edges"}
+        initial = NonLocalSortedSpikesDetector(**fit).fit(**fit_args)
 
         lls = np.asarray(results.attrs["marginal_log_likelihoods"])
         assert lls.shape == (refit.n_iter_ + 1,)

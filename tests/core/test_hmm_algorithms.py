@@ -767,73 +767,45 @@ def _decode_with_log_likelihoods(path, log_likes, is_missing=None):
     """Run one decoding path on a two-state stationary HMM; return its result."""
     init = np.array([0.5, 0.5])
     trans = np.array([[0.9, 0.1], [0.1, 0.9]])
-    n_time = log_likes.shape[0]
+    state_ind = np.array([0, 1])
+    discrete = np.broadcast_to(trans, (log_likes.shape[0], 2, 2))
+    continuous = np.eye(2)
+    driver = {
+        "time_edges": np.arange(float(log_likes.shape[0]) + 1),
+        "initial_distribution": init,
+        "log_likelihood_func": None,
+        "log_likelihood_args": (),
+        "log_likelihoods": log_likes,
+        "is_missing": is_missing,
+    }
+    covariate = {
+        "state_ind": state_ind,
+        "discrete_transition_matrix": discrete,
+        "continuous_transition_matrix": continuous,
+    }
     if path == "filter":
         return filter(init, trans, log_likes)
     if path == "filter_covariate":
         return filter_covariate_dependent(
-            init,
-            np.broadcast_to(trans, (n_time, 2, 2)),
-            np.eye(2),
-            np.array([0, 1]),
-            log_likes,
+            init, discrete, continuous, state_ind, log_likes
         )
     if path == "chunked_filter_smoother":
         return chunked_filter_smoother(
-            time_edges=np.arange(float(n_time) + 1),
-            state_ind=np.array([0, 1]),
-            initial_distribution=init,
-            transition_matrix=trans,
-            log_likelihood_func=None,
-            log_likelihood_args=(),
-            n_chunks=2,
-            log_likelihoods=log_likes,
-            is_missing=is_missing,
+            **driver, state_ind=state_ind, transition_matrix=trans, n_chunks=2
         )
     if path == "chunked_covariate":
         return chunked_filter_smoother_covariate_dependent(
-            time_edges=np.arange(float(n_time) + 1),
-            state_ind=np.array([0, 1]),
-            initial_distribution=init,
-            discrete_transition_matrix=np.broadcast_to(trans, (n_time, 2, 2)),
-            continuous_transition_matrix=np.eye(2),
-            log_likelihood_func=None,
-            log_likelihood_args=(),
-            n_chunks=2,
-            log_likelihoods=log_likes,
-            is_missing=is_missing,
+            **driver, **covariate, n_chunks=2
         )
     if path == "most_likely_sequence_covariate":
-        return most_likely_sequence_covariate_dependent(
-            time_edges=np.arange(float(n_time) + 1),
-            state_ind=np.array([0, 1]),
-            initial_distribution=init,
-            discrete_transition_matrix=np.broadcast_to(trans, (n_time, 2, 2)),
-            continuous_transition_matrix=np.eye(2),
-            log_likelihood_func=None,
-            log_likelihood_args=(),
-            log_likelihoods=log_likes,
-            is_missing=is_missing,
-        )
+        return most_likely_sequence_covariate_dependent(**driver, **covariate)
     if path == "viterbi":
         return viterbi(init, trans, log_likes)
     if path == "viterbi_covariate":
         return viterbi_covariate_dependent(
-            init,
-            np.broadcast_to(trans, (n_time, 2, 2)),
-            np.eye(2),
-            np.array([0, 1]),
-            log_likes,
+            init, discrete, continuous, state_ind, log_likes
         )
-    return most_likely_sequence(
-        time_edges=np.arange(n_time + 1),
-        initial_distribution=init,
-        transition_matrix=trans,
-        log_likelihood_func=None,
-        log_likelihood_args=(),
-        log_likelihoods=log_likes,
-        is_missing=is_missing,
-    )
+    return most_likely_sequence(**driver, transition_matrix=trans)
 
 
 @pytest.mark.unit

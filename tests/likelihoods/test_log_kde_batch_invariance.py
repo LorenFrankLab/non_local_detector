@@ -314,7 +314,10 @@ def test_every_spike_flagged_for_exact_repair_matches_reference(
     # Every spike has entries to check within the slots; beyond them, more
     # spikes than the 32 slots, twice over.
     n_checked = above.any(axis=1).sum()
-    assert n_checked == n_dec if n_dec <= 32 else n_checked > 64
+    if n_dec <= 32:
+        assert n_checked == n_dec
+    else:
+        assert n_checked > 64
     np.testing.assert_allclose(out[above], expected[above], atol=1e-4, rtol=0)
 
 
