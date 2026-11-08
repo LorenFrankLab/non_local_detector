@@ -5,6 +5,7 @@ detector and its environments untouched. ``_decoder`` builds a small one-state
 decoder for any registered likelihood algorithm, listed in ``ALGORITHMS``.
 ``make_two_arm_track`` builds a fitted environment with two disconnected arms.
 ``type_violations`` checks an encoding model's values against its declared types.
+``record_refit_weights`` records the weights of each EM encoding refit.
 """
 
 import types
@@ -105,6 +106,23 @@ def _decoder(algorithm, *, calibration=False, sampling_frequency=500.0):
         clusterless_algorithm_params=params,
         **options,
     )
+
+
+def record_refit_weights(monkeypatch, detector) -> list[np.ndarray]:
+    """Record the position-sample weights of each EM encoding refit.
+
+    The refit still runs; a copy of its weights is appended to the returned
+    list on every call.
+    """
+    weights = []
+    refit = detector._refit_encoding_model
+
+    def record(local_weights, encoding_fit_arguments):
+        weights.append(np.array(local_weights))
+        return refit(local_weights, encoding_fit_arguments)
+
+    monkeypatch.setattr(detector, "_refit_encoding_model", record)
+    return weights
 
 
 def make_two_arm_track():

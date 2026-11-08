@@ -31,6 +31,7 @@ from non_local_detector.analysis import (
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import time_edges_from_centers
 from tests.conftest import em_stops_at_max_iter
+from tests.models._helpers import record_refit_weights
 
 pytestmark = [
     pytest.mark.integration,
@@ -342,14 +343,7 @@ def test_em_encoding_refit_keeps_each_environment_on_its_own_samples(
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={"disable_progress_bar": True},
     )
-    refit_weights = []
-    refit = detector._refit_encoding_model
-
-    def record_refit_weights(weights, encoding_fit_arguments):
-        refit_weights.append(np.array(weights))
-        return refit(weights, encoding_fit_arguments)
-
-    monkeypatch.setattr(detector, "_refit_encoding_model", record_refit_weights)
+    refit_weights = record_refit_weights(monkeypatch, detector)
     detector.estimate_parameters(
         data["time"],
         data["position"],

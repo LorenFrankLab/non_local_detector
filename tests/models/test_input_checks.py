@@ -23,7 +23,7 @@ from non_local_detector import (
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.models._input_validation import _missing_bins, _sample_labels
-from tests.models._helpers import ALGORITHMS, _decoder
+from tests.models._helpers import ALGORITHMS, _decoder, record_refit_weights
 
 pytestmark = pytest.mark.unit
 
@@ -419,18 +419,13 @@ class TestEstimateParametersDecodeClock:
 
 class TestWarningsFirePerPublicCall:
     @pytest.mark.parametrize("family", FAMILIES)
-    def test_em_refits_do_not_repeat_the_encoding_warnings(self, family, recording):
+    def test_em_refits_do_not_repeat_the_encoding_warnings(
+        self, family, recording, monkeypatch
+    ):
         time, position, spikes, marks = recording
         grid = Environment(place_bin_size=5.0, position_range=[(0.0, 50.0)])
         detector = _detector(family, environments=grid)
-        n_refits = []
-        original = detector._refit_encoding_model
-
-        def spy(weights, encoding_fit_arguments):
-            n_refits.append(1)
-            return original(weights, encoding_fit_arguments)
-
-        detector._refit_encoding_model = spy
+        refit_weights = record_refit_weights(monkeypatch, detector)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             _, messages = _quality_warnings(
@@ -446,9 +441,8 @@ class TestWarningsFirePerPublicCall:
                 ),
                 "outside the fitted grid",
             )
-        del detector._refit_encoding_model
 
-        assert len(n_refits) == 3
+        assert len(refit_weights) == 3
         assert len(messages) == 1
 
 

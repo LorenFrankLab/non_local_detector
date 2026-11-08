@@ -27,6 +27,7 @@ from tests.models._helpers import (
     SORTED_SIM_RATE,
     _assert_unchanged,
     _snapshot,
+    record_refit_weights,
 )
 
 pytestmark = em_stops_at_max_iter
@@ -365,21 +366,16 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
     dt = np.median(np.diff(position_time))
     edges = position_time[0] + 0.5 * dt + np.arange(position_time.size + 1) * dt
     detector = _detector(detector_cls)
-    recorded = {"probabilities": [], "weights": []}
+    probabilities = []
     original_predict = detector._predict
-    original_refit_encoding = detector._refit_encoding_model
 
     def spy_predict(*args, **kwargs):
         result = original_predict(*args, **kwargs)
-        recorded["probabilities"].append(np.asarray(result.acausal_state_probabilities))
+        probabilities.append(np.asarray(result.acausal_state_probabilities))
         return result
 
-    def spy_refit_encoding(weights, encoding_fit_arguments):
-        recorded["weights"].append(np.asarray(weights))
-        return original_refit_encoding(weights, encoding_fit_arguments)
-
     monkeypatch.setattr(detector, "_predict", spy_predict)
-    monkeypatch.setattr(detector, "_refit_encoding_model", spy_refit_encoding)
+    weights = record_refit_weights(monkeypatch, detector)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,
@@ -393,12 +389,12 @@ def test_em_encoding_weights_are_interpolated_from_bin_centers(family, monkeypat
     inside = (position_time >= edges[0]) & (position_time <= edges[-1])
     expected = np.where(
         inside,
-        np.interp(position_time, centers, recorded["probabilities"][0][:, local]),
+        np.interp(position_time, centers, probabilities[0][:, local]),
         0.0,
     )
     assert not inside[0]
     assert inside[1:].all()
-    np.testing.assert_allclose(recorded["weights"][0], expected, rtol=1e-6)
+    np.testing.assert_allclose(weights[0], expected, rtol=1e-6)
 
 
 # ----------------------------------------------------------------- transitions
@@ -547,14 +543,7 @@ def test_em_weights_are_zero_outside_the_decoded_edges(family, monkeypatch):
     detector_cls, position_time, fit_args, _ = family
     edges = _coarse_edges(position_time, factor=4, n_bins=300)
     detector = _detector(detector_cls, factor=4)
-    weights = []
-    original = detector._refit_encoding_model
-
-    def spy(local_weights, encoding_fit_arguments):
-        weights.append(np.asarray(local_weights))
-        return original(local_weights, encoding_fit_arguments)
-
-    monkeypatch.setattr(detector, "_refit_encoding_model", spy)
+    weights = record_refit_weights(monkeypatch, detector)
     detector.estimate_parameters(
         **fit_args,
         time_edges=edges,
