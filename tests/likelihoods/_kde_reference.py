@@ -67,6 +67,7 @@ def reference_log_joint_mark_intensity(
     occupancy: ArrayLike,
     mean_rate: float,
     log_position_distance: ArrayLike,
+    *,
     encoding_weights: ArrayLike | None = None,
     log_background: ArrayLike | None = None,
 ) -> NDArray[np.float64]:
@@ -129,6 +130,7 @@ def reference_log_joint_mark_intensity_gradient(
     occupancy: ArrayLike,
     mean_rate: float,
     log_position_distance: ArrayLike,
+    *,
     log_background: ArrayLike,
     encoding_weights: ArrayLike | None = None,
 ) -> NDArray[np.float64]:
@@ -147,17 +149,22 @@ def reference_log_joint_mark_intensity_gradient(
     -------
     gradient : np.ndarray, shape (n_decoding_spikes, n_features)
     """
-    args = (
+    log_intensity = reference_log_joint_mark_intensity(
         decoding_features,
         encoding_features,
         waveform_stds,
         occupancy,
         mean_rate,
         log_position_distance,
+        encoding_weights=encoding_weights,
+    )
+    log_mark, log_position, mark_score = _log_terms(
+        decoding_features,
+        encoding_features,
+        waveform_stds,
+        log_position_distance,
         encoding_weights,
     )
-    log_intensity = reference_log_joint_mark_intensity(*args)
-    log_mark, log_position, mark_score = _log_terms(*args[:3], *args[5:])
     # (n_encoding, n_decoding, n_bins) log terms of each intensity.
     log_terms = log_mark[:, :, None] + log_position[:, None, :]
     with np.errstate(invalid="ignore"):  # all -inf terms: no intensity

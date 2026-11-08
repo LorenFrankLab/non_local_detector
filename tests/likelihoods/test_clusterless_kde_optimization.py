@@ -9,7 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from scipy.stats import norm
 
 from non_local_detector.likelihoods.clusterless_kde import (
     _estimate_with_enc_chunking,
@@ -18,32 +17,26 @@ from non_local_detector.likelihoods.clusterless_kde import (
 )
 from non_local_detector.likelihoods.common import EPS, LOG_EPS
 from non_local_detector.likelihoods.mark_reference import MarkReference
+from tests.likelihoods._kde_reference import reference_log_position_kernel
 
 
-class TestKdeDistance:
+def test_log_kde_distance_matches_scipy():
     """The log kernel product against scipy's float64 normal density.
 
     Measured max error: 3.4e-6 nats (|log| up to 26). Using the variance for
     the std is a 20-nat error; a normalizer off by sqrt(2) per dimension is
     1.4 nats.
     """
-
-    @staticmethod
-    def _data():
-        rng = np.random.default_rng(42)
-        eval_points = rng.standard_normal((30, 4))
-        samples = rng.standard_normal((50, 4))
-        std = rng.uniform(0.5, 2.0, 4)
-        # Per-dimension log densities, shape (n_samples, n_eval_points, n_dims).
-        per_dimension = norm.logpdf(eval_points[None], loc=samples[:, None], scale=std)
-        reference = per_dimension.sum(axis=-1)
-        return (jnp.asarray(x) for x in (eval_points, samples, std)), reference
-
-    def test_log_kde_distance_matches_scipy(self):
-        (eval_points, samples, std), reference = self._data()
-        np.testing.assert_allclose(
-            log_kde_distance(eval_points, samples, std), reference, rtol=0, atol=1e-4
-        )
+    rng = np.random.default_rng(42)
+    eval_points = rng.standard_normal((30, 4))
+    samples = rng.standard_normal((50, 4))
+    std = rng.uniform(0.5, 2.0, 4)
+    np.testing.assert_allclose(
+        log_kde_distance(*(jnp.asarray(x) for x in (eval_points, samples, std))),
+        reference_log_position_kernel(eval_points, samples, std),
+        rtol=0,
+        atol=1e-4,
+    )
 
 
 class TestScaledGemmJointIntensity:

@@ -68,7 +68,9 @@ def test_marked_blocks_match_finished_unblocked_intensity(n_dec, n_enc, weight_k
         **values, block_size=4, log_background=log_background
     )
     oracle = reference_log_joint_mark_intensity(
-        *_reference_arguments(values), values["encoding_weights"], log_background
+        *_reference_arguments(values),
+        encoding_weights=values["encoding_weights"],
+        log_background=log_background,
     )
     expected = unblocked_finished(values, log_background)
     assert actual.shape == (n_dec, 4)
@@ -140,7 +142,9 @@ def test_marked_block_gradients_match_unblocked_kernel():
         values["decoding_spike_waveform_features"]
     )
     oracle = reference_log_joint_mark_intensity_gradient(
-        *_reference_arguments(values), log_background, values["encoding_weights"]
+        *_reference_arguments(values),
+        log_background=log_background,
+        encoding_weights=values["encoding_weights"],
     )
     marks = values.pop("decoding_spike_waveform_features")
     expected = jax.grad(

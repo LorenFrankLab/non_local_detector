@@ -124,7 +124,14 @@ def test_encoding_weights_consistent_across_paths(n_features):
     w = jnp.asarray(rng.random(n_enc) * 2.0 + 0.5).at[3].set(0.0)
 
     ref = reference_log_joint_mark_intensity(
-        dec, enc, wf_std, occ, mean_rate, log_pos, w, log_background
+        dec,
+        enc,
+        wf_std,
+        occ,
+        mean_rate,
+        log_pos,
+        encoding_weights=w,
+        log_background=log_background,
     )
     unweighted = reference_log_joint_mark_intensity(
         dec, enc, wf_std, occ, mean_rate, log_pos, log_background=log_background

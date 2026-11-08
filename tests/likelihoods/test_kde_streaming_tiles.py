@@ -78,8 +78,8 @@ def joint_oracle(values):
     """Float64 finished terms ``logaddexp(log intensity, log background)``."""
     return reference_log_joint_mark_intensity(
         *_reference_arguments(values),
-        values["encoding_weights"],
-        values["log_background"],
+        encoding_weights=values["encoding_weights"],
+        log_background=values["log_background"],
     )
 
 
@@ -177,8 +177,8 @@ def test_finished_joint_gradients_match_independent_oracle(x64):
         values = joint_inputs(13, 9, 7, "weighted")
         expected = reference_log_joint_mark_intensity_gradient(
             *_reference_arguments(values),
-            values["log_background"],
-            values["encoding_weights"],
+            log_background=values["log_background"],
+            encoding_weights=values["encoding_weights"],
         )
         marks = values.pop("decoding_features")
         actual = jax.grad(
