@@ -240,6 +240,8 @@ def test_2d_column_support_includes_positions_between_bin_centers(monkeypatch):
             *args, emission_knot_spacing=1.0, disable_progress_bar=True
         )
     )
+    # The walk reaches the field by chance: this seed spends 2,023 of 50,000
+    # samples within 1 cm of it; seed 2 never does, and fails the next line.
     in_field = distance < 1.0
     assert every_column[in_field].mean() > 10.0
     # Measured max rel diff 3.7e-5; checking support only at bin centers drops
