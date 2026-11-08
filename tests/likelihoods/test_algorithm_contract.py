@@ -48,7 +48,20 @@ from non_local_detector.model_format import read_model_summary
 from non_local_detector.models.base import ClusterlessDetector
 from tests.models._helpers import ALGORITHMS, _decoder, type_violations
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # The mark GLM initializes its mixture with k-means, which can find fewer
+    # distinct points than components on the tiny recording.
+    pytest.mark.filterwarnings(
+        "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+    ),
+    # The sorted GLM's fit on the tiny recording ends near its gradient
+    # tolerance, above it on some platforms; these tests check the fit/predict
+    # contract, not the fit's quality.
+    pytest.mark.filterwarnings(
+        "ignore:GLM Poisson regression may not have converged:UserWarning"
+    ),
+]
 
 # The decode rows requested from the fitted decoder.
 _DECODE_SAMPLES = slice(100, 140)
@@ -149,17 +162,6 @@ def contract_violations(
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-# The mark GLM initializes its mixture with k-means, which can find fewer
-# distinct points than components on this tiny fixture.
-@pytest.mark.filterwarnings(
-    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-)
-# The sorted GLM's fit on this tiny fixture ends near its gradient tolerance,
-# above it on some platforms; the test checks the fit/predict contract, not
-# the fit's quality.
-@pytest.mark.filterwarnings(
-    "ignore:GLM Poisson regression may not have converged:UserWarning"
-)
 def test_registered_algorithm_meets_the_detector_contract(
     monkeypatch, recording, algorithm
 ):
@@ -216,12 +218,6 @@ def test_registered_algorithm_meets_the_detector_contract(
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-@pytest.mark.filterwarnings(
-    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:GLM Poisson regression may not have converged:UserWarning"
-)
 def test_predict_takes_no_position_when_not_local(monkeypatch, recording, algorithm):
     """A detector that reads no position passes predict None for both position
     arguments; the non-local likelihood needs neither, and the local one asks
@@ -279,12 +275,6 @@ def test_contract_check_reports_a_broken_algorithm(monkeypatch, recording):
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-@pytest.mark.filterwarnings(
-    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:GLM Poisson regression may not have converged:UserWarning"
-)
 def test_encoding_model_values_have_their_declared_types(
     tmp_path, recording, algorithm
 ):
@@ -303,12 +293,6 @@ def test_encoding_model_values_have_their_declared_types(
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-@pytest.mark.filterwarnings(
-    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:GLM Poisson regression may not have converged:UserWarning"
-)
 def test_values_saved_with_their_old_types_load_unified(tmp_path, recording, algorithm):
     """Models saved before the shared keys held NumPy arrays (Python floats in
     a list, or a JAX array) load with them as arrays of the same dtype and
@@ -501,12 +485,6 @@ _INVALID_SETTINGS = {
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-@pytest.mark.filterwarnings(
-    "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:GLM Poisson regression may not have converged:UserWarning"
-)
 def test_predict_reads_execution_settings_changed_after_fitting(
     monkeypatch, recording, algorithm
 ):

@@ -3,20 +3,9 @@
 import numpy as np
 import pytest
 
-pytestmark = [
-    # Tiny synthetic fixtures: a small position_std and zero-rate electrodes are
-    # properties of the fixture, not under test here.
-    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
-    # k-means seeding finds fewer distinct points than components on the tiny fixtures.
-    pytest.mark.filterwarnings(
-        "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
-    ),
-    pytest.mark.filterwarnings(
-        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
-    ),
-]
+from tests.conftest import tiny_fixture_warnings
+
+pytestmark = tiny_fixture_warnings
 
 
 @pytest.mark.unit

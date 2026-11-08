@@ -26,18 +26,10 @@ from non_local_detector.likelihoods.mark_reference import (
 from non_local_detector.model_checking._clusterless_models import DiffusionElectrode
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.time_edges import time_edges_from_centers
+from tests.conftest import tiny_fixture_warnings
 from tests.likelihoods.conftest import training_mark_references
 
-pytestmark = [
-    # Tiny synthetic fixtures: a small position_std and zero-rate electrodes are
-    # properties of the fixture, not under test here.
-    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
-    pytest.mark.filterwarnings(
-        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
-    ),
-]
+pytestmark = tiny_fixture_warnings
 
 # Every registered algorithm, plus the tiled / streamed prediction paths that
 # score spikes with separate kernels.

@@ -137,24 +137,6 @@ def _gmm_logp(gmm: GaussianMixtureModel, X: jax.Array | np.ndarray) -> jax.Array
     return gmm.score_samples(cast(jax.Array, X))
 
 
-def _gmm_density(gmm: GaussianMixtureModel, X: jax.Array) -> jax.Array:
-    """Density under a fitted GMM.
-
-    Parameters
-    ----------
-    gmm : GaussianMixtureModel
-        Fitted Gaussian mixture model.
-    X : jax.Array, shape (n_samples, n_features)
-        Input samples to evaluate.
-
-    Returns
-    -------
-    density : jax.Array, shape (n_samples,)
-        Probability density for each sample.
-    """
-    return jnp.exp(gmm.score_samples(X))
-
-
 @partial(jax.jit, donate_argnums=(0,))
 def _accumulate_log_likelihood_block(
     log_likelihood: jax.Array,

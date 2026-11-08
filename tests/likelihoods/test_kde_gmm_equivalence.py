@@ -12,7 +12,6 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_gmm import (
-    _gmm_density,
     _gmm_logp,
     predict_clusterless_gmm_log_likelihood,
 )
@@ -239,7 +238,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data, is_local):
     occupancy = jnp.exp(log_occupancy)
 
     # Compute GPI: mean_rate * gpi_density / occupancy
-    gpi_density = _gmm_density(gpi_gmm, interior_bins)
+    gpi_density = jnp.exp(_gmm_logp(gpi_gmm, interior_bins))
     mean_rate = kde_enc["mean_rates"][0]
 
     summed_gpi = jnp.clip(

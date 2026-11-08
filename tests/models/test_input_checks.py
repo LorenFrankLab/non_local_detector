@@ -23,6 +23,7 @@ from non_local_detector import (
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.models._input_validation import _missing_bins, _sample_labels
+from tests.conftest import spread_over_sample_bins
 from tests.models._helpers import ALGORITHMS, _decoder, record_refit_weights
 
 pytestmark = pytest.mark.unit
@@ -40,9 +41,7 @@ def _recording(start=0.0, seed=0):
     for center in np.linspace(5, 95, 6):
         rate = 25 * np.exp(-0.5 * ((position - center) / 8) ** 2) + 0.2
         counts = rng.poisson(rate / RATE)
-        times = np.repeat(time, counts) + rng.uniform(
-            -0.5 / RATE, 0.5 / RATE, counts.sum()
-        )
+        times = spread_over_sample_bins(rng, time, counts, RATE)
         spikes.append(np.sort(times))
         marks.append(rng.normal(center, 3.0, (times.size, 2)))
     return time, position[:, None], spikes, marks
@@ -466,9 +465,7 @@ def _gap_recording():
     for center in np.linspace(0, 100, 20):
         rate = 30 * np.exp(-0.5 * ((position[:, 0] - center) / 8) ** 2) + 0.2
         counts = rng.poisson(rate / RATE)
-        times = np.repeat(time, counts) + rng.uniform(
-            -0.5 / RATE, 0.5 / RATE, counts.sum()
-        )
+        times = spread_over_sample_bins(rng, time, counts, RATE)
         order = np.argsort(times)
         spikes.append(times[order])
         marks.append(rng.normal(center, 3.0, (times.size, 2)))

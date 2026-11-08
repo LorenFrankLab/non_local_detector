@@ -15,18 +15,10 @@ import numpy as np
 import pytest
 
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import tiny_fixture_warnings
 from tests.likelihoods.conftest import ALGORITHMS
 
-pytestmark = [
-    # The shared all-backend fixtures fit tiny synthetic data: a small
-    # position_std and zero-rate electrodes are fixture properties, not under test.
-    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
-    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
-    pytest.mark.filterwarnings(
-        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
-    ),
-]
+pytestmark = tiny_fixture_warnings
 
 STALE_GRID = "different environment grid"
 

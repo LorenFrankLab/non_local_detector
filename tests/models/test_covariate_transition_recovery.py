@@ -30,6 +30,7 @@ from non_local_detector.discrete_state_transitions import (
     _smoothness_matrix,
     predict_discrete_state_transitions,
 )
+from tests.conftest import spread_over_sample_bins
 
 SAMPLING_FREQUENCY = 500.0
 TRACK_LENGTH = 180.0
@@ -112,8 +113,7 @@ def _simulate(seed: int, duration_s: float) -> dict:
     counts = rng.poisson(rates / SAMPLING_FREQUENCY)
     spike_times = [
         np.sort(
-            np.repeat(time, counts[:, neuron])
-            + rng.uniform(-0.5, 0.5, counts[:, neuron].sum()) / SAMPLING_FREQUENCY
+            spread_over_sample_bins(rng, time, counts[:, neuron], SAMPLING_FREQUENCY)
         )
         for neuron in range(centers.size)
     ]
