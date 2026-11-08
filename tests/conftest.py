@@ -53,6 +53,22 @@ em_stops_at_max_iter = pytest.mark.filterwarnings(
     "ignore:EM did not converge after max_iter=:UserWarning"
 )
 
+# For modules that fit every registered algorithm on the shared tiny synthetic
+# fixtures: a small position_std, zero-rate electrodes and k-means seeding that
+# finds fewer distinct points than components are properties of the fixture,
+# not under test. Use as ``pytestmark = tiny_fixture_warnings``.
+tiny_fixture_warnings = [
+    pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    pytest.mark.filterwarnings(
+        "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:electrode \\d+ has zero total encoding weight:UserWarning"
+    ),
+]
+
 
 def pytest_collection_modifyitems(items):
     """Mark tests without a category marker as unit tests.
