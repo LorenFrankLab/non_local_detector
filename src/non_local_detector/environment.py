@@ -56,6 +56,7 @@ import copy
 import dataclasses
 import functools
 import hashlib
+import numbers
 import pickle
 import warnings
 from collections import OrderedDict
@@ -1117,8 +1118,10 @@ class Environment:
                 )
 
             min_val, max_val = dim_range
-            if not isinstance(min_val, int | float) or not isinstance(  # type: ignore[redundant-expr]  # runtime check of user input
-                max_val, int | float
+            # numbers.Real covers NumPy scalars (np.float32, np.int64, ...).
+            if not all(
+                isinstance(value, numbers.Real) and not isinstance(value, bool)
+                for value in (min_val, max_val)
             ):
                 msg = f"position_range[{i}] must contain numeric values"  # type: ignore[unreachable]  # runtime check of user input
                 raise ValidationError(

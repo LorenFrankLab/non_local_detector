@@ -415,3 +415,17 @@ class TestIsTrackInteriorValidation:
         is_interior = np.array([True, False, True, False])
         env = Environment(is_track_interior=is_interior)
         assert np.array_equal(env.is_track_interior, is_interior)
+
+
+@pytest.mark.unit
+class TestPositionRangeEndpointTypes:
+    """position_range endpoints may be any real scalar, NumPy ones included."""
+
+    @pytest.mark.parametrize("endpoint_type", [np.float32, np.int64])
+    def test_position_range_accepts_numpy_scalars(self, endpoint_type):
+        env = Environment(
+            place_bin_size=10.0,
+            position_range=[(endpoint_type(0), endpoint_type(100))],
+        )
+        env.fit_place_grid(np.linspace(0.0, 100.0, 11)[:, np.newaxis])
+        assert env.place_bin_centers_.shape == (10, 1)
