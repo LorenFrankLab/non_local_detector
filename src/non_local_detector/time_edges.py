@@ -26,12 +26,20 @@ from typing import Any, TypeVar, cast
 import numpy as np
 from numpy.typing import ArrayLike
 
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    ValidationError,
+    _structured_message,
+)
 
 __all__ = [
     "calculate_time_edges",
     "time_edges_from_centers",
 ]
+
+_TIME_GRID_GUIDE_URL = (
+    "https://lorenfranklab.github.io/non_local_detector/time_grid_migration/"
+)
 
 
 # Allowed deviation of a bin width from the mean width, in ulp of max|edge|.
@@ -68,17 +76,33 @@ def requires_time_edges(function: _F) -> _F:
     @wraps(function)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         if "time" in kwargs or "time_edges" not in kwargs:
-            msg = (
-                f"{function.__qualname__} requires keyword-only time_edges "
-                "(n_bins + 1 bin boundaries). For uniformly spaced sample "
-                "timestamps, use time_edges=time_edges_from_centers(time). "
-                "This preserves row count but changes between-sample spike "
-                "ownership. A detector decodes only edges 1 / sampling_frequency "
-                "wide: construct it (or call set_params) with sampling_frequency "
-                "equal to the sample rate, or build the edges with "
-                "detector.calculate_time_edges(time_range). See "
-                "docs/time_grid_migration.md for irregular tracking, masks, and "
-                "independent sequences."
+            if "time" in kwargs:
+                message = (
+                    f"{function.__qualname__} no longer takes time; pass the "
+                    "bin boundaries as time_edges"
+                )
+                got = "time=..."
+            else:
+                message = (
+                    f"{function.__qualname__} requires time_edges as a keyword argument"
+                )
+                got = "no time_edges keyword argument"
+            msg = _structured_message(
+                message,
+                expected="time_edges=..., the n_bins + 1 bin boundaries in seconds",
+                got=got,
+                hint=(
+                    "For one bin per uniformly spaced sample, use "
+                    "time_edges=time_edges_from_centers(time): the row count "
+                    "stays the same, but a spike between two samples belongs "
+                    "to the nearer sample's bin. A detector decodes only bins "
+                    "1 / sampling_frequency wide, so construct it (or call "
+                    "set_params) with sampling_frequency equal to the sample "
+                    "rate, or build edges at its rate with "
+                    "detector.calculate_time_edges([start, stop]). Irregular "
+                    "tracking, masks and independent "
+                    f"sequences: {_TIME_GRID_GUIDE_URL}"
+                ),
             )
             raise TypeError(msg)
         return function(*args, **kwargs)

@@ -88,7 +88,7 @@ bin, so its mean is over one bin.
 
 1. **Environment.** The detector built a grid of 2 cm position bins over the
    positions seen during fitting. With 1-D position and no track graph, the
-   track is treated as a 1-D open field (the detector warns about this); see
+   track is treated as a 1-D open field; see
    [Core concepts](core-concepts.md#environments) for track graphs.
 2. **Encoding.** `fit` estimated each neuron's firing rate as a function of
    position with a kernel density estimate (`sorted_spikes_kde`, the default),
