@@ -56,7 +56,8 @@ em_stops_at_max_iter = pytest.mark.filterwarnings(
 # For modules that fit every registered algorithm on the shared tiny synthetic
 # fixtures: a small position_std, zero-rate electrodes and k-means seeding that
 # finds fewer distinct points than components are properties of the fixture,
-# not under test. Use as ``pytestmark = tiny_fixture_warnings``.
+# not under test. Use as ``pytestmark = tiny_fixture_warnings``, or unpack it
+# beside other marks: ``pytestmark = [pytest.mark.unit, *tiny_fixture_warnings]``.
 tiny_fixture_warnings = [
     pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
     pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
