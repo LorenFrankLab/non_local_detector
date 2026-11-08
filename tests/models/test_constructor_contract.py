@@ -1,7 +1,6 @@
 """Constructor contract of the detectors: keyword-only arguments and ``set_params``."""
 
 import json
-import re
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +26,53 @@ ALL_MODELS = [getattr(models, name) for name in models.__all__]
 def test_positional_construction_raises(model_cls):
     with pytest.raises(TypeError, match="positional"):
         model_cls(None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_cls", ALL_MODELS, ids=lambda cls: cls.__name__)
+def test_default_model_repr_lists_no_parameters(model_cls):
+    """The resolved default states and transitions are not shown as changes."""
+    assert repr(model_cls()) == f"{model_cls.__name__}()"
+
+
+@pytest.mark.unit
+def test_repr_lists_only_changed_parameters():
+    detector = NonLocalSortedSpikesDetector(
+        sampling_frequency=1500.0, no_spike_rate=1e-8
+    )
+    assert repr(detector) == (
+        "NonLocalSortedSpikesDetector(no_spike_rate=1e-08, sampling_frequency=1500.0)"
+    )
+
+
+@pytest.mark.unit
+def test_long_repr_puts_one_parameter_per_line():
+    environment = Environment(place_bin_size=5.0)
+    detector = NonLocalSortedSpikesDetector(
+        environments=[environment], sampling_frequency=1500.0
+    )
+    assert repr(detector) == (
+        "NonLocalSortedSpikesDetector(\n"
+        f"    environments=({environment!r},),\n"
+        "    sampling_frequency=1500.0,\n"
+        ")"
+    )
+
+
+@pytest.mark.unit
+def test_repr_of_a_model_with_required_parameters_shows_them():
+    """A family base class has no defaults for its state space: every
+    required parameter is shown, and an optional one only when changed."""
+    text = repr(_base_detector(sampling_frequency=250.0))
+    assert text.startswith("SortedSpikesDetector(\n")
+    for name in ("discrete_initial_conditions", "environments", "sampling_frequency"):
+        assert f"    {name}=" in text
+    assert "no_spike_rate=" not in repr(_base_detector())
+
+
+@pytest.mark.unit
+def test_discrete_repr_has_no_address():
+    assert repr(Discrete()) == "Discrete()"
 
 
 @pytest.mark.unit
@@ -96,9 +142,7 @@ class TestSetParams:
         detector = NonLocalSortedSpikesDetector(continuous_transition_types=custom)
         detector.set_params(continuous_transition_types=None)
         default = NonLocalSortedSpikesDetector().continuous_transition_types
-        assert _stable_repr(detector.continuous_transition_types) == _stable_repr(
-            default
-        )
+        assert repr(detector.continuous_transition_types) == repr(default)
 
     def test_mixed_nested_error_leaves_detector_unchanged(self):
         detector = NonLocalSortedSpikesDetector()
@@ -156,7 +200,7 @@ class TestSetParams:
         original = model.get_params(deep=False)
         assert cloned.get_params(deep=False).keys() == original.keys()
         for name, value in cloned.get_params(deep=False).items():
-            assert _stable_repr(value) == _stable_repr(original[name]), name
+            assert repr(value) == repr(original[name]), name
         rebuilt = model_cls(**original)
         assert rebuilt.get_params(deep=False).keys() == original.keys()
         model.set_params(**original)
@@ -198,12 +242,8 @@ def _base_detector(n_states=3, **kwargs):
     )
 
 
-def _stable_repr(value):
-    return re.sub(r"0x[0-9a-f]+", "0x", repr(value))
-
-
 def _config_repr(value):
-    """``_stable_repr``, with each ``Environment`` shown by its ``get_params()``.
+    """``repr``, with each ``Environment`` shown by its ``get_params()``.
 
     Spyglass stores an environment's configuration, so fitted attributes,
     which are None on a default-constructed model, stay out of the reference.
@@ -212,7 +252,7 @@ def _config_repr(value):
         config = ", ".join(
             f"{name}={param!r}" for name, param in value.get_params().items()
         )
-        return re.sub(r"0x[0-9a-f]+", "0x", f"{type(value).__name__}({config})")
+        return f"{type(value).__name__}({config})"
     if isinstance(value, (list, tuple)) and any(
         isinstance(item, Environment) for item in value
     ):
@@ -220,7 +260,7 @@ def _config_repr(value):
         if isinstance(value, list):
             return f"[{', '.join(items)}]"
         return f"({', '.join(items)}{',' if len(items) == 1 else ''})"
-    return _stable_repr(value)
+    return repr(value)
 
 
 @pytest.mark.unit

@@ -180,8 +180,7 @@ axes[1].set_xlim(0, 60)
 #
 # - **Environment.** `Environment(place_bin_size=2.0)` discretizes the track
 #   into 2 cm bins. With 1-D position and no track graph the track is treated
-#   as a 1-D open field; the decoder warns about this, which is fine for a
-#   straight track. See [Core concepts](../../getting-started/core-concepts/#environments)
+#   as a 1-D open field, which is fine for a straight track. See [Core concepts](../../getting-started/core-concepts/#environments)
 #   for mazes.
 # - **Likelihood algorithm.** `clusterless_algorithm="clusterless_kde"` (the
 #   default) estimates the joint density of position and marks with a Gaussian

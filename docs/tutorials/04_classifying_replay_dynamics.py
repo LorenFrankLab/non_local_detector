@@ -256,9 +256,9 @@ print(f"Decoding bin width: {1000 / classifier.sampling_frequency:.0f} ms")
 # ## Fit on the running periods
 #
 # The encoding model is fit only where the animal runs faster than 4 cm/s, so
-# the rest period, with its replay events, is not used for encoding. The
-# decoder warns that 1-D position without a track graph is treated as a 1-D
-# open field, which is fine for a straight track.
+# the rest period, with its replay events, is not used for encoding. 1-D
+# position without a track graph is treated as a 1-D open field, which is fine
+# for a straight track.
 
 # %%
 speed = np.abs(np.gradient(position, time))  # cm/s
