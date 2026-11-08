@@ -206,6 +206,36 @@ def simple_1d_environment():
 
 
 # ==============================================================================
+# SIMULATION HELPERS
+# ==============================================================================
+
+
+def spread_over_sample_bins(rng, time, counts, sampling_frequency):
+    """Spike times for per-sample spike counts, unsorted.
+
+    Each sample's spikes fall uniformly within its decode bin, which
+    ``time_edges_from_centers`` centres on the sample; putting them all on the
+    sample time instead would bias recovered quantities by half a bin.
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+    time : np.ndarray, shape (n_time,)
+        Sample times in seconds.
+    counts : np.ndarray, shape (n_time,)
+        Spike count per sample.
+    sampling_frequency : float
+        Samples per second.
+
+    Returns
+    -------
+    spike_times : np.ndarray, shape (counts.sum(),)
+    """
+    jitter = rng.uniform(-0.5, 0.5, counts.sum()) / sampling_frequency
+    return np.repeat(time, counts) + jitter
+
+
+# ==============================================================================
 # ASSERTION HELPERS
 # ==============================================================================
 

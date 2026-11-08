@@ -29,6 +29,7 @@ from non_local_detector import (
     UniformInitialConditions,
 )
 from non_local_detector.observation_models import ObservationModel
+from tests.conftest import spread_over_sample_bins
 
 pytestmark = pytest.mark.integration
 
@@ -44,8 +45,9 @@ def data():
     for center in (20.0, 50.0, 80.0):
         rate = 30 * np.exp(-((position - center) ** 2) / (2 * 8.0**2)) + 1.0
         counts = rng.poisson(rate / SAMPLING_FREQUENCY)
-        jitter = rng.uniform(-0.5, 0.5, counts.sum()) / SAMPLING_FREQUENCY
-        spike_times.append(np.sort(np.repeat(time, counts) + jitter))
+        spike_times.append(
+            np.sort(spread_over_sample_bins(rng, time, counts, SAMPLING_FREQUENCY))
+        )
     speed = np.abs(np.gradient(position, time))
     return time, position[:, None], spike_times, speed
 
