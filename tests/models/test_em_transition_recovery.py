@@ -179,26 +179,19 @@ def recording():
 
 @pytest.fixture(scope="module")
 def maximum_likelihood_fit(recording):
-    """Fit maximum-likelihood EM at most once per transition representation."""
-    fits: dict[str, NonLocalSortedSpikesDetector] = {}
+    """Maximum-likelihood EM fit with dense transitions.
 
-    def fit(transition_representation: str) -> NonLocalSortedSpikesDetector:
-        if transition_representation not in fits:
-            fits[transition_representation] = fit_transitions(
-                recording, transition_representation, **MAXIMUM_LIKELIHOOD
-            )
-        return fits[transition_representation]
-
-    return fit
+    Structured EM's agreement with dense EM is tested in test_checkpointed_em.py.
+    """
+    return fit_transitions(recording, **MAXIMUM_LIKELIHOOD)
 
 
-@pytest.mark.parametrize("transition_representation", ["dense", "structured"])
 def test_maximum_likelihood_em_recovers_true_transitions(
-    recording, maximum_likelihood_fit, transition_representation
+    recording, maximum_likelihood_fit
 ):
     """Without a prior, EM's estimate matches the transition frequencies of
     the hidden state sequence (and so the true matrix)."""
-    detector = maximum_likelihood_fit(transition_representation)
+    detector = maximum_likelihood_fit
     estimate = np.asarray(detector.discrete_state_transitions_)
     states = recording[3]
     tolerance = MAX_STANDARD_ERRORS * binomial_standard_error(states)
@@ -223,9 +216,7 @@ def test_default_prior_shrinks_toward_its_stickiness(recording, maximum_likeliho
     default = np.asarray(
         fit_transitions(recording, tolerance=1e-4).discrete_state_transitions_
     )
-    maximum_likelihood = np.asarray(
-        maximum_likelihood_fit("dense").discrete_state_transitions_
-    )
+    maximum_likelihood = np.asarray(maximum_likelihood_fit.discrete_state_transitions_)
 
     # 1e5 pseudo-counts on the Local diagonal pull its stay probability up.
     assert default[0, 0] > maximum_likelihood[0, 0]
