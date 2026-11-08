@@ -5,7 +5,7 @@ likelihood (fit + non-local predict). The diffusion likelihood estimates the sam
 marked-point-process intensity as ``clusterless_kde`` but replaces the Gaussian
 *position* kernel with the environment's graph heat kernel ``exp(-t L)``
 (``t = position_std**2 / 2``); the *mark* kernel stays a Gaussian over waveform
-features (via ``kde_distance``).
+features (``compute_log_mark_kernel_gemm``).
 
 The joint mark density is
 
@@ -15,7 +15,7 @@ The joint mark density is
 where ``H_t`` is the mass-conserving heat kernel, ``sum_i w_i`` is the weighted
 encoding count, and ``dV(x) = bin_sizes`` the per-bin measure. There is NO
 per-column normalization to unit integral, and the mark Gaussian normalizer lives
-only in ``kde_distance``. Getting any of those constants wrong yields a
+only in the mark kernel. Getting any of those constants wrong yields a
 spatially-constant likelihood error that rank/argmax posterior tests cannot catch;
 the absolute-value tests below (uniform and non-uniform ``dV``) pin them.
 """
@@ -50,7 +50,7 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     predict_clusterless_diffusion_log_likelihood,
     spatial_kernel_columns,
 )
-from non_local_detector.likelihoods.clusterless_kde import kde_distance
+from non_local_detector.likelihoods.clusterless_kde import log_kde_distance
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
@@ -521,7 +521,11 @@ def test_mass_invariance_across_ranks():
     dec_marks = jnp.asarray(
         rng.standard_normal((4, enc_marks.shape[1])).astype(np.float32)
     )
-    K = kde_distance(dec_marks, enc_marks, jnp.full(enc_marks.shape[1], WAVEFORM_STD))
+    K = jnp.exp(
+        log_kde_distance(
+            dec_marks, enc_marks, jnp.full(enc_marks.shape[1], WAVEFORM_STD)
+        )
+    )
     D = jnp.zeros((n_bins, dec_marks.shape[0])).at[enc_bins].add(w[:, None] * K)
 
     masses = {}
@@ -1042,7 +1046,7 @@ def test_validation_fit():
             _fit(s, waveform_std=bad_std)
 
     # waveform_std dimensionality: fit never evaluates the mark kernel, so an
-    # ill-shaped bandwidth must be caught here (not later in kde_distance). The
+    # ill-shaped bandwidth must be caught here (not later in the mark kernel). The
     # fixture has 2-feature marks; an empty array and a length-3 vector are wrong.
     for bad_std in ([], [1.0, 2.0, 3.0]):
         with pytest.raises(

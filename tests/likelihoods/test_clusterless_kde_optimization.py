@@ -1,6 +1,6 @@
 """Vectorized clusterless KDE kernels and reductions against direct references.
 
-``kde_distance`` / ``log_kde_distance`` against scipy's normal density, the scaled
+``log_kde_distance`` against scipy's normal density, the scaled
 GEMM joint-intensity reduction against a float64-kernel logsumexp oracle, and the
 degeneracy rules of ``_log_joint_from_log_marginal``.
 """
@@ -14,7 +14,6 @@ from scipy.stats import norm
 from non_local_detector.likelihoods.clusterless_kde import (
     _estimate_with_enc_chunking,
     _log_joint_from_log_marginal,
-    kde_distance,
     log_kde_distance,
 )
 from non_local_detector.likelihoods.common import EPS, LOG_EPS
@@ -22,11 +21,11 @@ from non_local_detector.likelihoods.mark_reference import MarkReference
 
 
 class TestKdeDistance:
-    """The kernel products against scipy's float64 normal density.
+    """The log kernel product against scipy's float64 normal density.
 
-    Measured max error: 3.4e-6 nats in log (|log| up to 26), 3.4e-6 relative
-    in linear space. Using the variance for the std is a 20-nat error; a
-    normalizer off by sqrt(2) per dimension is 1.4 nats.
+    Measured max error: 3.4e-6 nats (|log| up to 26). Using the variance for
+    the std is a 20-nat error; a normalizer off by sqrt(2) per dimension is
+    1.4 nats.
     """
 
     @staticmethod
@@ -44,15 +43,6 @@ class TestKdeDistance:
         (eval_points, samples, std), reference = self._data()
         np.testing.assert_allclose(
             log_kde_distance(eval_points, samples, std), reference, rtol=0, atol=1e-4
-        )
-
-    def test_kde_distance_matches_scipy(self):
-        (eval_points, samples, std), reference = self._data()
-        np.testing.assert_allclose(
-            kde_distance(eval_points, samples, std),
-            np.exp(reference),
-            rtol=1e-4,
-            atol=0,
         )
 
 

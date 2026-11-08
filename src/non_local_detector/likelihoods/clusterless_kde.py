@@ -279,40 +279,6 @@ def _log_joint_from_log_marginal(
 
 
 @jax.jit
-def kde_distance(
-    eval_points: jax.Array, samples: jax.Array, std: jax.Array
-) -> jax.Array:
-    """Vectorized KDE distance computed via log-space for numerical stability.
-
-    Computes the product of per-dimension Gaussian kernels by summing
-    log-Gaussian values and exponentiating, avoiding underflow that occurs
-    when multiplying many small per-dimension PDFs directly.
-
-    Parameters
-    ----------
-    eval_points : jax.Array, shape (n_eval_points, n_dims)
-        Evaluation points.
-    samples : jax.Array, shape (n_samples, n_dims)
-        Training samples.
-    std : jax.Array, shape (n_dims,)
-        Standard deviation of the Gaussian kernel for each dimension.
-
-    Returns
-    -------
-    distance : jax.Array, shape (n_samples, n_eval_points)
-        Product of per-dimension Gaussian PDF values.
-
-    Notes
-    -----
-    Inputs are assumed to have matching dimensionality (not validated, to keep
-    JIT compatibility). ``std`` is clamped to ``[EPS, inf)`` inside the delegated
-    ``log_kde_distance`` call, so a zero bandwidth yields a heavily peaked kernel
-    rather than NaN.
-    """
-    return jnp.exp(log_kde_distance(eval_points, samples, std))
-
-
-@jax.jit
 def log_kde_distance(
     eval_points: jax.Array, samples: jax.Array, std: jax.Array
 ) -> jax.Array:

@@ -18,7 +18,6 @@ from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity as estimate_original,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
-    kde_distance,
     log_kde_distance,
 )
 
@@ -102,8 +101,9 @@ def analyze_extreme_features():
     print()
 
     # Compute position distances
-    position_distance = kde_distance(interior_bins, enc_positions, position_std)
-    log_kde_distance(interior_bins, enc_positions, position_std)
+    position_distance = jnp.exp(
+        log_kde_distance(interior_bins, enc_positions, position_std)
+    )
 
     print("-" * 80)
     print("ORIGINAL IMPLEMENTATION (clusterless_kde.py)")
