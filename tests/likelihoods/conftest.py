@@ -209,9 +209,14 @@ def env_2d():
 
 
 def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]:
-    """Likelihood parity: fixed-rate sorted paths are exact; others may round."""
+    """Likelihood parity: fixed-rate sorted paths are exact; others may round.
+
+    Local GLM and KDE rates are evaluated at each row's position, compiled for
+    the chunk's row count, so XLA may round them differently per chunk shape
+    (4 float32 ulps measured for the local KDE on JAX 0.12).
+    """
     if algorithm in _SORTED_SPIKES_ALGORITHMS and not (
-        algorithm == "sorted_spikes_glm" and is_local
+        algorithm in ("sorted_spikes_glm", "sorted_spikes_kde") and is_local
     ):
         return EXACT
     return FLOAT32_ROUNDING
