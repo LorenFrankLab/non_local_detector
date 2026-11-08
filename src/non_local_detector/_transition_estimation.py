@@ -94,6 +94,15 @@ _REML_LOG10_TOLERANCE = 0.02
 # With several spline terms, REML then refines each term's strength in turn,
 # in at most this many sweeps over the terms.
 _REML_MAX_SWEEPS = 5
+# A row fit is converged when a Newton step would lower its loss by at most
+# this many nats (see :func:`_newton_decrement`).
+_CONVERGED_NEWTON_DECREMENT = 1e-6
+# A row fit's start is kept without optimizing only if, in addition, the Newton
+# step would move no bin's logits by more than this. A rarely occupied row can
+# have a negligible decrement and still be 1e-4 short in its probabilities, the
+# change EM's convergence rule checks; a logit step of 1e-5 moves each
+# probability by at most 2e-5.
+_CONVERGED_LOGIT_STEP = 1e-5
 
 
 def estimate_non_stationary_state_transition_from_responses(
@@ -426,7 +435,7 @@ def _fit_covariate_transition(
                         _newton_decrement(
                             np.ravel(fitted), blocks, prior_per_bin, penalty(strength)
                         )
-                        > 1e-6
+                        > _CONVERGED_NEWTON_DECREMENT
                     ):
                         logger.warning(
                             "Transition optimization did not converge for state %d "
@@ -852,13 +861,31 @@ def _fit_covariate_row(
     -------
     coefficients : np.ndarray, shape (n_coefficients, n_states - 1)
         The initial coefficients when there are no transitions or no
-        coefficients to fit (one state, whose only transition is certain), or
-        when the optimizer does not lower the loss.
+        coefficients to fit (one state, whose only transition is certain),
+        when they are already converged, or when the optimizer does not lower
+        the loss.
     """
     x0 = np.asarray(initial_coefficients, dtype=np.float64).ravel()
     if not blocks or x0.size == 0:
         return initial_coefficients
     args = (blocks, prior_per_bin, penalty)
+    # A start that is already converged is kept. REML's fits each start from
+    # a neighbouring strength's fit, and EM's from the previous iteration's; at
+    # strengths near REML's 1e6 ceiling the Hessian's condition number reaches
+    # 1e10, the gradient cannot fall to scipy's tolerance, and the optimizer
+    # would spend all of ``maxiter`` lowering the loss by under 1e-6 nats.
+    converged, start_hessian = _start_is_converged(
+        x0, np.shape(initial_coefficients), *args
+    )
+    if converged:
+        return initial_coefficients
+
+    def hessian(x: np.ndarray, *hessian_args: Any) -> np.ndarray:
+        # The optimizer's first Hessian is the one the check computed.
+        if np.array_equal(x, x0):
+            return start_hessian
+        return _blocked_hessian(x, *hessian_args)
+
     minimize_kwargs = {
         "fun": _blocked_loss_and_gradient,
         "x0": x0,
@@ -868,7 +895,7 @@ def _fit_covariate_row(
         "options": options,
     }
     if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
-        minimize_kwargs["hess"] = _blocked_hessian
+        minimize_kwargs["hess"] = hessian
     try:
         # scipy 1.15's trust-exact takes the square root of a negative bound
         # product on some Hessians and warns; the loss check below guards the
@@ -919,7 +946,11 @@ def _fit_covariate_row(
             result.message,
         )
         return initial_coefficients
-    if warn and not result.success and _newton_decrement(result.x, *args) > 1e-6:
+    if (
+        warn
+        and not result.success
+        and _newton_decrement(result.x, *args) > _CONVERGED_NEWTON_DECREMENT
+    ):
         logger.warning(
             "Transition optimization did not report convergence for state %d: "
             "%s. Using improved coefficients.",
@@ -943,6 +974,51 @@ def _newton_decrement(coefficients: np.ndarray, *args: Any) -> float:
     except np.linalg.LinAlgError:
         return np.inf
     return float(gradient @ step) / 2.0
+
+
+def _start_is_converged(
+    coefficients: np.ndarray,
+    shape: tuple[int, ...],
+    blocks: _Blocks,
+    prior_per_bin: jax.Array,
+    penalty: np.ndarray,
+) -> tuple[bool, np.ndarray]:
+    """Whether a Newton step from ``coefficients`` would change nothing.
+
+    That is, whether it would lower the loss by at most
+    ``_CONVERGED_NEWTON_DECREMENT`` nats and move every bin's logits by at
+    most ``_CONVERGED_LOGIT_STEP``. Call with JAX in float64.
+
+    Parameters
+    ----------
+    coefficients : np.ndarray, shape (n_coefficients * (n_states - 1),)
+        The flattened row coefficients to check.
+    shape : tuple of int
+        ``(n_coefficients, n_states - 1)``.
+    blocks, prior_per_bin
+        From :func:`_row_problem`.
+    penalty : np.ndarray, shape (n_coefficients, n_coefficients)
+        From :func:`_penalty_matrix`.
+
+    Returns
+    -------
+    converged : bool
+        False if the Hessian is singular or the decrement is not finite.
+    hessian : np.ndarray, shape (n_parameters, n_parameters)
+        The Hessian at ``coefficients``.
+    """
+    args = (blocks, prior_per_bin, penalty)
+    _, gradient = _blocked_loss_and_gradient(coefficients, *args)
+    hessian = _blocked_hessian(coefficients, *args)
+    try:
+        step = np.linalg.solve(hessian, gradient)
+    except np.linalg.LinAlgError:
+        return False, hessian
+    if not float(gradient @ step) / 2.0 <= _CONVERGED_NEWTON_DECREMENT:
+        return False, hessian
+    logit_step = jnp.asarray(np.reshape(step, shape), dtype=jnp.float64)
+    largest = max(float(jnp.max(jnp.abs(design @ logit_step))) for design, _ in blocks)
+    return largest <= _CONVERGED_LOGIT_STEP, hessian
 
 
 def _row_prior_weights(prior_weight: float | np.ndarray, n_states: int) -> np.ndarray:

@@ -485,6 +485,60 @@ class TestSmoothedRowObjective:
                 atol=1e-6,
             )
 
+    def test_converged_start_is_kept_without_optimizing(self, monkeypatch):
+        """A fit started at its own optimum returns the start without running
+        the optimizer (REML and EM start most fits next to their optimum)."""
+        from non_local_detector import _transition_estimation
+
+        _, _, design, _, response = _row_problem(n_time=2_000)
+        design_matrix = np.asarray(design, dtype=float)
+        kwargs = {
+            "transition_regularization": 0.1,
+            "smoothness": 2.0,
+            "smoothness_matrix": _smoothness_matrix(design.design_info),
+        }
+        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+        fit = _fit_covariate_transition(start, design_matrix, response, **kwargs)
+
+        def unexpected_minimize(*args, **kwargs):
+            pytest.fail("The optimizer ran from a converged start")
+
+        monkeypatch.setattr(_transition_estimation, "minimize", unexpected_minimize)
+        refit = _fit_covariate_transition(
+            fit.coefficients, design_matrix, response, **kwargs
+        )
+        np.testing.assert_array_equal(refit.coefficients, fit.coefficients)
+
+    def test_rarely_occupied_row_is_refit_after_a_small_change(self):
+        """A row with little expected weight can be near its new optimum in
+        loss (Newton decrement under 1e-6 nats) while its probabilities still
+        have 1e-4 to move: a warm refit, as in EM, must still make that move."""
+        _, speed, design, _, response = _row_problem(seed=7, n_time=6_000)
+        design_matrix = np.asarray(design, dtype=float)
+        kwargs = {
+            "transition_regularization": 0.1,
+            "smoothness": 1.0,
+            "smoothness_matrix": _smoothness_matrix(design.design_info),
+            "compute_covariance": False,
+        }
+        start = np.zeros((design.shape[1], N_STATES, N_STATES - 1))
+        response = np.asarray(response, dtype=float).copy()
+        response[:, 2] *= 1e-3  # 6 expected transitions out of state 2
+        before = _fit_covariate_transition(start, design_matrix, response, **kwargs)
+        fast = speed[:-1] > np.quantile(speed, 0.8)
+        moved = 1e-3 * response[fast, 2, 2]
+        response[fast, 2, 2] -= moved
+        response[fast, 2, 0] += moved
+
+        cold = _fit_covariate_transition(start, design_matrix, response, **kwargs)
+        warm = _fit_covariate_transition(
+            before.coefficients, design_matrix, response, **kwargs
+        )
+
+        # Measured: the refit moves row 2 by 1.9e-4 and lands 1.0e-5 from the
+        # cold fit; keeping the start would leave it 1.9e-4 away.
+        np.testing.assert_allclose(warm.transition, cold.transition, atol=5e-5)
+
     def test_smoothness_adds_its_quadratic_form_per_logit(self):
         rng, _, design, _, response = _row_problem(n_time=300)
         design_matrix = np.asarray(design, dtype=float)
