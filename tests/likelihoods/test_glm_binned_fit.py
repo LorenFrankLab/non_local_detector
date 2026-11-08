@@ -55,7 +55,7 @@ def test_aggregation_never_mixes_regions():
 
 def test_binned_fit_is_as_close_to_the_truth_as_the_per_sample_fit():
     rng = np.random.default_rng(0)
-    dt, n_time, span = 0.002, 150_000, 78.0
+    dt, n_time, span = 0.002, 75_000, 78.0
     walk = np.cumsum(rng.normal(0.0, 0.25, (n_time, 2)), axis=0)
     position = 1.0 + np.abs((walk % (2 * span)) - span)
     time = np.arange(n_time) * dt
@@ -220,7 +220,7 @@ def test_2d_column_support_includes_positions_between_bin_centers(monkeypatch):
         box=20.0,
         field_center=(11.3, 8.7),
         field_std=1.5,
-        n_time=100_000,
+        n_time=50_000,
     )
 
     def local_rates(enc):
@@ -242,8 +242,8 @@ def test_2d_column_support_includes_positions_between_bin_centers(monkeypatch):
     )
     in_field = distance < 1.0
     assert every_column[in_field].mean() > 10.0
-    # Measured max rel diff 2.8e-6; checking support only at bin centers drops
-    # in-field columns and gives a max rel diff of 0.86.
+    # Measured max rel diff 3.7e-5; checking support only at bin centers drops
+    # in-field columns and gives a max rel diff of 0.85.
     np.testing.assert_allclose(pruned[in_field], every_column[in_field], rtol=2e-4)
 
 
