@@ -3,7 +3,9 @@
 ``_snapshot`` / ``_assert_unchanged`` check that a failed call leaves a fitted
 detector and its environments untouched. ``_decoder`` builds a small one-state
 decoder for any registered likelihood algorithm, listed in ``ALGORITHMS``.
-``make_two_arm_track`` builds a fitted environment with two disconnected arms.
+``toy_recording`` and ``toy_sorted_decoder`` are a tiny sorted recording and
+decoder for input-checking tests. ``make_two_arm_track`` builds a fitted
+environment with two disconnected arms.
 ``type_violations`` checks an encoding model's values against its declared types.
 ``record_refit_weights`` records the weights of each EM encoding refit.
 ``call_entry_point`` decodes through each of the ``ENTRY_POINTS`` that check a
@@ -41,6 +43,31 @@ ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 # sample (``time_edges_from_centers(time)``) is constructed at this rate.
 SORTED_SIM_RATE = sorted_spikes_simulation.SAMPLING_FREQUENCY
 CLUSTERLESS_SIM_RATE = clusterless_simulation.SAMPLING_FREQUENCY
+
+# Samples in ``toy_recording``.
+TOY_N_TIME = 100
+
+
+def toy_recording():
+    """One sorted unit, sampled every 2 ms while moving within (42, 58).
+
+    Returns ``(time, position, spike_times)``, of shapes ``(TOY_N_TIME,)``,
+    ``(TOY_N_TIME, 1)`` and a one-element list of spike times.
+    """
+    time = np.arange(TOY_N_TIME) * 0.002
+    position = (50 + 8 * np.sin(time * 40))[:, None]
+    spike_times = [np.array([0.021, 0.067, 0.121, 0.167])]
+    return time, position, spike_times
+
+
+def toy_sorted_decoder():
+    """An unfitted sorted-spikes KDE decoder on 5-unit bins over (40, 60)."""
+    return SortedSpikesDecoder(
+        environments=Environment(place_bin_size=5, position_range=((40, 60),)),
+        infer_track_interior=False,
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+    )
 
 
 def _snapshot(detector):
