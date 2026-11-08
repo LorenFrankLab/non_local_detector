@@ -366,9 +366,9 @@ plt.show()
 # The ends of the track hold the most time because the animal pauses there.
 #
 # A linear track is a 1-D open field, so this is all a linear track needs.
-# When you fit a model with 1-D position and no track graph, it warns that it
-# is treating the data as a 1-D open field; for a linear track that is
-# expected. For any maze with turns or junctions, use a track graph (below).
+# A model fit to 1-D position with no track graph treats the data as a 1-D
+# open field; for a linear track that is expected. For any maze with turns or
+# junctions, use a track graph (below).
 #
 # ### A 2-D open field
 #

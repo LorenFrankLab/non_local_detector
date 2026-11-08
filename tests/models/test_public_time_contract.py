@@ -41,8 +41,18 @@ def test_positional_count_edges_cannot_silently_change_meaning():
 @pytest.mark.unit
 def test_old_keyword_explains_centered_grid_migration(recording):
     detector, time, _, spikes = recording
-    with pytest.raises(TypeError, match="time_edges_from_centers"):
+    with pytest.raises(TypeError, match="time_edges_from_centers") as old_keyword:
         detector.predict(spikes, time=time)
+    message = str(old_keyword.value)
+    assert "no longer takes time" in message
+    assert "Got: time=..." in message
+    assert (
+        "https://lorenfranklab.github.io/non_local_detector/time_grid_migration/"
+        in message
+    )
+
+    with pytest.raises(TypeError, match="Got: no time_edges keyword argument"):
+        detector.predict(spikes)
 
 
 @pytest.mark.integration
