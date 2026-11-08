@@ -18,6 +18,7 @@ from non_local_detector import (
     time_edges_from_centers,
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 
@@ -100,9 +101,7 @@ class TestEstimationKeepsNoInputData:
     """
 
     # max_iter=1 keeps this fast; the test checks references, not convergence.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_encoding_refit_data_is_not_stored_on_the_detector(self):
         sim = make_simulated_run_data(
             n_tetrodes=1,

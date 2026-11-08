@@ -42,6 +42,7 @@ from non_local_detector import (
 from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.conftest import em_stops_at_max_iter
 
 PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
 # 202 bins (203 edges) is not divisible by 7, so the chunk split below has a
@@ -743,7 +744,7 @@ def test_chunked_predict_returns_requested_log_likelihood(sorted_setup):
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 def test_chunked_estimate_parameters_returns_requested_log_likelihood(
     sorted_simulation, sorted_setup
 ):

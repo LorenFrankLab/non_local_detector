@@ -40,6 +40,7 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     make_spline_predict_matrix,
 )
+from tests.conftest import em_stops_at_max_iter
 from tests.likelihoods.conftest import training_mark_references
 
 DT = 0.002
@@ -707,7 +708,7 @@ def test_decoder_decodes_a_simulated_run():
 
 
 # max_iter is capped for speed.
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.integration
 def test_detector_em_refits_the_encoding_with_posterior_weights(monkeypatch):
     from non_local_detector.models import NonLocalClusterlessDetector

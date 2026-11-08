@@ -19,6 +19,7 @@ from non_local_detector import (
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.models import base
 from non_local_detector.observation_models import ObservationModel
+from tests.conftest import em_stops_at_max_iter
 
 pytestmark = pytest.mark.unit
 
@@ -318,7 +319,7 @@ def test_position_a_decoder_ignores_is_not_checked(method):
 
 
 # One EM iteration is enough to run both fits; convergence is not checked.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_estimation_falling_back_to_dense_warns_once(monkeypatch):
     """When EM's "auto" fit cannot build structured transitions and refits
     dense, the off-grid warning of the abandoned fit is not repeated."""

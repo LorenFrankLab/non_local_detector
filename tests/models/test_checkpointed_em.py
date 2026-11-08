@@ -13,11 +13,11 @@ from non_local_detector import (
 )
 from non_local_detector.core import row_slice_aware
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import em_stops_at_max_iter
 
-# These tests cap max_iter for speed, so EM stops before convergence.
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning"),
+    em_stops_at_max_iter,
 ]
 
 N_BINS = 300
@@ -485,7 +485,7 @@ def test_checkpointed_em_writes_the_final_posterior_to_disk(tmp_path):
     _assert_store_keeps_em_traces(in_memory, stored, loaded, model.n_iter_)
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 def test_em_result_store_without_iterations_keeps_the_em_traces(tmp_path):
     """With max_iter=0 no M-step runs, and the store still reloads the final
     E-step's trace."""

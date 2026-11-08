@@ -47,6 +47,12 @@ else:
 
 TEST_CATEGORIES = {"unit", "integration"}
 
+# For tests that cap EM's max_iter for speed: EM stops before converging and
+# says so, which is expected there, not a failure.
+em_stops_at_max_iter = pytest.mark.filterwarnings(
+    "ignore:EM did not converge after max_iter=:UserWarning"
+)
+
 
 def pytest_collection_modifyitems(items):
     """Mark tests without a category marker as unit tests.

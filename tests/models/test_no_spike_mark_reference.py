@@ -31,6 +31,7 @@ from non_local_detector.likelihoods.mark_reference import (
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.time_edges import time_edges_from_centers
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 N_TRAIN = 8_000
@@ -317,7 +318,7 @@ def test_electrode_without_training_marks_adds_no_reference_term():
 
 @pytest.mark.integration
 # max_iter=2 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_encoding_refit_keeps_training_reference(run_data):
     detector = NonLocalClusterlessDetector(
         sampling_frequency=CLUSTERLESS_SIM_RATE,

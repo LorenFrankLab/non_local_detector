@@ -38,6 +38,7 @@ from non_local_detector.models.cont_frag_model import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE
 
 FAMILIES = ["sorted", "clusterless"]
@@ -395,7 +396,7 @@ def test_sorted_group_without_training_coverage(clusterless_sim, algorithm):
 
 @pytest.mark.integration
 # max_iter=2 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_glm_em_refit_with_gapped_mask_and_off_sample_spikes():
     """EM re-fits the GLM with fractional Local-state weights times a gapped
     training mask, with spikes between position samples. The re-fit place fields

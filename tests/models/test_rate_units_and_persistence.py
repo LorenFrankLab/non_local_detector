@@ -19,6 +19,7 @@ import pytest
 import xarray as xr
 
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import ALGORITHMS, _assert_unchanged, _decoder, _snapshot
 
 
@@ -219,7 +220,7 @@ def test_stale_or_unknown_contract_is_rejected_before_likelihood(
 
 @pytest.mark.integration
 # max_iter=1 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_estimation_refits_legacy_contract_before_decoding(contract_recording):
     """The supported recovery path fits physical units from original recording."""
     fitted, time, position, args = contract_recording

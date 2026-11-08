@@ -30,6 +30,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.observation_models import ObservationModel
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import (
     ALGORITHMS,
     CLUSTERLESS_SIM_RATE,
@@ -242,7 +243,7 @@ def test_encoding_model_without_a_recorded_algorithm_raises(sorted_sim):
     assert "=None" not in str(error.value)
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])
 def test_em_refit_does_not_go_through_the_public_fit_encoding_model(
     family, sorted_sim, clusterless_sim, monkeypatch

@@ -17,6 +17,7 @@ import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import SORTED_SIM_RATE
 
 N_CHUNKS = 5
@@ -110,7 +111,7 @@ def assert_matches_fresh_run(reused, fresh):
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("n_chunks", [1, N_CHUNKS])
 def test_second_estimate_parameters_ignores_the_stored_log_likelihood(
     datasets, n_chunks
@@ -140,7 +141,7 @@ def test_second_estimate_parameters_ignores_the_stored_log_likelihood(
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 def test_cached_likelihood_is_recomputed_after_the_encoding_model_updates(datasets):
     """Within one EM run, the cached likelihood must not outlive the M-step.
 
@@ -206,7 +207,7 @@ def test_cached_likelihood_is_recomputed_after_the_encoding_model_updates(datase
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 def test_predict_ignores_the_stored_log_likelihood(datasets):
     """``predict`` must decode the spikes it is given, not a stored likelihood."""
     first, second = datasets
@@ -235,7 +236,7 @@ def test_predict_ignores_the_stored_log_likelihood(datasets):
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 def test_most_likely_sequence_ignores_the_stored_log_likelihood(datasets, monkeypatch):
     """The Viterbi path must be decoded from the spikes passed to it."""
     first, second = datasets
@@ -270,7 +271,7 @@ def test_most_likely_sequence_ignores_the_stored_log_likelihood(datasets, monkey
 
 
 @pytest.mark.integration
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 def test_refitting_clears_the_stored_log_likelihood(datasets):
     """Any refit invalidates the stored output it no longer describes."""
     first, second = datasets

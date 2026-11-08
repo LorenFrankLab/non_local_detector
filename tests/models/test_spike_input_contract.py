@@ -14,6 +14,7 @@ import pytest
 from non_local_detector import ClusterlessDecoder, Environment, SortedSpikesDecoder
 from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.models._input_validation import _validate_spike_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import _assert_unchanged, _snapshot
 
 N_TIME = 100
@@ -141,7 +142,7 @@ def test_non_finite_spike_times_raise(fitted, method, family, bad_value):
 
 @pytest.mark.unit
 # max_iter=1 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 # With no spikes in range the EM objective is about 0, so the relative
 # monotonicity slack is below float32 rounding and the final E-step can
 # "decrease" by an ulp on some platforms (2.4e-7 on Linux CI).
@@ -401,7 +402,7 @@ OBJECT_FORMS = {
 
 
 @pytest.mark.unit
-@pytest.mark.filterwarnings("ignore:EM did not converge")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("form", list(OBJECT_FORMS))
 @pytest.mark.parametrize("method", FIT_METHODS)
 @pytest.mark.parametrize("family", ["sorted", "clusterless"])

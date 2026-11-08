@@ -11,6 +11,7 @@ import pytest
 
 from non_local_detector import Environment, SortedSpikesDecoder
 from non_local_detector.exceptions import ValidationError
+from tests.conftest import em_stops_at_max_iter
 
 N_TIME = 100
 SPIKE_OFFSETS = np.array([0.021, 0.067, 0.121, 0.167])
@@ -63,7 +64,7 @@ def fitted():
 
 @pytest.mark.unit
 # max_iter=1 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("start", [0.0, 1e5, 1e6])
 def test_calculate_time_edges_match_at_large_origins(fitted, method, start):
@@ -73,7 +74,7 @@ def test_calculate_time_edges_match_at_large_origins(fitted, method, start):
 
 
 @pytest.mark.unit
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("start", [0.0, 1e5, 1e6])
 def test_hand_built_edges_at_the_rate_match(fitted, method, start):
@@ -97,7 +98,7 @@ def test_edges_at_another_rate_raise(fitted, method):
 
 
 @pytest.mark.unit
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 @pytest.mark.parametrize("method", METHODS)
 def test_relative_difference_within_the_uniformity_tolerance_passes(fitted, method):
     """A 1e-4 relative difference is below the thousandth-of-a-bin floor."""

@@ -26,6 +26,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import (
     CLUSTERLESS_SIM_RATE,
     SORTED_SIM_RATE,
@@ -33,10 +34,7 @@ from tests.models._helpers import (
     _snapshot,
 )
 
-# These tests cap max_iter for speed, so EM stops before convergence.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:EM did not converge after max_iter:UserWarning"
-)
+pytestmark = em_stops_at_max_iter
 
 FAMILIES = ["sorted", "clusterless"]
 N_DECODE = 300

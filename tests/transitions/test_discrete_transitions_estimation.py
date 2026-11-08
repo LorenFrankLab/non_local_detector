@@ -46,7 +46,11 @@ from tests._transition_statistics import (
     expanded_counts,
     expanded_responses,
 )
-from tests.conftest import assert_stochastic_matrix, precision_mode
+from tests.conftest import (
+    assert_stochastic_matrix,
+    em_stops_at_max_iter,
+    precision_mode,
+)
 
 
 @pytest.fixture
@@ -979,10 +983,7 @@ class TestExpandedDiscreteTransitionCounts:
 class TestExpandedTransitionMstepEndToEnd:
     """Detector-level tests for exact expanded-state transition learning."""
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_simulated_likelihoods_shift_learned_transition_to_matching_source(self):
         """The learned matrix should credit the source with matching target bins."""
         log_likelihoods = np.full((2, 6), -1000.0)
@@ -1011,10 +1012,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert learned_transition[0, 2] < 0.5
         assert_stochastic_matrix(learned_transition)
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_simulated_hmm_recovers_stationary_discrete_transition(self):
         """With informative simulated emissions, the M-step recovers A."""
         learned_transition, empirical_transition, true_discrete_transition, _ = (
@@ -1037,10 +1035,7 @@ class TestExpandedTransitionMstepEndToEnd:
             atol=0.04,
         )
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_recovery_improves_with_emission_strength_and_sample_size(self):
         """Recovery should improve as emissions and sample size become stronger."""
         emission_errors = []
@@ -1074,10 +1069,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert long_error < short_error
         assert long_error < 0.02
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_exact_discrete_transition_em_is_monotonic(self):
         """Repeated exact transition M-steps should not decrease likelihood."""
         _, _, _, marginal_log_likelihoods = _estimate_simulated_discrete_transition(
@@ -1093,10 +1085,7 @@ class TestExpandedTransitionMstepEndToEnd:
         # (LL magnitude ~700, float32 epsilon ~1e-7 → ~1e-4 noise).
         assert np.all(np.diff(marginal_log_likelihoods) >= -1e-3)
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_nonstationary_detector_recovers_covariate_direction(self):
         """Exact responses should learn a simple covariate-dependent transition."""
         n_time = 1_200
@@ -1123,10 +1112,7 @@ class TestExpandedTransitionMstepEndToEnd:
         # 1 EM iteration + 1 final E-step after the loop
         assert len(marginal_log_likelihoods) == 2
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_nonstationary_recovery_improves_with_emission_strength(self):
         """Nonstationary recovery should improve with more informative emissions."""
         weak_learned, weak_true, weak_covariate, _ = (
@@ -1158,10 +1144,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert strong_error < weak_error
         assert strong_error < 0.10
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_nonstationary_strong_emissions_do_not_freeze_rows(self):
         """Strong emissions should still recover rows that are nearly separated."""
         learned_transition, true_transition, covariate, _ = (
@@ -1197,10 +1180,7 @@ class TestExpandedTransitionMstepEndToEnd:
             ),
         ],
     )
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_reml_smoothed_detector_is_monotone_and_recovers_transitions(
         self, formula, n_terms
     ):
@@ -1285,10 +1265,7 @@ def _estimate_transitions(detector, **kwargs):
 class TestRemlInsideEM:
     """EM's bookkeeping when REML changes the prior inside each M-step."""
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     # The M-step is monkeypatched to jump, so EM's penalized objective decreases,
     # at an iteration and, depending on rounding, at the final E-step too.
     @pytest.mark.filterwarnings("ignore:EM iteration \\d+:UserWarning")
@@ -1416,10 +1393,7 @@ class TestTransitionIntervals:
         with pytest.raises(ValueError, match="do not depend on covariates"):
             detector.discrete_transition_intervals({"covariate": np.zeros(3)})
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_intervals_need_an_m_step(self):
         detector, _, _ = _reml_detector()
         _estimate_transitions(detector, max_iter=0)
@@ -1428,10 +1402,7 @@ class TestTransitionIntervals:
                 {"covariate": np.zeros(3), "phase": np.zeros(3)}
             )
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_frozen_rows_have_zero_width_intervals(self):
         detector, _, _ = _reml_detector(
             frozen_discrete_transition_rows=[False, True, False]

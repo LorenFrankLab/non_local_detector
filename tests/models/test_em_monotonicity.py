@@ -31,6 +31,7 @@ from non_local_detector._transition_estimation import _transition_log_prior
 from non_local_detector.core import EM_MONOTONICITY_SLACK, check_converged
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 
@@ -275,10 +276,7 @@ class TestEncodingUpdateGuards:
             f"{[str(w.message) for w in unexpected]}"
         )
 
-    # max_iter is capped for speed, so EM stops before converging.
-    @pytest.mark.filterwarnings(
-        "ignore:EM did not converge after max_iter=:UserWarning"
-    )
+    @em_stops_at_max_iter
     def test_sorted_spikes_glm_encoding_refit_records_finite_likelihoods_and_moves_fields(
         self, sorted_sim
     ):

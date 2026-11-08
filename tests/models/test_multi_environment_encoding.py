@@ -30,6 +30,7 @@ from non_local_detector.analysis import (
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import time_edges_from_centers
+from tests.conftest import em_stops_at_max_iter
 
 pytestmark = [
     pytest.mark.integration,
@@ -294,7 +295,7 @@ def test_decoding_favors_the_environment_the_spikes_came_from(
         assert float(probability.mean()) > 0.8, name
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_em_encoding_refit_keeps_each_environment_on_its_own_samples(
     two_environment_recording, monkeypatch
 ):

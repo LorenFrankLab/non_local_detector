@@ -21,6 +21,7 @@ from non_local_detector.models.base import (
     _normalize_return_outputs,
     _validate_inference_arguments,
 )
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import _assert_unchanged, _snapshot
 
 N_TIME = 100
@@ -381,7 +382,7 @@ def test_estimate_parameters_rejects_malformed_inputs_before_fitting(monkeypatch
 
 @pytest.mark.unit
 # max_iter=1 is a speed cap, so EM stops before convergence.
-@pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning")
+@em_stops_at_max_iter
 def test_estimate_parameters_accepts_list_inputs():
     time, position, spike_times = _recording()
     options = {

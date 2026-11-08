@@ -21,6 +21,7 @@ from non_local_detector import (
 )
 from non_local_detector.models.base import SortedSpikesDetector
 from non_local_detector.observation_models import ObservationModel
+from tests.conftest import em_stops_at_max_iter
 from tests.model_format._compare import assert_same_fitted_state
 from tests.model_format.conftest import (
     CLUSTERLESS_RATE,
@@ -91,7 +92,7 @@ def test_covariate_dependent_discrete_transitions(
     assert loaded.discrete_transition_design_matrix_ is not None
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")  # 1-2 iterations
+@em_stops_at_max_iter  # 1-2 iterations
 def test_covariate_transitions_after_em(sorted_recording, tmp_path):
     time, position, spike_times = sorted_recording
     speed = _speed(time, position)
@@ -226,7 +227,7 @@ def test_stored_block_with_exterior_mass_loads(sorted_recording, tmp_path):
     assert loaded._rebuild_check_.stored_blocks == ((0, 0),)
 
 
-@pytest.mark.filterwarnings("ignore:EM did not converge:UserWarning")  # 1-2 iterations
+@em_stops_at_max_iter  # 1-2 iterations
 def test_em_after_an_auto_fit_rebuilds_the_dense_matrix(
     clusterless_recording, tmp_path
 ):

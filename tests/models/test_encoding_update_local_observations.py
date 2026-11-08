@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 
 from non_local_detector import Environment, SortedSpikesDecoder
+from tests.conftest import em_stops_at_max_iter
 
-# These tests cap max_iter for speed, so EM stops before convergence.
 pytestmark = [
     pytest.mark.unit,
-    pytest.mark.filterwarnings("ignore:EM did not converge after max_iter:UserWarning"),
+    em_stops_at_max_iter,
 ]
 
 

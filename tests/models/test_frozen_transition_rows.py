@@ -34,15 +34,13 @@ from non_local_detector.models.base import (
     _normalize_frozen_discrete_transition_rows,
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE, SORTED_SIM_RATE
 
 # Four states with the No-Spike state second, as in the non-local detector.
 NO_SPIKE_1 = np.array([False, True, False, False])
 
-# These tests cap max_iter for speed, so EM stops before convergence.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:EM did not converge after max_iter:UserWarning"
-)
+pytestmark = em_stops_at_max_iter
 
 ALL_MODEL_CLASSES = [
     SortedSpikesDecoder,
