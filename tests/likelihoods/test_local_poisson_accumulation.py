@@ -378,7 +378,7 @@ def test_compiled_local_kde_accepts_vector_positions(x64):
         np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
 
 
-def test_no_spike_dispatch_does_not_scale_with_population(monkeypatch):
+def test_no_spike_dispatch_does_not_scale_with_population(patch_and_retrace):
     original = jax.scipy.special.xlogy
     calls = []
 
@@ -386,16 +386,11 @@ def test_no_spike_dispatch_does_not_scale_with_population(monkeypatch):
         calls.append(1)
         return original(*args)
 
-    monkeypatch.setattr(jax.scipy.special, "xlogy", record)
-    # Compile with the spy and drop those kernels afterwards.
-    jax.clear_caches()
-    try:
-        actual = no_spike.predict_no_spike_log_likelihood(
-            spikes(64), time_edges=np.arange(18) * 0.002
-        )
-        jax.block_until_ready(actual)
-    finally:
-        jax.clear_caches()
+    patch_and_retrace(jax.scipy.special, "xlogy", record)
+    actual = no_spike.predict_no_spike_log_likelihood(
+        spikes(64), time_edges=np.arange(18) * 0.002
+    )
+    jax.block_until_ready(actual)
     assert len(calls) <= 1
 
 

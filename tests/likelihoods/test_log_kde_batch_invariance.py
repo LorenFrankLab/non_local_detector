@@ -269,7 +269,7 @@ def test_gemm_matches_float64_reference_where_linear_kernels_underflow():
     ],
 )
 def test_every_spike_flagged_for_exact_repair_matches_reference(
-    n_dec, enc_tile_size, group_size, monkeypatch
+    n_dec, enc_tile_size, group_size, patch_and_retrace
 ):
     """Backgrounds far below every intensity flag all spikes for the exact path.
 
@@ -278,34 +278,39 @@ def test_every_spike_flagged_for_exact_repair_matches_reference(
     Groups of 5, as larger encoding and position tiles get, split the 32 slots
     over several groups.
     """
-    if group_size is not None:
-        repair = clusterless_kde._repair_flagged_in_groups
-        monkeypatch.setattr(
-            clusterless_kde,
-            "_repair_flagged_in_groups",
-            lambda values, needs_exact, exact_rows, _: repair(
-                values, needs_exact, exact_rows, group_size
-            ),
-        )
     decoding, encoding, stds, occupancy, log_position = _place_field_tile(n_dec=n_dec)
-    log_background = np.full(decoding.shape[0], -400.0, np.float32)
-    jax.clear_caches()
-    try:
-        out = np.asarray(
-            estimate_log_joint_mark_intensity(
-                decoding,
-                encoding,
-                stds,
-                occupancy,
-                1.0,
-                log_position,
-                enc_tile_size=enc_tile_size,
-                log_background=log_background,
-            )
+    if group_size is not None:
+        # Budget one repair temporary (encoding tile x group x position bins)
+        # at ``group_size`` spikes.
+        patch_and_retrace(
+            clusterless_kde,
+            "_EXACT_REPAIR_ELEMENTS",
+            group_size * (enc_tile_size or encoding.shape[0]) * occupancy.shape[0],
         )
-    finally:
-        # Keep the patched group size out of later tests' compiled reductions.
-        jax.clear_caches()
+        traced_group_sizes = []
+
+        def record_group_size(*args):
+            traced_group_sizes.append(args[-1])
+            return _repair_flagged_in_groups(*args)
+
+        patch_and_retrace(
+            clusterless_kde, "_repair_flagged_in_groups", record_group_size
+        )
+    log_background = np.full(decoding.shape[0], -400.0, np.float32)
+    out = np.asarray(
+        estimate_log_joint_mark_intensity(
+            decoding,
+            encoding,
+            stds,
+            occupancy,
+            1.0,
+            log_position,
+            enc_tile_size=enc_tile_size,
+            log_background=log_background,
+        )
+    )
+    if group_size is not None:
+        assert set(traced_group_sizes) == {group_size}
     reference = reference_log_joint_mark_intensity(
         decoding, encoding, stds, occupancy, 1.0, log_position
     )
