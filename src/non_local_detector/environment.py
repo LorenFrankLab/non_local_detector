@@ -1695,14 +1695,17 @@ class Environment:
             np.searchsorted(edges[i], sample[:, i], side="right") for i in range(D)
         )
 
-        # Using digitize, values that fall on an edge are put in the right bin.
-        # For the rightmost bin, we want values equal to the right edge to be
-        # counted in the last bin, and not as an outlier.
-        for i in range(D):
-            # Find which points are on the rightmost edge.
-            on_edge = sample[:, i] == edges[i][-1]
-            # Shift these points one bin to the left.
-            Ncount[i][on_edge] -= 1
+        # Values that fall on an edge are put in the bin to its right. On a
+        # padded grid (get_grid pads every dimension of a multi-dimensional
+        # grid) the edges left after removing the padding end at the data
+        # maximum, and values equal to it belong in the last real bin, not the
+        # trailing padding bin. A 1-D grid is not padded: its outer edges were
+        # removed above, so its last remaining edge is an interior one, and
+        # values on it already land in the last bin.
+        if len(grid.edges) > 1:
+            for i in range(D):
+                on_edge = sample[:, i] == edges[i][-1]
+                Ncount[i][on_edge] -= 1
 
         bin_inds = np.ravel_multi_index(Ncount, nbin)
 
