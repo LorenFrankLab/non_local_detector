@@ -20,6 +20,8 @@ module.
 
 import abc
 import copy
+import inspect
+import textwrap
 import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -603,6 +605,42 @@ class _DetectorBase(
                     ),
                 )
         self.local_position_std = local_position_std
+
+    def __repr__(self) -> str:
+        """Show the constructor parameters that differ from the defaults.
+
+        The constructors replace ``None`` defaults with the model's states,
+        transitions and observation models, so scikit-learn's repr, which
+        compares against the signature's ``None``, listed all of them for a
+        default model. This compares against a model of the same class built
+        from only this model's required parameters, by ``repr`` as
+        scikit-learn does; required parameters are always shown.
+
+        Returns
+        -------
+        str
+            ``ClassName(param=value, ...)``, one parameter per line when it
+            does not fit on one line.
+        """
+        params = self.get_params(deep=False)
+        signature = inspect.signature(type(self).__init__)
+        required = {
+            name: params[name]
+            for name, parameter in signature.parameters.items()
+            if name in params and parameter.default is inspect.Parameter.empty
+        }
+        defaults = type(self)(**required).get_params(deep=False)
+        changed = [
+            f"{name}={value!r}"
+            for name, value in params.items()
+            if name in required or repr(value) != repr(defaults[name])
+        ]
+        class_name = type(self).__name__
+        one_line = f"{class_name}({', '.join(changed)})"
+        if len(one_line) <= 79 and "\n" not in one_line:
+            return one_line
+        body = "".join(textwrap.indent(f"{item},", "    ") + "\n" for item in changed)
+        return f"{class_name}(\n{body})"
 
     def set_params(self: _Detector, **params: Any) -> _Detector:
         """Set constructor parameters, applying the constructor's rules.

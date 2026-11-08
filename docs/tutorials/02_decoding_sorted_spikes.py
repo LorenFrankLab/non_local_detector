@@ -161,8 +161,8 @@ plt.show()
 #
 # `fit` also builds the environment's grid from the positions it is given (2
 # cm bins here) and the transition model. The rat's position is 1-D and there
-# is no track graph, so the decoder warns that it treats the track as a 1-D
-# open field. For a linear track that is what we want.
+# is no track graph, so the decoder treats the track as a 1-D open field. For
+# a linear track that is what we want.
 
 # %%
 decoder = SortedSpikesDecoder(environments=[Environment(place_bin_size=2.0)]).fit(

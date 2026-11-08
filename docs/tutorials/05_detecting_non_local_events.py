@@ -261,8 +261,8 @@ ax.set(
 # transitions assume 2 ms time bins: the detector's `sampling_frequency` is
 # 500 Hz.
 #
-# The position here is 1-D, so the detector warns that it treats the track
-# as a 1-D open field. On a straight track with no junctions this is the
+# The position here is 1-D, so the detector treats the track as a 1-D open
+# field. On a straight track with no junctions this is the
 # same as the track graph; for a maze, pass 2-D position and a track graph
 # instead.
 
