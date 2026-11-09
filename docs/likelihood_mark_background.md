@@ -157,7 +157,8 @@ past the data in a 1-D simulation). The fit stores `log_occupancy_threshold`,
 the maximum log occupancy density over the interior bins plus `log(1e-6)`.
 Where the occupancy is below it, the ground intensity and every spike's marked
 intensity are zero (fit-time bin intensities, local expected counts, non-local
-and local spike terms), and a spike there is scored by the background alone.
+and local spike terms, and model checking's GMM intensity), and a spike there
+is scored by the background alone.
 An encoding model stored without the key has no threshold and decodes as it
 was fitted.
 

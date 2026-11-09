@@ -22,6 +22,7 @@ from non_local_detector.likelihoods.mark_reference import (
     background_rate,
     fit_mark_references,
 )
+from non_local_detector.model_checking._clusterless_models import GMMElectrode
 from non_local_detector.time_edges import time_edges_from_centers
 
 pytestmark = pytest.mark.unit
@@ -251,3 +252,29 @@ def test_encoding_model_without_threshold_decodes_as_fitted(partial_coverage):
     np.testing.assert_allclose(
         local, -DT * (unfloored_rate + background_rate(1)), rtol=1e-5
     )
+
+
+def test_model_checking_intensity_applies_the_decoder_threshold(partial_coverage):
+    """Model checking's GMM intensity is zero where decoding's is, and equal
+    elsewhere; without a stored threshold it keeps the unfloored ratio."""
+    data = partial_coverage
+    unresolved = data["unresolved"]
+    encoding = data["encoding"]
+    electrode = GMMElectrode(encoding, 0)
+    bins = electrode.bin_centers
+
+    ground = electrode.ground_intensity(bins)
+    log_intensity = electrode.log_intensity_at_bins(data["decode_marks"][:3])
+
+    np.testing.assert_allclose(
+        ground, encoding["summed_ground_process_intensity"], rtol=1e-5
+    )
+    assert np.all(ground[unresolved] == 0.0)
+    assert np.all(np.isneginf(log_intensity[unresolved]))
+    assert np.all(np.isfinite(log_intensity[~unresolved]))
+    with np.errstate(over="ignore"):  # the unfloored ratio overflows far out
+        old_ground = GMMElectrode(_without_threshold(encoding), 0).ground_intensity(
+            bins
+        )
+    assert np.all(old_ground[unresolved] > 1.0)
+    np.testing.assert_array_equal(old_ground[~unresolved], ground[~unresolved])
