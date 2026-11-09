@@ -12,6 +12,7 @@ import numpy as np
 from scipy.stats import entropy
 
 from non_local_detector.model_checking.highest_posterior_density import (
+    _highest_density_threshold,
     get_highest_posterior_threshold,
 )
 
@@ -110,8 +111,10 @@ def posterior_consistency_hpd_overlap(
         Default is 0.95 for 95% HPD regions.
     bin_width : np.ndarray, shape (n_position_bins,), optional
         Width of each position bin, when the widths differ. The HPD regions
-        then hold the highest-density bins, and their sizes and intersection
-        are total widths. Without it each bin counts once.
+        then hold the highest-density bins (``mass / bin_width``), and their
+        sizes and intersection are total widths. Without it, the regions
+        hold the highest-mass bins and each bin counts once, which is right
+        for equal widths.
 
     Returns
     -------
@@ -138,13 +141,13 @@ def posterior_consistency_hpd_overlap(
     likelihood = np.asarray(likelihood)
     _validate_consistency_inputs(posterior, likelihood)
 
-    posterior_threshold = get_highest_posterior_threshold(
-        posterior, coverage=coverage, bin_width=bin_width
-    )
-    likelihood_threshold = get_highest_posterior_threshold(
-        likelihood, coverage=coverage, bin_width=bin_width
-    )
     if bin_width is None:
+        posterior_threshold = get_highest_posterior_threshold(
+            posterior, coverage=coverage
+        )
+        likelihood_threshold = get_highest_posterior_threshold(
+            likelihood, coverage=coverage
+        )
         isin_posterior_hpd = posterior >= posterior_threshold[:, None]
         isin_likelihood_hpd = likelihood >= likelihood_threshold[:, None]
 
@@ -163,6 +166,16 @@ def posterior_consistency_hpd_overlap(
         )
 
     width = np.asarray(bin_width, dtype=float)
+    if width.shape != (posterior.shape[1],) or not np.all(
+        np.isfinite(width) & (width > 0)
+    ):
+        msg = (
+            f"bin_width must hold {posterior.shape[1]} finite, positive widths; "
+            f"got shape {width.shape}."
+        )
+        raise ValueError(msg)
+    posterior_threshold = _highest_density_threshold(posterior, coverage, width)
+    likelihood_threshold = _highest_density_threshold(likelihood, coverage, width)
     isin_posterior_hpd = posterior / width >= posterior_threshold[:, None]
     isin_likelihood_hpd = likelihood / width >= likelihood_threshold[:, None]
     smaller = np.minimum(
