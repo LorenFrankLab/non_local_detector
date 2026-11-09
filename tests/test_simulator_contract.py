@@ -486,3 +486,30 @@ def test_multiunit_refuses_more_than_one_expected_spike_per_sample() -> None:
             sampling_frequency=1000,
             rng=np.random.default_rng(0),
         )
+
+
+def test_sorted_spike_times_hold_every_counted_spike() -> None:
+    """A sample counted twice yields two spike times, at that sample."""
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        _spike_times_from_counts,
+    )
+
+    time = np.array([0.0, 0.1, 0.2, 0.3])
+    counts = np.array([[0, 2], [1, 0], [3, 1], [0, 0]])
+
+    spike_times = _spike_times_from_counts(time, counts)
+
+    assert sum(times.size for times in spike_times) == counts.sum()
+    np.testing.assert_array_equal(spike_times[0], [0.1, 0.2, 0.2, 0.2])
+    np.testing.assert_array_equal(spike_times[1], [0.0, 0.0, 0.2])
+
+
+def test_sorted_simulation_keeps_samples_with_two_spikes() -> None:
+    """The default seeded simulation has samples with two Poisson spikes."""
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        make_simulated_data,
+    )
+
+    spike_times = make_simulated_data()[2]
+
+    assert any(np.any(np.diff(times) == 0) for times in spike_times)

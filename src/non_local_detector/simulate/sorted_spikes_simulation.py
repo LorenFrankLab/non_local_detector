@@ -492,6 +492,25 @@ def make_fragmented_replay(
     return spikes
 
 
+def _spike_times_from_counts(time: np.ndarray, counts: np.ndarray) -> list[np.ndarray]:
+    """Spike times of each neuron, one entry per spike.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+        Sample times in seconds.
+    counts : np.ndarray, shape (n_time, n_neurons)
+        Spike count of each neuron in each sample.
+
+    Returns
+    -------
+    spike_times : list of np.ndarray, length n_neurons
+        A sample with ``k`` spikes contributes its time ``k`` times, so
+        ``spike_times[i].size == counts[:, i].sum()``.
+    """
+    return [np.repeat(time, neuron_counts.astype(int)) for neuron_counts in counts.T]
+
+
 def make_simulated_data(
     track_height: float = TRACK_HEIGHT,
     sampling_frequency: int = SAMPLING_FREQUENCY,
@@ -533,7 +552,8 @@ def make_simulated_data(
     linear_distance : np.ndarray, shape (n_time,)
         Linear distance along the track.
     spike_times : list[np.ndarray]
-        Spike times in seconds for each neuron.
+        Spike times in seconds for each neuron, one per spike: a sample with
+        several Poisson spikes repeats its time.
     time : np.ndarray, shape (n_time,)
         Time in seconds.
     event_times : np.ndarray, shape (n_events, 2)
@@ -652,7 +672,7 @@ def make_simulated_data(
 
     event_times = np.stack([event_starts, event_ends], axis=1)
 
-    spike_times = [time[np.nonzero(spike_indicator)[0]] for spike_indicator in spikes.T]
+    spike_times = _spike_times_from_counts(time, spikes)
 
     is_event = np.zeros_like(time, dtype=bool)
     for event_start, event_end in event_times[:-1]:
