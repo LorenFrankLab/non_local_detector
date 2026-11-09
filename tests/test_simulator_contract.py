@@ -120,8 +120,9 @@ def test_no_nans_finite_features() -> None:
 
 def test_optional_empty_electrode() -> None:
     """A silent electrode yields times of shape (0,) and features of shape (0, 4)."""
-    # A 20 ms recording with one neuron per tetrode (peak rate 100 Hz) leaves
-    # some electrodes without spikes; seed 3 gives spike counts [1, 1, 0, 1].
+    # A 20 ms recording on a 1 cm track with one neuron per tetrode (peak rate
+    # 100 Hz): only the field at 0 cm is on the track, so the other electrodes
+    # are nearly silent; seed 3 gives spike counts [1, 0, 0, 0].
     sim = make_simulated_run_data(
         n_tetrodes=4,
         place_field_means=np.array([0.0, 10.0, 20.0, 30.0]),
@@ -361,3 +362,64 @@ def test_get_firing_rate_without_weights_matches_unit_weights() -> None:
     np.testing.assert_allclose(
         get_firing_rate(*args), get_firing_rate(*args, weights=np.ones(n_time))
     )
+
+
+def _gaussian_field(x, mean, max_rate, variance):
+    return max_rate * np.exp(-0.5 * (x - mean) ** 2 / variance)
+
+
+def test_place_field_rate_does_not_depend_on_the_trajectory() -> None:
+    """The field peaks at ``max_rate`` at its center wherever the animal went.
+
+    A field at 70 cm read at 60 cm is the same whether the trajectory reaches
+    the center (0-100 cm) or stops short of it (0-60 cm).
+    """
+    from non_local_detector.simulate import simulate_place_field_firing_rate
+
+    full = simulate_place_field_firing_rate([70.0], np.linspace(0, 100, 1001)[:, None])
+    short = simulate_place_field_firing_rate([70.0], np.linspace(0, 60, 601)[:, None])
+
+    expected = _gaussian_field(60.0, 70.0, max_rate=15.0, variance=12.5)
+    np.testing.assert_allclose(full[600], expected, rtol=1e-12)
+    np.testing.assert_allclose(short[-1], expected, rtol=1e-12)
+
+
+def test_place_field_beyond_the_track_follows_its_gaussian() -> None:
+    """A field centered off the track is only its Gaussian tail on the track."""
+    from non_local_detector.simulate import simulate_place_field_firing_rate
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        create_place_field,
+    )
+
+    position = np.linspace(0.0, 100.0, 10_001)
+    rate = simulate_place_field_firing_rate([120.0], position[:, None])
+    sorted_rate = create_place_field(120.0, position)
+
+    np.testing.assert_allclose(
+        rate[-1], _gaussian_field(100.0, 120.0, 15.0, 12.5), rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        sorted_rate[-1],
+        0.001 + _gaussian_field(100.0, 120.0, 20.0, 12.5),
+        rtol=1e-12,
+    )
+
+
+def test_nan_position_leaves_other_rates_finite() -> None:
+    """A NaN position gives a NaN rate at that sample only."""
+    from non_local_detector.simulate import simulate_place_field_firing_rate
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        create_place_field,
+    )
+
+    position = np.linspace(0.0, 100.0, 101)
+    position[10] = np.nan
+    finite = np.ones(position.shape, dtype=bool)
+    finite[10] = False
+
+    for rate in (
+        simulate_place_field_firing_rate([50.0], position[:, None]),
+        create_place_field(50.0, position),
+    ):
+        assert np.all(np.isfinite(rate[finite]))
+        assert np.isnan(rate[10])

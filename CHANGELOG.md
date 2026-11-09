@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Numerical fixes
+
+- **Fixed (changes simulated data):** `simulate_place_field_firing_rate`, and so every simulator built on it, and the sorted simulator's `create_place_field` scale a field by its value at the center, so `max_rate` (`max_firing_rate`) is the rate at the field center, as documented. They divided by the largest value on the trajectory, so a field the animal never reached peaked wherever the trajectory came closest: a field at 120 cm on a 0–100 cm track fired 15 Hz at 100 cm instead of its Gaussian 1.7e-6 Hz, and a field at 70 cm gave 0.27 Hz at 60 cm on a 0–100 cm track but 15 Hz on a 0–60 cm one. One NaN position no longer makes every rate of `simulate_place_field_firing_rate` NaN. The default simulations cross every field center: their rates move by under 4e-6 relative, and their seeded spikes do not change.
+
 ### Test suite audit
 
 - **Breaking:** `fit_sorted_spikes_diffusion_encoding_model` and `fit_sorted_spikes_mrf_encoding_model` no longer return `interior_log_place_fields`, and their predict functions no longer accept it. Prediction only checked its length; the likelihood never read it. Detectors pickled or saved with `save_model` by earlier versions drop the key on load and decode identically. A direct predict call with an old encoding dict raises `TypeError`.

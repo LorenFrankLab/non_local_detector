@@ -92,19 +92,20 @@ def create_place_field(
     place_field_std_deviation : float, optional
         Standard deviation of the Gaussian place field, by default sqrt(12.5).
     max_firing_rate : float, optional
-        Maximum firing rate at the field center, by default 20.0.
+        Firing rate above baseline at the field center, whether or not the
+        trajectory reaches it, by default 20.0.
     baseline_firing_rate : float, optional
         Baseline firing rate outside the field, by default 0.001.
 
     Returns
     -------
     firing_rate : np.ndarray, shape (n_time,)
-        Firing rate at each time point.
+        Firing rate at each time point; NaN where the position is NaN.
     """
     if is_condition is None:
         is_condition = np.ones_like(position, dtype=bool)
-    field_firing_rate = norm(place_field_mean, place_field_std_deviation).pdf(position)
-    field_firing_rate /= np.nanmax(field_firing_rate)
+    field = norm(place_field_mean, place_field_std_deviation)
+    field_firing_rate = field.pdf(position) / field.pdf(place_field_mean)
     field_firing_rate[~is_condition] = 0
     return cast(
         "np.ndarray", baseline_firing_rate + max_firing_rate * field_firing_rate
