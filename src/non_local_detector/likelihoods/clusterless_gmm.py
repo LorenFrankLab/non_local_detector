@@ -155,7 +155,9 @@ def _accumulate_log_likelihood_block(
 
     The density difference is formed first: adding ``log_rate`` to a huge log
     density before subtracting the other would round the rate term away. Each
-    spike's intensity then gains its background ``log_background``.
+    spike's intensity then gains its background ``log_background``. A
+    ``log_occupancy`` of ``+inf`` (an unresolved bin, ``_place_log_occupancy``)
+    leaves the background alone.
     """
     log_contribution = jnp.logaddexp(
         log_rate + (joint_logp - log_occupancy), log_background[:, None]
@@ -229,7 +231,8 @@ def _add_electrode_gmm_intensities(
     log_rate : jax.Array, scalar
         Log of the electrode's mean rate.
     log_occupancy : jax.Array, shape (n_bins,)
-        Log occupancy density at each bin.
+        Log occupancy density at each bin, ``+inf`` where it is unresolved
+        (``_place_log_occupancy``), so spikes there add their background alone.
     log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
     covariance_type : {"full", "tied", "diag", "spherical"}
@@ -456,7 +459,9 @@ def _log_occupancy_threshold(log_occupancy: jax.Array) -> float:
 
     ``FIELD_RESOLUTION`` of the maximum over the interior bins, the rule the
     diffusion likelihoods apply to their diffused occupancy
-    (``resolved_occupancy``).
+    (``resolved_occupancy``). The constant is shared on purpose, so both treat
+    a position as unvisited below the same fraction of peak occupancy; a change
+    to it changes GMM fits too.
 
     Parameters
     ----------

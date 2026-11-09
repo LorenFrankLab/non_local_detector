@@ -113,8 +113,8 @@ def _without_threshold(encoding):
     return {k: v for k, v in encoding.items() if k != "log_occupancy_threshold"}
 
 
-def _pre_change_intensity(encoding):
-    """``rate * p_gpi / p_occ`` at every interior bin, as the fit formed it."""
+def _unthresholded_intensity(encoding):
+    """``rate * p_gpi / p_occ`` at every interior bin with no occupancy threshold."""
     gpi_logp = encoding["gpi_models"][0].score_samples(
         jnp.asarray(encoding["interior_place_bin_centers"])
     )
@@ -164,7 +164,7 @@ def test_fitted_intensity_is_zero_only_where_occupancy_is_unresolved(
     assert np.all(intensity[unresolved] == 0.0)
     np.testing.assert_allclose(
         intensity[~unresolved],
-        _pre_change_intensity(encoding)[~unresolved],
+        _unthresholded_intensity(encoding)[~unresolved],
         rtol=1e-6,
     )
 
@@ -204,7 +204,7 @@ def test_resolved_bins_decode_as_without_the_threshold(partial_coverage):
         data,
         {
             **_without_threshold(encoding),
-            "summed_ground_process_intensity": _pre_change_intensity(encoding),
+            "summed_ground_process_intensity": _unthresholded_intensity(encoding),
         },
     )
 
@@ -221,7 +221,7 @@ def test_encoding_model_without_threshold_decodes_as_fitted(partial_coverage):
     data = partial_coverage
     old = {
         **_without_threshold(data["encoding"]),
-        "summed_ground_process_intensity": _pre_change_intensity(data["encoding"]),
+        "summed_ground_process_intensity": _unthresholded_intensity(data["encoding"]),
     }
     stored_intensity = old["summed_ground_process_intensity"]
     assert np.isposinf(stored_intensity).any()
