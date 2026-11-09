@@ -65,8 +65,15 @@ def test_converted_model_decodes_as_the_pickle(version, artifact, inputs, tmp_pa
     converted = _family(artifact).load_model(path)
 
     assert is_saved_model_format(path)
-    np.testing.assert_array_equal(
-        _posterior(converted, inputs, artifact), _posterior(pickled, inputs, artifact)
+    # A converted model rebuilds its continuous transitions on load, and the
+    # rebuild check admits differences up to its 1e-6 relative tolerance, so
+    # its decode can differ from the pickle's (which keeps its stored
+    # transitions) at that level.
+    np.testing.assert_allclose(
+        _posterior(converted, inputs, artifact),
+        _posterior(pickled, inputs, artifact),
+        rtol=1e-6,
+        atol=2e-6,
     )
     # Versions before environments_ kept the fitted environments in
     # ``environments`` too; a converted model keeps only their configuration
