@@ -1,5 +1,8 @@
 """Interactive figurl view for 1D decoding results (requires ``sortingview``)."""
 
+import numpy as np
+from numpy.typing import ArrayLike
+
 from non_local_detector.visualization._optional import sortingview_available
 
 __all__ = [
@@ -8,10 +11,32 @@ __all__ = [
 ]
 
 
+def get_sampling_freq(times: ArrayLike) -> float:
+    """Get the sampling frequency from a series of times.
+
+    The median time difference picks out the regular sample interval, so
+    gaps are ignored; the mean of the differences within 1% of it then
+    averages out the rounding of large time stamps, such as Unix seconds.
+
+    Parameters
+    ----------
+    times : array_like, shape (n_time,)
+        Sample times in seconds.
+
+    Returns
+    -------
+    sampling_rate : float
+        Samples per second.
+    """
+    time_differences = np.diff(np.asarray(times, dtype=float))
+    median_difference = np.median(time_differences)
+    is_regular = np.isclose(time_differences, median_difference, rtol=0.01, atol=0)
+    return float(1.0 / np.mean(time_differences[is_regular]))
+
+
 if sortingview_available():
     from typing import cast
 
-    import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
@@ -68,22 +93,6 @@ if sortingview_available():
         )
 
         return good_counts.values.astype(np.uint8)
-
-    def get_sampling_freq(times: np.ndarray) -> float:
-        """Get the sampling frequency from a series of times.
-
-        Parameters
-        ----------
-        times : np.ndarray, shape (n_time,)
-            Sample times in seconds.
-
-        Returns
-        -------
-        sampling_rate : float
-        """
-        round_times = np.floor(1000 * times)
-        median_delta_t_ms = np.median(np.diff(round_times)).item()
-        return cast("float", 1000 / median_delta_t_ms)  # from time-delta to Hz
 
     def get_trimmed_bin_center_index(
         place_bin_centers: np.ndarray, trimmed_place_bin_centers: np.ndarray
