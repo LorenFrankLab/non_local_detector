@@ -513,3 +513,24 @@ def test_sorted_simulation_keeps_samples_with_two_spikes() -> None:
     spike_times = make_simulated_data()[2]
 
     assert any(np.any(np.diff(times) == 0) for times in spike_times)
+
+
+def test_run_data_spikes_lie_strictly_inside_their_sample_bins() -> None:
+    """Each decode bin is centered on one position sample and holds its spikes.
+
+    A spike at sample ``i`` falls in bin ``i``, with neither edge within a
+    quarter of a sample of it, so float rounding cannot move it to a neighbor.
+    """
+    sim = make_simulated_run_data(n_runs=1, seed=0)
+    edges, position_time = sim.edges, sim.position_time
+    quarter_sample = 0.25 * np.median(np.diff(position_time))
+
+    assert edges.size == position_time.size + 1
+    np.testing.assert_allclose(sim.bin_widths, np.diff(edges))
+    for times in sim.spike_times:
+        sample = np.searchsorted(position_time, times)
+        np.testing.assert_array_equal(position_time[sample], times)
+        bin_ind = np.searchsorted(edges, times, side="right") - 1
+        np.testing.assert_array_equal(bin_ind, sample)
+        assert np.all(times - edges[bin_ind] > quarter_sample)
+        assert np.all(edges[bin_ind + 1] - times > quarter_sample)
