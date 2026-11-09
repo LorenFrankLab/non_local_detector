@@ -132,14 +132,16 @@ def test_euclidean_random_walk_accepts_flat_1d_centers():
 
 def test_random_walk_on_one_bin_grid_is_identity():
     """A one-bin grid's Euclidean random walk is the (1, 1) matrix [[1]]:
-    ``make_state_transition`` masks and normalizes it as a square matrix."""
+    ``make_state_transition`` masks and scales it as a square matrix, so its
+    one row sums to one within the scaling's tolerance."""
     env = Environment(place_bin_size=100.0, position_range=((0.0, 30.0),))
     env = env.fit_place_grid(np.linspace(0.0, 30.0, 11)[:, None])
     assert env.place_bin_centers_.shape == (1, 1)
 
     transition = RandomWalk().make_state_transition([env])
 
-    np.testing.assert_array_equal(transition, [[1.0]])
+    assert transition.shape == (1, 1)
+    np.testing.assert_allclose(transition, [[1.0]], rtol=0, atol=1e-12)
 
 
 @pytest.mark.parametrize(("movement_mean", "movement_var"), [(0.0, 6.0), (1.5, 0.5)])
@@ -802,8 +804,8 @@ def test_transition_on_an_unfitted_environment_raises_not_fitted(transition):
 def test_random_walk_crosses_junction_by_track_distance():
     """Two perpendicular 10 cm edges are linearized with a 10 cm gap
     between them. Across the junction, adjacent bins are 2 cm apart along
-    the track (12 cm apart linearized), so their transition probability
-    equals that of adjacent bins within an edge; the gap bin gets none."""
+    the track (12 cm apart linearized), so the walk on the bent track equals
+    the walk on one straight 20 cm edge; the gap bin gets none."""
     graph = nx.Graph()
     graph.add_node(0, pos=(0.0, 0.0))
     graph.add_node(1, pos=(10.0, 0.0))
@@ -829,10 +831,27 @@ def test_random_walk_crosses_junction_by_track_distance():
         environment_name="track", movement_var=4.0
     ).make_state_transition((env,))
 
+    straight_graph = nx.Graph()
+    straight_graph.add_node(0, pos=(0.0, 0.0))
+    straight_graph.add_node(1, pos=(20.0, 0.0))
+    straight_graph.add_edge(0, 1, distance=20.0, edge_id=0)
+    straight = Environment(
+        environment_name="track",
+        place_bin_size=2.0,
+        track_graph=straight_graph,
+        edge_order=[(0, 1)],
+        edge_spacing=0.0,
+    ).fit_place_grid()
+    straight_trans = RandomWalk(
+        environment_name="track", movement_var=4.0
+    ).make_state_transition((straight,))
+
     assert trans.shape == (11, 11)
     np.testing.assert_allclose(trans[is_interior].sum(axis=1), 1.0)
     np.testing.assert_array_equal(trans[5], 0.0)
     np.testing.assert_array_equal(trans[:, 5], 0.0)
-    # Last bin of edge 0 -> first bin of edge 1 vs. a within-edge step.
-    np.testing.assert_allclose(trans[4, 6], trans[4, 3], rtol=1e-6)
+    np.testing.assert_allclose(
+        trans[np.ix_(is_interior, is_interior)], straight_trans, rtol=1e-6, atol=0
+    )
+    # Last bin of edge 0 -> first bin of edge 1.
     assert trans[4, 6] > 0.1
