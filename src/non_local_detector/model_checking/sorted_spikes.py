@@ -308,8 +308,7 @@ class TimeRescaling:
         ax: Axes | None = None,
         scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
-        sampling_frequency: float = 1.0,
-        lag_max: float | None = None,
+        lag_max: int | None = None,
     ) -> Axes:
         """Plot the rescaled ISI dependence.
 
@@ -324,10 +323,8 @@ class TimeRescaling:
             Plotting arguments for scatter plot.
         ci_color : str, optional
             Confidence interval color, by default "red".
-        sampling_frequency : float, optional
-            Sampling frequency of the data in Hz, by default 1.0.
-        lag_max : float, optional
-            Maximum lag to plot, in time units. If None, plots all lags.
+        lag_max : int, optional
+            Largest lag to plot, in number of ISIs. If None, plots all lags.
 
         Returns
         -------
@@ -339,7 +336,6 @@ class TimeRescaling:
             ax=ax,
             scatter_kwargs=scatter_kwargs,
             ci_color=ci_color,
-            sampling_frequency=sampling_frequency,
             lag_max=lag_max,
         )
 
@@ -894,8 +890,7 @@ def plot_rescaled_ISI_autocorrelation(
     ax: Axes | None = None,
     scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
-    sampling_frequency: float = 1.0,
-    lag_max: float | None = None,
+    lag_max: int | None = None,
 ) -> Axes:
     """Plot autocorrelation function of rescaled interspike intervals.
 
@@ -913,11 +908,9 @@ def plot_rescaled_ISI_autocorrelation(
         Additional keyword arguments passed to scatter plot.
     ci_color : str, optional
         Color for confidence interval lines. Default is "red".
-    sampling_frequency : float, optional
-        Sampling frequency of the data in Hz. Default is 1.0.
-    lag_max : float, optional
-        Maximum lag to display in time units; lags with ``|lag| <= lag_max``
-        are shown. If None, shows all lags.
+    lag_max : int, optional
+        Largest lag to display, in number of ISIs; lags with
+        ``|lag| <= lag_max`` are shown. If None, shows all lags.
 
     Returns
     -------
@@ -928,11 +921,13 @@ def plot_rescaled_ISI_autocorrelation(
     -----
     Points outside the confidence interval lines suggest temporal dependence
     in the rescaled ISIs, indicating potential model misfit.
+
+    The lag counts intervals, not time: lag ``j`` correlates each rescaled
+    ISI with the one ``j`` spikes later, whatever time separates them.
     """
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
-    lag = np.arange(-n_spikes + 1, n_spikes) / sampling_frequency
+    lag = np.arange(-n_spikes + 1, n_spikes)
 
-    # Select actual lag values so fractional limits retain equal endpoints.
     lag_ind = slice(None) if lag_max is None else np.abs(lag) <= lag_max
 
     if ax is None:
@@ -943,7 +938,7 @@ def plot_rescaled_ISI_autocorrelation(
     ax.scatter(lag[lag_ind], rescaled_ISI_autocorrelation[lag_ind], **scatter_kwargs)
     ax.axhline(ci, linestyle="--", color=ci_color)
     ax.axhline(-ci, linestyle="--", color=ci_color)
-    ax.set_xlabel("Lag")
+    ax.set_xlabel("Lag (ISIs)")
     ax.set_ylabel("Autocorrelation")
 
     return ax

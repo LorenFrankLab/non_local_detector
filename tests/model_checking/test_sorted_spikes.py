@@ -14,6 +14,7 @@ mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from non_local_detector.model_checking.sorted_spikes import (
     TimeRescaling,
@@ -469,54 +470,52 @@ class TestPlotting:
             fitted_rescaling.plot_rescaled_ISI_autocorrelation(),
             plot_ks(uniform),
             plot_qq(uniform),
-            plot_rescaled_ISI_autocorrelation(
-                autocorrelation, sampling_frequency=2.0, lag_max=5.0
-            ),
+            plot_rescaled_ISI_autocorrelation(autocorrelation, lag_max=5),
         ):
             assert isinstance(ax, plt.Axes)
         plt.close("all")
 
     @pytest.mark.parametrize(
-        ("sampling_frequency", "lag_max", "expected_lags"),
+        ("lag_max", "expected_lags"),
         [
-            (1.0, None, np.arange(-4, 5)),
-            (1.0, 2.0, np.arange(-2, 3)),
-            (2.0, 1.0, np.arange(-2, 3) / 2.0),
-            (1.0, 100.0, np.arange(-4, 5)),
+            (None, np.arange(-4, 5)),
+            (2, np.arange(-2, 3)),
+            (100, np.arange(-4, 5)),
         ],
     )
-    def test_autocorrelation_plots_lags_centered_on_zero(
-        self, sampling_frequency, lag_max, expected_lags
-    ):
+    def test_autocorrelation_plots_lags_centered_on_zero(self, lag_max, expected_lags):
         """Every lag with |lag| <= lag_max is plotted at its own value."""
         # Five spikes: lags -4..4, zero lag at index 4; value = lag index.
         autocorrelation = np.arange(-4.0, 5.0)
         _, ax = plt.subplots()
-        plot_rescaled_ISI_autocorrelation(
-            autocorrelation,
-            ax=ax,
-            sampling_frequency=sampling_frequency,
-            lag_max=lag_max,
-        )
+        plot_rescaled_ISI_autocorrelation(autocorrelation, ax=ax, lag_max=lag_max)
         points = ax.collections[0].get_offsets()
         np.testing.assert_allclose(points[:, 0], expected_lags)
-        np.testing.assert_allclose(points[:, 1], expected_lags * sampling_frequency)
+        np.testing.assert_allclose(points[:, 1], expected_lags)
         plt.close("all")
 
-    @pytest.mark.parametrize(
-        ("lag_max", "max_lag_index"), [(0.29, 29), (0.58, 58), (0.579, 57)]
-    )
-    def test_autocorrelation_keeps_fractional_boundary_lags(
-        self, lag_max, max_lag_index
-    ):
-        """Fractional limits retain equal endpoints and exclude larger lags."""
-        autocorrelation = np.arange(-60.0, 61.0)
-        expected_values = np.arange(-max_lag_index, max_lag_index + 1)
-        _, ax = plt.subplots()
-        plot_rescaled_ISI_autocorrelation(
-            autocorrelation, ax=ax, sampling_frequency=100.0, lag_max=lag_max
+    def test_autocorrelation_lag_counts_intervals(self):
+        """Intervals that repeat every third interval peak at a lag of 3 ISIs.
+
+        Bin widths set the rescaled intervals exactly (rate 1 Hz, one spike
+        per bin, no within-bin draw); their normal transforms cycle through
+        -1, 0, 1, so the largest nonzero-lag autocorrelation is at lag 3.
+        """
+        cycle = -np.log(norm.sf([-1.0, 0.0, 1.0]))
+        widths = np.tile(cycle, 10)
+        check = TimeRescaling(
+            np.ones(widths.size),
+            np.ones(widths.size, dtype=bool),
+            adjust_for_short_trials=False,
+            rate_units="Hz",
+            time_edges=np.concatenate([[0.0], np.cumsum(widths)]),
+            discrete_time_correction=False,
         )
-        points = ax.collections[0].get_offsets()
-        np.testing.assert_allclose(points[:, 0], expected_values / 100.0)
-        np.testing.assert_allclose(points[:, 1], expected_values)
+        _, ax = plt.subplots()
+        check.plot_rescaled_ISI_autocorrelation(ax=ax, lag_max=8)
+        lag, value = ax.collections[0].get_offsets().T
+        np.testing.assert_array_equal(lag, np.arange(-8, 9))
+        nonzero = lag != 0
+        assert lag[nonzero][np.argmax(value[nonzero])] in (-3, 3)
+        assert "ISI" in ax.get_xlabel()
         plt.close("all")
