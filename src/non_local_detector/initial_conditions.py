@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
+from non_local_detector.continuous_state_transitions import _bin_volumes
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.observation_models import ObservationModel
@@ -60,12 +61,14 @@ class ContinuousInitialCondition(Protocol):
 
 @dataclass
 class UniformInitialConditions:
-    """Initial conditions where all position bins are equally likely.
+    """Initial conditions with a uniform density over the position bins.
 
     This class creates uniform initial state distributions for HMM decoders,
-    ensuring all spatial positions have equal prior probability at the start
-    of decoding. The initial conditions are automatically adjusted based on
-    the observation model type and environmental constraints.
+    ensuring all spatial positions have equal prior probability density at
+    the start of decoding: on a grid every interior bin is equally likely,
+    and on a track graph each is weighted by its width along the track. The
+    initial conditions are automatically adjusted based on the observation
+    model type and environmental constraints.
 
     Examples
     --------
@@ -99,7 +102,8 @@ class UniformInitialConditions:
         initial_conditions : np.ndarray, shape (n_place_bins,)
             Normalized initial probability distribution. For local/no-spike models,
             returns shape (1,). For spatial models, one value per place bin of
-            the environment: uniform over its interior bins, 0 elsewhere.
+            the environment: uniform over its interior bins (proportional to
+            bin width on a track graph), 0 elsewhere.
 
         Raises
         ------
@@ -122,7 +126,7 @@ class UniformInitialConditions:
                     "before making initial conditions."
                 ),
             )
-        initial_conditions = environment.is_track_interior_.ravel().astype(np.float32)
+        initial_conditions = _bin_volumes(environment).astype(np.float32)
         total = initial_conditions.sum()
         if total == 0:
             msg = f"Environment {name!r} has no interior bins"

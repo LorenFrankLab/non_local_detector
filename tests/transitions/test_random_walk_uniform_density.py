@@ -14,8 +14,10 @@ import numpy as np
 import pytest
 from scipy.stats import norm
 
-from non_local_detector.continuous_state_transitions import RandomWalk
+from non_local_detector.continuous_state_transitions import RandomWalk, Uniform
 from non_local_detector.environment import Environment
+from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.observation_models import ObservationModel
 from non_local_detector.transition_operators import (
     GaussianGridBlock,
     LazyDenseTransition,
@@ -296,4 +298,43 @@ def test_structured_block_pickled_in_the_earlier_layout_applies_its_matrix():
         earlier,
         rtol=1e-12,
         atol=1e-15,
+    )
+
+
+def test_uniform_transition_and_initial_conditions_are_uniform_density_on_a_track():
+    env = y_track()
+    widths = bin_widths(env)
+    expected = widths / widths.sum()
+
+    matrix = Uniform().make_state_transition([env])
+    initial = UniformInitialConditions().make_initial_conditions(
+        ObservationModel(), [env]
+    )
+    n_bins = len(widths)
+    structured = np.asarray(
+        LazyDenseTransition(build_transition_operator([[Uniform()]], [env], (n_bins,)))
+    )
+
+    interior = widths > 0
+    np.testing.assert_allclose(
+        matrix[interior], expected[None].repeat(interior.sum(), 0)
+    )
+    np.testing.assert_allclose(structured, matrix, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(initial, expected, rtol=1e-6)
+
+
+def test_uniform_transition_and_initial_conditions_unchanged_on_a_grid():
+    env = field_with_hole()
+    interior = env.is_track_interior_flat_
+
+    matrix = Uniform().make_state_transition([env])
+    initial = UniformInitialConditions().make_initial_conditions(
+        ObservationModel(), [env]
+    )
+
+    expected = np.where(interior[:, None] & interior[None, :], 1 / interior.sum(), 0)
+    np.testing.assert_array_equal(matrix, expected)
+    np.testing.assert_array_equal(
+        initial,
+        interior.astype(np.float32) / np.float32(interior.sum()),
     )

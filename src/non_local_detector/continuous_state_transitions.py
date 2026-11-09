@@ -855,7 +855,11 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
 
 @dataclass
 class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
-    """Transition where all valid destination bins are equally likely.
+    """Transition to a uniform density over the valid destination bins.
+
+    On a grid every interior destination bin is equally likely; on a track
+    graph each is weighted by its width along the track, so that unequal
+    bins still receive a uniform density.
 
     Attributes
     ----------
@@ -873,19 +877,20 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
         """Rank-one block from the interior of ``environment_name`` to its target.
 
         The target is the interior of ``environment2_name`` (or the same
-        environment).
+        environment), weighted by bin volume.
         """
         from non_local_detector.transition_operators import UniformBlock
 
         source = find_environment_by_name(
             environments, self.environment_name
         ).is_track_interior_flat_
-        destination = (
-            source.copy()
-            if self.environment2_name is None
-            else find_environment_by_name(
-                environments, self.environment2_name
-            ).is_track_interior_flat_
+        destination = _bin_volumes(
+            find_environment_by_name(
+                environments,
+                self.environment_name
+                if self.environment2_name is None
+                else self.environment2_name,
+            )
         )
         return UniformBlock(
             source,
@@ -921,26 +926,14 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
             Row-normalized uniform transition probability matrix.
         """
         environment1 = find_environment_by_name(environments, self.environment_name)
-        n_bins1 = environment1.place_bin_centers_.shape[0]
-
-        is_track_interior1 = environment1.is_track_interior_flat_
-
-        if self.environment2_name is None:
-            n_bins2 = n_bins1
-            is_track_interior2 = is_track_interior1.copy()
-        else:
-            environment2 = find_environment_by_name(
-                environments, self.environment2_name
-            )
-            n_bins2 = environment2.place_bin_centers_.shape[0]
-
-            is_track_interior2 = environment2.is_track_interior_flat_
-
-        transition_matrix = np.ones((n_bins1, n_bins2))
-
-        transition_matrix[~is_track_interior1] = 0.0
-        transition_matrix[:, ~is_track_interior2] = 0.0
-
+        environment2 = (
+            environment1
+            if self.environment2_name is None
+            else find_environment_by_name(environments, self.environment2_name)
+        )
+        transition_matrix = np.outer(
+            environment1.is_track_interior_flat_, _bin_volumes(environment2)
+        )
         return _normalize_row_probability(transition_matrix)
 
 
