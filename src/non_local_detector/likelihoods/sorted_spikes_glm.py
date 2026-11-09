@@ -291,8 +291,9 @@ class TensorSplineBasis:
     inputs that define it instead (read-only copies), and rebuilds the design
     from them on first use after unpickling or copying. The knots and the
     centering constraint depend only on these inputs, but their arithmetic can
-    change with the NumPy or patsy version, so the rebuilt design must match a
-    fingerprint of the fitted one.
+    change with the NumPy or patsy version, or with this package's knot
+    placement, so the rebuilt design must match a fingerprint of the fitted
+    one.
 
     Attributes
     ----------
@@ -370,8 +371,10 @@ class TensorSplineBasis:
             msg = (
                 "The GLM's spline basis, rebuilt from the saved encoding model, "
                 f"differs from the one it was fitted with ({difference}), "
-                "probably because the NumPy or patsy version changed since the "
-                "model was saved. Refit the model with the installed versions."
+                "probably because the NumPy or patsy version, or the "
+                "non_local_detector code that builds the basis, changed since "
+                "the model was saved. Refit the model, or decode it with the "
+                "versions that fitted it."
             )
             raise ValidationError(msg)
         return design_info
