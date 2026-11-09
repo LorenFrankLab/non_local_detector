@@ -479,7 +479,8 @@ def get_velocity(
         is in position units per unit of ``time``. By default None.
     sigma : float, optional
         Standard deviation of the Gaussian smoothing kernel in seconds,
-        by default 0.0025.
+        by default 0.0025. Near the first and last samples the kernel is
+        renormalized over the samples that exist.
     sampling_frequency : float, optional
         Sampling frequency of the data in Hz, by default 500.
 
@@ -491,12 +492,13 @@ def get_velocity(
     if time is None:
         time = np.arange(position.shape[0])
 
+    velocity = np.gradient(position, time, axis=0)
+    # Divide by the kernel mass inside the array: zero padding alone would pull
+    # the first and last samples toward zero.
     return _gaussian_smooth(
-        np.gradient(position, time, axis=0),
-        sigma,
-        sampling_frequency,
-        axis=0,
-        truncate=8,
+        velocity, sigma, sampling_frequency, axis=0, truncate=8
+    ) / _gaussian_smooth(
+        np.ones_like(velocity), sigma, sampling_frequency, axis=0, truncate=8
     )
 
 
