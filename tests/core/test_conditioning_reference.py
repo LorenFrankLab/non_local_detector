@@ -974,6 +974,43 @@ class TestViterbiEnumerationReference:
 
         np.testing.assert_array_equal(driver_path, expected)
 
+    @pytest.mark.parametrize("path", ["stationary", "covariate"])
+    def test_all_impossible_row_matches_enumeration_without_its_evidence(
+        self, path, caplog
+    ):
+        """Every path scores ``-inf`` through an all-(-inf) row, so the row is
+        treated as uninformative: the path equals the enumerated best path
+        with that row set to 0, rather than state 0 before it."""
+        if path == "stationary":
+            initial, transitions, ll = _tiny_model(seed=2)
+            expanded = transitions[0]
+        else:
+            initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
+                seed=2
+            )
+        impossible_row = 3
+        ll[impossible_row] = 0.0
+        expected, margin = enumerate_most_likely_path(initial, expanded, ll)
+        assert margin > 1e-3  # the optimum is unique
+        assert np.any(expected[:impossible_row] != 0)
+        ll[impossible_row] = -np.inf
+
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            if path == "stationary":
+                decoded = viterbi(
+                    jnp.asarray(initial), jnp.asarray(expanded), jnp.asarray(ll)
+                )
+            else:
+                decoded = viterbi_covariate_dependent(
+                    jnp.asarray(initial),
+                    jnp.asarray(discrete),
+                    jnp.asarray(continuous),
+                    jnp.asarray(state_ind),
+                    jnp.asarray(ll),
+                )
+
+        np.testing.assert_array_equal(np.asarray(decoded), expected)
+
     def test_time_varying_transition_changes_the_optimal_path(self):
         """A forced switch at one step moves the path; a constant matrix does not.
 

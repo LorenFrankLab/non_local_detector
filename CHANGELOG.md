@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Numerical fixes
+
+- **Fixed (changes results):** `most_likely_sequence` (and `viterbi`, `most_likely_sequence_covariate_dependent`, `viterbi_covariate_dependent`) lost precision on long recordings in float32, the default. The score carried backward through the recording grew with its length, and at 200,000 bins (about 4.8e5 nats, where float32 spacing is 0.03) rounding outweighed the transition and likelihood differences between neighbouring bins: on a simulated 60-bin random walk decoded from 40 place cells, 12.8% of bins differed from the float64 path, which scored 101 nats higher. The score is now shifted to a maximum of 0 at every step, which leaves the best path unchanged in exact arithmetic, and the float32 path equals the float64 path at 200,000 and 1,000,000 bins. Only the most likely sequence changes: posteriors, the marginal likelihood and EM are not affected.
+- **Fixed (changes results):** a time bin whose log likelihoods are all `-inf` no longer moves the most likely sequence far from that bin. Every earlier score was `-inf`, so the path sat in state 0 from the start of the recording up to that bin. The bin is now treated as uninformative (log likelihood 0 in every state), as the filter falls back to its prediction there, and the warning says so. A bin finite only on states no path can reach from the bin before, which had the same effect without any warning, is now skipped (its evidence ignored, the path keeping its state across it) and logged.
+
 ### Test suite audit
 
 - **Breaking:** `fit_sorted_spikes_diffusion_encoding_model` and `fit_sorted_spikes_mrf_encoding_model` no longer return `interior_log_place_fields`, and their predict functions no longer accept it. Prediction only checked its length; the likelihood never read it. Detectors pickled or saved with `save_model` by earlier versions drop the key on load and decode identically. A direct predict call with an old encoding dict raises `TypeError`.

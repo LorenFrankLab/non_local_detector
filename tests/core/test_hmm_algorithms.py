@@ -733,7 +733,8 @@ class TestViterbiDegenerateTimestepWarning:
 
     def test_viterbi_degenerate_step_warns_with_viterbi_wording(self, caplog):
         """An all-(-inf) step warns, and the message describes Viterbi behavior
-        (argmax over an all-(-inf) column), NOT the filter's posterior fallback."""
+        (the step is treated as uninformative), NOT the filter's posterior
+        fallback."""
         log_likes = jnp.array([[0.0, -1.0], [-jnp.inf, -jnp.inf], [0.0, -1.0]])
         self._run(log_likes, caplog)
         msgs = [
@@ -744,7 +745,7 @@ class TestViterbiDegenerateTimestepWarning:
         )
         joined = " ".join(msgs)
         assert "Viterbi decoding" in joined
-        assert "arbitrary" in joined
+        assert "uninformative" in joined
         # Must not use the filter-only phrasing.
         assert "posterior" not in joined
         assert "predicted distribution" not in joined
@@ -874,7 +875,7 @@ def test_positive_infinite_log_likelihood_raises(path, caplog):
 @pytest.mark.parametrize("path", ["viterbi", "viterbi_covariate"])
 def test_public_viterbi_warns_on_impossible_steps(path, caplog):
     """The jit-composable Viterbi passes warn about all-(-inf) steps, as the
-    filters do, with the Viterbi wording; the path itself is unchanged."""
+    filters do, with the Viterbi wording."""
     log_likes = np.array([[0.0, -1.0], [-np.inf, -np.inf], [0.0, -1.0]])
     with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
         _decode_with_log_likelihoods(path, log_likes)
@@ -1002,6 +1003,197 @@ class TestViterbiGlobalOptimum:
         greedy = tuple(int(s) for s in jnp.argmax(log_likelihoods, axis=1))
         assert greedy == (0, 1, 0)
         assert tuple(int(s) for s in path) == (0, 0, 0)
+
+
+def _simulate_place_cell_decoding(n_time: int) -> dict[str, np.ndarray]:
+    """A random-walk trajectory and the log likelihoods of 40 Poisson place cells.
+
+    60 position bins, a Gaussian random-walk transition with a 1.5-bin
+    standard deviation, 2 ms bins and a fixed seed.
+
+    Returns
+    -------
+    model : dict
+        ``time_edges`` (n_time + 1,), ``initial_distribution`` (n_bins,),
+        ``transition_matrix`` (n_bins, n_bins) and ``log_likelihoods``
+        (n_time, n_bins), all float64.
+    """
+    n_bins, n_cells, dt = 60, 40, 0.002
+    rng = np.random.default_rng(0)
+    bins = np.arange(n_bins)
+    transition = np.exp(-0.5 * ((bins[:, None] - bins[None, :]) / 1.5) ** 2)
+    transition /= transition.sum(axis=1, keepdims=True)
+
+    position = np.empty(n_time, dtype=int)
+    position[0] = n_bins // 2
+    cumulative = np.cumsum(transition, axis=1)
+    draws = rng.random(n_time)
+    for t in range(1, n_time):
+        position[t] = min(
+            np.searchsorted(cumulative[position[t - 1]], draws[t]), n_bins - 1
+        )
+    centers = rng.uniform(0, n_bins, n_cells)
+    rates = 0.5 + 15 * np.exp(-0.5 * ((bins[None] - centers[:, None]) / 4) ** 2)
+    counts = rng.poisson(rates[:, position].T * dt)  # (n_time, n_cells)
+    log_likelihoods = counts @ np.log(rates * dt) - (rates * dt).sum(axis=0)
+    return {
+        "time_edges": np.arange(n_time + 1) * dt,
+        "initial_distribution": np.full(n_bins, 1 / n_bins),
+        "transition_matrix": transition,
+        "log_likelihoods": log_likelihoods,
+    }
+
+
+@pytest.fixture
+def place_cell_decoding(request):
+    """:func:`_simulate_place_cell_decoding` for ``request.param`` time bins."""
+    return _simulate_place_cell_decoding(request.param)
+
+
+def _float32_and_float64_paths(model, covariate):
+    """Decode ``model`` with both dtypes through one Viterbi driver.
+
+    The covariate-dependent driver gets one discrete state with a constant
+    discrete transition, so its continuous transition is the model's.
+    """
+    common = {
+        "time_edges": model["time_edges"],
+        "initial_distribution": model["initial_distribution"],
+        "log_likelihood_func": None,
+        "log_likelihood_args": (),
+        "log_likelihoods": model["log_likelihoods"],
+    }
+    if covariate:
+        n_time, n_bins = model["log_likelihoods"].shape
+        common |= {
+            "state_ind": np.zeros(n_bins, dtype=int),
+            "discrete_transition_matrix": np.ones((n_time, 1, 1)),
+            "continuous_transition_matrix": model["transition_matrix"],
+        }
+        decode = most_likely_sequence_covariate_dependent
+    else:
+        common["transition_matrix"] = model["transition_matrix"]
+        decode = most_likely_sequence
+    with precision_mode(True):
+        return tuple(
+            decode(**common, dtype=dtype)[0] for dtype in (np.float32, np.float64)
+        )
+
+
+@pytest.mark.unit
+class TestViterbiFloat32Precision:
+    """The float32 path equals the float64 path however long the recording.
+
+    The best score of the remaining bins grows linearly with the number of
+    bins: about 4.8e5 nats at 200,000 bins, where float32 spacing is 0.03,
+    coarser than the transition and likelihood differences that choose
+    between neighbouring bins. Without re-centring, 12.8% of those bins
+    differed from the float64 path, 0.8% at 20,000 bins.
+    """
+
+    @pytest.mark.parametrize("place_cell_decoding", [2_000], indirect=True)
+    def test_short_recording_matches_float64(self, place_cell_decoding):
+        path32, path64 = _float32_and_float64_paths(place_cell_decoding, False)
+        np.testing.assert_array_equal(path32, path64)
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("place_cell_decoding", [200_000], indirect=True)
+    def test_long_recording_matches_float64(self, place_cell_decoding):
+        path32, path64 = _float32_and_float64_paths(place_cell_decoding, False)
+        np.testing.assert_array_equal(path32, path64)
+
+    @pytest.mark.parametrize("place_cell_decoding", [20_000], indirect=True)
+    def test_covariate_dependent_matches_float64(self, place_cell_decoding):
+        path32, path64 = _float32_and_float64_paths(place_cell_decoding, True)
+        np.testing.assert_array_equal(path32, path64)
+
+
+def _wandering_decoding(n_bins=20, n_time=400):
+    """A sinusoidal path over ``n_bins`` with sharp Gaussian likelihoods.
+
+    Returns ``(time_edges, initial, transition, log_likelihoods)``.
+    """
+    bins = np.arange(n_bins)
+    transition = np.exp(-0.5 * (bins[:, None] - bins[None, :]) ** 2)
+    transition /= transition.sum(axis=1, keepdims=True)
+    true = (10 + 6 * np.sin(np.arange(n_time) / 30)).round().astype(int)
+    log_likelihoods = -0.5 * (bins[None, :] - true[:, None]) ** 2 - 5.0
+    initial = np.full(n_bins, 1 / n_bins)
+    return np.arange(n_time + 1) * 0.002, initial, transition, log_likelihoods
+
+
+def _viterbi_path(time_edges, initial, transition, log_likelihoods, caplog):
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        path, _ = most_likely_sequence(
+            time_edges=time_edges,
+            initial_distribution=initial,
+            transition_matrix=transition,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likelihoods,
+        )
+    return path
+
+
+@pytest.mark.unit
+class TestViterbiImpossibleRow:
+    """A row no path can explain changes the path only near that row.
+
+    Its scores are ``-inf`` for every state, so before it was treated as
+    uninformative every earlier back-pointer was the argmax of a constant
+    and the path sat in bin 0 from the start of the recording to that row.
+    """
+
+    far_rows = np.r_[0:291, 310:400]
+
+    def _assert_local(self, log_likelihoods, transition, caplog):
+        time_edges, initial, _, _ = _wandering_decoding()
+        without_evidence = log_likelihoods.copy()
+        without_evidence[300] = 0.0
+        expected = _viterbi_path(
+            time_edges, initial, transition, without_evidence, caplog
+        )
+        caplog.clear()
+        path = _viterbi_path(time_edges, initial, transition, log_likelihoods, caplog)
+        assert np.mean(expected[:300] == 0) < 0.5
+        np.testing.assert_array_equal(path[self.far_rows], expected[self.far_rows])
+        return [r.getMessage() for r in caplog.records]
+
+    def test_all_impossible_row_is_local(self, caplog):
+        _, _, transition, log_likelihoods = _wandering_decoding()
+        log_likelihoods[300] = -np.inf
+        messages = self._assert_local(log_likelihoods, transition, caplog)
+        assert any(
+            "1/400 time step(s)" in m and "uninformative" in m for m in messages
+        ), messages
+
+    def test_row_finite_only_on_an_unreachable_bin_is_local(self, caplog):
+        """No transition enters bin 19, the one bin row 300 allows."""
+        _, _, transition, log_likelihoods = _wandering_decoding()
+        transition[:, 19] = 0.0
+        transition /= transition.sum(axis=1, keepdims=True)
+        log_likelihoods[300] = -np.inf
+        log_likelihoods[300, 19] = 0.0
+        messages = self._assert_local(log_likelihoods, transition, caplog)
+        assert any("1/400 time step(s)" in m and "reach" in m for m in messages), (
+            messages
+        )
+
+    def test_rows_no_path_joins_are_local(self, caplog):
+        """Rows 300 and 301 each allow one bin, 13 bins apart, and a step
+        moves at most 2 bins: no path explains both, and neither row is
+        all-impossible."""
+        _, _, transition, log_likelihoods = _wandering_decoding()
+        bins = np.arange(len(transition))
+        transition[np.abs(bins[:, None] - bins[None, :]) > 2] = 0.0
+        transition /= transition.sum(axis=1, keepdims=True)
+        log_likelihoods[300:302] = -np.inf
+        log_likelihoods[300, 19] = 0.0
+        log_likelihoods[301, 6] = 0.0
+        messages = self._assert_local(log_likelihoods, transition, caplog)
+        assert any("1/400 time step(s)" in m and "reach" in m for m in messages), (
+            messages
+        )
 
 
 @pytest.mark.unit

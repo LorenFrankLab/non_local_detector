@@ -349,10 +349,37 @@ _ALGO_LABEL = {"filter": "filtering", "viterbi": "Viterbi decoding"}
 _DEGENERATE_CONSEQUENCE = {
     "filter": "the posterior at those steps fell back to the predicted distribution",
     "viterbi": (
-        "the most likely state there is arbitrary (argmax over an all-(-inf) "
-        "column returns state 0)"
+        "those steps were treated as uninformative (log likelihood 0 in every "
+        "state), so the path there follows the transitions from its neighbours"
     ),
 }
+
+
+def _report_unreachable_viterbi_steps(n_unreachable: jax.Array, n_total: int) -> None:
+    """Log Viterbi steps whose allowed states no path could reach.
+
+    Skipped when ``n_unreachable`` is a tracer (the pass runs under a JAX
+    transformation), as the other diagnostics are.
+
+    Parameters
+    ----------
+    n_unreachable : jax.Array, shape ()
+        Steps at which no state could reach any state with a finite score
+        through the next row (the second output of :func:`_viterbi_scan`).
+    n_total : int
+        Total steps.
+    """
+    if _is_traced(n_unreachable):
+        return
+    n_unreachable_steps = int(n_unreachable)
+    if n_unreachable_steps > 0:
+        logger.warning(
+            "HMM Viterbi decoding encountered %d/%d time step(s) whose finite "
+            "log-likelihoods lie only on states no path can reach; those steps' "
+            "evidence was ignored and the path keeps its state across them.",
+            n_unreachable_steps,
+            n_total,
+        )
 
 
 def _report_degenerate_and_nan_timesteps(
@@ -1119,31 +1146,61 @@ def _viterbi_scan(
     Returns
     -------
     most_likely_state_sequence : jax.Array, shape (n_time,)
+    n_unreachable : jax.Array, shape ()
+        Number of steps at which no state could reach any state the next
+        row allows (see Notes).
 
     Notes
     -----
     Base case at t=T: terminal cost is 0, we accumulate from t=T-1 down.
+
+    The carried best score of the remaining rows is shifted to a maximum of
+    0 at every step. A constant shift leaves every argmax unchanged, and
+    without it the score grows with the number of rows until float32
+    rounding (0.03 nats at 200,000 rows) exceeds the differences that choose
+    between neighbouring bins.
+
+    A row whose log-likelihoods are all ``-inf`` is treated as uninformative
+    (all zero), as a filter falls back to the prediction there. Otherwise
+    every score before it would be ``-inf`` and the path would sit in state
+    0 from the first row to that one. A row finite only on states that no
+    state can reach from the previous row has the same effect without being
+    all ``-inf``; at such a step the previous score is carried through and
+    every state points to itself, so the row's evidence is ignored and the
+    path keeps its state across the step.
     """
     log_initial_distribution = _safe_log(initial_distribution)
+    impossible_rows = jnp.all(jnp.isneginf(log_likelihoods), axis=1, keepdims=True)
+    log_likelihoods = jnp.where(impossible_rows, 0.0, log_likelihoods)
+    num_timesteps, num_states = log_likelihoods.shape
+    all_states = jnp.arange(num_states)
 
     def _backward_step(
         best_next_score: jax.Array, args: tuple[jax.Array, Any]
-    ) -> tuple[jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
         t, log_weight = args
         scores = log_operator.scores(
             best_next_score, log_likelihoods[t + 1], log_weight
         )
         best_next_state = jnp.argmax(scores, axis=1)
-        best_next_score = jnp.max(scores, axis=1)
-        return best_next_score, best_next_state
+        # Read the maxima through the argmax: a separate max reduction stops
+        # being fused with the argmax once the shift below consumes it, and
+        # the scores are then computed twice (23% slower at 400 bins on CPU).
+        best_score = jnp.take_along_axis(
+            scores, best_next_state[:, None], axis=1
+        ).squeeze(axis=1)
+        peak = jnp.max(best_score)
+        unreachable = jnp.isneginf(peak)
+        best_next_state = jnp.where(unreachable, all_states, best_next_state)
+        best_score = jnp.where(unreachable, best_next_score, best_score - peak)
+        return best_score, (best_next_state, unreachable)
 
-    num_timesteps, num_states = log_likelihoods.shape
     # The terminal cost takes the scores' dtype. A default-dtype zeros carry
     # is float64 under x64, which promoted every step of a float32 scan.
     score_dtype = jnp.result_type(
         log_likelihoods, *jax.tree_util.tree_leaves((log_operator, log_weights))
     )
-    best_second_score, best_next_states = jax.lax.scan(
+    best_second_score, (best_next_states, unreachable_steps) = jax.lax.scan(
         _backward_step,
         jnp.zeros(num_states, dtype=score_dtype),
         (
@@ -1164,7 +1221,7 @@ def _viterbi_scan(
     )
     _, states = jax.lax.scan(_forward_step, first_state, best_next_states)
 
-    return jnp.concatenate([first_state[None], states])
+    return jnp.concatenate([first_state[None], states]), jnp.sum(unreachable_steps)
 
 
 def _filter_impl(
@@ -2928,7 +2985,7 @@ def _viterbi_impl(
     initial_distribution: ConcreteArray,
     transition_matrix: ConcreteArray,
     log_likelihoods: ConcreteArray,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
 
     Parameters
@@ -2943,6 +3000,9 @@ def _viterbi_impl(
     Returns
     -------
     most_likely_state_sequence : jax.Array, shape (n_time,)
+    n_unreachable : jax.Array, shape ()
+        Steps treated as uninformative by :func:`_viterbi_scan` because no
+        path reached the next row's allowed states.
 
     Notes
     -----
@@ -3001,10 +3061,14 @@ def viterbi(
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
 
-    As :func:`filter` does, a host-side ``logger.warning`` counts the time
-    steps whose log-likelihoods are all ``-inf`` (where the path's state is
-    arbitrary), and a NaN or ``+inf`` (where it is undefined) raises
-    ``DataError``, unless the inputs are traced. The path is unchanged.
+    A time step whose log-likelihoods are all ``-inf`` is treated as
+    uninformative (log likelihood 0 in every state), as :func:`filter`
+    falls back to the prediction there, so it changes the path only near
+    that step. A step finite only on states no path can reach is skipped:
+    its evidence is ignored and the path keeps its state across it. A
+    host-side ``logger.warning`` counts both kinds of step, and a NaN or
+    ``+inf`` (where the path is undefined) raises ``DataError``, unless the
+    inputs are traced.
     """
     if not _is_traced(initial_distribution, transition_matrix, log_likelihoods):
         _check_hmm_arrays(
@@ -3015,13 +3079,14 @@ def viterbi(
             initial_mass_loss=True,
         )
     log_likelihoods = jnp.asarray(log_likelihoods)
-    # As the filters do: argmax over an all-(-inf) step returns state 0
-    # silently, and a NaN or +inf step leaves the path undefined.
+    # As the filters do: an all-(-inf) step carries no evidence, and a NaN or
+    # +inf step leaves the path undefined.
     _report_degenerate_timesteps(log_likelihoods, context="viterbi")
-    return cast(
-        jax.Array,
-        _viterbi_jit(initial_distribution, transition_matrix, log_likelihoods),
+    states, n_unreachable = _viterbi_jit(
+        initial_distribution, transition_matrix, log_likelihoods
     )
+    _report_unreachable_viterbi_steps(n_unreachable, log_likelihoods.shape[0])
+    return cast(jax.Array, states)
 
 
 def most_likely_sequence(
@@ -3113,19 +3178,20 @@ def most_likely_sequence(
 
     # Warn if any time step is all-impossible (-inf) and raise if it contains
     # a NaN, so a Viterbi-only workflow gets the same diagnostics as the
-    # filter/smoother drivers. Note ``argmax`` over an all-``-inf`` column
-    # silently returns state 0, which this warning surfaces. context="viterbi"
-    # selects Viterbi-appropriate wording (no posterior / marginal here).
+    # filter/smoother drivers. The scan treats an all-``-inf`` step as
+    # uninformative, which this warning surfaces. context="viterbi" selects
+    # Viterbi-appropriate wording (no posterior / marginal here).
     _report_degenerate_timesteps(log_likelihoods_jax, context="viterbi")
 
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
-    most_likely_states = _viterbi_jit(
+    most_likely_states, n_unreachable = _viterbi_jit(
         initial_distribution=initial_distribution_jax,
         transition_matrix=transition_matrix_jax,
         log_likelihoods=log_likelihoods_jax,
     )
+    _report_unreachable_viterbi_steps(n_unreachable, log_likelihoods_jax.shape[0])
 
     # Return NumPy array for API consistency
     return np.asarray(most_likely_states), log_likelihoods
@@ -3637,7 +3703,7 @@ def _viterbi_covariate_dependent_impl(
     continuous_transition_matrix: ConcreteArray,
     state_ind: ConcreteArray,
     log_likelihoods: ConcreteArray,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     r"""Compute the most likely state sequence with covariate dependent transitions.
 
     Uses the Viterbi algorithm with time-varying transition matrices.
@@ -3659,6 +3725,9 @@ def _viterbi_covariate_dependent_impl(
     -------
     most_likely_state_sequence : jax.Array, shape (n_time,)
         Most likely state sequence.
+    n_unreachable : jax.Array, shape ()
+        Steps treated as uninformative by :func:`_viterbi_scan` because no
+        path reached the next row's allowed states.
 
     Notes
     -----
@@ -3729,8 +3798,8 @@ def viterbi_covariate_dependent(
     skipped so the pass stays composable with no host transfer; check such
     inputs before the transformation.
 
-    Degenerate and NaN or ``+inf`` time steps are reported as by
-    :func:`viterbi`.
+    Degenerate and unreachable steps are treated, and they and NaN or
+    ``+inf`` time steps are reported, as by :func:`viterbi`.
     """
     if not _is_traced(
         initial_distribution,
@@ -3750,16 +3819,15 @@ def viterbi_covariate_dependent(
         )
     log_likelihoods = jnp.asarray(log_likelihoods)
     _report_degenerate_timesteps(log_likelihoods, context="viterbi")
-    return cast(
-        jax.Array,
-        _viterbi_covariate_dependent_jit(
-            initial_distribution,
-            discrete_transition_matrix,
-            continuous_transition_matrix,
-            state_ind,
-            log_likelihoods,
-        ),
+    states, n_unreachable = _viterbi_covariate_dependent_jit(
+        initial_distribution,
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        log_likelihoods,
     )
+    _report_unreachable_viterbi_steps(n_unreachable, log_likelihoods.shape[0])
+    return cast(jax.Array, states)
 
 
 def most_likely_sequence_covariate_dependent(
@@ -3862,9 +3930,9 @@ def most_likely_sequence_covariate_dependent(
 
     # Warn if any time step is all-impossible (-inf) and raise if it contains
     # a NaN, so a Viterbi-only workflow gets the same diagnostics as the
-    # filter/smoother drivers. Note ``argmax`` over an all-``-inf`` column
-    # silently returns state 0, which this warning surfaces. context="viterbi"
-    # selects Viterbi-appropriate wording (no posterior / marginal here).
+    # filter/smoother drivers. The scan treats an all-``-inf`` step as
+    # uninformative, which this warning surfaces. context="viterbi" selects
+    # Viterbi-appropriate wording (no posterior / marginal here).
     _report_degenerate_timesteps(log_likelihoods_jax, context="viterbi")
 
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
@@ -3876,13 +3944,14 @@ def most_likely_sequence_covariate_dependent(
     )
     state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
 
-    most_likely_states = _viterbi_covariate_dependent_jit(
+    most_likely_states, n_unreachable = _viterbi_covariate_dependent_jit(
         initial_distribution=initial_distribution_jax,
         discrete_transition_matrix=discrete_transition_matrix_jax,
         continuous_transition_matrix=continuous_transition_matrix_jax,
         state_ind=state_ind_jax,
         log_likelihoods=log_likelihoods_jax,
     )
+    _report_unreachable_viterbi_steps(n_unreachable, log_likelihoods_jax.shape[0])
 
     # Return NumPy array for API consistency
     return np.asarray(most_likely_states), log_likelihoods
