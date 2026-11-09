@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Numerical fixes
+
+- **Fixed (changes results):** sorted-spike time rescaling (`TimeRescaling`, `uniform_rescaled_ISIs`) uses the discrete-time rescaling of Haslinger, Pipa & Brown (2010), so a correct model of binned spikes passes the KS test at any bin width. Each spike was placed at its bin's closing edge, which makes every interval too long: spikes drawn from the model itself at 2 ms bins and a 40 Hz peak gave KS 0.040 against a 95% band of 0.0096, and a uniform-transform mean of 0.517. With the correction they give 0.0066 and 0.502, and 93.5% of 200 independent datasets of 200 s fall inside the band. Spikes from a 40 Hz model tested against a 20 Hz model still fail (KS 0.23). A spike's place within its bin is drawn at random, so pass `rng` (a seed or `numpy.random.Generator`) to reproduce a KS statistic; `TimeRescaling` draws once, so its methods agree. With the correction, expected counts are each bin's own integrated intensity, not a trapezoid between neighbouring bins, and a count above one is a bin with a spike (the test stays exact for a Poisson model; the extra spikes are not used). The short-trial adjustment works with it. `discrete_time_correction=False` gives the previous transform.
+
 ### Test suite audit
 
 - **Breaking:** `fit_sorted_spikes_diffusion_encoding_model` and `fit_sorted_spikes_mrf_encoding_model` no longer return `interior_log_place_fields`, and their predict functions no longer accept it. Prediction only checked its length; the likelihood never read it. Detectors pickled or saved with `save_model` by earlier versions drop the key on load and decode identically. A direct predict call with an old encoding dict raises `TypeError`.

@@ -132,6 +132,7 @@ class TestTimeRescalingCorrectness:
             regular_spike_train["conditional_intensity"],
             regular_spike_train["is_spike"],
             adjust_for_short_trials=False,
+            discrete_time_correction=False,
         )
         u = tr.uniform_rescaled_ISIs()
 
@@ -139,6 +140,168 @@ class TestTimeRescalingCorrectness:
         # The first ISI is measured from t=0 to the first spike (also k bins),
         # so every entry equals ``expected``.
         np.testing.assert_allclose(u, expected, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Discrete-time correction: binned data drawn from the model itself
+# ---------------------------------------------------------------------------
+
+BIN_SIZE = 0.002  # seconds, a decoder bin
+N_BINS = 500_000  # 1000 s: ~20,000 spikes at a 40 Hz peak, KS band ~0.0095
+
+
+def _sinusoid_expected_counts(peak_rate: float) -> np.ndarray:
+    """Expected counts per 2 ms bin of a rate oscillating 1 to peak+1 Hz."""
+    centers = (np.arange(N_BINS) + 0.5) * BIN_SIZE
+    rate = 0.5 * peak_rate * (1 + np.sin(2 * np.pi * centers / 3.0)) + 1.0
+    return rate * BIN_SIZE
+
+
+def _spikes_from_model(expected_counts: np.ndarray, seed: int) -> np.ndarray:
+    """Whether each bin has a spike: probability ``1 - exp(-expected_counts)``."""
+    rng = np.random.default_rng(seed)
+    return rng.uniform(size=expected_counts.size) < -np.expm1(-expected_counts)
+
+
+def _ks_band(n_spikes: int) -> float:
+    return 1.36 / np.sqrt(n_spikes)
+
+
+@pytest.mark.unit
+class TestDiscreteTimeCorrection:
+    @pytest.mark.parametrize("peak_rate", [40.0, 10.0])
+    def test_correct_model_passes(self, peak_rate):
+        """Data drawn from the model pass at the decoder bin size.
+
+        Without the correction a 40 Hz peak at 2 ms bins gives KS ~0.04
+        against a band of ~0.0095: each spike is placed at its bin's closing
+        edge, so every interval is too long.
+        """
+        expected_counts = _sinusoid_expected_counts(peak_rate)
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+        check = TimeRescaling(expected_counts, is_spike, rng=1)
+        assert check.ks_statistic() < _ks_band(check.n_spikes)
+
+    def test_rapidly_varying_expected_counts_pass(self):
+        """Each bin's own expected count is its integrated intensity.
+
+        Counts alternating between 0.01 and 0.6 per bin: averaging adjacent
+        bins (a trapezoid between samples) would give KS ~0.24 here.
+        """
+        expected_counts = np.tile([0.01, 0.6], 100_000)
+        is_spike = _spikes_from_model(expected_counts, seed=2)
+        check = TimeRescaling(expected_counts, is_spike, rng=3)
+        assert check.ks_statistic() < _ks_band(check.n_spikes)
+
+    def test_irregular_time_edges_pass(self):
+        """With Hz rates and unequal bins, each bin's mass is rate * width."""
+        rng = np.random.default_rng(4)
+        widths = rng.uniform(0.001, 0.003, size=N_BINS)
+        edges = np.concatenate([[0.0], np.cumsum(widths)])
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        rate = 20.0 * (1 + np.sin(2 * np.pi * centers / 3.0)) + 1.0
+        is_spike = _spikes_from_model(rate * widths, seed=5)
+        check = TimeRescaling(rate, is_spike, rate_units="Hz", time_edges=edges, rng=6)
+        assert check.ks_statistic() < _ks_band(check.n_spikes)
+
+    def test_sample_times_pass(self):
+        """With Hz rates at sample times, a spike lies in the interval ending
+        at its sample, whose mass is the trapezoid over that interval.
+        """
+        time = np.arange(N_BINS) * BIN_SIZE
+        rate = 20.0 * (1 + np.sin(2 * np.pi * time / 3.0)) + 1.0
+        interval_mass = np.r_[0.0, 0.5 * (rate[1:] + rate[:-1]) * BIN_SIZE]
+        is_spike = _spikes_from_model(interval_mass, seed=13)
+        check = TimeRescaling(rate, is_spike, rate_units="Hz", time=time, rng=14)
+        assert check.ks_statistic() < _ks_band(check.n_spikes)
+
+    def test_wrong_model_still_fails(self):
+        """Data from a 40 Hz peak tested against a 20 Hz peak model fail."""
+        is_spike = _spikes_from_model(_sinusoid_expected_counts(40.0), seed=0)
+        check = TimeRescaling(_sinusoid_expected_counts(20.0), is_spike, rng=1)
+        assert check.ks_statistic() > _ks_band(check.n_spikes)
+
+    def test_uniform_transform_mean_is_one_half(self):
+        """The mean is within 3 standard errors of 0.5 (uncorrected: ~0.515)."""
+        expected_counts = _sinusoid_expected_counts(40.0)
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+        u = TimeRescaling(expected_counts, is_spike, rng=1).uniform_rescaled_ISIs()
+        standard_error = np.sqrt(1 / 12 / u.size)
+        assert abs(u.mean() - 0.5) < 3 * standard_error
+
+    def test_short_trial_adjustment_still_lands_in_band(self):
+        """2000 trials of 100 ms at 10 Hz: only the adjusted test passes."""
+        n_trials, n_bins_per_trial = 2000, 50
+        expected_counts = np.full(n_trials * n_bins_per_trial, 10.0 * BIN_SIZE)
+        is_spike = _spikes_from_model(expected_counts, seed=7)
+        trial_id = np.repeat(np.arange(n_trials), n_bins_per_trial)
+
+        def ks_ratio(adjust):
+            check = TimeRescaling(
+                expected_counts,
+                is_spike,
+                trial_id,
+                adjust_for_short_trials=adjust,
+                rng=8,
+            )
+            return check.ks_statistic() / _ks_band(check.n_spikes)
+
+        assert ks_ratio(adjust=True) < 1.0
+        assert ks_ratio(adjust=False) > 1.0
+
+    def test_poisson_counts_above_one_count_as_one_spike(self):
+        """A bin with several spikes is a bin with a spike.
+
+        The model gives a bin at least one spike with probability
+        ``1 - exp(-q)``, so the test stays exact for Poisson counts.
+        """
+        expected_counts = _sinusoid_expected_counts(40.0)
+        counts = np.random.default_rng(9).poisson(expected_counts)
+        assert np.any(counts > 1)
+        from_counts = TimeRescaling(expected_counts, counts, rng=10)
+        from_indicator = TimeRescaling(expected_counts, counts > 0, rng=10)
+        np.testing.assert_array_equal(
+            from_counts.uniform_rescaled_ISIs(), from_indicator.uniform_rescaled_ISIs()
+        )
+        assert from_counts.ks_statistic() < _ks_band(from_counts.n_spikes)
+
+    def test_seed_determines_result(self):
+        expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+
+        def rescaled(seed):
+            return TimeRescaling(
+                expected_counts, is_spike, rng=seed
+            ).uniform_rescaled_ISIs()
+
+        np.testing.assert_array_equal(rescaled(1), rescaled(1))
+        assert not np.array_equal(rescaled(1), rescaled(2))
+
+    def test_methods_of_one_object_agree_without_a_seed(self):
+        """Within-bin draws are made once, so the KS plot shows ks_statistic."""
+        expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+        check = TimeRescaling(expected_counts, is_spike)
+        u = check.uniform_rescaled_ISIs()
+        np.testing.assert_array_equal(u, check.uniform_rescaled_ISIs())
+        assert check.ks_statistic() == ks_statistic(
+            np.sort(u), (np.arange(u.size) + 0.5) / u.size
+        )
+
+    def test_interval_lies_within_its_spike_bin(self):
+        """Constant count c, spikes every k bins: each interval is in
+        ``[(k - 1) c, k c]``, the first from time zero in ``[k c, (k + 1) c]``.
+        """
+        n_time, c, k = 100, 0.2, 10
+        is_spike = np.zeros(n_time, dtype=bool)
+        is_spike[k::k] = True
+        u = uniform_rescaled_ISIs(
+            np.full(n_time, c), is_spike, adjust_for_short_trials=False, rng=12
+        )
+        isi = -np.log1p(-u)
+        lower = np.r_[k * c, np.full(u.size - 1, (k - 1) * c)]
+        assert np.all(isi >= lower - 1e-12)
+        assert np.all(isi <= lower + c + 1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +322,10 @@ class TestShortTrialCorrection:
         is_spike = regular_spike_train["is_spike"]
 
         u_plain = TimeRescaling(
-            ci, is_spike, adjust_for_short_trials=False
+            ci, is_spike, adjust_for_short_trials=False, rng=0
         ).uniform_rescaled_ISIs()
         u_adjusted = TimeRescaling(
-            ci, is_spike, adjust_for_short_trials=True
+            ci, is_spike, adjust_for_short_trials=True, rng=0
         ).uniform_rescaled_ISIs()
 
         assert np.all(u_adjusted >= u_plain - 1e-12)
@@ -175,9 +338,11 @@ class TestShortTrialCorrection:
         ci = regular_spike_train["conditional_intensity"]
         is_spike = regular_spike_train["is_spike"]
 
-        from_func = uniform_rescaled_ISIs(ci, is_spike, adjust_for_short_trials=True)
+        from_func = uniform_rescaled_ISIs(
+            ci, is_spike, adjust_for_short_trials=True, rng=0
+        )
         from_class = TimeRescaling(
-            ci, is_spike, adjust_for_short_trials=True
+            ci, is_spike, adjust_for_short_trials=True, rng=0
         ).uniform_rescaled_ISIs()
 
         np.testing.assert_allclose(from_func, from_class, rtol=1e-12)
@@ -205,7 +370,11 @@ class TestTrialGrouping:
         trial_id = np.array([0] * 10 + [1] * 10)
 
         tr = TimeRescaling(
-            ci, is_spike, trial_id=trial_id, adjust_for_short_trials=False
+            ci,
+            is_spike,
+            trial_id=trial_id,
+            adjust_for_short_trials=False,
+            discrete_time_correction=False,
         )
         u = tr.uniform_rescaled_ISIs()
         np.testing.assert_allclose(u, -np.expm1(-np.array([1.5, 2.0, 1.5, 2.0])))

@@ -370,6 +370,7 @@ def time_rescaling(fields_at_test_position):
             test_spike_counts[:, cell] > 0,
             rate_units="Hz",
             time_edges=test_edges,
+            rng=0,
         )
         for cell in range(n_cells)
     ]
@@ -415,9 +416,10 @@ for ax, (name, checks) in zip(axes, rescaled.items(), strict=True):
 # silent and too few where it fires.
 #
 # Across all cells, about 5% should fail by chance even under the true
-# model. With `time_edges`, `TimeRescaling` places each spike at the end of
-# its 2 ms bin; the true rates show that this approximation does not distort
-# the test here.
+# model. A binned spike has no exact time within its 2 ms bin, so
+# `TimeRescaling` draws one from the model (the discrete-time rescaling of
+# Haslinger, Pipa & Brown, 2010); a correct model then passes at any bin
+# width. The draw is random, so `rng` fixes it.
 
 # %%
 for algorithm in sorted_algorithms[1:]:

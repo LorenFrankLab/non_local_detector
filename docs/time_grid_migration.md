@@ -274,10 +274,12 @@ residuals = point_process_residuals(
 )
 ```
 
-With `time_edges`, rates are piecewise constant within bins and spike indicators
-are assigned to closing edges. This is a binned approximation; it does not
-recover within-bin event times. Alternatively, `time=sample_time` integrates
-sampled Hz rates by trapezoids and locates indicators at those sample times.
+With `time_edges`, rates are piecewise constant within bins. A binned spike has
+no exact time within its bin, so `TimeRescaling` draws one from the model's
+conditional distribution (the discrete-time rescaling of Haslinger, Pipa & Brown,
+2010; pass `rng` to reproduce it). Alternatively, `time=sample_time` integrates
+sampled Hz rates by trapezoids; a spike at a sample lies in the interval that
+ends there.
 Supply exactly one physical grid. Independent trials are integrated separately.
 
 Clusterless `interval_rescaling_transform` now defaults to `rate_units="Hz"`
