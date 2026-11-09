@@ -166,7 +166,17 @@ def _spline_inner_knots(
     place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
         Place-bin edges; the knot grid spans their range in each dimension.
     knot_spacing : float
-        Target spacing between knots, in position units.
+        Requested spacing between knots, in position units. In each varying
+        dimension the knots split the extent of ``place_bin_edges`` into
+        ``ceil(extent / knot_spacing) - 1`` equal intervals, so the realised
+        spacing is ``extent / (ceil(extent / knot_spacing) - 1)``, larger than
+        the request: for a 7.07 cm request, 10.5 cm at a 21 cm extent and
+        7.14 cm at 100 cm. When no knot falls strictly inside the range of
+        ``position`` (always for an extent of at most twice the request), the
+        dimension gets one knot at the midpoint of that range. The track-graph
+        basis (``make_track_graph_basis``) instead splits each branch of
+        length ``L`` into ``ceil(L / knot_spacing)`` intervals, so its spacing
+        is at most the request.
 
     Returns
     -------
@@ -236,8 +246,9 @@ def make_spline_design_matrix(
         Place-bin edge coordinates (``Environment.place_bin_edges_``); only
         each dimension's extent is used, to place the knots.
     knot_spacing : float, optional
-        Spacing of spline knots, in coordinate units, by default
-        ``2 * sqrt(12.5)``.
+        Requested spacing of spline knots, in coordinate units, by default
+        ``2 * sqrt(12.5)``. The knots usually end up farther apart than this;
+        see ``fit_sorted_spikes_glm_encoding_model`` for the rule.
 
     Returns
     -------
@@ -1521,9 +1532,16 @@ def fit_sorted_spikes_glm_encoding_model(
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
     emission_knot_spacing : float, optional
-        Spacing of the spline knots in position units, by default
-        ``sqrt(12.5) * 2`` (about 7.07). On a track graph, the largest knot
-        spacing along each branch of the track.
+        Requested spacing of the spline knots in position units, by default
+        ``sqrt(12.5) * 2`` (about 7.07). Without a track graph, the knots split
+        each varying dimension's place-bin-edge extent into
+        ``ceil(extent / emission_knot_spacing) - 1`` equal intervals, so they
+        end up farther apart than requested: at the default, 10.5 apart over a
+        21-unit extent and 7.14 apart over 100 units. An extent of at most
+        twice the spacing gets a single knot at its midpoint. On a track
+        graph, each branch of length ``L`` is split into
+        ``ceil(L / emission_knot_spacing)`` equal intervals (at least three on
+        a closed loop), so the spacing along a branch is at most the request.
     l2_penalty : float, optional
         Penalty on the sum of squared spline (non-intercept) coefficients, in
         nats against the total log likelihood: a ``Normal(0, 1 / (2 *

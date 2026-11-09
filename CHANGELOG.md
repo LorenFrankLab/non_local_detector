@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Numerical fixes
 
+- **Documented:** without a track graph, the `sorted_spikes_glm` and `clusterless_mark_glm` spline knots are spaced `extent / (ceil(extent / emission_knot_spacing) - 1)` apart, more than requested once the extent exceeds twice the spacing (10.5 over a 21-unit extent and 7.14 over 100 units at the default 7.07; a shorter extent gets one midpoint knot), while the track-graph basis is at most the request. Results are unchanged.
 - **Fixed:** the error raised when a saved GLM's rebuilt spline basis no longer matches the fitted one now names a change in this package's basis code, as well as a NumPy or patsy upgrade, as a possible cause, and suggests decoding with the versions that fitted the model as an alternative to a refit.
 
 ### Test suite audit
