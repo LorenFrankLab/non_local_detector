@@ -274,7 +274,18 @@ def sample_posterior(
     -------
     posterior_samples : np.ndarray, shape (n_time, n_samples)
         Random samples drawn from the posterior distribution at each time point.
-        Each row contains samples for one time point.
+        Each row contains samples for one time point; all NaN for a time point
+        with no posterior mass.
+
+    Notes
+    -----
+    NaN bins, such as bins off the track, hold no mass.
+
+    A 2-D posterior (a DataArray with ``x_position`` and ``y_position``
+    dimensions) is flattened to one axis of ``n_x_bins * n_y_bins`` bins, and
+    ``place_bin_edges`` must then have one more element than that axis: the
+    samples are positions along the flattened axis, not ``(x, y)``
+    coordinates.
     """
     # Stack 2D positions into one dimension
     try:
@@ -285,16 +296,19 @@ def sample_posterior(
         posterior = np.asarray(posterior)
 
     place_bin_edges = place_bin_edges.squeeze()
-    n_time = posterior.shape[0]
+    posterior = np.where(np.isnan(posterior), 0.0, posterior)
+    has_mass = posterior.sum(axis=1) > 0
     # One generator for every time point: reseeding each draw with the same int
     # would give every time point the same uniform variates.
     rng = np.random.default_rng(rng)
 
     posterior_samples = [
-        rv_histogram((posterior[time_ind], place_bin_edges), density=False).rvs(
+        rv_histogram((probability, place_bin_edges), density=False).rvs(
             size=n_samples, random_state=rng
         )
-        for time_ind in range(n_time)
+        if row_has_mass
+        else np.full(n_samples, np.nan)
+        for probability, row_has_mass in zip(posterior, has_mass, strict=True)
     ]
 
     return np.asarray(posterior_samples)
