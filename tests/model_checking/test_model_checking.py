@@ -154,7 +154,9 @@ class TestGetHPDSpatialCoverage:
             dims=["time", "position"],
             coords={"position": [0.0, 1.0]},
         )
-        threshold = get_highest_posterior_threshold(posterior, coverage=0.75)
+        threshold = get_highest_posterior_threshold(
+            posterior, coverage=0.75, bin_width=bin_width
+        )
 
         coverage = get_HPD_spatial_coverage(posterior, threshold, bin_width)
 
@@ -357,13 +359,17 @@ class TestGetHPDSpatialCoverage:
         posterior = xr.DataArray(
             probs, dims=["time", "position"], coords={"position": centers}
         )
-        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+        threshold = get_highest_posterior_threshold(
+            posterior, coverage=0.95, bin_width=bin_width
+        )
 
         exact = get_HPD_spatial_coverage(posterior, threshold, bin_width=bin_width)
         np.testing.assert_allclose(exact, bin_width[hpd_bins].sum(), atol=1e-9)
 
         # The uniform default differs because the HPD spans two bin widths.
-        uniform = get_HPD_spatial_coverage(posterior, threshold)
+        uniform = get_HPD_spatial_coverage(
+            posterior, get_highest_posterior_threshold(posterior, coverage=0.95)
+        )
         assert not np.isclose(exact[0], uniform[0])
 
     def test_hpd_spatial_coverage_bin_width_rejects_multidim(self):
@@ -423,6 +429,86 @@ class TestGetHPDSpatialCoverage:
             get_HPD_spatial_coverage(
                 posterior, threshold, bin_width=np.array([1.0, 1.0, 1.0])
             )
+
+
+def _two_arm_posterior(within_arm_slope):
+    """50 bins of 2 cm at density d and 50 of 1 cm at density 1.5 d.
+
+    ``within_arm_slope`` lowers each arm's density along the arm by that
+    fraction per bin; zero leaves every bin of an arm tied.
+    """
+    widths = np.concatenate([np.full(50, 2.0), np.full(50, 1.0)])
+    edges = np.concatenate([[0.0], np.cumsum(widths)])
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    along_arm = 1 - within_arm_slope * np.tile(np.arange(50), 2)
+    density = np.repeat([1.0, 1.5], 50) * along_arm
+    mass = density * widths / np.sum(density * widths)
+    posterior = xr.DataArray(
+        mass[None], dims=("time", "position"), coords={"position": centers}
+    )
+    return posterior, widths
+
+
+@pytest.mark.unit
+class TestHPDUnequalBinWidths:
+    """With bin widths, the HPD region holds the highest-density bins."""
+
+    def test_region_has_smallest_width_for_its_coverage(self):
+        """Half the mass: all of the narrow, dense arm and 7 wide bins.
+
+        The dense arm holds 75/175 of the mass in 50 cm; 7 more 2 cm bins
+        reach half, 64 cm in all. Ranking bins by mass instead takes the
+        wide arm first: 100 cm, none of the dense arm.
+        """
+        posterior, widths = _two_arm_posterior(within_arm_slope=1e-4)
+        threshold = get_highest_posterior_threshold(
+            posterior, coverage=0.5, bin_width=widths
+        )
+        region_width = get_HPD_spatial_coverage(posterior, threshold, bin_width=widths)
+        in_region = (posterior / widths >= threshold[:, None]).values[0]
+
+        assert in_region[50:].all()
+        assert abs(region_width[0] - 64.0) <= 2.0
+        assert posterior.values[0, in_region].sum() >= 0.5
+
+    def test_tied_low_density_arm_enters_whole(self):
+        """Bins of equal density are all in or all out, as with equal widths.
+
+        With every 2 cm bin at the same density, the dense arm alone (3/7 of
+        the mass) falls short of half, so the region is the whole track.
+        """
+        posterior, widths = _two_arm_posterior(within_arm_slope=0.0)
+        threshold = get_highest_posterior_threshold(
+            posterior, coverage=0.5, bin_width=widths
+        )
+        np.testing.assert_allclose(
+            get_HPD_spatial_coverage(posterior, threshold, bin_width=widths), 150.0
+        )
+
+    def test_equal_widths_give_the_same_region_as_no_widths(self):
+        rng = np.random.default_rng(0)
+        positions = np.arange(0.0, 40.0, 2.0)
+        posterior = xr.DataArray(
+            rng.dirichlet(np.ones(20), size=5),
+            dims=("time", "position"),
+            coords={"position": positions},
+        )
+        widths = np.full(20, 2.0)
+        without = get_HPD_spatial_coverage(
+            posterior, get_highest_posterior_threshold(posterior, coverage=0.8)
+        )
+        with_widths = get_HPD_spatial_coverage(
+            posterior,
+            get_highest_posterior_threshold(posterior, coverage=0.8, bin_width=widths),
+            bin_width=widths,
+        )
+        np.testing.assert_allclose(with_widths, without)
+
+    def test_rejects_nonpositive_widths(self):
+        posterior, widths = _two_arm_posterior(within_arm_slope=0.0)
+        widths[3] = 0.0
+        with pytest.raises(ValueError, match="positive"):
+            get_highest_posterior_threshold(posterior, bin_width=widths)
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +639,23 @@ class TestPosteriorConsistencyHPDOverlap:
 
         np.testing.assert_allclose(overlap, [1.0 / 3.0])
         np.testing.assert_allclose(swapped, [1.0 / 3.0])
+
+    def test_bin_width_measures_overlap_in_width(self):
+        """With widths [1, 1, 4], A = {0, 2} and B = {1, 2} share 4 of 5 cm.
+
+        Counting bins gives 1 of 2.
+        """
+        p = np.array([[0.3, 0.0, 0.7]])
+        q = np.array([[0.0, 0.3, 0.7]])
+        widths = np.array([1.0, 1.0, 4.0])
+
+        np.testing.assert_allclose(
+            posterior_consistency_hpd_overlap(p, q, coverage=0.95, bin_width=widths),
+            [0.8],
+        )
+        np.testing.assert_allclose(
+            posterior_consistency_hpd_overlap(p, q, coverage=0.95), [0.5]
+        )
 
     def test_overlap_in_unit_range(self):
         """Overlap should be in [0, 1]."""

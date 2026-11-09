@@ -85,7 +85,10 @@ def posterior_consistency_kl_divergence(
 
 
 def posterior_consistency_hpd_overlap(
-    posterior: np.ndarray, likelihood: np.ndarray, coverage: float = 0.95
+    posterior: np.ndarray,
+    likelihood: np.ndarray,
+    coverage: float = 0.95,
+    bin_width: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute overlap between HPD regions of posterior and likelihood distributions.
 
@@ -105,6 +108,10 @@ def posterior_consistency_hpd_overlap(
     coverage : float, optional
         Coverage probability for the HPD regions. Must be between 0 and 1.
         Default is 0.95 for 95% HPD regions.
+    bin_width : np.ndarray, shape (n_position_bins,), optional
+        Width of each position bin, when the widths differ. The HPD regions
+        then hold the highest-density bins, and their sizes and intersection
+        are total widths. Without it each bin counts once.
 
     Returns
     -------
@@ -117,7 +124,8 @@ def posterior_consistency_hpd_overlap(
     -----
     The overlap is computed as the intersection of the HPD regions divided
     by the minimum of the two HPD region sizes to normalize for different
-    region sizes.
+    region sizes. Sizes are numbers of bins, or total widths with
+    `bin_width`.
 
     This is the containment coefficient ``|A∩B| / min(|A|, |B|)``, bounded in
     ``[0, 1]`` but asymmetric in a specific sense: if ``A ⊆ B``, the coefficient
@@ -130,22 +138,39 @@ def posterior_consistency_hpd_overlap(
     likelihood = np.asarray(likelihood)
     _validate_consistency_inputs(posterior, likelihood)
 
-    posterior_threshold = get_highest_posterior_threshold(posterior, coverage=coverage)
+    posterior_threshold = get_highest_posterior_threshold(
+        posterior, coverage=coverage, bin_width=bin_width
+    )
     likelihood_threshold = get_highest_posterior_threshold(
-        likelihood, coverage=coverage
+        likelihood, coverage=coverage, bin_width=bin_width
     )
-    isin_posterior_hpd = posterior >= posterior_threshold[:, None]
-    isin_likelihood_hpd = likelihood >= likelihood_threshold[:, None]
+    if bin_width is None:
+        isin_posterior_hpd = posterior >= posterior_threshold[:, None]
+        isin_likelihood_hpd = likelihood >= likelihood_threshold[:, None]
 
-    denom = np.min(
-        np.stack(
-            (isin_posterior_hpd.sum(axis=1), isin_likelihood_hpd.sum(axis=1)), axis=1
-        ),
-        axis=1,
+        denom = np.min(
+            np.stack(
+                (isin_posterior_hpd.sum(axis=1), isin_likelihood_hpd.sum(axis=1)),
+                axis=1,
+            ),
+            axis=1,
+        )
+        # Avoid division by zero
+        denom = np.clip(denom, 1, None)
+
+        return cast(
+            np.ndarray, (isin_posterior_hpd & isin_likelihood_hpd).sum(axis=1) / denom
+        )
+
+    width = np.asarray(bin_width, dtype=float)
+    isin_posterior_hpd = posterior / width >= posterior_threshold[:, None]
+    isin_likelihood_hpd = likelihood / width >= likelihood_threshold[:, None]
+    smaller = np.minimum(
+        (isin_posterior_hpd * width).sum(axis=1),
+        (isin_likelihood_hpd * width).sum(axis=1),
     )
-    # Avoid division by zero
-    denom = np.clip(denom, 1, None)
-
-    return cast(
-        np.ndarray, (isin_posterior_hpd & isin_likelihood_hpd).sum(axis=1) / denom
+    intersection = ((isin_posterior_hpd & isin_likelihood_hpd) * width).sum(axis=1)
+    # An empty region (a row without mass) has no overlap.
+    return np.divide(
+        intersection, smaller, out=np.zeros_like(intersection), where=smaller > 0
     )
