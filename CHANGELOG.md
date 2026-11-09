@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Numerical fixes
+
+- **Fixed:** the warning that `estimate_parameters` did not converge, after fewer than two iterations (`max_iter=0` or `1`), reported a penalized log-likelihood change of `inf` per time bin and suggested relaxing `tolerance`. No change is computed until the second iteration, so it now says that and that judging convergence needs `max_iter` of at least 2. Results do not change.
+
 ### Test suite audit
 
 - **Breaking:** `fit_sorted_spikes_diffusion_encoding_model` and `fit_sorted_spikes_mrf_encoding_model` no longer return `interior_log_place_fields`, and their predict functions no longer accept it. Prediction only checked its length; the likelihood never read it. Detectors pickled or saved with `save_model` by earlier versions drop the key on load and decode identically. A direct predict call with an old encoding dict raises `TypeError`.
