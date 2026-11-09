@@ -122,7 +122,7 @@ def test_optional_empty_electrode() -> None:
     """A silent electrode yields times of shape (0,) and features of shape (0, 4)."""
     # A 20 ms recording on a 1 cm track with one neuron per tetrode (peak rate
     # 100 Hz): only the field at 0 cm is on the track, so the other electrodes
-    # are nearly silent; seed 3 gives spike counts [1, 0, 0, 0].
+    # are nearly silent; seed 3 gives spike counts [2, 0, 0, 0].
     sim = make_simulated_run_data(
         n_tetrodes=4,
         place_field_means=np.array([0.0, 10.0, 20.0, 30.0]),
@@ -423,3 +423,66 @@ def test_nan_position_leaves_other_rates_finite() -> None:
     ):
         assert np.all(np.isfinite(rate[finite]))
         assert np.isnan(rate[10])
+
+
+def test_multiunit_spike_probability_and_neuron_choice_are_unbiased() -> None:
+    """Each sample spikes with probability ``sum(rate) / fs``, split by rate.
+
+    Two neurons with fields at the animal's position fire at 100 Hz each,
+    sampled at 1 kHz: a sample spikes with probability 0.2 and each neuron
+    owns half of the spikes. Neuron identity is read from the mark cluster
+    (centers 0 and 5, unit variance, four dimensions).
+    """
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    n_time, sampling_frequency, max_rate = 200_000, 1000, 100.0
+    marks = simulate_multiunit_with_place_fields(
+        np.zeros((2, 1)),
+        np.zeros((n_time, 1)),
+        max_rate=max_rate,
+        sampling_frequency=sampling_frequency,
+        rng=np.random.default_rng(0),
+    )
+
+    has_spike = ~np.isnan(marks[:, 0])
+    p_spike = 2 * max_rate / sampling_frequency
+    expected = n_time * p_spike
+    standard_error = np.sqrt(n_time * p_spike * (1 - p_spike))
+    assert abs(has_spike.sum() - expected) < 3 * standard_error, has_spike.sum()
+
+    from_second = marks[has_spike].mean(axis=1) > 2.5
+    fraction_standard_error = np.sqrt(0.25 / has_spike.sum())
+    assert abs(from_second.mean() - 0.5) < 3 * fraction_standard_error, (
+        from_second.mean()
+    )
+
+
+def test_multiunit_has_no_spike_at_a_nan_position() -> None:
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    position = np.zeros((1000, 1))
+    position[::2] = np.nan
+    marks = simulate_multiunit_with_place_fields(
+        np.zeros((2, 1)),
+        position,
+        max_rate=400.0,
+        sampling_frequency=1000,
+        rng=np.random.default_rng(0),
+    )
+
+    assert np.all(np.isnan(marks[::2]))
+    assert np.any(~np.isnan(marks[1::2, 0]))
+
+
+def test_multiunit_refuses_more_than_one_expected_spike_per_sample() -> None:
+    """One mark row per sample cannot hold a total rate above the sampling rate."""
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    with pytest.raises(ValueError, match="sampling_frequency"):
+        simulate_multiunit_with_place_fields(
+            np.zeros((2, 1)),
+            np.zeros((10, 1)),
+            max_rate=600.0,
+            sampling_frequency=1000,
+            rng=np.random.default_rng(0),
+        )
