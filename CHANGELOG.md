@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fixed:** the warning that `estimate_parameters` did not converge, after fewer than two iterations (`max_iter=0` or `1`), reported a penalized log-likelihood change of `inf` per time bin and suggested relaxing `tolerance`. No change is computed until the second iteration, so it now says that and that judging convergence needs `max_iter` of at least 2. Results do not change.
 - **Fixed:** indexing a `LazyDenseTransition` (a structured detector's `continuous_state_transitions_`) with a slice for the rows and an integer array of two or more dimensions for the columns returned the wrong shape and entries: `lazy[2:4, [[0], [1]]]` had shape `(1, 2, 1)` instead of NumPy's `(2, 2, 1)`. It now returns what the same index returns on the dense matrix. Other index forms already did. Decoding never indexes it this way, so results do not change.
+- **Fixed (documentation):** `DiscreteNonStationaryDiagonal`'s docstring said its off-diagonal probabilities stay uniform. Only the initial matrix has them equal: the M-step fits every entry of each row, as `DiscreteNonStationaryCustom` does (a row fitted to responses that leave state 0 mostly for state 1 was `[0.903, 0.083, 0.014]`). The model is unchanged.
 
 ### Test suite audit
 
