@@ -4,7 +4,10 @@ Clusterless decoding using Gaussian Mixture Models (GMM).
 Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
 p_occ(pos)`` and the ground process is ``rate * p_joint(pos) / p_occ(pos)``,
 where ``p_joint(pos)`` is the analytical position marginal of the same joint
-GMM. Both are formed in log space. Each spike's intensity is combined with the
+GMM. Both are formed in log space. Where the occupancy density is below
+``FIELD_RESOLUTION`` of its maximum over the interior bins, the occupancy
+mixture does not resolve the position and both are zero, as for the diffusion
+likelihoods' unvisited bins. Each spike's intensity is combined with the
 electrode's background ``RATE_EPS_HZ * q(mark)`` by ``logaddexp`` (``q`` is the
 electrode's reference mark density, see ``mark_reference``), and each
 electrode's expected count gains ``RATE_EPS_HZ``.
@@ -16,7 +19,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import jax
 import jax.numpy as jnp
@@ -68,6 +71,7 @@ from non_local_detector.likelihoods.common import (
     validate_spike_feature_pair,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.diffusion import FIELD_RESOLUTION
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.gmm import (
     CovType,
@@ -283,6 +287,7 @@ def _add_electrode_gmm_spike_terms(
     row_ids: jax.Array,
     joint: tuple[jax.Array, ...],
     occupancy: tuple[jax.Array, ...],
+    log_occupancy_threshold: jax.Array,
     mean_rate: jax.Array,
     log_background: jax.Array,
     *,
@@ -304,6 +309,9 @@ def _add_electrode_gmm_spike_terms(
         Local rows; padding uses ``n_rows``, which the row sum drops.
     joint, occupancy : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of each GMM.
+    log_occupancy_threshold : jax.Array, scalar
+        Log occupancy density below which a spike position is unresolved and
+        the spike scores its background alone (see ``_place_log_occupancy``).
     mean_rate : jax.Array, scalar
         Electrode's mean rate.
     log_background : jax.Array, shape (n_padded_spikes,)
@@ -322,7 +330,10 @@ def _add_electrode_gmm_spike_terms(
     joint_logp = _gmm_score(
         jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
     )
-    occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
+    occupancy_logp = _place_log_occupancy(
+        _gmm_score(spike_positions, occupancy, occupancy_type),
+        log_occupancy_threshold,
+    )
     # Density difference first (see _accumulate_log_likelihood_block).
     terms = jnp.logaddexp(
         log_nonnegative(mean_rate) + (joint_logp - occupancy_logp),
@@ -360,7 +371,8 @@ def _add_gmm_expected_counts(
     positions : jax.Array, shape (n_rows, n_position_dims)
         Animal position at each row.
     log_occupancy : jax.Array, shape (n_rows,)
-        Log occupancy density at ``positions``.
+        Log occupancy density at ``positions``, ``+inf`` where it is unresolved
+        (``_place_log_occupancy``).
     mean_rate : jax.Array, scalar
         Electrode's mean rate.
     gpi_type : {"full", "tied", "diag", "spherical"}
@@ -387,7 +399,8 @@ def _ground_process_intensity(
     gpi_logp : jax.Array, shape (n_points,)
         Log density of the electrode's spike positions at the evaluation points.
     log_occupancy : jax.Array, shape (n_points,)
-        Log occupancy density at the same points.
+        Log occupancy density at the same points, ``+inf`` where it is
+        unresolved (``_place_log_occupancy``), which gives zero intensity.
 
     Returns
     -------
@@ -397,14 +410,68 @@ def _ground_process_intensity(
         underflow (``exp(-800) / exp(-790)`` is ``0 / 0`` in float32; the
         ratio is ``e^-10``), and a representable product such as
         ``1e-15 * exp(95)`` whose separate ``exp`` overflows. A NaN in either
-        density propagates; a ratio beyond the dtype's range overflows to
-        ``inf`` (a ``-inf`` log likelihood) rather than being substituted.
-        Both the fit-time bin intensities and the local expected counts use
-        this function.
+        density propagates. At resolved points the occupancy is at least
+        ``FIELD_RESOLUTION`` of its maximum, which bounds the ratio; the
+        diverging tails beyond the encoding data are unresolved and give
+        zero. Both the fit-time bin intensities and the local expected counts
+        use this function.
     """
     # Difference first: two nearly equal large log densities subtract exactly,
     # whereas adding log(rate) to one of them first rounds at their magnitude.
     return jnp.exp(jnp.log(mean_rate) + (gpi_logp - log_occupancy))
+
+
+def _place_log_occupancy(
+    log_occupancy: jax.Array, log_occupancy_threshold: jax.Array | float
+) -> jax.Array:
+    """Log occupancy for the place ratios, ``+inf`` where it is unresolved.
+
+    Below ``log_occupancy_threshold`` the occupancy mixture does not resolve
+    the position: the spike-position and occupancy mixtures are tails of
+    different Gaussians there, and their ratio is not a rate. The place
+    intensity is then zero, so a spike there is scored by its background
+    alone. An infinite log occupancy gives exactly that in every use:
+    ``exp(gpi_logp - inf) = 0``, and ``log_rate + (joint_logp - inf) = -inf``,
+    which ``logaddexp`` with the background leaves as the background.
+
+    Parameters
+    ----------
+    log_occupancy : jax.Array, shape (n_points,)
+        Log occupancy density at the evaluation points.
+    log_occupancy_threshold : jax.Array or float, scalar
+        The fit's ``log_occupancy_threshold``; ``-inf`` (an encoding model
+        stored without one) leaves every point resolved.
+
+    Returns
+    -------
+    place_log_occupancy : jax.Array, shape (n_points,)
+        ``log_occupancy``, or ``+inf`` where it is below the threshold. A NaN
+        stays NaN.
+    """
+    return jnp.where(log_occupancy < log_occupancy_threshold, jnp.inf, log_occupancy)
+
+
+def _log_occupancy_threshold(log_occupancy: jax.Array) -> float:
+    """Log occupancy density below which a position is unresolved.
+
+    ``FIELD_RESOLUTION`` of the maximum over the interior bins, the rule the
+    diffusion likelihoods apply to their diffused occupancy
+    (``resolved_occupancy``).
+
+    Parameters
+    ----------
+    log_occupancy : jax.Array, shape (n_interior_bins,)
+        Log occupancy density at the interior bin centers.
+
+    Returns
+    -------
+    log_occupancy_threshold : float
+        Formed in ``log_occupancy``'s dtype, so comparisons in that dtype and
+        in float64 (model checking) classify every point alike.
+    """
+    log_occupancy = jnp.asarray(log_occupancy)
+    log_floor = jnp.asarray(np.log(FIELD_RESOLUTION), dtype=log_occupancy.dtype)
+    return float(jnp.max(log_occupancy) + log_floor)
 
 
 def _fit_gmm_density(
@@ -561,13 +628,21 @@ def mark_reference_scale(
     return float(np.sqrt(gmm_reg_covar))
 
 
-class ClusterlessGMMEncodingModel(ClusterlessEncodingModel):
+class _OccupancyThreshold(TypedDict, total=False):
+    """Keys that encoding models stored by earlier versions lack."""
+
+    log_occupancy_threshold: float
+
+
+class ClusterlessGMMEncodingModel(ClusterlessEncodingModel, _OccupancyThreshold):
     """The encoding model ``fit_clusterless_gmm_encoding_model`` returns.
 
     Its keys are the encoding-model parameters of
     ``predict_clusterless_gmm_log_likelihood``, documented there. The
     component counts (``gmm_requested_components``,
     ``gmm_effective_components``) are fit diagnostics that predict ignores.
+    Every fit stores ``log_occupancy_threshold``; a model stored without it
+    decodes with no threshold, as it was fitted.
     """
 
     occupancy_model: GaussianMixtureModel
@@ -680,6 +755,7 @@ def fit_clusterless_gmm_encoding_model(
         - occupancy_model
         - interior_place_bin_centers
         - log_occupancy
+        - log_occupancy_threshold
         - gpi_models (analytical position marginals of joint_models)
         - joint_models
         - mean_rates
@@ -766,6 +842,8 @@ def fit_clusterless_gmm_encoding_model(
         tol=gmm_tol,
     )
     log_occupancy = _gmm_logp(occupancy_model, interior_place_bin_centers)
+    log_occupancy_threshold = _log_occupancy_threshold(log_occupancy)
+    place_log_occupancy = _place_log_occupancy(log_occupancy, log_occupancy_threshold)
 
     gpi_models: list[GaussianMixtureModel | None] = []
     joint_models: list[GaussianMixtureModel | None] = []
@@ -864,11 +942,12 @@ def fit_clusterless_gmm_encoding_model(
         gpi_gmm = _position_marginal(joint_gmm, enc_pos.shape[1])
         gpi_models.append(gpi_gmm)
 
-        # Expected-counts term at bins: mean_rate * (gpi / occupancy), in log space
+        # Expected-counts term at bins: mean_rate * (gpi / occupancy), in log
+        # space; zero at unresolved bins.
         summed_ground_process_intensity += _ground_process_intensity(
             mean_rate,
             _gmm_logp(gpi_gmm, interior_place_bin_centers),
-            log_occupancy,
+            place_log_occupancy,
         )
 
     return {
@@ -878,6 +957,7 @@ def fit_clusterless_gmm_encoding_model(
         "occupancy_model": occupancy_model,
         "interior_place_bin_centers": interior_place_bin_centers,
         "log_occupancy": log_occupancy,
+        "log_occupancy_threshold": log_occupancy_threshold,
         "gpi_models": gpi_models,
         "joint_models": joint_models,
         "mean_rates": np.asarray(jnp.asarray(mean_rates)),
@@ -921,6 +1001,7 @@ def predict_clusterless_gmm_log_likelihood(
     joint_models: list[GaussianMixtureModel | None],
     mean_rates: np.ndarray,
     summed_ground_process_intensity: np.ndarray,
+    log_occupancy_threshold: float | None = None,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
@@ -976,7 +1057,14 @@ def predict_clusterless_gmm_log_likelihood(
         Weighted mean firing rate per electrode, in Hz.
     summed_ground_process_intensity : np.ndarray, shape (n_interior_bins,)
         Sum over electrodes of ``rate * p_gpi(x) / p_occ(x)`` at the interior
-        bins, in Hz (without the background rate).
+        bins, in Hz (without the background rate); zero at unresolved bins.
+    log_occupancy_threshold : float | None, optional
+        Log occupancy density below which the occupancy mixture does not
+        resolve a position: ``log(FIELD_RESOLUTION)`` (``log(1e-6)``) below
+        the maximum of ``log_occupancy``. The place intensity is zero there, so
+        spikes at unresolved bins (non-local) or positions (local) are scored
+        by their background alone. None, for an encoding model stored before
+        fits recorded it, applies no threshold, so it decodes as it was fitted.
     is_local : bool, default=False
         If True, compute local likelihood at the animal's position.
         Else compute non-local likelihood across interior bins.
@@ -1090,6 +1178,7 @@ def predict_clusterless_gmm_log_likelihood(
             gpi_models=gpi_models,
             joint_models=joint_models,
             mean_rates=mean_rates,
+            log_occupancy_threshold=log_occupancy_threshold,
             mark_reference=mark_reference,
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
@@ -1109,6 +1198,10 @@ def predict_clusterless_gmm_log_likelihood(
         )
 
     n_bins = interior_place_bin_centers.shape[0]
+    if log_occupancy_threshold is not None:
+        log_occupancy = _place_log_occupancy(
+            jnp.asarray(log_occupancy), log_occupancy_threshold
+        )
 
     def add_electrode(
         log_likelihood: jax.Array,
@@ -1233,6 +1326,7 @@ def compute_local_log_likelihood(
     joint_models: list[GaussianMixtureModel | None],
     mean_rates: np.ndarray,
     *,
+    log_occupancy_threshold: float | None = None,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
@@ -1267,6 +1361,11 @@ def compute_local_log_likelihood(
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
     mean_rates : np.ndarray, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
+    log_occupancy_threshold : float | None, optional
+        Log occupancy density below which a position is unresolved, so its
+        place intensity is zero and its spikes score the background alone;
+        None applies no threshold (see
+        ``predict_clusterless_gmm_log_likelihood``).
     disable_progress_bar : bool, optional
         Turn off progress bar display, by default False.
     row_slice : slice | None, optional
@@ -1316,8 +1415,11 @@ def compute_local_log_likelihood(
         environment,
     )  # (n_rows, pos_dims)
 
-    # Occupancy density and its log at the animal's position
-    log_occ_at_pos = _gmm_logp(occupancy_model, interp_pos)  # (n_rows,)
+    # Log occupancy density at the animal's position, +inf where unresolved.
+    threshold = -np.inf if log_occupancy_threshold is None else log_occupancy_threshold
+    log_occ_at_pos = _place_log_occupancy(
+        _gmm_logp(occupancy_model, interp_pos), threshold
+    )  # (n_rows,)
 
     log_likelihood = jnp.zeros((n_rows,), dtype=working_dtype)
     summed_expected_counts = jnp.zeros((n_rows,), dtype=working_dtype)
@@ -1388,6 +1490,7 @@ def compute_local_log_likelihood(
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 _gmm_parameters(joint_gmm),
                 _gmm_parameters(occupancy_model),
+                jnp.asarray(threshold, dtype=working_dtype),
                 mean_rate,
                 jnp.asarray(pad_rows(log_background, n_padded), dtype=working_dtype),
                 joint_type=joint_gmm.covariance_type,

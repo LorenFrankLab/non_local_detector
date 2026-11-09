@@ -150,6 +150,17 @@ background alone, as for KDE's zero-occupancy bins. Without this rule, a mark
 field divided by near-zero occupancy gave unvisited bins up to ~100 nats of
 spurious evidence.
 
+The clusterless GMM applies the same rule to its occupancy mixture. Beyond the
+encoding data the spike-position and occupancy mixtures are tails of different
+Gaussians, so `p_gpi / p_occ` grows without bound (`inf` in float32 about 30 cm
+past the data in a 1-D simulation). The fit stores `log_occupancy_threshold`,
+the maximum log occupancy density over the interior bins plus `log(1e-6)`.
+Where the occupancy is below it, the ground intensity and every spike's marked
+intensity are zero (fit-time bin intensities, local expected counts, non-local
+and local spike terms), and a spike there is scored by the background alone.
+An encoding model stored without the key has no threshold and decodes as it
+was fitted.
+
 ## Validation
 
 - `tests/likelihoods/test_clusterless_mark_background.py` covers:
