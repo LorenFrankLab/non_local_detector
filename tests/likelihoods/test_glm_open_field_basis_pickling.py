@@ -4,7 +4,8 @@ patsy cannot pickle its design, so the basis is rebuilt after unpickling. The
 rebuilt basis must give the same design matrix, bit for bit, as the one the
 encoding model was fitted with, including when the fit dropped spline columns
 without support on the environment. A rebuild that differs from the fitted
-design (as a NumPy or patsy upgrade could make it) raises instead of decoding,
+design (as a NumPy or patsy upgrade, or a change to the package's knot
+placement, could make it) raises instead of decoding,
 and the inputs it is rebuilt from cannot be written to.
 """
 
@@ -157,6 +158,29 @@ def test_rebuild_from_shifted_knots_raises(encoding, monkeypatch):
     )
     with pytest.raises(ValidationError, match="differs from the one it was fitted"):
         make_spline_predict_matrix(restored, _random_interior_positions(environment))
+
+
+def test_rebuild_with_a_different_knot_count_names_every_cause(encoding, monkeypatch):
+    """A rebuild with more knots than the fit, as a change to this package's
+    knot placement would give, reports the column counts, names both the
+    library versions and the package's own basis code as causes, and asks
+    for a refit or a decode with the versions that fitted the model."""
+    model, environment, _ = encoding
+    restored = _unpickled(model["emission_design_info"])
+    inner_knots = sorted_spikes_glm._spline_inner_knots
+    monkeypatch.setattr(
+        sorted_spikes_glm,
+        "_spline_inner_knots",
+        lambda position, edges, spacing: inner_knots(position, edges, spacing / 2),
+    )
+    with pytest.raises(ValidationError) as error:
+        make_spline_predict_matrix(restored, _random_interior_positions(environment))
+    message = str(error.value)
+    assert "columns instead of" in message
+    assert "NumPy or patsy version" in message
+    assert "non_local_detector code that builds the basis" in message
+    assert "Refit the model" in message
+    assert "versions that fitted it" in message
 
 
 def test_rebuild_within_rounding_of_the_fingerprint_decodes(encoding):

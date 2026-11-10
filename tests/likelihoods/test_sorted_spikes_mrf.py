@@ -47,6 +47,7 @@ from non_local_detector.time_edges import time_edges_from_centers
 from tests.likelihoods._sorted_spikes_helpers import (
     dot_general_precisions,
     make_two_room_env,
+    make_two_width_env,
     path_graph,
     simulate_place_data,
     simulate_sparse_uniform_tracking,
@@ -1056,3 +1057,78 @@ def test_predict_shared_with_diffusion(env_2d, is_local):
             )
         ),
     )
+
+
+def _flat_rate_on_two_widths(n_wide: int = 60, n_narrow: int = 100):
+    """A 50 Hz cell on a grid of 2.0 cm then 1.05 cm bins.
+
+    The animal sweeps the track back and forth at constant speed for 200 s
+    (20,000 samples) and the cell fires midway between every other pair of
+    samples, so every bin's spike count is its exposure times 50 Hz up to half
+    a spike: the fitted rate should be flat.
+    """
+    env = make_two_width_env(n_wide, n_narrow)
+    length = 2.0 * n_wide + 1.05 * n_narrow
+    time = np.arange(20_000) * 0.01
+    phase = np.mod(time * 19.37, 2.0 * length)  # never on a bin edge for long
+    position = np.where(phase > length, 2.0 * length - phase, phase)[:, None]
+    spike_times = [time[:-1:2] + 0.005]
+    return env, time, position, spike_times
+
+
+def _narrow_over_wide_rate(env, encoding) -> float:
+    _, node_order, bin_sizes = environment_graph(env)
+    rate = np.asarray(encoding["place_fields"])[0, node_order]
+    narrow = bin_sizes < 1.5
+    return float(rate[narrow].mean() / rate[~narrow].mean())
+
+
+@pytest.fixture(scope="module")
+def flat_rate_on_two_widths():
+    return _flat_rate_on_two_widths()
+
+
+@pytest.mark.parametrize("penalty", [None, 1e2, 1e4, 1e6])
+def test_flat_rate_stays_flat_across_unequal_bins(flat_rate_on_two_widths, penalty):
+    """A constant-rate cell is fitted flat over 2.0 cm and 1.05 cm bins, at
+    fixed penalties and under REML: the penalty's unpenalized mode is the
+    constant log-rate, whatever the bin widths."""
+    env, time, position, spike_times = flat_rate_on_two_widths
+
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env, penalty=penalty
+    )
+
+    np.testing.assert_allclose(_narrow_over_wide_rate(env, encoding), 1.0, atol=0.01)
+
+
+@pytest.mark.parametrize("rank", [20, 40])
+@pytest.mark.parametrize("penalty", [None, 1e4])
+def test_truncated_basis_holds_a_flat_rate_on_unequal_bins(
+    flat_rate_on_two_widths, rank, penalty
+):
+    """A truncated basis keeps the constant log-rate on unequal bins, so a
+    strong penalty, fixed or chosen by REML, shrinks toward a flat rate."""
+    env, time, position, spike_times = flat_rate_on_two_widths
+
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env, rank=rank, penalty=penalty
+    )
+
+    np.testing.assert_allclose(_narrow_over_wide_rate(env, encoding), 1.0, atol=0.01)
+
+
+@pytest.mark.filterwarnings("ignore:MRF basis auto-capped:UserWarning")
+@pytest.mark.parametrize("penalty", [None, 1e4])
+def test_default_rank_cap_holds_a_flat_rate_on_unequal_bins(penalty):
+    """With more bins than the default rank cap, the capped basis still fits a
+    constant-rate cell flat over unequal bins."""
+    env, time, position, spike_times = _flat_rate_on_two_widths(150, 200)
+    assert env.is_track_interior_.sum() > 250
+
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        time, position, spike_times, env, penalty=penalty
+    )
+
+    assert encoding["mrf_rank"] == 250
+    np.testing.assert_allclose(_narrow_over_wide_rate(env, encoding), 1.0, atol=0.01)

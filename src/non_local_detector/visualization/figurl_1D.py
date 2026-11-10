@@ -1,5 +1,9 @@
 """Interactive figurl view for 1D decoding results (requires ``sortingview``)."""
 
+import numpy as np
+from numpy.typing import ArrayLike
+
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.visualization._optional import sortingview_available
 
 __all__ = [
@@ -8,10 +12,57 @@ __all__ = [
 ]
 
 
+def get_sampling_freq(times: ArrayLike) -> float:
+    """Get the sampling frequency from a series of times.
+
+    The times are split into contiguous runs wherever a difference exceeds
+    1.5 times the regular sample interval, taken as the 10th percentile of
+    the differences (a low percentile, so that it is the one-sample interval
+    even when frames are dropped as often as they are kept). The rate is the
+    number of intervals inside the runs divided by the time the runs span.
+    Gaps and dropped frames are thus left out, and jitter or rounding of the
+    time stamps (to the millisecond, or of Unix seconds in float64) only
+    moves the runs' end points.
+
+    Parameters
+    ----------
+    times : array_like, shape (n_time,)
+        Sample times in seconds, finite and strictly increasing.
+
+    Returns
+    -------
+    sampling_rate : float
+        Samples per second.
+
+    Raises
+    ------
+    ValidationError
+        If there are fewer than two times, or they are not finite and
+        strictly increasing.
+    """
+    times = np.asarray(times, dtype=float)
+    time_differences = np.diff(times)
+    if (
+        times.ndim != 1
+        or times.size < 2
+        or not np.all(np.isfinite(times))
+        or np.any(time_differences <= 0)
+    ):
+        msg = "Cannot read a sampling rate from these times"
+        raise ValidationError(
+            msg,
+            expected="finite, strictly increasing times with shape (n_time,), "
+            "n_time >= 2",
+            got=f"array with shape {times.shape}",
+        )
+    regular_interval = np.quantile(time_differences, 0.1)
+    is_in_run = time_differences < 1.5 * regular_interval
+    return float(np.count_nonzero(is_in_run) / np.sum(time_differences[is_in_run]))
+
+
 if sortingview_available():
     from typing import cast
 
-    import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
@@ -68,22 +119,6 @@ if sortingview_available():
         )
 
         return good_counts.values.astype(np.uint8)
-
-    def get_sampling_freq(times: np.ndarray) -> float:
-        """Get the sampling frequency from a series of times.
-
-        Parameters
-        ----------
-        times : np.ndarray, shape (n_time,)
-            Sample times in seconds.
-
-        Returns
-        -------
-        sampling_rate : float
-        """
-        round_times = np.floor(1000 * times)
-        median_delta_t_ms = np.median(np.diff(round_times)).item()
-        return cast("float", 1000 / median_delta_t_ms)  # from time-delta to Hz
 
     def get_trimmed_bin_center_index(
         place_bin_centers: np.ndarray, trimmed_place_bin_centers: np.ndarray

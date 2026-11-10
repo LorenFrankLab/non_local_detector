@@ -1,0 +1,11 @@
+{
+ "non_local_detector": "0.1.dev2364+g11d9b3de7",
+ "python": "3.10.12",
+ "platform": "Linux x86_64",
+ "numpy": "2.2.0",
+ "pandas": "2.3.0",
+ "scipy": "1.15.0",
+ "xarray": "2024.11.0",
+ "jax": "0.6.2",
+ "commit": "11d9b3de76fd1e60b86d5e96ed24fc4a3b8c5685"
+}

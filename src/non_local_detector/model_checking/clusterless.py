@@ -275,6 +275,55 @@ def _electrode_intensity(
     )
 
 
+def _refuse_unresolved_spikes(
+    model: Any, spike_positions: np.ndarray, *, binned: bool
+) -> None:
+    """Raise if spikes sit where the model's occupancy is unresolved.
+
+    Only an intensity whose place term is zero below an occupancy threshold
+    (the clusterless GMM's ``unresolved_positions``) is checked; the model
+    gives such spikes no probability, so neither transform is defined for
+    them.
+
+    Parameters
+    ----------
+    model : object
+        The electrode's intensity (``_clusterless_models``).
+    spike_positions : np.ndarray, shape (n_spikes, n_position_dims)
+        Each spike's position.
+    binned : bool
+        Check the center of each spike's place bin, where a transform that
+        evaluates the intensity at bins (MDCI) reads it, instead of the
+        position itself (IRCM).
+
+    Raises
+    ------
+    ValueError
+        If any spike is at an unresolved position (or bin).
+    """
+    unresolved_positions = getattr(model, "unresolved_positions", None)
+    if unresolved_positions is None:
+        return
+    points = (
+        model.bin_centers[model.bin_indices(spike_positions)]
+        if binned
+        else spike_positions
+    )
+    n_unresolved = int(np.sum(unresolved_positions(points)))
+    if n_unresolved:
+        where = "place bins" if binned else "positions"
+        msg = (
+            f"{n_unresolved} of {len(points)} spikes are at {where} whose "
+            "occupancy density is below the encoding model's "
+            "log_occupancy_threshold (1e-6 of its maximum over the place bins): "
+            "the occupancy mixture does not resolve them, so the model gives "
+            "those spikes zero place intensity and no probability. Exclude "
+            "those spikes, or the periods when the animal was outside the "
+            "positions the encoding data covered, before testing the fit."
+        )
+        raise ValueError(msg)
+
+
 def ircm_transform(
     encoding_model: dict[str, Any],
     electrode: int,
@@ -346,6 +395,7 @@ def ircm_transform(
         encoding_model, position_time, position, spike_times, spike_waveform_features
     )
     model = electrode_intensity(encoding_model, electrode)
+    _refuse_unresolved_spikes(model, spike_positions, binned=False)
     ground = model.ground_intensity(positions)
     ground_at_spikes = model.ground_intensity(spike_positions)
     if not np.all(np.isfinite(ground_at_spikes) & (ground_at_spikes > 0)):
@@ -476,10 +526,11 @@ def mdci_transform(
     position bandwidth.
     """
     electrode_intensity = _electrode_intensity(encoding_model)
-    time, positions, spike_times, _, marks = _prepare_inputs(
+    time, positions, spike_times, spike_positions, marks = _prepare_inputs(
         encoding_model, position_time, position, spike_times, spike_waveform_features
     )
     model = electrode_intensity(encoding_model, electrode)
+    _refuse_unresolved_spikes(model, spike_positions, binned=True)
     sample_bins = model.bin_indices(positions)
     total_time = _time_in_bins(time, sample_bins, model.n_bins, time[-1:])[0]
     with np.errstate(divide="ignore"):
