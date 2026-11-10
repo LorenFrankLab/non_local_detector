@@ -41,6 +41,7 @@ from non_local_detector._formula_grammar import (
     refuse_untrusted,
 )
 from non_local_detector._jax_typing import finfo, optimization_barrier
+from non_local_detector.core import _log2_max_ratio
 from non_local_detector.exceptions import ValidationError
 
 __all__ = [
@@ -303,7 +304,9 @@ def _stationary_counts_block(
     multiplied back only after the transition weights it. Powers of two divide
     exactly, and only columns near overflow are scaled, so a rare transition
     into one bin does not scale, or underflow, the ratios of other bins, as a
-    single global scale would.
+    single global scale would. The power is found from logarithms and the
+    smoothed posterior divided before the ratio is formed, because a single
+    ratio over a subnormal prediction can itself exceed the range.
 
     Parameters
     ----------
@@ -322,18 +325,24 @@ def _stationary_counts_block(
     -------
     counts : jax.Array, shape (n_states, n_states)
     """
-    ratio = _safe_ratio_jax(acausal_next, predictive_next)
-    maximum = jnp.max(ratio, axis=0, initial=0.0)
-    # The column sum is at most n_rows * maximum; keep it 256x below the
+    dtype = jnp.result_type(acausal_next, predictive_next)
+    # The column sum is at most n_rows * maximum ratio; keep it 256x below the
     # largest finite value.
-    headroom = finfo(ratio.dtype).max / 256
+    log2_headroom = np.log2(finfo(dtype).max / 256)
     exponent = jnp.ceil(
-        jnp.log2(jnp.maximum(maximum / headroom * causal_posterior.shape[0], 1.0))
+        jnp.maximum(
+            _log2_max_ratio(acausal_next, predictive_next, axis=0)
+            + np.log2(causal_posterior.shape[0])
+            - log2_headroom,
+            0.0,
+        )
     )
     # Non-finite ratios propagate unscaled, as in an unscaled sum.
     exponent = jnp.where(jnp.isfinite(exponent), exponent, 0.0)
-    scale = jnp.ldexp(jnp.ones((), ratio.dtype), exponent.astype(jnp.int32))
-    contraction = _blocked_contraction(causal_posterior, ratio / scale)
+    scale = jnp.ldexp(jnp.ones((), dtype), exponent.astype(jnp.int32))
+    # The barrier keeps XLA from dividing before scaling, which would overflow.
+    ratio = _safe_ratio_jax(optimization_barrier(acausal_next / scale), predictive_next)
+    contraction = _blocked_contraction(causal_posterior, ratio)
     # Weight first: the weighted terms are bounded, the unweighted sums are not.
     weighted = optimization_barrier(transition_matrix * contraction)
     return _aggregate_xi_by_state_jax(weighted * scale, state_ind, n_states)

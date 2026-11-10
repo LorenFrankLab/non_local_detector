@@ -27,7 +27,7 @@ import numpy as np
 import numpy.typing as npt
 from jax.typing import DTypeLike
 
-from non_local_detector._jax_typing import finfo
+from non_local_detector._jax_typing import finfo, optimization_barrier
 from non_local_detector._validation import PROBABILITY_SUM_TOLERANCE
 from non_local_detector.exceptions import DataError, ValidationError
 
@@ -600,6 +600,57 @@ def _divide_safe(numerator: ConcreteArray, denominator: ConcreteArray) -> jax.Ar
     return jnp.where(denominator != 0.0, numerator / safe_denominator, 0.0)
 
 
+def _log2_max_ratio(
+    numerator: jax.Array, denominator: jax.Array, axis: int | None = None
+) -> jax.Array:
+    """Largest ``log2(numerator / denominator)`` over ``axis``, without dividing.
+
+    Taken over the entries where both are positive, and ``-inf`` where there
+    are none. A smoothed probability over a subnormal prediction can exceed
+    the floating-point range (``0.02 / 6e-41`` is ``3e38``), so the scale
+    that keeps such ratios in range has to come from the logarithms.
+
+    Parameters
+    ----------
+    numerator, denominator : jax.Array
+        Nonnegative arrays of the same shape.
+    axis : int, optional
+        Axis to reduce; by default all of them.
+
+    Returns
+    -------
+    log2_max : jax.Array
+    """
+    positive = (numerator > 0) & (denominator > 0)
+    log2_ratio = jnp.log2(jnp.where(positive, numerator, 1.0)) - jnp.log2(
+        jnp.where(positive, denominator, 1.0)
+    )
+    return jnp.max(jnp.where(positive, log2_ratio, -jnp.inf), axis=axis)
+
+
+def _ratio_exponent(numerator: jax.Array, denominator: jax.Array) -> jax.Array:
+    """Power of two that keeps ``numerator / denominator / 2**e`` in range.
+
+    The smallest ``e >= 0`` that brings the largest ratio to at most
+    ``2**(maxexp - 8)``, leaving 256x for the transition products that sum
+    the ratios. It is 0, so nothing changes, unless a ratio would come within
+    that margin of overflowing; it is at most ``maxexp - 2`` so that ``2**e``
+    and ``2**-e`` are both normal numbers.
+
+    Parameters
+    ----------
+    numerator, denominator : jax.Array, shape (n_state_bins,)
+        Nonnegative.
+
+    Returns
+    -------
+    exponent : jax.Array of int32, shape ()
+    """
+    info = finfo(numerator.dtype)
+    exponent = jnp.ceil(_log2_max_ratio(numerator, denominator) - (info.maxexp - 8))
+    return jnp.clip(exponent, 0, info.maxexp - 2).astype(jnp.int32)
+
+
 # Time steps per scan iteration in the dense filter and smoother. On GPU each
 # step is a few small kernels, so the per-iteration loop overhead dominates
 # small state spaces: unrolling 8 steps made 514-bin scans 1.7x faster on an
@@ -1162,6 +1213,18 @@ def _smoother_scan(
     smoothed : array, shape (n_rows, n_state_bins)
         Or ``(smoothed, pairs)`` with ``pair_statistics``, pairs of shape
         (n_rows, n_states, n_states).
+
+    Notes
+    -----
+    The ratio ``smoothed_{t+1} / predicted_{t+1}`` overflows where a later
+    row has mass over a subnormal prediction, which GPUs keep (CPUs flush
+    them to zero); the infinity then makes that row, and every earlier one,
+    NaN. Its scale cancels in the normalized smoothed row, so if any smoothed
+    row is not finite the pass is run again with each step's ratio divided
+    by the power of two that keeps it in range (:func:`_ratio_exponent`),
+    and the pair statistics, which keep the ratio's scale, multiplied back.
+    Scaling every step instead cost a third more time per step on an A100
+    (an extra reduction per step) and changed results by a float32 ulp.
     """
     paired: TransitionOperator | None = None
     if pair_statistics:
@@ -1173,29 +1236,49 @@ def _smoother_scan(
             raise TypeError(msg)
         paired = operator
 
-    def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
-        current, weight, row = args
-        predicted = operator.forward(current, weight)
-        ratio = _divide_safe(following, predicted)
-        if paired is not None:
-            backward, pairs = paired.backward_and_pairs(ratio, current, weight)
-        else:
-            backward = operator.backward(ratio, weight)
-        smoothed = current * backward * (row < n_time - 1) + current * (
-            row == n_time - 1
-        )
-        smoothed, _ = _normalize(smoothed, axis=-1)
-        if not pair_statistics:
-            return smoothed, smoothed
-        pairs = jnp.where(row < n_time - 1, pairs, 0)
-        return smoothed, (smoothed, pairs)
+    def scan(*, scaled: bool) -> tuple[jax.Array, Any]:
+        def step(following: jax.Array, args: tuple[Any, Any, Any]) -> Any:
+            current, weight, row = args
+            predicted = operator.forward(current, weight)
+            if scaled:
+                exponent = _ratio_exponent(following, predicted)
+                one = jnp.ones((), following.dtype)
+                # The barrier keeps XLA from dividing before scaling, which
+                # would overflow again.
+                following = optimization_barrier(following * jnp.ldexp(one, -exponent))
+            ratio = _divide_safe(following, predicted)
+            if paired is not None:
+                backward, pairs = paired.backward_and_pairs(ratio, current, weight)
+            else:
+                backward = operator.backward(ratio, weight)
+            smoothed = current * backward * (row < n_time - 1) + current * (
+                row == n_time - 1
+            )
+            smoothed, _ = _normalize(smoothed, axis=-1)
+            if not pair_statistics:
+                return smoothed, smoothed
+            if scaled:
+                pairs = pairs * jnp.ldexp(one, exponent)
+            pairs = jnp.where(row < n_time - 1, pairs, 0)
+            return smoothed, (smoothed, pairs)
 
-    return jax.lax.scan(
-        step,
-        next_smoothed,  # type: ignore[arg-type]  # NumPy input is converted
-        (filtered, weights, rows),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
+        return jax.lax.scan(
+            step,
+            next_smoothed,  # type: ignore[arg-type]  # NumPy input is converted
+            (filtered, weights, rows),
+            reverse=True,
+            unroll=_HMM_SCAN_UNROLL,
+        )
+
+    result = scan(scaled=False)
+    smoothed_rows = result[1][0] if pair_statistics else result[1]
+    return cast(
+        "tuple[jax.Array, Any]",
+        jax.lax.cond(
+            jnp.isfinite(smoothed_rows).all(),
+            lambda: result,
+            lambda: scan(scaled=True),
+        ),
     )
 
 

@@ -837,6 +837,27 @@ class TestExpandedDiscreteTransitionCounts:
         assert np.all(np.isfinite(counts))
         np.testing.assert_array_equal(counts, np.zeros((2, 2)))
 
+    def test_subnormal_predictive_bin_does_not_overflow_its_ratio(self):
+        """A visited bin predicted at 2**-140 has a ratio of 2**140, beyond float32.
+
+        The count it weights is still one. CPU backends flush the subnormal
+        prediction to zero, which hides the overflow; GPUs keep it.
+        """
+        if jax.default_backend() == "cpu":
+            pytest.skip("CPU flushes subnormal predictions to zero")
+        delta = np.float32(2.0**-140)
+        state_ind = np.array([0, 1])
+        transition_matrix = np.array([[1 - delta, delta], [0.5, 0.5]], np.float32)
+        causal = np.array([[1.0, 0.0], [0.0, 1.0]], np.float32)
+        predictive = np.array([[1.0, 0.0], [1 - delta, delta]], np.float32)
+        acausal = np.array([[1.0, 0.0], [0.0, 1.0]], np.float32)
+
+        counts = expanded_counts(
+            causal, predictive, acausal, transition_matrix, state_ind
+        )
+
+        np.testing.assert_allclose(counts, [[0.0, 1.0], [0.0, 0.0]], atol=1e-6)
+
     def test_tiny_nonzero_predictive_bin_is_not_dropped(self):
         """A tiny but nonzero predictive bin must keep its transition count.
 
