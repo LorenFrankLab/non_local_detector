@@ -65,33 +65,14 @@ def test_converted_model_decodes_as_the_pickle(version, artifact, inputs, tmp_pa
     converted = _family(artifact).load_model(path)
 
     assert is_saved_model_format(path)
-    # A converted model rebuilds its continuous transitions on load, and the
-    # rebuild check admits differences up to its 1e-6 relative tolerance, so
-    # its decode can differ from the pickle's (which keeps its stored
-    # transitions) at that level.
-    np.testing.assert_allclose(
-        _posterior(converted, inputs, artifact),
-        _posterior(pickled, inputs, artifact),
-        rtol=1e-6,
-        atol=2e-6,
+    np.testing.assert_array_equal(
+        _posterior(converted, inputs, artifact), _posterior(pickled, inputs, artifact)
     )
     # Versions before environments_ kept the fitted environments in
     # ``environments`` too; a converted model keeps only their configuration
     # there.
     del pickled.environments, converted.environments
-    # The rebuilt continuous transitions, like the decode, may differ from
-    # the pickle's stored matrix by what the rebuild check admits (1e-6 on
-    # the blocks' weighted row and column sums); everything else is exact.
-    assert_same_fitted_state(
-        pickled,
-        converted,
-        tolerances={
-            "state_space_<StateSpace>['continuous_transitions']": {
-                "rtol": 1e-6,
-                "atol": 1e-6,
-            }
-        },
-    )
+    assert_same_fitted_state(pickled, converted)
 
 
 @pytest.mark.parametrize(("version", "artifact"), UNDECODABLE)

@@ -1628,14 +1628,19 @@ def _gaussian_block(
     # T = diag(d) K diag(d), as the dense RandomWalk. The scaled kernel has a
     # unit diagonal on valid bins and entries at most 1, so d_i**2 <= d_i (K
     # d)_i = 1 gives d <= 1 and d_i = 1 / (K d)_i >= 1 / n_bins: both d and
-    # 1 / d are normal in float32.
+    # 1 / d are normal in float32. Bins whose float64 density underflows
+    # everywhere (``original_positive`` False) have no kernel in the dense
+    # build either, so they are left out and their rows stay zero.
     def kernel_product(values: np.ndarray) -> np.ndarray:
         product = _axes_product(
-            (values * mask).reshape(shape), factors, backward=True, numpy=True
+            (values * original_positive).reshape(shape),
+            factors,
+            backward=True,
+            numpy=True,
         ).ravel()
-        return cast(np.ndarray, product * mask)
+        return cast(np.ndarray, product * original_positive)
 
-    scale = _uniform_density_scaling(kernel_product, mask.astype(float))
+    scale = _uniform_density_scaling(kernel_product, original_positive.astype(float))
     return GaussianGridBlock(factors, mask, _ratio(np.ones_like(scale), scale), scale)
 
 

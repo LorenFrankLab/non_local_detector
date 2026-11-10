@@ -176,8 +176,10 @@ def _bin_volumes(environment: Environment) -> np.ndarray:
 
     On a track graph the volume is the bin's width along the track, divided
     by the largest interior width, so nominally equal bins weigh 1 to
-    rounding; on a grid every interior bin weighs exactly 1. Bins off the
-    track weigh 0.
+    rounding. On a grid every interior bin weighs exactly 1, even on a
+    grid whose bins differ in size (``fit_place_grid_from_edges`` with
+    unequal edges), where the walk then keeps an equal mass per bin, not a
+    uniform density, stationary. Bins off the track weigh 0.
 
     Parameters
     ----------
@@ -197,11 +199,13 @@ def _bin_volumes(environment: Environment) -> np.ndarray:
 
 # Convergence of ``_uniform_density_scaling``: every row of the scaled
 # matrix sums to one within the tolerance, well above float64 rounding
-# (about 5e-15). Measured on 1-D tracks, open fields with and without a
-# hole, two rooms joined by a one-bin door, and Y and W track graphs, with
-# variances from 0.1 to 1e6 cm**2 (2 and 4 cm bins), dense and structured:
-# 0-37 updates of the scale (0-1 at 0.1 cm**2, 2-19 at 1, 26-37 from 6 up),
-# so the cap leaves a factor of 27 before an unconverged scaling raises.
+# (about 5e-15). Over 574 dense builds (1-D tracks, open fields with and
+# without holes, two rooms joined by a one-bin door, track graphs up to an
+# 8-arm radial maze and a 32-arm star, grid graph distances, variances from
+# 1e-300 to 1e300, per-axis and full covariances) the scale took 0 to 43
+# updates: at most 1 when the step is far smaller than a bin, tens otherwise
+# (40 on the radial maze, 43 on the star at 25 cm**2). The cap leaves a
+# factor of 23 before an unconverged scaling raises.
 _UNIFORM_DENSITY_TOLERANCE = 1e-12
 _UNIFORM_DENSITY_MAX_ITERATIONS = 1000
 
@@ -611,8 +615,8 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
 
     ``T = diag(d) K diag(w d)``,
 
-    with ``w`` the bin volumes (the bin widths along a track graph, all
-    equal on a grid) and ``d`` chosen so that every row sums to one. Then
+    with ``w`` the bin volumes (the bin widths along a track graph, 1 for
+    every bin of a grid) and ``d`` chosen so that every row sums to one. Then
     ``w_i T_ij`` is symmetric, so ``sum_i w_i T_ij = w_j``: with a flat
     likelihood a uniform density stays uniform, at walls, track ends,
     holes and junctions alike. Far from any boundary ``d`` is constant and
@@ -622,6 +626,9 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     the wall. Truncating ``K`` at the boundary and normalizing each row
     instead would make the stationary distribution proportional to the row
     sums, depleting walls and track ends and piling mass onto junctions.
+    On a grid whose bins differ in size (``fit_place_grid_from_edges`` with
+    unequal edges) every bin still weighs 1, so the walk keeps an equal mass
+    per bin, not a uniform density, stationary there.
 
     The scaling applies exactly when ``movement_mean`` is zero (every
     component exactly 0) and ``direction`` is None, on a Euclidean grid,
@@ -632,10 +639,12 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     a nonzero mean shifts the Gaussian, ``K_ij = N(x_j - x_i - mean)``, so
     ``K`` is not symmetric and the symmetric scaling does not apply; a
     ``direction`` keeps only steps toward (or away from) the center, so no
-    uniform density can be stationary. Along graph distances, ``K_ij =
-    N(d_ij - mean)`` is symmetric even with a mean, but such a walk also
-    keeps the row-normalized construction: when the Gaussian's peak is off
-    the diagonal the scaling can converge slowly or not at all.
+    uniform density can be stationary. Along graph distances (a track graph
+    or ``use_manifold_distance``), wherever a nonzero mean is accepted, it
+    is not scaled either: ``K_ij = N(d_ij - mean)`` is symmetric, but when
+    the Gaussian's peak is off the diagonal the scaling can converge slowly
+    or not at all. ``RandomWalkDirection1/2`` keep one triangle of the
+    row-normalized ``K``, without the scaling.
     """
 
     environment_name: str = ""
@@ -727,6 +736,37 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
             scaling that keeps a uniform density does not converge.
         """
         environment = find_environment_by_name(environments, self.environment_name)
+        transition_matrix = self._masked_kernel(environment)
+        if not self._keeps_uniform_density():
+            return _normalize_row_probability(transition_matrix)
+        volumes = _bin_volumes(environment)
+        scale = _uniform_density_scaling(
+            lambda values: transition_matrix @ values, volumes
+        )
+        transition_matrix *= scale[:, np.newaxis]
+        transition_matrix *= (volumes * scale)[np.newaxis, :]
+        # Bins with no finite kernel mass stay zero (not NaN from 0 * inf).
+        is_empty = scale == 0
+        transition_matrix[is_empty] = 0.0
+        transition_matrix[:, is_empty] = 0.0
+        return transition_matrix
+
+    def _row_normalized(self, environments: Sequence[Environment]) -> np.ndarray:
+        """Return the kernel on the track divided by its row sums, without scaling.
+
+        ``RandomWalkDirection1/2`` keep one triangle of this matrix.
+        """
+        environment = find_environment_by_name(environments, self.environment_name)
+        return _normalize_row_probability(self._masked_kernel(environment))
+
+    def _masked_kernel(self, environment: Environment) -> np.ndarray:
+        """Return the Gaussian kernel ``K``, zero on rows and columns off the track.
+
+        Raises
+        ------
+        ConfigurationError
+            If ``direction`` is set on a path that would ignore it.
+        """
         # ``direction`` is only consulted on the N-D-grid manifold-distance path
         # (no track_graph + use_manifold_distance=True). On every other path it
         # would be silently ignored, so surface the misconfiguration loudly.
@@ -756,18 +796,6 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         is_track_interior = environment.is_track_interior_flat_
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
-        if not self._keeps_uniform_density():
-            return _normalize_row_probability(transition_matrix)
-        volumes = _bin_volumes(environment)
-        scale = _uniform_density_scaling(
-            lambda values: transition_matrix @ values, volumes
-        )
-        transition_matrix *= scale[:, np.newaxis]
-        transition_matrix *= (volumes * scale)[np.newaxis, :]
-        # Bins with no finite kernel mass stay zero (not NaN from 0 * inf).
-        is_empty = scale == 0
-        transition_matrix[is_empty] = 0.0
-        transition_matrix[:, is_empty] = 0.0
         return transition_matrix
 
     def _keeps_uniform_density(self) -> bool:
@@ -1224,11 +1252,14 @@ class RandomWalkDirection1(_DropsLegacyEnvironment, _EnvironmentBlock):
         Returns
         -------
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
-            Row-normalized upper triangular transition matrix.
+            Row-normalized upper triangular transition matrix: the upper
+            triangle of the Gaussian kernel divided by its row sums, then
+            row-normalized again, without ``RandomWalk``'s uniform-density
+            scaling.
         """
-        random = RandomWalk(
-            self.environment_name, self.movement_var
-        ).make_state_transition(environments)
+        random = RandomWalk(self.environment_name, self.movement_var)._row_normalized(
+            environments
+        )
 
         return _normalize_row_probability(np.triu(random))
 
@@ -1283,11 +1314,14 @@ class RandomWalkDirection2(_DropsLegacyEnvironment, _EnvironmentBlock):
         Returns
         -------
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
-            Row-normalized lower triangular transition matrix.
+            Row-normalized lower triangular transition matrix: the lower
+            triangle of the Gaussian kernel divided by its row sums, then
+            row-normalized again, without ``RandomWalk``'s uniform-density
+            scaling.
         """
-        random = RandomWalk(
-            self.environment_name, self.movement_var
-        ).make_state_transition(environments)
+        random = RandomWalk(self.environment_name, self.movement_var)._row_normalized(
+            environments
+        )
 
         return _normalize_row_probability(np.tril(random))
 

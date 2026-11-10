@@ -21,6 +21,7 @@ from non_local_detector.transition_operators import (
     LazyDenseTransition,
     build_transition_operator,
 )
+from tests.conftest import set_place_grid
 
 pytestmark = pytest.mark.unit
 
@@ -234,6 +235,28 @@ def test_uniform_density_on_a_grid_with_graph_distance(transition):
     assert_uniform_density_is_stationary(
         matrix, env.is_track_interior_flat_.astype(float)
     )
+
+
+def test_structured_block_is_zero_where_the_dense_density_underflows():
+    """A 3-D grid with a variance so large that the float64 density of every
+    step underflows has an all-zero dense walk; the structured block is zero
+    too."""
+    shape = (3, 3, 3)
+    axes = [np.arange(n, dtype=float) for n in shape]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    env = set_place_grid(
+        Environment(),
+        place_bin_centers=np.stack([x.ravel() for x in mesh], axis=1),
+        centers_shape=shape,
+        is_track_interior=np.ones(shape, dtype=bool),
+    )
+    transition = RandomWalk(movement_var=1e250)
+    dense = transition.make_state_transition([env])
+
+    operator = build_transition_operator([[transition]], [env], (27,))
+
+    np.testing.assert_array_equal(dense, 0.0)
+    np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
 
 
 @pytest.mark.parametrize("make_environment", [line, field_with_hole])
