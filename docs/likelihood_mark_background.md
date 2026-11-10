@@ -159,8 +159,11 @@ Where the occupancy is below it, the ground intensity and every spike's marked
 intensity are zero (fit-time bin intensities, local expected counts, non-local
 and local spike terms, and model checking's GMM intensity), and a spike there
 is scored by the background alone; `ircm_transform` and `mdci_transform`
-refuse such spikes. An encoding model stored without the key has no threshold
-and decodes as it was fitted.
+refuse such spikes. The threshold does not bound the ratio where the occupancy
+is above it: in the same simulation a never-visited bin 5 cm past the data
+keeps 25 Hz, where the clusterless KDE gives 1 Hz. An encoding model stored
+without the key has no threshold and decodes as it was fitted, including any
+overflow to `inf`.
 
 ## Validation
 

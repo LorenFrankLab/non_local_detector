@@ -413,11 +413,17 @@ def _ground_process_intensity(
         underflow (``exp(-800) / exp(-790)`` is ``0 / 0`` in float32; the
         ratio is ``e^-10``), and a representable product such as
         ``1e-15 * exp(95)`` whose separate ``exp`` overflows. A NaN in either
-        density propagates. At resolved points the occupancy is at least
-        ``FIELD_RESOLUTION`` of its maximum, which bounds the ratio; the
-        diverging tails beyond the encoding data are unresolved and give
-        zero. Both the fit-time bin intensities and the local expected counts
-        use this function.
+        density propagates. Unresolved points (``+inf`` log occupancy) give
+        zero. The threshold does not bound the ratio at resolved points: just
+        above it the two mixtures' tails can already differ by several orders
+        of magnitude (in a 1-D simulation, 25 Hz at a never-visited bin
+        center and about 400 Hz half a bin further, where a KDE gives 1 Hz).
+        Without a
+        threshold (an encoding model stored before fits kept one, or a direct
+        caller leaving ``log_occupancy_threshold`` as None) a ratio beyond the
+        dtype's range overflows to ``inf``, a ``-inf`` log likelihood. Both
+        the fit-time bin intensities and the local expected counts use this
+        function.
     """
     # Difference first: two nearly equal large log densities subtract exactly,
     # whereas adding log(rate) to one of them first rounds at their magnitude.
@@ -461,7 +467,11 @@ def _log_occupancy_threshold(log_occupancy: jax.Array) -> float:
     diffusion likelihoods apply to their diffused occupancy
     (``resolved_occupancy``). The constant is shared on purpose, so both treat
     a position as unvisited below the same fraction of peak occupancy; a change
-    to it changes GMM fits too.
+    to it changes GMM fits too. The maximum is taken at the bin centers, so
+    it depends on where the grid falls relative to the occupancy components:
+    in a 1-D simulation shifting the grid moved it by 0.04 nats at the default
+    ``gmm_reg_covar`` and by 0.6 nats at ``gmm_reg_covar=1e-2``, more for
+    sharper components.
 
     Parameters
     ----------
@@ -1066,10 +1076,12 @@ def predict_clusterless_gmm_log_likelihood(
     log_occupancy_threshold : float | None, optional
         Log occupancy density below which the occupancy mixture does not
         resolve a position: ``log(FIELD_RESOLUTION)`` (``log(1e-6)``) below
-        the maximum of ``log_occupancy``. The place intensity is zero there, so
-        spikes at unresolved bins (non-local) or positions (local) are scored
-        by their background alone. None, for an encoding model stored before
-        fits recorded it, applies no threshold, so it decodes as it was fitted.
+        the maximum of ``log_occupancy`` over the bin centers. The place
+        intensity is zero there, so spikes at unresolved bins (non-local) or
+        positions (local) are scored by their background alone. None, for an
+        encoding model stored before fits recorded it, applies no threshold,
+        so it decodes as it was fitted, including any overflow of the ratio to
+        ``inf``.
     is_local : bool, default=False
         If True, compute local likelihood at the animal's position.
         Else compute non-local likelihood across interior bins.
