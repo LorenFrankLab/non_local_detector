@@ -310,9 +310,10 @@ class GaussianGridBlock:
     ``row_normalization`` is 0 are zero. A zero-mean ``RandomWalk`` stores
     ``row_normalization = 1 / d`` and ``column_scale = d``, with ``d`` the
     scaling that makes rows sum to one, so ``T`` is symmetric and a uniform
-    density is stationary (see ``RandomWalk``). A walk with a mean step
-    stores the row sums of ``K diag(mask)`` and ``column_scale = mask``,
-    normalizing each row. Blocks pickled before ``column_scale`` was stored
+    density is stationary (see ``RandomWalk``). A walk with any nonzero
+    mean step, here a shifted and so non-symmetric Gaussian, stores the row
+    sums of ``K diag(mask)`` and ``column_scale = mask``, normalizing each
+    row. Blocks pickled before ``column_scale`` was stored
     applied that row-normalized form and restore with ``column_scale =
     mask``.
 

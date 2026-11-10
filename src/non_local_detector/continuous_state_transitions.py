@@ -172,11 +172,12 @@ def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
 
 
 def _bin_volumes(environment: Environment) -> np.ndarray:
-    """Relative volume of each place bin, for weighting a uniform density.
+    """Relative volume of each place bin, the weights of ``RandomWalk``'s scaling.
 
     On a track graph the volume is the bin's width along the track, divided
-    by the largest interior width so that equal bins weigh exactly 1; on a
-    grid every interior bin weighs 1. Bins off the track weigh 0.
+    by the largest interior width, so nominally equal bins weigh 1 to
+    rounding; on a grid every interior bin weighs exactly 1. Bins off the
+    track weigh 0.
 
     Parameters
     ----------
@@ -195,11 +196,12 @@ def _bin_volumes(environment: Environment) -> np.ndarray:
 
 
 # Convergence of ``_uniform_density_scaling``: every row of the scaled
-# matrix sums to one within the tolerance. Measured on 1-D tracks, open
-# fields with holes, two rooms joined by a one-bin door, and Y and W track
-# graphs, with variances from 0.1 to 1e6 cm**2: 22-43 iterations reach a
-# row-sum error of 1e-14 (float64 rounding leaves about 5e-15), so the cap
-# leaves a factor of 20 before an unconverged scaling raises.
+# matrix sums to one within the tolerance, well above float64 rounding
+# (about 5e-15). Measured on 1-D tracks, open fields with and without a
+# hole, two rooms joined by a one-bin door, and Y and W track graphs, with
+# variances from 0.1 to 1e6 cm**2 (2 and 4 cm bins), dense and structured:
+# 0-37 updates of the scale (0-1 at 0.1 cm**2, 2-19 at 1, 26-37 from 6 up),
+# so the cap leaves a factor of 27 before an unconverged scaling raises.
 _UNIFORM_DENSITY_TOLERANCE = 1e-12
 _UNIFORM_DENSITY_MAX_ITERATIONS = 1000
 
@@ -621,9 +623,19 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
     instead would make the stationary distribution proportional to the row
     sums, depleting walls and track ends and piling mass onto junctions.
 
-    A walk with a nonzero ``movement_mean`` or a ``direction`` drifts, so a
-    uniform density is not its stationary distribution; its rows are ``K``
-    divided by their sums over the bins on the track.
+    The scaling applies exactly when ``movement_mean`` is zero (every
+    component exactly 0) and ``direction`` is None, on a Euclidean grid,
+    with ``use_manifold_distance`` and on a track graph. Any other walk,
+    with any nonzero ``movement_mean`` however small or with a
+    ``direction``, has rows ``K`` divided by their sums over the bins on the
+    track, and keeps that construction's boundary bias. On a Euclidean grid
+    a nonzero mean shifts the Gaussian, ``K_ij = N(x_j - x_i - mean)``, so
+    ``K`` is not symmetric and the symmetric scaling does not apply; a
+    ``direction`` keeps only steps toward (or away from) the center, so no
+    uniform density can be stationary. Along graph distances, ``K_ij =
+    N(d_ij - mean)`` is symmetric even with a mean, but such a walk also
+    keeps the row-normalized construction: when the Gaussian's peak is off
+    the diagonal the scaling can converge slowly or not at all.
     """
 
     environment_name: str = ""
@@ -759,7 +771,11 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
         return transition_matrix
 
     def _keeps_uniform_density(self) -> bool:
-        """Whether the kernel is symmetric: no mean step and no direction."""
+        """Whether the walk is scaled to keep a uniform density.
+
+        Only with ``movement_mean`` exactly zero and no ``direction`` (see the
+        class Notes); any other walk is row-normalized.
+        """
         return self.direction is None and bool(
             np.all(np.asarray(self.movement_mean) == 0)
         )
@@ -855,11 +871,7 @@ class RandomWalk(_DropsLegacyEnvironment, _EnvironmentBlock):
 
 @dataclass
 class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
-    """Transition to a uniform density over the valid destination bins.
-
-    On a grid every interior destination bin is equally likely; on a track
-    graph each is weighted by its width along the track, so that unequal
-    bins still receive a uniform density.
+    """Transition where all valid destination bins are equally likely.
 
     Attributes
     ----------
@@ -877,20 +889,19 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
         """Rank-one block from the interior of ``environment_name`` to its target.
 
         The target is the interior of ``environment2_name`` (or the same
-        environment), weighted by bin volume.
+        environment).
         """
         from non_local_detector.transition_operators import UniformBlock
 
         source = find_environment_by_name(
             environments, self.environment_name
         ).is_track_interior_flat_
-        destination = _bin_volumes(
-            find_environment_by_name(
-                environments,
-                self.environment_name
-                if self.environment2_name is None
-                else self.environment2_name,
-            )
+        destination = (
+            source.copy()
+            if self.environment2_name is None
+            else find_environment_by_name(
+                environments, self.environment2_name
+            ).is_track_interior_flat_
         )
         return UniformBlock(
             source,
@@ -926,14 +937,26 @@ class Uniform(_DropsLegacyEnvironment, _EnvironmentBlock):
             Row-normalized uniform transition probability matrix.
         """
         environment1 = find_environment_by_name(environments, self.environment_name)
-        environment2 = (
-            environment1
-            if self.environment2_name is None
-            else find_environment_by_name(environments, self.environment2_name)
-        )
-        transition_matrix = np.outer(
-            environment1.is_track_interior_flat_, _bin_volumes(environment2)
-        )
+        n_bins1 = environment1.place_bin_centers_.shape[0]
+
+        is_track_interior1 = environment1.is_track_interior_flat_
+
+        if self.environment2_name is None:
+            n_bins2 = n_bins1
+            is_track_interior2 = is_track_interior1.copy()
+        else:
+            environment2 = find_environment_by_name(
+                environments, self.environment2_name
+            )
+            n_bins2 = environment2.place_bin_centers_.shape[0]
+
+            is_track_interior2 = environment2.is_track_interior_flat_
+
+        transition_matrix = np.ones((n_bins1, n_bins2))
+
+        transition_matrix[~is_track_interior1] = 0.0
+        transition_matrix[:, ~is_track_interior2] = 0.0
+
         return _normalize_row_probability(transition_matrix)
 
 

@@ -14,10 +14,8 @@ import numpy as np
 import pytest
 from scipy.stats import norm
 
-from non_local_detector.continuous_state_transitions import RandomWalk, Uniform
+from non_local_detector.continuous_state_transitions import RandomWalk
 from non_local_detector.environment import Environment
-from non_local_detector.initial_conditions import UniformInitialConditions
-from non_local_detector.observation_models import ObservationModel
 from non_local_detector.transition_operators import (
     GaussianGridBlock,
     LazyDenseTransition,
@@ -177,11 +175,8 @@ def test_rows_far_from_the_walls_are_the_normalized_gaussian():
     np.testing.assert_allclose(transition[far], row_normalized[far], rtol=0, atol=1e-10)
 
 
-def test_close_to_image_reflection_on_a_line():
-    """At a wall the walk is close to reflecting the Gaussian at the wall."""
-    env = line()
-    centers = env.place_bin_centers_[:, 0]
-    length = 100.0
+def reflected_walk(centers, length):
+    """The Gaussian reflected at both walls of [0, length], at the bin centers."""
     reflected = np.zeros((len(centers), len(centers)))
     for image in range(-3, 4):
         for sign in (1, -1):
@@ -190,7 +185,13 @@ def test_close_to_image_reflection_on_a_line():
                 loc=centers[:, None],
                 scale=np.sqrt(MOVEMENT_VAR),
             )
-    reflected /= reflected.sum(axis=1, keepdims=True)
+    return reflected / reflected.sum(axis=1, keepdims=True)
+
+
+def test_close_to_image_reflection_on_a_line():
+    """At a wall the walk is close to reflecting the Gaussian at the wall."""
+    env = line()
+    reflected = reflected_walk(env.place_bin_centers_[:, 0], 100.0)
 
     transition = RandomWalk().make_state_transition([env])
 
@@ -199,18 +200,23 @@ def test_close_to_image_reflection_on_a_line():
 
 def test_steady_state_filter_at_a_wall_is_close_to_reflection():
     """A likelihood centred on the wall (sd 4 cm) keeps about as much
-    posterior in the edge bin as a reflecting walk does (0.549)."""
+    posterior in the edge bin as the reflected walk does (0.553; truncating
+    and normalizing rows kept 0.472)."""
     env = line()
     centers = env.place_bin_centers_[:, 0]
     likelihood = norm.pdf(centers, loc=0.0, scale=4.0)
-    transition = RandomWalk().make_state_transition([env])
 
-    posterior = np.full(len(centers), 1 / len(centers))
-    for _ in range(2000):
-        posterior = likelihood * (posterior @ transition)
-        posterior /= posterior.sum()
+    def steady_edge_posterior(transition):
+        posterior = np.full(len(centers), 1 / len(centers))
+        for _ in range(2000):
+            posterior = likelihood * (posterior @ transition)
+            posterior /= posterior.sum()
+        return posterior[0]
 
-    assert abs(posterior[0] - 0.549) <= 0.02
+    walk = steady_edge_posterior(RandomWalk().make_state_transition([env]))
+    reflected = steady_edge_posterior(reflected_walk(centers, 100.0))
+
+    assert abs(walk - reflected) <= 0.02
 
 
 @pytest.mark.parametrize(
@@ -298,43 +304,4 @@ def test_structured_block_pickled_in_the_earlier_layout_applies_its_matrix():
         earlier,
         rtol=1e-12,
         atol=1e-15,
-    )
-
-
-def test_uniform_transition_and_initial_conditions_are_uniform_density_on_a_track():
-    env = y_track()
-    widths = bin_widths(env)
-    expected = widths / widths.sum()
-
-    matrix = Uniform().make_state_transition([env])
-    initial = UniformInitialConditions().make_initial_conditions(
-        ObservationModel(), [env]
-    )
-    n_bins = len(widths)
-    structured = np.asarray(
-        LazyDenseTransition(build_transition_operator([[Uniform()]], [env], (n_bins,)))
-    )
-
-    interior = widths > 0
-    np.testing.assert_allclose(
-        matrix[interior], expected[None].repeat(interior.sum(), 0)
-    )
-    np.testing.assert_allclose(structured, matrix, rtol=1e-12, atol=0)
-    np.testing.assert_allclose(initial, expected, rtol=1e-6)
-
-
-def test_uniform_transition_and_initial_conditions_unchanged_on_a_grid():
-    env = field_with_hole()
-    interior = env.is_track_interior_flat_
-
-    matrix = Uniform().make_state_transition([env])
-    initial = UniformInitialConditions().make_initial_conditions(
-        ObservationModel(), [env]
-    )
-
-    expected = np.where(interior[:, None] & interior[None, :], 1 / interior.sum(), 0)
-    np.testing.assert_array_equal(matrix, expected)
-    np.testing.assert_array_equal(
-        initial,
-        interior.astype(np.float32) / np.float32(interior.sum()),
     )

@@ -812,3 +812,113 @@ class TestDeltaKernel:
             np.log(n_interior),
             rtol=1e-6,
         )
+
+
+def _track_with_unequal_bins(length):
+    """Three collinear edges whose 2 cm bins have three different widths."""
+    import networkx as nx
+
+    from non_local_detector.environment import Environment
+
+    nodes = np.array([0.0, 51.0, 110.3, 170.0]) * length / 170.0
+    graph = nx.Graph()
+    for node, x in enumerate(nodes):
+        graph.add_node(node, pos=(float(x), 0.0))
+    for edge in range(3):
+        graph.add_edge(
+            edge,
+            edge + 1,
+            distance=float(nodes[edge + 1] - nodes[edge]),
+            edge_id=edge,
+        )
+    return Environment(
+        place_bin_size=2.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (1, 2), (2, 3)],
+        edge_spacing=0.0,
+    )
+
+
+def _recording(family, n_samples=2_000):
+    """``(time, position, spikes, track length, sampling rate)`` of a simulation."""
+    if family == "sorted":
+        from non_local_detector.simulate import sorted_spikes_simulation as sim
+
+        _, position, spike_times, time, *_ = sim.make_simulated_data(
+            seed=0, n_neurons=8
+        )
+        time, position = time[:n_samples], np.clip(position[:n_samples], 0, 170)
+        spikes = {"spike_times": [st[st <= time[-1]] for st in spike_times]}
+        return time, position, spikes, 170.0, sim.SAMPLING_FREQUENCY
+    from non_local_detector.simulate import clusterless_simulation as sim
+
+    run = sim.make_simulated_run_data(
+        n_tetrodes=2, place_field_means=np.arange(0, 160, 20), n_runs=1, seed=0
+    )
+    time = np.asarray(run.position_time)[:n_samples]
+    position = np.clip(np.asarray(run.position)[:n_samples, 0], 0, 175)
+    keep = [np.asarray(st) <= time[-1] for st in run.spike_times]
+    spikes = {
+        "spike_times": [
+            np.asarray(st)[k] for st, k in zip(run.spike_times, keep, strict=True)
+        ],
+        "spike_waveform_features": [
+            np.asarray(features)[k]
+            for features, k in zip(run.spike_waveform_features, keep, strict=True)
+        ],
+    }
+    return time, position, spikes, 175.0, sim.SAMPLING_FREQUENCY
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("detector_cls", "family"),
+    zip(DETECTOR_CLASSES, DETECTOR_IDS, strict=True),
+    ids=DETECTOR_IDS,
+)
+def test_delta_kernel_local_matches_one_bin_local_on_unequal_track_bins(
+    detector_cls, family
+):
+    """``local_position_std=0`` spreads the Local state over the bins with
+    1/n initial conditions and a per-bin Local->Local uniform block, which the
+    Local likelihood's ``log(n_interior_bins)`` cancels. That holds only if
+    those are per bin: weighting them by bin width on a track with unequal
+    bins left the state probabilities 0.16 (sorted) and 0.21 (clusterless)
+    off the one-bin Local state. Per bin they differ by at most 0.007 and
+    0.037: the clusterless delta kernel differs by 0.037 without any width
+    weighting, so its bound is looser."""
+    time, position, spikes, length, rate = _recording(family)
+    xy = np.column_stack([position, np.zeros_like(position)])
+    kwargs = (
+        {"sorted_spikes_algorithm_params": {"disable_progress_bar": True}}
+        if family == "sorted"
+        else {"clusterless_algorithm_params": {"disable_progress_bar": True}}
+    )
+    probabilities = {}
+    for std in (None, 0.0):
+        model = detector_cls(
+            sampling_frequency=rate,
+            environments=_track_with_unequal_bins(length),
+            local_position_std=std,
+            **kwargs,
+        ).fit(time, xy, **spikes)
+        edges = model.calculate_time_edges([time[0], time[-1]], trim=True)
+        in_window = [
+            (st >= edges[0]) & (st < edges[-1]) for st in spikes["spike_times"]
+        ]
+        decode_spikes = {
+            name: [
+                np.asarray(values)[k]
+                for values, k in zip(arrays, in_window, strict=True)
+            ]
+            for name, arrays in spikes.items()
+        }
+        probabilities[std] = model.predict(
+            **decode_spikes, time_edges=edges, position_time=time, position=xy
+        ).acausal_state_probabilities.values
+    environment = model.environments_[0]
+    widths = np.diff(environment.edges_[0])[environment.is_track_interior_flat_]
+    assert len(np.unique(np.round(widths, 3))) == 3
+
+    largest = {"sorted": 0.02, "clusterless": 0.05}[family]
+    assert np.max(np.abs(probabilities[0.0] - probabilities[None])) <= largest
