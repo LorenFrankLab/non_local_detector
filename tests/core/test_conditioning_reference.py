@@ -974,6 +974,91 @@ class TestViterbiEnumerationReference:
 
         np.testing.assert_array_equal(driver_path, expected)
 
+    @pytest.mark.parametrize("path", ["stationary", "covariate"])
+    def test_all_impossible_row_matches_enumeration_without_its_evidence(
+        self, path, caplog
+    ):
+        """Every path scores ``-inf`` through an all-(-inf) row, so the row is
+        treated as uninformative: the path equals the enumerated best path
+        with that row set to 0, rather than state 0 before it."""
+        if path == "stationary":
+            initial, transitions, ll = _tiny_model(seed=2)
+            expanded = transitions[0]
+        else:
+            initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
+                seed=2
+            )
+        impossible_row = 3
+        ll[impossible_row] = 0.0
+        expected, margin = enumerate_most_likely_path(initial, expanded, ll)
+        assert margin > 1e-3  # the optimum is unique
+        assert np.any(expected[:impossible_row] != 0)
+        ll[impossible_row] = -np.inf
+
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            if path == "stationary":
+                decoded = viterbi(
+                    jnp.asarray(initial), jnp.asarray(expanded), jnp.asarray(ll)
+                )
+            else:
+                decoded = viterbi_covariate_dependent(
+                    jnp.asarray(initial),
+                    jnp.asarray(discrete),
+                    jnp.asarray(continuous),
+                    jnp.asarray(state_ind),
+                    jnp.asarray(ll),
+                )
+
+        np.testing.assert_array_equal(np.asarray(decoded), expected)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            f"1/{len(ll)} time step(s)" in m and "uninformative" in m for m in messages
+        ), messages
+
+    @pytest.mark.parametrize("path", ["stationary", "covariate"])
+    def test_unsatisfiable_rows_match_enumeration_without_their_evidence(
+        self, path, caplog
+    ):
+        """Four states in a line, one step at most per row; rows 0-2 allow
+        only state 3 and rows 3-5 only state 0. No path explains both, and
+        reaching 0 by row 3 needs rows 1 and 2 free: the path equals the
+        enumerated best path with those two rows set to 0."""
+        states = np.arange(4)
+        transition = np.exp(-0.5 * (states[:, None] - states[None, :]) ** 2.0)
+        transition[np.abs(states[:, None] - states[None, :]) > 1] = 0.0
+        transition /= transition.sum(axis=1, keepdims=True)
+        initial = np.full(4, 0.25)
+        ll = np.full((6, 4), -np.inf)
+        ll[:3, 3] = 0.0
+        ll[3:, 0] = 0.0
+        without_evidence = ll.copy()
+        without_evidence[1:3] = 0.0
+        expected, margin = enumerate_most_likely_path(
+            initial, transition, without_evidence
+        )
+        assert margin > 1e-3  # the optimum is unique
+        np.testing.assert_array_equal(expected, [3, 2, 1, 0, 0, 0])
+
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            if path == "stationary":
+                decoded = viterbi(
+                    jnp.asarray(initial), jnp.asarray(transition), jnp.asarray(ll)
+                )
+            else:
+                decoded = viterbi_covariate_dependent(
+                    jnp.asarray(initial),
+                    jnp.ones((6, 1, 1)),
+                    jnp.asarray(transition),
+                    jnp.zeros(4, dtype=int),
+                    jnp.asarray(ll),
+                )
+
+        np.testing.assert_array_equal(np.asarray(decoded), expected)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "2/6 time step(s)" in m and "uninformative" in m for m in messages
+        ), messages
+
     def test_time_varying_transition_changes_the_optimal_path(self):
         """A forced switch at one step moves the path; a constant matrix does not.
 

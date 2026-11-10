@@ -258,12 +258,17 @@ The misfit coordinate identifies the misfit component: `u` for the rate model,
   that spike times are continuous. When spikes are recorded only to a sample
   grid on which `Lambda * dt` is not small, the intervals are discrete and
   `u` is not uniform even for the true model. The package simulator
-  (`make_simulated_run_data`) draws spikes on a 1 ms grid with up to 0.098
+  (`make_simulated_run_data`) draws spikes on a 1 ms grid with up to 0.103
   probability per sample. Under its true intensity, held-out IRCM `u` on
   tetrode 0 (4,515 spikes, seed 0) gave KS p = 5.5e-19, while the
   discrete-time rescaling of Haslinger, Pipa and Brown (2010) gave p = 0.59.
   MDCI's `u`, which normalizes over the whole period, gave p = 0.46 under the
-  same intensity. Use spike times at acquisition resolution.
+  same intensity. Use spike times at acquisition resolution. (These spike
+  counts and p-values were measured with an earlier simulator, which kept a
+  sample when a neuron's Poisson count was positive and let a later neuron
+  overwrite an earlier one, so it spiked with up to 0.098 probability per
+  sample; they have not been rerun with the current one, whose seeded spikes
+  differ.)
 - **Thousands of spikes resolve kernel smoothing.** A KDE's bandwidths smooth
   the place fields and mark clusters it estimates. On the same simulation,
   fitted on the first half, the smallest per-coordinate KS p-value of IRCM's

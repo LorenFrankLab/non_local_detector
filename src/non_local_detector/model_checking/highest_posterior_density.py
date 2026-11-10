@@ -1,5 +1,7 @@
 """Highest posterior density (HPD) thresholds and spatial coverage of posteriors."""
 
+from typing import cast
+
 import numpy as np
 import xarray as xr
 
@@ -43,6 +45,11 @@ def get_highest_posterior_threshold(
     The algorithm sorts posterior values in descending order and finds the
     threshold where the cumulative probability first exceeds the desired coverage.
     For reference see: https://stats.stackexchange.com/questions/240749/how-to-find-95-credible-interval
+
+    Bins are ranked by mass, which is the highest-density region only when
+    the bins have equal widths. For bins of unequal widths, such as a track
+    graph's arms, use ``get_HPD_spatial_coverage(posterior,
+    bin_width=bin_width, coverage=coverage)``, which ranks bins by density.
     """
     # Reshape non-time dimensions into a single dimension
     n_time = posterior.shape[0]
@@ -78,10 +85,62 @@ def get_highest_posterior_threshold(
     return threshold
 
 
+def _check_density_coverage(coverage: float) -> None:
+    """Raise unless ``0 < coverage <= 1`` (NaN fails too)."""
+    if not 0.0 < coverage <= 1.0:
+        msg = f"coverage must be in (0, 1]; got {coverage}."
+        raise ValueError(msg)
+
+
+def _highest_density_threshold(
+    posterior: np.ndarray, coverage: float, bin_width: np.ndarray
+) -> np.ndarray:
+    """Density threshold of the highest-density region holding `coverage`.
+
+    Parameters
+    ----------
+    posterior : np.ndarray, shape (n_time, n_position_bins)
+        Posterior mass; NaN bins are ignored.
+    coverage : float
+        Mass the region must reach.
+    bin_width : np.ndarray, shape (n_position_bins,)
+        Positive width of each bin.
+
+    Returns
+    -------
+    threshold : np.ndarray, shape (n_time,)
+        Density ``posterior / bin_width`` at the region's boundary; NaN for
+        rows without mass.
+    """
+    posterior = np.where(np.isnan(posterior), 0.0, posterior)
+    threshold = np.full(posterior.shape[0], np.nan)
+    const = np.sum(posterior, axis=1, keepdims=True)
+    has_mass = np.isfinite(const[:, 0]) & (const[:, 0] > 0.0)
+    if not np.any(has_mass):
+        return threshold
+    # The same division as the membership test in get_HPD_spatial_coverage,
+    # so the boundary bin compares equal to the threshold.
+    density = posterior[has_mass] / bin_width
+    order = np.argsort(-density, axis=1, kind="stable")
+    sorted_density = np.take_along_axis(density, order, axis=1)
+    sorted_mass = np.take_along_axis(posterior[has_mass], order, axis=1)
+    reached = np.cumsum(sorted_mass / const[has_mass], axis=1) >= coverage
+    crit_ind = np.argmax(reached, axis=1)
+    # As for mass: if rounding leaves the total just below one, stop at the
+    # last bin with mass.
+    no_cutoff = ~reached.any(axis=1)
+    last_positive = np.count_nonzero(sorted_density > 0.0, axis=1) - 1
+    crit_ind[no_cutoff] = last_positive[no_cutoff]
+    threshold[has_mass] = sorted_density[np.arange(len(crit_ind)), crit_ind]
+    return threshold
+
+
 def get_HPD_spatial_coverage(
     posterior: xr.DataArray,
-    hpd_threshold: np.ndarray,
+    hpd_threshold: np.ndarray | None = None,
     bin_width: np.ndarray | None = None,
+    *,
+    coverage: float | None = None,
 ) -> np.ndarray:
     """Compute total spatial measure covered by highest posterior density regions.
 
@@ -98,9 +157,10 @@ def get_HPD_spatial_coverage(
         naming: ``position`` (1D) or names ending in ``_position``
         (``x_position``/``y_position`` for 2D, ``z_position`` and so on for
         higher dimensions).
-    hpd_threshold : np.ndarray, shape (n_time,)
+    hpd_threshold : np.ndarray, shape (n_time,), optional
         HPD threshold values for each time point, typically obtained from
-        `get_highest_posterior_threshold`.
+        `get_highest_posterior_threshold`. Bins whose posterior mass is at
+        or above it are in the region. Required unless `coverage` is given.
     bin_width : np.ndarray, shape (n_position_bins,), optional
         Exact width of each position bin, used when the bins are *not*
         uniformly spaced — e.g. ``np.diff(environment.edges_[0])`` for a
@@ -110,6 +170,18 @@ def get_HPD_spatial_coverage(
         omitted, uniform spacing is assumed (see Notes); this is exact for
         open-field grids and single-segment tracks, which the
         ``Environment`` builds with equal-width bins.
+    coverage : float, optional
+        Compute the highest-density region with this coverage, in
+        ``(0, 1]``, instead of taking `hpd_threshold`: bins are ranked by
+        density, ``posterior / bin_width``, and their mass is accumulated in
+        that order until it reaches `coverage`. The region is that density level
+        set: every bin in it is at least as dense as every bin outside. It
+        holds at least `coverage`, possibly more, since the last bin enters
+        whole, with every bin of equal density. With discrete bins it is not
+        always the narrowest set of bins holding `coverage`. Requires
+        `bin_width` and excludes `hpd_threshold`. Use it when the bin widths
+        differ; with a mass threshold, a wide bin can enter before a narrower
+        one of higher density.
 
     Returns
     -------
@@ -130,6 +202,11 @@ def get_HPD_spatial_coverage(
     raises a ``ValueError``. Pass ``bin_width`` to integrate exact per-bin widths
     instead (1D only); the widths cannot be recovered from the bin centers alone
     when the spacing is non-uniform.
+
+    With `hpd_threshold`, the region holds the bins of highest posterior
+    *mass*, whatever `bin_width` is. With `coverage` and `bin_width` it holds
+    the bins of highest *density*; bins of equal density are all in or all
+    out, as bins of equal mass are with a threshold.
     """
     position_dims = get_position_dims(posterior)
     if not position_dims:
@@ -138,9 +215,19 @@ def get_HPD_spatial_coverage(
             f"'_position'; got {tuple(posterior.dims)}"
         )
         raise ValueError(msg)
-    # Broadcast the per-time threshold over the trailing position axes.
-    threshold = hpd_threshold[(slice(None), *([np.newaxis] * len(position_dims)))]
-    isin_hpd = posterior >= threshold
+    if coverage is not None and (hpd_threshold is not None or bin_width is None):
+        msg = (
+            "coverage computes a highest-density region from bin_width; pass "
+            "bin_width and no hpd_threshold."
+        )
+        raise ValueError(msg)
+    if coverage is None and hpd_threshold is None:
+        msg = "pass hpd_threshold, or coverage with bin_width."
+        raise ValueError(msg)
+    if hpd_threshold is not None:
+        # Broadcast the per-time threshold over the trailing position axes.
+        threshold = hpd_threshold[(slice(None), *([np.newaxis] * len(position_dims)))]
+        isin_hpd = posterior >= threshold
 
     if bin_width is not None:
         if len(position_dims) != 1:
@@ -163,10 +250,23 @@ def get_HPD_spatial_coverage(
         # axis identified by name, so the result does not depend on whether the
         # position axis is trailing.
         axis = posterior.dims.index(dim)
-        weight_shape = [1] * isin_hpd.ndim
+        weight_shape = [1] * posterior.ndim
         weight_shape[axis] = bin_width.shape[0]
-        weighted = np.asarray(isin_hpd.values) * bin_width.reshape(weight_shape)
-        return np.where(np.isnan(hpd_threshold), np.nan, weighted.sum(axis=axis))
+        if coverage is None:
+            row_threshold = cast(np.ndarray, hpd_threshold)
+            isin_values = np.asarray(isin_hpd.values)
+        else:
+            _check_density_coverage(coverage)
+            if not np.all(np.isfinite(bin_width) & (bin_width > 0)):
+                msg = "bin_width must be finite and positive to rank by density."
+                raise ValueError(msg)
+            values = np.moveaxis(np.asarray(posterior.values), axis, -1)
+            row_threshold = _highest_density_threshold(values, coverage, bin_width)
+            isin_values = np.moveaxis(
+                values / bin_width >= row_threshold[:, np.newaxis], -1, axis
+            )
+        weighted = isin_values * bin_width.reshape(weight_shape)
+        return np.where(np.isnan(row_threshold), np.nan, weighted.sum(axis=axis))
 
     # Uniform spacing: bin measure is the product of per-dimension bin widths,
     # taken from the first difference of each (strictly increasing) coordinate.
@@ -190,5 +290,5 @@ def get_HPD_spatial_coverage(
             )
             raise ValueError(msg)
         bin_measure *= float(diffs[0])
-    coverage = (isin_hpd * bin_measure).sum(position_dims).values
-    return np.where(np.isnan(hpd_threshold), np.nan, coverage)
+    measure = (isin_hpd * bin_measure).sum(position_dims).values
+    return np.where(np.isnan(cast(np.ndarray, hpd_threshold)), np.nan, measure)

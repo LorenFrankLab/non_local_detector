@@ -207,6 +207,32 @@ class TestSamplePosterior:
             first, sample_posterior(posterior, bin_edges, n_samples=50, rng=4)
         )
 
+    def test_nan_bins_hold_no_mass(self):
+        """An off-track (NaN) bin is never sampled; the others keep their mass."""
+        bin_edges = np.arange(0.0, 4.0)
+        n_samples = 10_000
+
+        samples = sample_posterior(
+            np.array([[0.2, np.nan, 0.8]]), bin_edges, n_samples=n_samples, rng=0
+        )
+
+        assert np.all(np.isfinite(samples))
+        assert not np.any((samples >= 1.0) & (samples < 2.0))
+        standard_error = np.sqrt(0.2 * 0.8 / n_samples)
+        assert abs(np.mean(samples < 1.0) - 0.2) < 3 * standard_error
+        assert abs(np.mean(samples >= 2.0) - 0.8) < 3 * standard_error
+
+    def test_row_without_mass_gives_nan_samples_for_that_row_only(self):
+        bin_edges = np.arange(0.0, 4.0)
+        posterior = np.array(
+            [[np.nan, np.nan, np.nan], [0.0, 0.0, 0.0], [0.5, 0.5, 0.0]]
+        )
+
+        samples = sample_posterior(posterior, bin_edges, n_samples=20, rng=0)
+
+        assert np.all(np.isnan(samples[:2]))
+        assert np.all((samples[2] >= 0.0) & (samples[2] <= 2.0))
+
     def test_int_seed_draws_each_time_point_independently(self):
         """An int seed must not restart the stream at every time point."""
         bin_edges = np.arange(0.0, 4.0)
