@@ -18,12 +18,29 @@ width, and rejects deviations above that larger bound. The separate precision
 guard rejects grids whose ulp bound exceeds 1% of their smallest bin width.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
+from typing import Any, TypeVar, cast
 
 import numpy as np
+from numpy.typing import ArrayLike
 
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector.exceptions import (
+    DataError,
+    ValidationError,
+    _structured_message,
+)
+
+__all__ = [
+    "calculate_time_edges",
+    "time_edges_from_centers",
+]
+
+_TIME_GRID_GUIDE_URL = (
+    "https://lorenfranklab.github.io/non_local_detector/time_grid_migration/"
+)
+
 
 # Allowed deviation of a bin width from the mean width, in ulp of max|edge|.
 _SPACING_TOLERANCE_ULPS = 4
@@ -35,27 +52,62 @@ _MAX_RELATIVE_SPACING_TOLERANCE = 1e-2
 _UNIFORMITY_RELATIVE_FLOOR = 1e-3
 
 
-def requires_time_edges(function):
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def requires_time_edges(function: _F) -> _F:
     """Keep the explicit-edge signature and explain obsolete time arguments.
 
     This is an error adapter, not a compatibility conversion: old inputs are
     never interpreted as bin boundaries automatically.
+
+    Parameters
+    ----------
+    function : callable
+        Function that takes a keyword-only ``time_edges`` argument.
+
+    Returns
+    -------
+    callable
+        ``function`` wrapped so that calls without the ``time_edges``
+        keyword, or with the obsolete ``time`` keyword, raise ``TypeError``.
     """
 
     @wraps(function)
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         if "time" in kwargs or "time_edges" not in kwargs:
-            raise TypeError(
-                f"{function.__qualname__} requires keyword-only time_edges "
-                "(n_bins + 1 bin boundaries). For uniformly spaced sample "
-                "timestamps, use time_edges=time_edges_from_centers(time). "
-                "This preserves row count but changes between-sample spike "
-                "ownership. See docs/time_grid_migration.md for irregular "
-                "tracking, masks, and independent sequences."
+            if "time" in kwargs:
+                message = (
+                    f"{function.__qualname__} no longer takes time; pass the "
+                    "bin boundaries as time_edges"
+                )
+                got = "time=..."
+            else:
+                message = (
+                    f"{function.__qualname__} requires time_edges as a keyword argument"
+                )
+                got = "no time_edges keyword argument"
+            msg = _structured_message(
+                message,
+                expected="time_edges=..., the n_bins + 1 bin boundaries in seconds",
+                got=got,
+                hint=(
+                    "For one bin per uniformly spaced sample, use "
+                    "time_edges=time_edges_from_centers(time): the row count "
+                    "stays the same, but a spike between two samples belongs "
+                    "to the nearer sample's bin. A detector decodes only bins "
+                    "1 / sampling_frequency wide, so construct it (or call "
+                    "set_params) with sampling_frequency equal to the sample "
+                    "rate, or build edges at its rate with "
+                    "detector.calculate_time_edges([start, stop]). Irregular "
+                    "tracking, masks and independent "
+                    f"sequences: {_TIME_GRID_GUIDE_URL}"
+                ),
             )
+            raise TypeError(msg)
         return function(*args, **kwargs)
 
-    return wrapped
+    return cast(_F, wrapped)
 
 
 def _spacing_tolerance(time_edges: np.ndarray) -> float:
@@ -64,7 +116,7 @@ def _spacing_tolerance(time_edges: np.ndarray) -> float:
 
 
 def _uniformity_tolerance(time_edges: np.ndarray, width: float) -> float:
-    """Allowed deviation of a bin width from ``width``, in seconds."""
+    """Return the allowed deviation of a bin width from ``width``, in seconds."""
     return max(_spacing_tolerance(time_edges), _UNIFORMITY_RELATIVE_FLOOR * width)
 
 
@@ -77,8 +129,9 @@ def _validate_time_precision(
     if not np.isfinite(tolerance) or (
         tolerance > _MAX_RELATIVE_SPACING_TOLERANCE * smallest
     ):
+        msg = f"{name} has insufficient precision for its bin widths"
         raise DataError(
-            f"{name} has insufficient precision for its bin widths",
+            msg,
             data_name=name,
             hint=f"dtype {time_edges.dtype} resolves timestamps near "
             f"{np.max(np.abs(time_edges)):.6g} only to about {tolerance:.3g} s, which "
@@ -88,7 +141,7 @@ def _validate_time_precision(
         )
 
 
-def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
+def validate_time_edges(time_edges: ArrayLike, name: str = "time_edges") -> np.ndarray:
     """Validate decode bin edges and return them as a float array.
 
     Parameters
@@ -117,8 +170,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     """
     edges = np.asarray(time_edges)
     if edges.ndim != 1 or edges.shape[0] < 2:
+        msg = f"{name} must be a one-dimensional array of at least two bin edges"
         raise ValidationError(
-            f"{name} must be a one-dimensional array of at least two bin edges",
+            msg,
             expected="array with shape (n_bins + 1,), n_bins >= 1",
             got=f"array with shape {edges.shape}",
             hint="Pass bin boundaries, not one timestamp per bin; see "
@@ -129,15 +183,17 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
         np.issubdtype(edges.dtype, np.integer)
         or np.issubdtype(edges.dtype, np.floating)
     ):
+        msg = f"{name} must contain real numbers"
         raise ValidationError(
-            f"{name} must contain real numbers",
+            msg,
             expected="an integer or floating-point array",
             got=f"dtype {edges.dtype}",
             hint="Convert timestamps to seconds as float64.",
         )
     if not np.all(np.isfinite(edges)):
+        msg = f"Found non-finite values in {name}"
         raise DataError(
-            f"Found non-finite values in {name}",
+            msg,
             data_name=name,
             hint="Every bin edge must be a finite timestamp.",
         )
@@ -146,8 +202,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
         widths = np.diff(edges.astype(np.result_type(edges.dtype, np.float64)))
     span = float(edges[-1]) - float(edges[0])
     if not np.all(np.isfinite(widths)) or not np.isfinite(span):
+        msg = f"{name} must describe finite bin durations and a finite span"
         raise DataError(
-            f"{name} must describe finite bin durations and a finite span",
+            msg,
             data_name=name,
             hint="Subtract a reference time or express timestamps in seconds "
             "at a scale whose differences remain finite.",
@@ -158,8 +215,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     bad = np.flatnonzero(widths <= 0)
     if bad.size > 0:
         i = int(bad[0])
+        msg = f"{name} must be strictly increasing"
         raise DataError(
-            f"{name} must be strictly increasing",
+            msg,
             data_name=name,
             hint=f"{name}[{i}] = {edges[i]!r} and {name}[{i + 1}] = "
             f"{edges[i + 1]!r}. Repeated edges give zero-width bins and "
@@ -183,7 +241,7 @@ class _DecodeTimeGrid:
     uniform_width: float | None
     uniform_tolerance: float | None
 
-    def __init__(self, edges) -> None:
+    def __init__(self, edges: ArrayLike) -> None:
         object.__setattr__(self, "edges", validate_time_edges(edges))
         object.__setattr__(self, "uniform_width", None)
         object.__setattr__(self, "uniform_tolerance", None)
@@ -219,7 +277,7 @@ class _DecodeTimeGrid:
 
 
 def _resolve_time_grid(
-    time_edges, time_grid: _DecodeTimeGrid | None = None
+    time_edges: ArrayLike, time_grid: _DecodeTimeGrid | None = None
 ) -> _DecodeTimeGrid:
     """Reuse matching private preparation; validate fresh inputs otherwise."""
     if isinstance(time_grid, _DecodeTimeGrid) and time_grid.edges is time_edges:
@@ -227,7 +285,20 @@ def _resolve_time_grid(
     return _DecodeTimeGrid(time_edges)
 
 
-def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
+def _uniform_time_grid(
+    time_edges: np.ndarray, time_grid: _DecodeTimeGrid | None = None
+) -> _DecodeTimeGrid:
+    """Bind edges the detector already checked uniform; reuse a matching grid."""
+    if isinstance(time_grid, _DecodeTimeGrid) and time_grid.edges is time_edges:
+        return time_grid
+    return _DecodeTimeGrid.from_validated_edges(
+        time_edges,
+        uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
+        / (len(time_edges) - 1),
+    )
+
+
+def uniform_time_bin_width(time_edges: ArrayLike, name: str = "time_edges") -> float:
     """Validate that decode bins are uniform and return their width.
 
     See :func:`uniform_time_edges`, which also returns the validated edges.
@@ -235,6 +306,7 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Bin boundaries in seconds.
     name : str, optional
         Name used in error messages, by default "time_edges".
 
@@ -252,7 +324,7 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
 
 
 def uniform_time_edges(
-    time_edges, name: str = "time_edges"
+    time_edges: ArrayLike, name: str = "time_edges"
 ) -> tuple[np.ndarray, float]:
     """Validate uniform decode bins in one pass; return the edges and width.
 
@@ -263,6 +335,7 @@ def uniform_time_edges(
     Parameters
     ----------
     time_edges : array_like, shape (n_bins + 1,)
+        Bin boundaries in seconds.
     name : str, optional
         Name used in error messages, by default "time_edges".
 
@@ -286,8 +359,9 @@ def uniform_time_edges(
     tolerance = _uniformity_tolerance(edges, width)
     if np.any(deviation > tolerance):
         i = int(np.argmax(deviation))
+        msg = f"{name} must describe uniform bins for this detector"
         raise DataError(
-            f"{name} must describe uniform bins for this detector",
+            msg,
             data_name=name,
             hint=f"Bin {i} is {edges[i + 1] - edges[i]:.9g} s wide but the mean "
             f"width is {width:.9g} s (tolerance {tolerance:.3g} s). The HMM "
@@ -299,8 +373,8 @@ def uniform_time_edges(
     return edges, float(width)
 
 
-def time_edges_from_centers(time) -> np.ndarray:
-    """Edges of uniform bins centered on uniformly spaced timestamps.
+def time_edges_from_centers(time: ArrayLike) -> np.ndarray:
+    """Return the edges of uniform bins centered on uniformly spaced timestamps.
 
     This is the migration for code that decoded one row per position sample:
     each sample ``t[i]`` becomes the center of the bin
@@ -314,6 +388,8 @@ def time_edges_from_centers(time) -> np.ndarray:
     Returns
     -------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Bin boundaries in the units of ``time``: the midpoints between
+        adjacent centers, with half a bin width added beyond each end.
 
     Raises
     ------
@@ -326,8 +402,9 @@ def time_edges_from_centers(time) -> np.ndarray:
     """
     centers = np.asarray(time)
     if centers.ndim == 1 and centers.shape[0] < 2:
+        msg = "time_edges_from_centers needs at least two timestamps"
         raise ValidationError(
-            "time_edges_from_centers needs at least two timestamps",
+            msg,
             expected="array with shape (n_bins,), n_bins >= 2",
             got=f"array with shape {centers.shape}",
             hint="A single timestamp does not determine a bin duration; pass "
@@ -348,7 +425,7 @@ def time_edges_from_centers(time) -> np.ndarray:
 
 
 def calculate_time_edges(
-    time_range, sampling_frequency: float, trim: bool = False
+    time_range: ArrayLike, sampling_frequency: float, *, trim: bool = False
 ) -> np.ndarray:
     """Uniform edges at ``1 / sampling_frequency`` spanning ``time_range``.
 
@@ -366,6 +443,7 @@ def calculate_time_edges(
     Returns
     -------
     time_edges : np.ndarray, shape (n_bins + 1,)
+        Uniform bin boundaries in seconds.
 
     Raises
     ------
@@ -379,14 +457,16 @@ def calculate_time_edges(
         validated by the same uniformity guard as detector inputs.
     """
     if not (np.isfinite(sampling_frequency) and sampling_frequency > 0):
+        msg = "sampling_frequency must be a positive finite number"
         raise ValidationError(
-            "sampling_frequency must be a positive finite number",
+            msg,
             expected="bins per second > 0",
             got=repr(sampling_frequency),
         )
     if np.shape(time_range) != (2,):
+        msg = "time_range must be (start, stop)"
         raise ValidationError(
-            "time_range must be (start, stop)",
+            msg,
             expected="array with shape (2,)",
             got=f"array with shape {np.shape(time_range)}",
         )
@@ -406,8 +486,9 @@ def calculate_time_edges(
     n_bins = int(np.round(n_float))
     if abs(n_float - n_bins) > tolerance:
         if not trim:
+            msg = "time_range is not a whole number of bins"
             raise ValidationError(
-                "time_range is not a whole number of bins",
+                msg,
                 expected=f"a duration that is a multiple of 1/{sampling_frequency} s",
                 got=f"{stop - start!r} s = {n_float:.6f} bins",
                 hint="Pass trim=True to drop the partial final bin, or adjust "
@@ -415,10 +496,37 @@ def calculate_time_edges(
             )
         n_bins = int(np.floor(n_float))
     if n_bins < 1:
+        msg = "time_range contains no complete bin"
         raise ValidationError(
-            "time_range contains no complete bin",
+            msg,
             expected=f"a duration of at least 1/{sampling_frequency} s",
             got=f"{stop - start!r} s",
         )
     edges: np.ndarray = start + np.arange(n_bins + 1) / sampling_frequency
     return uniform_time_edges(edges)[0]
+
+
+def decode_bin_centers(
+    time_edges: np.ndarray, row_start: int, row_stop: int
+) -> np.ndarray:
+    """Compute the centers of the decode bins ``[row_start, row_stop)``.
+
+    Local-position kernels, the non-local penalty, and local likelihoods
+    evaluate the animal's position at these observation coordinates.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges, in seconds.
+    row_start : int
+        First requested bin (inclusive).
+    row_stop : int
+        End of the requested bins (exclusive).
+
+    Returns
+    -------
+    centers : np.ndarray, shape (row_stop - row_start,)
+        Center time of each requested decode bin, in seconds.
+    """
+    edges = np.asarray(time_edges)[row_start : row_stop + 1]
+    return edges[:-1] + 0.5 * np.diff(edges)

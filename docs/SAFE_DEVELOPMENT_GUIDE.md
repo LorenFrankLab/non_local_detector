@@ -332,7 +332,6 @@ If you develop new workflow patterns:
 2. Follow existing skill format
 3. Add to CLAUDE.md "Mandatory Skills Usage"
 4. Update `.claude/skills/README.md`
-5. Verify with `bash tests/test_safe_dev_system.sh`
 
 ---
 
@@ -377,8 +376,7 @@ A: You're the domain expert. If Claude says "differences are acceptable" but you
 
 **System not working?**
 
-1. Run `bash tests/test_safe_dev_system.sh` to verify installation
-2. Review recent changes to CLAUDE.md
+1. Review recent changes to CLAUDE.md
 
 **Need help?**
 

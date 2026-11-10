@@ -1,7 +1,71 @@
+# Run `uvx pre-commit install` once; then every commit runs these.
+# `uvx pre-commit run --all-files` runs them by hand. CI runs ruff, mypy and
+# zizmor directly.
+ci:
+  autoupdate_schedule: monthly
+  autofix_commit_msg: "style: pre-commit fixes"
+  autoupdate_commit_msg: "chore(deps): update pre-commit hooks"
+
+# Recorded benchmark output stays byte-for-byte as recorded, a patch's
+# trailing whitespace is part of its context lines, and .claude holds
+# planning notes.
+exclude: '^(docs/performance_artifacts/|\.claude/)|\.patch$'
+
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # mkdocs.yml uses the !ENV tag; `mkdocs build --strict` validates it.
+        exclude: '^mkdocs\.yml$'
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: debug-statements
+      - id: mixed-line-ending
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep equal to the ruff version in uv.lock.
     rev: v0.17.2
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        args: [--fix, --show-fixes]
       - id: ruff-format
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        additional_dependencies: [tomli]
+
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.27
+    hooks:
+      - id: validate-pyproject
+
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.39.0
+    hooks:
+      - id: check-dependabot
+      - id: check-github-workflows
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      - id: zizmor
+
+  # The project environment's mypy, so it sees the installed dependencies.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        # --no-sync: never rebuild the shared venv from a hook
+        entry: uv run --no-sync mypy
+        language: system
+        types: [python]
+        files: '^src/non_local_detector/'
+        pass_filenames: false

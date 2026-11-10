@@ -39,28 +39,40 @@ this corresponds to a user-supplied ``xt$penalty``.
 
 Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`` /
 ``sorted_spikes_diffusion``, so the Poisson prediction is shared with the diffusion
-likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
+likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` calls it).
 """
 
 import warnings
+from collections.abc import Sequence
 from functools import partial
+from typing import Any, TypeAlias
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.optimize
 from jax import lax
+from numpy.typing import ArrayLike
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
+    SpikeTimeOrder,
+    as_array,
+    as_arrays,
     environment_grid_fingerprint,
-    validate_weights,
 )
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
@@ -69,17 +81,21 @@ from non_local_detector.likelihoods.diffusion import (
     n_connected_components,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-    _assemble_place_fields,
-    _validate_local_interpolation,
+    LocalInterpolation,
+    SortedSpikesDiffusionEncodingModel,
+    assemble_place_fields,
     pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
+    validate_local_interpolation,
 )
+from non_local_detector.time_edges import _DecodeTimeGrid, requires_time_edges
 
-# The MRF place-field / Poisson-prediction contract is identical to the diffusion
-# smoother's (both store FULL-GRID rate maps), so the prediction is shared.
-predict_sorted_spikes_mrf_log_likelihood = (
-    predict_sorted_spikes_diffusion_log_likelihood
-)
+__all__ = [
+    "SortedSpikesMRFEncodingModel",
+    "fit_sorted_spikes_mrf_encoding_model",
+    "predict_sorted_spikes_mrf_log_likelihood",
+]
+
 
 # The Newton/IRLS fit and REML score run in JAX (jit + GPU-ready), batched over
 # neurons. float32 is the package regime (core.py is float32-explicit, so no global
@@ -108,15 +124,18 @@ _DEFAULT_MAX_RANK = 250
 def _as_positive_int(name: str, value: int) -> int:
     """Validate positive integer controls used by the Newton solver."""
     if isinstance(value, bool):
-        raise ValidationError(f"{name} must be a positive integer")
+        msg = f"{name} must be a positive integer"
+        raise ValidationError(msg)
 
     try:
         int_value = int(value)
     except (TypeError, ValueError) as err:
-        raise ValidationError(f"{name} must be a positive integer") from err
+        msg = f"{name} must be a positive integer"
+        raise ValidationError(msg) from err
 
     if int_value != value or int_value < 1:
-        raise ValidationError(f"{name} must be a positive integer")
+        msg = f"{name} must be a positive integer"
+        raise ValidationError(msg)
 
     return int_value
 
@@ -126,10 +145,12 @@ def _as_positive_float(name: str, value: float) -> float:
     try:
         float_value = float(value)
     except (TypeError, ValueError) as err:
-        raise ValidationError(f"{name} must be a positive finite value") from err
+        msg = f"{name} must be a positive finite value"
+        raise ValidationError(msg) from err
 
     if not np.isfinite(float_value) or float_value <= 0:
-        raise ValidationError(f"{name} must be a positive finite value")
+        msg = f"{name} must be a positive finite value"
+        raise ValidationError(msg)
 
     return float_value
 
@@ -139,10 +160,12 @@ def _as_nonnegative_float(name: str, value: float) -> float:
     try:
         float_value = float(value)
     except (TypeError, ValueError) as err:
-        raise ValidationError(f"{name} must be a non-negative finite value") from err
+        msg = f"{name} must be a non-negative finite value"
+        raise ValidationError(msg) from err
 
     if not np.isfinite(float_value) or float_value < 0:
-        raise ValidationError(f"{name} must be a non-negative finite value")
+        msg = f"{name} must be a non-negative finite value"
+        raise ValidationError(msg)
 
     return float_value
 
@@ -154,14 +177,12 @@ def _validate_log_penalty_bounds(
     try:
         lower, upper = tuple(float(bound) for bound in log_penalty_bounds)
     except (TypeError, ValueError) as err:
-        raise ValidationError(
-            "log_penalty_bounds must contain two finite values with lower < upper"
-        ) from err
+        msg = "log_penalty_bounds must contain two finite values with lower < upper"
+        raise ValidationError(msg) from err
 
     if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
-        raise ValidationError(
-            "log_penalty_bounds must contain two finite values with lower < upper"
-        )
+        msg = "log_penalty_bounds must contain two finite values with lower < upper"
+        raise ValidationError(msg)
 
     return lower, upper
 
@@ -185,52 +206,60 @@ def _validate_mrf_problem(
     tol = _as_positive_float("tol", tol)
 
     if counts.ndim != 2:
-        raise ValidationError("counts must be a 2D array of shape (n_bins, n_neurons)")
+        msg = "counts must be a 2D array of shape (n_bins, n_neurons)"
+        raise ValidationError(msg)
 
     if occupancy.ndim != 1:
-        raise ValidationError("occupancy must be a 1D array")
+        msg = "occupancy must be a 1D array"
+        raise ValidationError(msg)
 
     if basis.ndim != 2:
-        raise ValidationError("basis must be a 2D array")
+        msg = "basis must be a 2D array"
+        raise ValidationError(msg)
 
     if penalty_weights.ndim != 1:
-        raise ValidationError("penalty_weights must be a 1D array")
+        msg = "penalty_weights must be a 1D array"
+        raise ValidationError(msg)
 
     if occupancy.shape[0] != counts.shape[0]:
-        raise ValidationError(
-            "occupancy and counts must have the same number of spatial bins"
-        )
+        msg = "occupancy and counts must have the same number of spatial bins"
+        raise ValidationError(msg)
 
     if basis.shape[0] != counts.shape[0]:
-        raise ValidationError(
-            "basis and counts must have the same number of spatial bins"
-        )
+        msg = "basis and counts must have the same number of spatial bins"
+        raise ValidationError(msg)
 
     if penalty_weights.shape[0] != basis.shape[1]:
-        raise ValidationError(
-            "penalty_weights must have one entry for each basis vector"
-        )
+        msg = "penalty_weights must have one entry for each basis vector"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(counts)):
-        raise ValidationError("counts must contain only finite values")
+        msg = "counts must contain only finite values"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(occupancy)):
-        raise ValidationError("occupancy must contain only finite values")
+        msg = "occupancy must contain only finite values"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(basis)):
-        raise ValidationError("basis must contain only finite values")
+        msg = "basis must contain only finite values"
+        raise ValidationError(msg)
 
     if not np.all(np.isfinite(penalty_weights)):
-        raise ValidationError("penalty_weights must contain only finite values")
+        msg = "penalty_weights must contain only finite values"
+        raise ValidationError(msg)
 
     if np.any(counts < 0):
-        raise ValidationError("counts must be non-negative")
+        msg = "counts must be non-negative"
+        raise ValidationError(msg)
 
     if np.any(occupancy < 0):
-        raise ValidationError("occupancy must be non-negative")
+        msg = "occupancy must be non-negative"
+        raise ValidationError(msg)
 
     if np.any(penalty_weights < 0):
-        raise ValidationError("penalty_weights must be non-negative")
+        msg = "penalty_weights must be non-negative"
+        raise ValidationError(msg)
 
     return counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
 
@@ -240,7 +269,9 @@ def _validate_mrf_problem(
 _matmul = partial(jnp.matmul, precision=jax.lax.Precision.HIGHEST)
 
 
-def _penalized_hessian(basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.ndarray):
+def _penalized_hessian(
+    basis: jax.Array, mu: jax.Array, penalty_diag: jax.Array
+) -> jax.Array:
     """Batched penalized Hessian ``Bᵀ diag(mu_k) B + diag(penalty_diag)`` per neuron.
 
     The 3-operand einsum is compiled by XLA to an efficient batched matmul (unlike
@@ -254,16 +285,19 @@ def _penalized_hessian(basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.nd
     )
 
 
+_NewtonState: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+
+
 @partial(jax.jit, static_argnames=("max_iter",))
 def _newton_fit_jax(
-    counts: jnp.ndarray,
-    occupancy: jnp.ndarray,
-    basis: jnp.ndarray,
-    penalty_diag: jnp.ndarray,
+    counts: jax.Array,
+    occupancy: jax.Array,
+    basis: jax.Array,
+    penalty_diag: jax.Array,
     max_iter: int,
-    tol: jnp.ndarray,
+    tol: jax.Array,
     rate_scale: float = 1.0,
-):
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Batched penalized-Poisson Newton/IRLS with per-neuron step-halving (jit).
 
     All inputs are ``_FIT_DTYPE`` and the whole loop compiles to batched linear
@@ -275,7 +309,9 @@ def _newton_fit_jax(
         tol, _FIT_TOL_FLOOR
     )  # float32-safe floor on the relative-objective decrease
 
-    def penalized_neg_loglik(coeffs, eta, mu):
+    def penalized_neg_loglik(
+        coeffs: jax.Array, eta: jax.Array, mu: jax.Array
+    ) -> jax.Array:
         loglik = jnp.sum(
             counts * (eta - jnp.log(rate_scale)) - mu, axis=0
         )  # (n_neurons,)
@@ -288,7 +324,7 @@ def _newton_fit_jax(
     basis_pinv_ones = jnp.linalg.lstsq(basis, jnp.ones(n_bins, basis.dtype))[0]
     coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
-    def newton_cond(state):
+    def newton_cond(state: _NewtonState) -> jax.Array:
         _coeffs, iteration, _max_step, rel_decrease = state
         # Converge on the penalized objective (-loglik + penalty), not the coefficient
         # step. A Poisson GAM in a Laplacian eigenbasis has an unpenalized null
@@ -300,7 +336,7 @@ def _newton_fit_jax(
         # coefficient-step test cannot.
         return (iteration < max_iter) & (rel_decrease >= tol)
 
-    def newton_body(state):
+    def newton_body(state: _NewtonState) -> _NewtonState:
         coeffs, iteration, _max_step, _rel = state
         eta = _matmul(basis, coeffs)
         mu = occupancy[:, None] * jnp.exp(
@@ -316,7 +352,7 @@ def _newton_fit_jax(
             coeffs, eta, mu
         )  # (n_neurons,), current coeffs
 
-        def is_worse(scale):
+        def is_worse(scale: jax.Array) -> jax.Array:
             trial = coeffs + scale[None, :] * step.T
             trial_eta = _matmul(basis, trial)
             trial_mu = occupancy[:, None] * jnp.exp(
@@ -332,11 +368,13 @@ def _newton_fit_jax(
                 trial_objective <= objective + _DESCENT_TOL * (1.0 + jnp.abs(objective))
             )
 
-        def halving_cond(hstate):
+        def halving_cond(hstate: tuple[jax.Array, int]) -> jax.Array:
             scale, halvings = hstate
             return (halvings < _MAX_STEP_HALVINGS) & jnp.any(is_worse(scale))
 
-        def halving_body(hstate):
+        def halving_body(
+            hstate: tuple[jax.Array, int],
+        ) -> tuple[jax.Array, int]:
             scale, halvings = hstate
             return jnp.where(is_worse(scale), 0.5 * scale, scale), halvings + 1
 
@@ -396,6 +434,7 @@ def mrf_penalized_poisson_fit(
     penalty: float,
     max_iter: int = 100,
     tol: float = 1e-10,
+    *,
     validate: bool = True,
     rate_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]:
@@ -480,7 +519,7 @@ def mrf_penalized_poisson_fit(
 
 
 def _penalty_rank(penalty_weights: np.ndarray) -> int:
-    """Number of penalized directions (positive eigenvalues) for the REML df term."""
+    """Return the number of penalized directions (positive eigenvalues) for the REML df term."""
     largest = penalty_weights.max()
     if largest <= 0:
         return 0
@@ -489,16 +528,16 @@ def _penalty_rank(penalty_weights: np.ndarray) -> int:
 
 @partial(jax.jit, static_argnames=("max_iter",))
 def _reml_score_jax(
-    log_penalty: jnp.ndarray,
-    counts: jnp.ndarray,
-    occupancy: jnp.ndarray,
-    basis: jnp.ndarray,
-    penalty_weights: jnp.ndarray,
-    penalty_rank: jnp.ndarray,
+    log_penalty: jax.Array,
+    counts: jax.Array,
+    occupancy: jax.Array,
+    basis: jax.Array,
+    penalty_weights: jax.Array,
+    penalty_rank: jax.Array,
     max_iter: int,
-    tol: jnp.ndarray,
+    tol: jax.Array,
     rate_scale: float = 1.0,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Negative Laplace REML for ``lambda = exp(log_penalty)``, summed over neurons.
 
     On-device scalar (the fit stays on device across REML candidates). Returns +inf
@@ -529,6 +568,7 @@ def mrf_reml_objective(
     penalty_weights: np.ndarray,
     max_iter: int = 100,
     tol: float = 1e-10,
+    *,
     validate: bool = True,
     rate_scale: float = 1.0,
 ) -> float:
@@ -685,6 +725,7 @@ def select_penalty_by_reml(
     max_iter = int(max_iter)
 
     def objective(log_penalty: float) -> float:
+        """Return the REML objective minimized at ``log_penalty`` (``inf`` if not finite)."""
         log_penalty = float(log_penalty)
         if not np.isfinite(log_penalty):
             return np.inf
@@ -712,8 +753,9 @@ def select_penalty_by_reml(
     # still returns an arbitrary point; reject it rather than fitting with a
     # meaningless penalty.
     if not result.success or not np.isfinite(result.fun):
+        msg = "REML failed to find a valid smoothing parameter"
         raise ValidationError(
-            "REML failed to find a valid smoothing parameter",
+            msg,
             expected="a finite REML objective for some lambda in the search interval",
             got=str(result.message)
             if not result.success
@@ -767,26 +809,46 @@ def _floor_unoccupied_components(
     return rate_interior, coeffs
 
 
+class SortedSpikesMRFEncodingModel(SortedSpikesDiffusionEncodingModel):
+    """The encoding model ``fit_sorted_spikes_mrf_encoding_model`` returns.
+
+    The diffusion model's keys, which the prediction reads, plus the fit's
+    diagnostics (``mrf_*``, documented in the fit's Returns), which it does
+    not. The diagnostics stay in the encoding model so a fitted detector
+    reports how its penalty was chosen.
+    """
+
+    mrf_penalty: float
+    mrf_rank: int
+    mrf_coefficients: np.ndarray
+    mrf_penalty_weights: np.ndarray
+    mrf_reml_objective: float
+    mrf_n_iter: int
+    mrf_converged: bool
+    mrf_max_step: float
+    mrf_log_penalty_bounds: tuple[float, float]
+    mrf_penalty_selected_by_reml: bool
+
+
 def fit_sorted_spikes_mrf_encoding_model(
-    position_time: np.ndarray,
-    position: np.ndarray,
-    spike_times: list[np.ndarray],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
     environment: Environment,
-    weights: np.ndarray | None = None,
+    weights: ArrayLike | None = None,
+    *,
     rank: int | None = None,
     penalty: float | None = None,
     max_iter: int = 100,
     tol: float = 1e-10,
     log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
     reml_xatol: float = 0.001,
-    block_size: int = 100,
-    local_interpolation: str = "linear",
+    local_interpolation: LocalInterpolation = "linear",
     disable_progress_bar: bool = False,
-    *,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> SortedSpikesMRFEncodingModel:
     """Fit a population MRF-GAM encoding model for sorted spikes.
 
     Pixellates spike counts and occupancy onto interior bins, uses the ``rank``
@@ -799,15 +861,15 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     Parameters
     ----------
-    position_time : np.ndarray, shape (n_time_position,)
+    position_time : array_like, shape (n_time_position,)
         Sampling times for the position.
-    position : np.ndarray, shape (n_time_position, n_position_dims)
+    position : array_like, shape (n_time_position, n_position_dims)
         Position samples.
-    spike_times : list[np.ndarray]
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Spike times for each neuron.
     environment : Environment
         The spatial environment (must be fitted).
-    weights : np.ndarray, shape (n_time_position,), optional
+    weights : array_like, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM), by default
         None. If None, uniform weights are used.
     rank : int or None, optional
@@ -817,8 +879,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         mgcv's ``bs="mrf"`` default, which uses the full rank (all regions) and only
         truncates when ``k`` is set below the region count; the 250 cap silently drops
         the highest-frequency modes on large grids (pass an explicit ``rank`` to
-        override). Must be an explicit parameter so a user-supplied ``rank`` is not
-        dropped by the base class's signature filter.
+        override).
     penalty : float or None, optional
         The smoothing parameter ``lambda`` of the penalty
         ``(lambda / 2) * gamma_k^T diag(d) gamma_k``. None (default) selects it by
@@ -834,9 +895,6 @@ def fit_sorted_spikes_mrf_encoding_model(
         (-8.0, 20.0).
     reml_xatol : float, optional
         Scalar optimizer tolerance for REML penalty selection, by default 1e-3.
-    block_size : int, optional
-        Accepted for signature compatibility with sorted-spikes likelihood defaults, by
-        default 100; unused by the MRF fit.
     local_interpolation : {"linear", "nearest"}, optional
         How local likelihood evaluates full-grid rate maps at the animal's position, by
         default "linear". ``"linear"`` interpolates within connected interior stencils
@@ -846,23 +904,29 @@ def fit_sorted_spikes_mrf_encoding_model(
         Turn off the progress bar, by default False.
 
     encoding_time_range : array_like, shape (2,), optional
-        Acquisition start/stop in seconds. Clips encoding support using the
-        original interpolation basis. Uniform samples otherwise include endpoint
-        half-cells; a singleton requires explicit bounds or a tracking interval.
+        Acquisition start/stop in seconds, replacing the outer bounds of the
+        encoding support. A range inside the samples clips it, using the
+        original interpolation basis; a range past them extends it, holding
+        position at the first or last sample. Uniform samples otherwise include
+        endpoint half-cells; a singleton requires explicit bounds or a tracking
+        interval.
     valid_position_intervals : array_like, shape (n_intervals, 2), optional
         Ordered, non-overlapping continuous tracking intervals in seconds.
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
-        Encoding support does not automatically mark decode bins missing.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : SortedSpikesMRFEncodingModel
         The same keys as ``sorted_spikes_diffusion`` -- ``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` (FULL-GRID), ``no_spike_part_log_likelihood``,
-        ``interior_log_place_fields``, ``is_track_interior``, ``node_order``,
+        ``is_track_interior``, ``node_order``,
         ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar``,
-        ``rate_units``, ``encoding_exposure_seconds`` -- plus MRF diagnostics:
+        ``rate_units``, ``encoding_exposure_seconds``, with ``algorithm``
+        ``"sorted_spikes_mrf"`` -- plus MRF diagnostics:
 
         - ``mrf_penalty``: the selected (or supplied) smoothing parameter ``lambda``
         - ``mrf_rank``: number of eigenmodes used as the basis
@@ -881,15 +945,17 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     Warns
     -----
-    UserWarning
+    DataQualityWarning
         If some, but not all, connected components of the interior graph have
         exactly zero exposure. Their rates are unidentified, so spike counts binned
         there are ignored, their place fields are set to ``RATE_EPS_HZ`` and their
         modes' coefficients to zero.
-    UserWarning
+    DataQualityWarning
         If the exposure is zero everywhere. Every place field is then
         ``RATE_EPS_HZ``.
     """
+    position_time = as_array(position_time)
+    spike_times = as_arrays(spike_times)
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
         position,
@@ -898,10 +964,6 @@ def fit_sorted_spikes_mrf_encoding_model(
         valid_position_intervals=valid_position_intervals,
         _encoding_support=_encoding_support,
     )
-    position = position if position.ndim > 1 else position[:, np.newaxis]
-    if weights is None:
-        weights = np.ones((position.shape[0],))
-    weights = validate_weights(weights, position.shape[0])
     warn_if_no_encoding_exposure(
         exposure_weights, "Sorted-spikes MRF", clusterless=False
     )
@@ -909,7 +971,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     tol = _as_positive_float("tol", tol)
     log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
     reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
-    local_interpolation = _validate_local_interpolation(local_interpolation)
+    local_interpolation = validate_local_interpolation(local_interpolation)
     if penalty is not None:
         penalty = _as_nonnegative_float("penalty", penalty)
     if rank is not None:
@@ -939,11 +1001,10 @@ def fit_sorted_spikes_mrf_encoding_model(
             f"MRF basis auto-capped at {effective_rank} of "
             f"{node_order.shape[0]} interior bins; the highest-frequency "
             f"eigenmodes are dropped. Pass an explicit `rank` to override.",
-            UserWarning,
-            stacklevel=2,
+            ParameterWarning,
+            stacklevel=user_stacklevel(),
         )
 
-    assert environment.is_track_interior_ is not None
     is_track_interior = environment.is_track_interior_.ravel()
     n_total_bins = is_track_interior.shape[0]
 
@@ -954,7 +1015,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         environment,
         node_order,
         weights,
-        disable_progress_bar,
+        disable_progress_bar=disable_progress_bar,
         encoding_support=support,
     )
     if spike_fields:
@@ -986,8 +1047,8 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"connected components of the environment have zero encoding "
                 f"exposure; their rates are unidentified and set to the zero-exposure "
                 f"floor ({RATE_EPS_HZ:.1e} Hz).",
-                UserWarning,
-                stacklevel=2,
+                DataQualityWarning,
+                stacklevel=user_stacklevel(),
             )
             # Spikes binned where there is no exposure carry no rate information and
             # would push that component's unpenalized null mode without bound.
@@ -1030,8 +1091,8 @@ def fit_sorted_spikes_mrf_encoding_model(
                 f"{diagnostics['n_iter']} iteration(s) (max coefficient step "
                 f"{diagnostics['max_step']:.2e}); place fields may be unreliable. "
                 f"Increase max_iter or the penalty.",
-                UserWarning,
-                stacklevel=2,
+                NumericalWarning,
+                stacklevel=user_stacklevel(),
             )
         rate_interior = np.exp(
             eta
@@ -1040,18 +1101,18 @@ def fit_sorted_spikes_mrf_encoding_model(
             rate_interior, coeffs = _floor_unoccupied_components(
                 rate_interior, coeffs, unoccupied_bins, basis
             )
-    place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
-        _assemble_place_fields(rate_interior, node_order, n_total_bins)
+    place_fields, no_spike_part_log_likelihood = assemble_place_fields(
+        rate_interior, node_order, n_total_bins
     )
 
     return {
+        "algorithm": "sorted_spikes_mrf",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy_field,
-        "mean_rates": mean_rates,
+        "mean_rates": np.asarray(mean_rates),
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "interior_log_place_fields": interior_log_place_fields,
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
@@ -1062,11 +1123,145 @@ def fit_sorted_spikes_mrf_encoding_model(
         "mrf_coefficients": coeffs,
         "mrf_penalty_weights": penalty_weights,
         "mrf_reml_objective": reml_objective,
-        "mrf_n_iter": diagnostics["n_iter"],
-        "mrf_converged": diagnostics["converged"],
-        "mrf_max_step": diagnostics["max_step"],
+        "mrf_n_iter": int(diagnostics["n_iter"]),
+        "mrf_converged": bool(diagnostics["converged"]),
+        "mrf_max_step": float(diagnostics["max_step"]),
         "mrf_log_penalty_bounds": log_penalty_bounds,
         "mrf_penalty_selected_by_reml": penalty_selected_by_reml,
         "rate_units": "Hz",
         "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
+
+
+@requires_time_edges
+def predict_sorted_spikes_mrf_log_likelihood(
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
+    *,
+    environment: Environment,
+    occupancy: np.ndarray,
+    mean_rates: np.ndarray,
+    place_fields: jax.Array,
+    no_spike_part_log_likelihood: jax.Array,
+    is_track_interior: np.ndarray,
+    node_order: np.ndarray | None = None,
+    bin_sizes: np.ndarray | None = None,
+    local_interpolation: LocalInterpolation = "linear",
+    disable_progress_bar: bool = False,
+    is_local: bool = False,
+    row_slice: slice | None = None,
+    time_edges: np.ndarray,
+    algorithm: str | None = None,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
+    environment_grid: dict[str, Any] | None = None,
+    mrf_penalty: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_rank: int | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_coefficients: np.ndarray | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_penalty_weights: np.ndarray | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_reml_objective: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_n_iter: int | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_converged: bool | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_max_step: float | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_log_penalty_bounds: tuple[float, float] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    mrf_penalty_selected_by_reml: bool | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    _spike_time_order: SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
+) -> jax.Array:
+    """Predict the Poisson log likelihood of sorted spikes under the MRF-GAM.
+
+    The MRF fit stores full-grid rate maps like the diffusion fit, so this is
+    ``predict_sorted_spikes_diffusion_log_likelihood`` applied to the
+    diffusion keys of the encoding model; the fit's ``mrf_*`` diagnostics are
+    accepted and unused.
+
+    Parameters
+    ----------
+    position_time : array_like or None, shape (n_time_position,)
+        Sampling times for the position.
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
+        Position samples.
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment (must be fitted).
+    occupancy : np.ndarray, shape (n_interior_bins,)
+        The fit's exposure field; unused.
+    mean_rates : np.ndarray, shape (n_neurons,)
+        Mean firing rate in Hz per neuron.
+    place_fields : jax.Array, shape (n_neurons, n_total_bins)
+        Full-grid spatial firing rates in Hz.
+    no_spike_part_log_likelihood : jax.Array, shape (n_total_bins,)
+        Sum of full-grid Hz rates across neurons.
+    is_track_interior : np.ndarray, shape (n_total_bins,)
+        Interior-bin mask.
+    node_order : np.ndarray, shape (n_interior,), optional
+        Interior flat-bin indices in graph order, by default None.
+    bin_sizes : np.ndarray, shape (n_interior,), optional
+        Per-interior-bin volume, by default None; unused.
+    local_interpolation : {"linear", "nearest"}, optional
+        How local likelihood evaluates ``place_fields`` at the animal's
+        position, by default "linear".
+    disable_progress_bar : bool, optional
+        Turn off the progress bar, by default False.
+    is_local : bool, optional
+        Compute the likelihood at the animal's position, by default False.
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded; unused.
+    rate_units : str, default="Hz"
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError``.
+    encoding_exposure_seconds : float, optional
+        Weighted encoding occupancy time in seconds; unused.
+    environment_grid : dict | None, optional
+        The fit's record of the environment's grid, by default None.
+    mrf_penalty, mrf_rank, mrf_coefficients, mrf_penalty_weights : optional
+        Fit diagnostics (see ``fit_sorted_spikes_mrf_encoding_model``); unused.
+    mrf_reml_objective, mrf_n_iter, mrf_converged, mrf_max_step : optional
+        Fit diagnostics; unused.
+    mrf_log_penalty_bounds, mrf_penalty_selected_by_reml : optional
+        Fit diagnostics; unused.
+    _spike_time_order : SpikeTimeOrder | None, optional
+        Internal ordering preparation shared across a detector's states and
+        chunks; direct callers omit it.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
+
+    Returns
+    -------
+    log_likelihood : jax.Array
+        Shape (n_rows, n_interior_bins) when ``is_local`` is False, else
+        (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
+    """
+    return predict_sorted_spikes_diffusion_log_likelihood(
+        position_time,
+        position,
+        spike_times,
+        environment=environment,
+        occupancy=occupancy,
+        mean_rates=mean_rates,
+        place_fields=place_fields,
+        no_spike_part_log_likelihood=no_spike_part_log_likelihood,
+        is_track_interior=is_track_interior,
+        node_order=node_order,
+        bin_sizes=bin_sizes,
+        local_interpolation=local_interpolation,
+        disable_progress_bar=disable_progress_bar,
+        is_local=is_local,
+        row_slice=row_slice,
+        time_edges=time_edges,
+        algorithm=algorithm,
+        rate_units=rate_units,
+        encoding_exposure_seconds=encoding_exposure_seconds,
+        environment_grid=environment_grid,
+        _spike_time_order=_spike_time_order,
+        _time_grid=_time_grid,
+    )

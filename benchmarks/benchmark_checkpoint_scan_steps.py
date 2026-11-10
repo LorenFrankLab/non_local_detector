@@ -27,7 +27,7 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import provenance, workload  # noqa: E402
+from compare_prediction_modes import provenance, workload
 
 
 def count_kernels(compiled_text):
@@ -38,7 +38,7 @@ def count_kernels(compiled_text):
     computations = {
         match.group(1): match.group(2)
         for match in re.finditer(
-            r"^(%[\w.\-]+) \(.*?\{\n(.*?)^\}", compiled_text, re.M | re.S
+            r"^(%[\w.\-]+) \(.*?\{\n(.*?)^\}", compiled_text, re.MULTILINE | re.DOTALL
         )
     }
     bodies = re.findall(r"while\(.*?body=(%[\w.\-]+)", compiled_text)
@@ -109,7 +109,7 @@ def main():
     model.fit(**fit_kwargs)
     # The same restricted, bound operator that checkpointed prediction uses.
     operator = jax.device_put(
-        model._continuous_transition_operator_.restricted(
+        model.state_space_.transition_operator.restricted(
             model.is_track_interior_state_bins_
         )
         .bind_discrete(np.asarray(model.discrete_state_transitions_))

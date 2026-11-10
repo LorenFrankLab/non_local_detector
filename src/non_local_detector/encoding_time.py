@@ -8,16 +8,54 @@ Event weights are dimensionless; integrated sample exposure is in seconds.
 import warnings
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
-from non_local_detector.exceptions import DataError, ValidationError
+from non_local_detector._validation import validate_weights
+from non_local_detector._warnings import user_stacklevel
+from non_local_detector.exceptions import DataError, DataQualityWarning, ValidationError
 from non_local_detector.time_edges import uniform_time_bin_width, validate_time_edges
+
+
+def parse_tracking_intervals(
+    valid_position_intervals: ArrayLike,
+) -> NDArray[np.float64]:
+    """Validate ``valid_position_intervals`` and return them as a float array.
+
+    Parameters
+    ----------
+    valid_position_intervals : array_like, shape (n_intervals, 2)
+        Ordered, non-overlapping ``(start, stop)`` intervals in seconds.
+
+    Returns
+    -------
+    intervals : np.ndarray, shape (n_intervals, 2)
+
+    Raises
+    ------
+    ValidationError
+        If the shape is wrong or the intervals overlap or are out of order.
+    DataError
+        If an interval is not finite and increasing.
+    """
+    intervals = np.asarray(valid_position_intervals, dtype=float)
+    if intervals.ndim != 2 or intervals.shape[1] != 2:
+        msg = "valid_position_intervals must have shape (n_intervals, 2)"
+        raise ValidationError(msg)
+    for interval in intervals:
+        validate_time_edges(interval, name="valid_position_intervals")
+    if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
+        msg = "valid_position_intervals must be ordered and non-overlapping"
+        raise ValidationError(msg)
+    return intervals
 
 
 class EncodingSupport:
     """Interpolation segments and integrals of their sample basis functions.
 
-    ``encoding_time_range`` clips acquisition support without redefining the
-    original interpolation basis. ``valid_position_intervals`` declares
+    ``encoding_time_range`` replaces the outer bounds of the support: inside
+    the samples it clips without redefining the original interpolation basis,
+    and past them it extends the support, holding position at the first or last
+    sample. ``valid_position_intervals`` declares
     disconnected tracking segments; their endpoints are held constant.
     Uniform samples default to supported endpoint half-cells. NaN positions
     inside a tracking segment split its original timeline before acquisition
@@ -26,61 +64,85 @@ class EncodingSupport:
     declares a shared physical endpoint. Discontinuous endpoints need separate
     measured sample spans or sequence-local tracking; one timestamp cannot
     represent two different positions. Spike ownership is a separate rule.
+
+    Parameters
+    ----------
+    position_time : array_like, shape (n_samples,)
+        Position sample times in seconds, finite and strictly increasing.
+        Without ``valid_position_intervals`` they must be uniformly spaced.
+    position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
+        Position at each sample. Rows with a NaN coordinate are treated as
+        missing and split the interpolation segment.
+    encoding_time_range : array_like, shape (2,), optional
+        ``(start, stop)`` in seconds of the acquisition support, which clips
+        the tracking and extends past its first or last sample. By default
+        None, which uses the span of ``valid_position_intervals`` or,
+        for uniform samples, the first and last sample extended by half a
+        sample.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping ``(start, stop)`` intervals in seconds in
+        which tracking was continuous. Required when ``position_time`` is
+        irregularly sampled. By default None.
+
+    Attributes
+    ----------
+    time : np.ndarray, shape (n_samples,)
+        Position sample times in seconds.
+    exposure : np.ndarray, shape (n_samples,)
+        Integrated interpolation-basis exposure of each sample, in seconds.
+    segments : list of tuple
+        ``(start, stop, indices)`` for each continuous interpolation segment:
+        its time bounds in seconds and the indices of its samples.
+    bounds : np.ndarray, shape (2,)
+        ``(start, stop)`` of the acquisition support, in seconds.
+    indices : np.ndarray of int
+        Indices of the samples with a finite position.
     """
 
     def __init__(
         self,
-        position_time,
-        position,
+        position_time: ArrayLike,
+        position: ArrayLike,
         *,
-        encoding_time_range=None,
-        valid_position_intervals=None,
-    ):
+        encoding_time_range: ArrayLike | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+    ) -> None:
         time = np.asarray(position_time, dtype=np.float64)
         position = np.asarray(position)
         if time.size == 0:
-            raise ValidationError(
-                "Encoding has no position samples; position_time and position must be nonempty"
-            )
+            msg = "Encoding has no position samples; position_time and position must be nonempty"
+            raise ValidationError(msg)
         if (
             time.ndim != 1
             or time.size == 0
             or position.ndim not in (1, 2)
             or position.shape[0] != time.size
         ):
-            raise ValidationError(
-                "position_time and position need matching, nonempty sample rows"
-            )
+            msg = "position_time and position need matching, nonempty sample rows"
+            raise ValidationError(msg)
         position = position.reshape(len(time), -1)
         if not np.all(np.isfinite(time)) or np.any(np.diff(time) <= 0):
+            msg = "position_time must be finite and strictly increasing"
             raise DataError(
-                "position_time must be finite and strictly increasing",
+                msg,
                 data_name="position_time",
             )
         if np.any(np.isinf(position)):
-            raise DataError("position contains infinite values", data_name="position")
+            msg = "position contains infinite values"
+            raise DataError(msg, data_name="position")
         self.time = time
         self.exposure = np.zeros(time.size)
-        self.segments = []
+        self.segments: list[tuple[float, float, NDArray[np.intp]]] = []
         finite = np.all(np.isfinite(position), axis=1)
         self.indices = np.flatnonzero(finite)
         intervals = None
         if valid_position_intervals is not None:
-            intervals = np.asarray(valid_position_intervals, dtype=float)
-            if intervals.ndim != 2 or intervals.shape[1] != 2:
-                raise ValidationError(
-                    "valid_position_intervals must have shape (n_intervals, 2)"
-                )
-            for interval in intervals:
-                validate_time_edges(interval, name="valid_position_intervals")
-            if len(intervals) > 1 and np.any(intervals[1:, 0] < intervals[:-1, 1]):
-                raise ValidationError(
-                    "valid_position_intervals must be ordered and non-overlapping"
-                )
+            intervals = parse_tracking_intervals(valid_position_intervals)
             for start, stop in intervals:
                 if not np.any(finite & (time >= start) & (time <= stop)):
+                    msg = "Each valid_position_intervals segment needs a finite position sample"
                     raise ValidationError(
-                        "Each valid_position_intervals segment needs a finite position sample",
+                        msg,
                         hint="Use encoding_time_range to clip an existing interpolation segment between samples.",
                     )
         if time.size > 1 and intervals is None:
@@ -88,8 +150,9 @@ class EncodingSupport:
             try:
                 uniform_time_bin_width(np.asarray(position_time), name="position_time")
             except DataError as error:
+                msg = "Irregular position_time requires explicit continuous tracking intervals"
                 raise DataError(
-                    "Irregular position_time requires explicit continuous tracking intervals",
+                    msg,
                     data_name="position_time",
                     hint="Pass valid_position_intervals=[[start, stop], ...]. Acquisition bounds alone do not establish tracking continuity.",
                 ) from error
@@ -98,13 +161,13 @@ class EncodingSupport:
                 encoding_time_range, name="encoding_time_range"
             )
             if bounds.shape != (2,):
-                raise ValidationError("encoding_time_range must be (start, stop)")
+                msg = "encoding_time_range must be (start, stop)"
+                raise ValidationError(msg)
         elif intervals is not None and len(intervals):
             bounds = np.array([intervals[0, 0], intervals[-1, 1]])
         elif time.size < 2:
-            raise ValidationError(
-                "A single position sample requires encoding_time_range or valid_position_intervals"
-            )
+            msg = "A single position sample requires encoding_time_range or valid_position_intervals"
+            raise ValidationError(msg)
         else:
             width = uniform_time_bin_width(
                 np.asarray(position_time), name="position_time"
@@ -147,7 +210,7 @@ class EncodingSupport:
                 self.segments.append((lower, upper, run))
                 self._integrate(lower, upper, run)
 
-    def _integrate(self, start, stop, indices):
+    def _integrate(self, start: float, stop: float, indices: NDArray[np.intp]) -> None:
         time = self.time[indices]
         self.exposure[indices[0]] += max(min(stop, time[0]) - start, 0)
         self.exposure[indices[-1]] += max(stop - max(start, time[-1]), 0)
@@ -166,16 +229,46 @@ class EncodingSupport:
         np.add.at(self.exposure, indices[:-1], duration - right_mass)
         np.add.at(self.exposure, indices[1:], right_mass)
 
-    def contains(self, times):
+    def contains(self, times: ArrayLike) -> NDArray[np.bool_]:
+        """Return which times fall inside a supported interpolation segment.
+
+        Parameters
+        ----------
+        times : array_like, shape (n_times,)
+            Times in seconds.
+
+        Returns
+        -------
+        is_supported : np.ndarray of bool, shape (n_times,)
+            True where a time lies within the closed bounds of any segment.
+        """
         times = np.asarray(times)
         mask = np.zeros(times.shape, dtype=bool)
         for start, stop, _ in self.segments:
             mask |= (times >= start) & (times <= stop)
         return mask
 
-    def interpolate(self, values, times, *, fill_value=np.nan):
+    def interpolate(
+        self, values: ArrayLike, times: ArrayLike, *, fill_value: float = np.nan
+    ) -> NDArray[np.float64]:
+        """Linearly interpolate sample values within each supported segment.
+
+        Parameters
+        ----------
+        values : array_like, shape (n_samples,) or (n_samples, n_columns)
+            Values at the position samples.
+        times : array_like, shape (n_times,)
+            Times in seconds at which to interpolate.
+        fill_value : float, optional
+            Value for times outside every segment, by default NaN.
+
+        Returns
+        -------
+        interpolated : np.ndarray, shape (n_times,) or (n_times, n_columns)
+            Interpolated values; ``fill_value`` where a time is unsupported.
+        """
         values, times = np.asarray(values), np.asarray(times)
-        shape = (len(times),) + values.shape[1:]
+        shape = (len(times), *values.shape[1:])
         result = np.full(shape, fill_value, dtype=float)
         for start, stop, indices in self.segments:
             mask = (times >= start) & (times <= stop)
@@ -190,13 +283,22 @@ class EncodingSupport:
                     )
         return result
 
-    def _segment_events(self, segment_index, spike_times):
+    def _segment_events(
+        self, segment_index: int, spike_times: NDArray[np.float64]
+    ) -> tuple[
+        NDArray[np.bool_],
+        NDArray[np.intp],
+        NDArray[np.intp],
+        NDArray[np.float64],
+    ]:
         """Spikes one segment owns, with their bracketing samples and fraction.
 
         Parameters
         ----------
         segment_index : int
+            Index into ``self.segments``.
         spike_times : np.ndarray, shape (n_spikes,)
+            Spike times in seconds.
 
         Returns
         -------
@@ -235,7 +337,14 @@ class EncodingSupport:
         )
         return owned, indices[left], indices[right], fraction
 
-    def event_basis(self, spike_times):
+    def event_basis(
+        self, spike_times: ArrayLike
+    ) -> tuple[
+        NDArray[np.intp],
+        NDArray[np.intp],
+        NDArray[np.intp],
+        NDArray[np.float64],
+    ]:
         """Each supported spike's bracketing samples and interpolation fraction.
 
         A spike's unit event is split between its two bracketing samples: the
@@ -244,6 +353,7 @@ class EncodingSupport:
         Parameters
         ----------
         spike_times : array_like, shape (n_spikes,)
+            Spike times in seconds.
 
         Returns
         -------
@@ -271,8 +381,24 @@ class EncodingSupport:
         )
         return spike_index[order], left, right, fraction
 
-    def event_counts(self, spike_times, weights):
-        """Dimensionless weighted events assigned to their interpolation basis."""
+    def event_counts(
+        self, spike_times: ArrayLike, weights: ArrayLike
+    ) -> NDArray[np.float64]:
+        """Dimensionless weighted events assigned to their interpolation basis.
+
+        Parameters
+        ----------
+        spike_times : array_like, shape (n_spikes,)
+            Spike times in seconds.
+        weights : array_like, shape (n_samples,)
+            Dimensionless weight per position sample, applied to the samples
+            bracketing each supported spike.
+
+        Returns
+        -------
+        counts : np.ndarray, shape (n_samples,)
+            Weighted event count assigned to each position sample.
+        """
         spike_times, weights = np.asarray(spike_times, dtype=float), np.asarray(weights)
         counts = np.zeros(len(self.time))
         for segment_index in range(len(self.segments)):
@@ -287,17 +413,48 @@ class EncodingSupport:
 
 
 def prepare_encoding_support(
-    position_time,
-    position,
-    weights,
+    position_time: ArrayLike,
+    position: ArrayLike,
+    weights: ArrayLike | None,
     *,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    _encoding_support=None,
-):
-    """Prepare separate event weights and exposure weights for a backend."""
-    from non_local_detector.likelihoods.common import validate_weights
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> tuple[
+    EncodingSupport, NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]
+]:
+    """Prepare separate event weights and exposure weights for a backend.
 
+    Parameters
+    ----------
+    position_time : array_like, shape (n_samples,)
+        Position sample times in seconds.
+    position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
+        Position at each sample.
+    weights : array_like, shape (n_samples,), or None
+        Dimensionless weight of each sample, or None for all ones. Weights of
+        samples with a non-finite position are set to zero.
+    encoding_time_range : array_like, shape (2,), optional
+        ``(start, stop)`` in seconds of the acquisition support. See
+        :class:`EncodingSupport`.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Continuous tracking intervals in seconds. See
+        :class:`EncodingSupport`.
+    _encoding_support : EncodingSupport, optional
+        A prebuilt support to reuse instead of constructing one from
+        ``position_time`` and the interval arguments.
+
+    Returns
+    -------
+    support : EncodingSupport
+        The interpolation support.
+    weights : np.ndarray, shape (n_samples,)
+        Validated event weights (dimensionless), zero for non-finite positions.
+    exposure_weights : np.ndarray, shape (n_samples,)
+        ``weights`` times the sample exposure, in seconds.
+    position : np.ndarray, shape (n_samples, n_position_dims)
+        Position with non-finite values replaced by zero.
+    """
     position = np.asarray(position)
     position = position[:, None] if position.ndim == 1 else position
     support = _encoding_support or EncodingSupport(
@@ -317,7 +474,7 @@ def prepare_encoding_support(
 
 
 def warn_if_no_encoding_exposure(
-    exposure_weights, model: str, *, clusterless: bool, stacklevel: int = 3
+    exposure_weights: ArrayLike, model: str, *, clusterless: bool
 ) -> None:
     """Warn when an encoding fit has zero training exposure.
 
@@ -336,8 +493,6 @@ def warn_if_no_encoding_exposure(
         Name of the encoding model, for the message.
     clusterless : bool
         Whether the model is clusterless, which selects the stated consequence.
-    stacklevel : int, optional
-        Passed to ``warnings.warn``, by default 3 (the encoding fit's caller).
     """
     if not np.sum(exposure_weights) > 0.0:
         consequence = (
@@ -354,12 +509,12 @@ def warn_if_no_encoding_exposure(
             f"{consequence} Check the weights (or is_training, "
             "encoding_group_labels and environment_labels), NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
-            UserWarning,
-            stacklevel=stacklevel,
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
         )
 
 
-def largest_tracking_step(support: EncodingSupport, position) -> float:
+def largest_tracking_step(support: EncodingSupport, position: ArrayLike) -> float:
     """Largest distance between consecutive tracking samples within a segment.
 
     Only samples that share an interpolation segment of ``support`` count, so
@@ -368,6 +523,7 @@ def largest_tracking_step(support: EncodingSupport, position) -> float:
     Parameters
     ----------
     support : EncodingSupport
+        Interpolation support built from the position samples.
     position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
         The samples ``support`` was built from, in the units of the bandwidth.
 
@@ -386,7 +542,7 @@ def largest_tracking_step(support: EncodingSupport, position) -> float:
 
 
 def warn_if_tracking_is_sparse(
-    support: EncodingSupport, position, position_std, *, stacklevel: int = 3
+    support: EncodingSupport, position: ArrayLike, position_std: ArrayLike
 ) -> None:
     """Warn when tracking moves farther per sample than ``position_std``.
 
@@ -400,11 +556,11 @@ def warn_if_tracking_is_sparse(
     Parameters
     ----------
     support : EncodingSupport
+        Interpolation support built from the position samples.
     position : array_like, shape (n_samples,) or (n_samples, n_position_dims)
+        The position samples ``support`` was built from.
     position_std : float or array_like
         Position bandwidth; its smallest entry is used.
-    stacklevel : int, optional
-        Passed to ``warnings.warn``, by default 3 (the encoding fit's caller).
     """
     scale = float(np.min(position_std))
     step = largest_tracking_step(support, position)
@@ -416,6 +572,6 @@ def warn_if_tracking_is_sparse(
             "so place fields can be biased where spikes fall between distant "
             "samples. Use position sampled more often (or upsampled along the "
             "path), or a position_std at least as large as the largest step.",
-            UserWarning,
-            stacklevel=stacklevel,
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
         )

@@ -6,12 +6,19 @@ state space models. These tests help identify issues with prior specification
 and model assumptions.
 """
 
+from typing import cast
+
 import numpy as np
-from scipy.stats import entropy  # type: ignore[import-untyped]
+from scipy.stats import entropy
 
 from non_local_detector.model_checking.highest_posterior_density import (
     get_highest_posterior_threshold,
 )
+
+__all__ = [
+    "posterior_consistency_hpd_overlap",
+    "posterior_consistency_kl_divergence",
+]
 
 
 def _validate_consistency_inputs(posterior: np.ndarray, likelihood: np.ndarray) -> None:
@@ -24,17 +31,19 @@ def _validate_consistency_inputs(posterior: np.ndarray, likelihood: np.ndarray) 
     2-D array of matching shape up front.
     """
     if posterior.ndim != 2 or likelihood.ndim != 2:
-        raise ValueError(
+        msg = (
             "posterior and likelihood must be 2-D arrays of shape "
             "(n_time, n_position_bins); flatten multidimensional environments to "
             f"a single position axis first. Got posterior.ndim={posterior.ndim}, "
             f"likelihood.ndim={likelihood.ndim}."
         )
+        raise ValueError(msg)
     if posterior.shape != likelihood.shape:
-        raise ValueError(
+        msg = (
             "posterior and likelihood must have the same shape; got "
             f"{posterior.shape} and {likelihood.shape}."
         )
+        raise ValueError(msg)
 
 
 def posterior_consistency_kl_divergence(
@@ -72,7 +81,7 @@ def posterior_consistency_kl_divergence(
     posterior = np.asarray(posterior)
     likelihood = np.asarray(likelihood)
     _validate_consistency_inputs(posterior, likelihood)
-    return entropy(posterior, likelihood, axis=-1)
+    return cast(np.ndarray, entropy(posterior, likelihood, axis=-1))
 
 
 def posterior_consistency_hpd_overlap(
@@ -137,4 +146,6 @@ def posterior_consistency_hpd_overlap(
     # Avoid division by zero
     denom = np.clip(denom, 1, None)
 
-    return (isin_posterior_hpd & isin_likelihood_hpd).sum(axis=1) / denom
+    return cast(
+        np.ndarray, (isin_posterior_hpd & isin_likelihood_hpd).sum(axis=1) / denom
+    )

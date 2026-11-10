@@ -77,7 +77,7 @@ class _ModelDefaults:
     """
 
     @staticmethod
-    def decoder_defaults():
+    def decoder_defaults() -> dict[str, Callable[[], Any]]:
         """Defaults for single-state decoder models (sorted and clusterless)."""
         return {
             "discrete_initial_conditions": lambda: np.ones((1,)),
@@ -93,7 +93,7 @@ class _ModelDefaults:
         }
 
     @staticmethod
-    def cont_frag_defaults():
+    def cont_frag_defaults() -> dict[str, Callable[[], Any]]:
         """Defaults for continuous vs fragmented classifier (sorted and clusterless)."""
         return {
             "discrete_initial_conditions": lambda: np.ones((2,)) / 2,
@@ -115,7 +115,7 @@ class _ModelDefaults:
         }
 
     @staticmethod
-    def multi_environment_defaults():
+    def multi_environment_defaults() -> dict[str, Callable[[], Any]]:
         """Defaults for multi-environment classifier (sorted and clusterless)."""
 
         def transition_type():
@@ -154,7 +154,7 @@ class _ModelDefaults:
         }
 
     @staticmethod
-    def non_local_defaults():
+    def non_local_defaults() -> dict[str, Callable[[], Any]]:
         """Defaults for non-local detector (4-state, sorted and clusterless)."""
         # Expected dwell times at 500 Hz:
         #   Local:          200 ms  (p_self = 0.990)
@@ -240,7 +240,7 @@ class _ModelDefaults:
         }
 
     @staticmethod
-    def nospike_cont_frag_defaults():
+    def nospike_cont_frag_defaults() -> dict[str, Callable[[], Any]]:
         """Defaults for no-spike/continuous/fragmented classifier (sorted and clusterless)."""
         no_spike_trans_prob = 1e-5
         no_spike_prob = 0.99
@@ -291,7 +291,9 @@ class _ModelDefaults:
         }
 
 
-def _initialize_params(defaults_dict: dict[str, Callable], **provided_params) -> dict:
+def _initialize_params(
+    defaults_dict: dict[str, Callable[[], Any]], **provided_params: Any
+) -> dict[str, Any]:
     """Initialize parameters using defaults and provided values.
 
     Parameters
@@ -306,7 +308,7 @@ def _initialize_params(defaults_dict: dict[str, Callable], **provided_params) ->
     dict
         Resolved parameters ready for use
     """
-    resolved = {}
+    resolved: dict[str, Any] = {}
     for param_name, factory in defaults_dict.items():
         provided_value = provided_params.get(param_name)
         resolved[param_name] = _resolve_param(provided_value, factory)

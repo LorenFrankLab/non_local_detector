@@ -1,0 +1,708 @@
+"""Edge case tests for all likelihood models.
+
+Tests degenerate inputs that could cause NaN, -inf, division by zero,
+or crashes: zero spikes, single spikes, extreme bandwidths, partial
+occupancy, and extreme regularization.
+"""
+
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from scipy.special import logsumexp
+from scipy.stats import norm
+
+from non_local_detector.environment import Environment
+from non_local_detector.likelihoods.clusterless_gmm import (
+    fit_clusterless_gmm_encoding_model,
+    mark_reference_scale,
+    predict_clusterless_gmm_log_likelihood,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
+    fit_clusterless_kde_encoding_model,
+    predict_clusterless_kde_log_likelihood,
+)
+from non_local_detector.likelihoods.common import (
+    LOG_EPS,
+    RATE_EPS_HZ,
+    RATE_REFERENCE_SECONDS,
+)
+from non_local_detector.likelihoods.mark_reference import (
+    background_log_intensity,
+    fit_mark_references,
+)
+from non_local_detector.likelihoods.sorted_spikes_glm import (
+    fit_sorted_spikes_glm_encoding_model,
+    predict_sorted_spikes_glm_log_likelihood,
+)
+from non_local_detector.likelihoods.sorted_spikes_kde import (
+    fit_sorted_spikes_kde_encoding_model,
+    predict_sorted_spikes_kde_log_likelihood,
+)
+from tests.likelihoods._sorted_spikes_helpers import (
+    poisson_log_likelihood_reference,
+)
+from tests.likelihoods.conftest import fit_registered_backends
+
+pytestmark = pytest.mark.unit
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_env_1d(position_range=(0.0, 10.0), bin_size=1.0, n_pos=101):
+    """Create and fit a simple 1D environment."""
+    env = Environment(
+        environment_name="test",
+        place_bin_size=bin_size,
+        position_range=(position_range,),
+    )
+    pos = np.linspace(position_range[0], position_range[1], n_pos)[:, None]
+    return env.fit_place_grid(position=pos, infer_track_interior=False)
+
+
+def _fit_sorted_kde(env, spike_times, n_time=101, position_std=1.0):
+    lo, hi = env.position_range[0]
+    t = jnp.linspace(0.0, float(hi - lo), n_time)
+    pos = jnp.linspace(float(lo), float(hi), n_time)[:, None]
+    weights = jnp.ones_like(t)
+    enc = fit_sorted_spikes_kde_encoding_model(
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        environment=env,
+        weights=weights,
+        position_std=position_std,
+        block_size=16,
+        disable_progress_bar=True,
+    )
+    return enc, t, pos
+
+
+def _predict_sorted_kde(enc, env, spike_times, t_pos, pos, n_decode=6, is_local=False):
+    lo, hi = env.position_range[0]
+    t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
+    return predict_sorted_spikes_kde_log_likelihood(
+        time_edges=t_edges,
+        position_time=t_pos,
+        position=pos,
+        spike_times=spike_times,
+        **enc,
+        is_local=is_local,
+    )
+
+
+def _fit_sorted_glm(env, spike_times, n_time=101):
+    lo, hi = env.position_range[0]
+    t = jnp.linspace(0.0, float(hi - lo), n_time)
+    pos = jnp.linspace(float(lo), float(hi), n_time)[:, None]
+    enc = fit_sorted_spikes_glm_encoding_model(
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        environment=env,
+        disable_progress_bar=True,
+    )
+    return enc, t, pos
+
+
+def _predict_sorted_glm(enc, env, spike_times, t_pos, pos, n_decode=6, is_local=False):
+    lo, hi = env.position_range[0]
+    t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
+    return predict_sorted_spikes_glm_log_likelihood(
+        time_edges=t_edges,
+        position_time=t_pos,
+        position=pos,
+        spike_times=spike_times,
+        **enc,
+        is_local=is_local,
+    )
+
+
+def _fit_clusterless_kde(
+    env, spike_times, spike_features, n_time=101, position_std=1.0, waveform_std=1.0
+):
+    lo, hi = env.position_range[0]
+    t = jnp.linspace(0.0, float(hi - lo), n_time)
+    pos = jnp.linspace(float(lo), float(hi), n_time)[:, None]
+    enc = fit_clusterless_kde_encoding_model(
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        spike_waveform_features=spike_features,
+        environment=env,
+        position_std=position_std,
+        waveform_std=waveform_std,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+    enc["mark_reference"] = fit_mark_references(spike_features, waveform_std)
+    return enc, t, pos
+
+
+def _predict_clusterless_kde(
+    enc, env, spike_times, spike_features, t_pos, pos, n_decode=6, is_local=False
+):
+    lo, hi = env.position_range[0]
+    t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
+    return predict_clusterless_kde_log_likelihood(
+        time_edges=t_edges,
+        position_time=t_pos,
+        position=pos,
+        spike_times=spike_times,
+        spike_waveform_features=spike_features,
+        **enc,
+        is_local=is_local,
+    )
+
+
+def _fit_clusterless_gmm(env, spike_times, spike_features, n_time=101, n_components=2):
+    lo, hi = env.position_range[0]
+    t = jnp.linspace(0.0, float(hi - lo), n_time)
+    pos = jnp.linspace(float(lo), float(hi), n_time)[:, None]
+    enc = fit_clusterless_gmm_encoding_model(
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        spike_waveform_features=spike_features,
+        environment=env,
+        gmm_components_occupancy=n_components,
+        gmm_components_joint=n_components,
+        gmm_random_state=0,
+        disable_progress_bar=True,
+    )
+    enc["mark_reference"] = fit_mark_references(spike_features, mark_reference_scale())
+    return enc, t, pos
+
+
+def _predict_clusterless_gmm(
+    enc, env, spike_times, spike_features, t_pos, pos, n_decode=6, is_local=False
+):
+    lo, hi = env.position_range[0]
+    t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
+    return predict_clusterless_gmm_log_likelihood(
+        time_edges=t_edges,
+        position_time=t_pos,
+        position=pos,
+        spike_times=spike_times,
+        spike_waveform_features=spike_features,
+        **enc,
+        is_local=is_local,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zero spikes
+# ---------------------------------------------------------------------------
+
+
+def _assert_no_spike_closed_form(ll, env, summed_rate, n_decode=6):
+    """With no spikes every bin scores ``-duration * summed_rate`` (float32).
+
+    ``n_decode`` matches the decoding edges of the ``_predict_*`` helpers.
+    """
+    lo, hi = env.position_range[0]
+    durations = np.diff(np.linspace(0.0, float(hi - lo), n_decode))
+    expected = np.broadcast_to(-durations[:, None] * summed_rate, ll.shape)
+    np.testing.assert_allclose(np.asarray(ll), expected, rtol=1e-6, atol=0.0)
+
+
+def test_sorted_kde_zero_spikes_all_neurons():
+    """Fit and predict with all neurons having zero spikes."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([]), jnp.array([])]
+    enc, t, pos = _fit_sorted_kde(env, spike_times)
+
+    assert enc["place_fields"].shape[0] == 2
+    for mr in enc["mean_rates"]:
+        assert mr == 0.0
+    # Silent neurons sit at the (float32) rate floor.
+    np.testing.assert_allclose(np.asarray(enc["place_fields"]), RATE_EPS_HZ, rtol=1e-6)
+
+    ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
+
+
+def test_sorted_glm_zero_spikes_all_neurons():
+    """GLM should handle all-zero spike neurons without NaN."""
+    env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
+    spike_times = [jnp.array([]), jnp.array([])]
+    enc, t, pos = _fit_sorted_glm(env, spike_times, n_time=101)
+
+    # Silent neurons sit at the rate floor.
+    np.testing.assert_allclose(np.asarray(enc["place_fields"]), RATE_EPS_HZ, rtol=1e-6)
+
+    ll = _predict_sorted_glm(enc, env, spike_times, t, pos)
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
+
+
+def test_clusterless_kde_zero_spikes_all_electrodes():
+    """Clusterless KDE should handle zero spikes without crash."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([]), jnp.array([])]
+    spike_features = [jnp.zeros((0, 2)), jnp.zeros((0, 2))]
+    enc, t, pos = _fit_clusterless_kde(env, spike_times, spike_features)
+    np.testing.assert_array_equal(
+        np.asarray(enc["summed_ground_process_intensity"]), 0.0
+    )
+
+    ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
+    # Only each electrode's background rate RATE_EPS_HZ remains.
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
+
+
+def test_clusterless_gmm_zero_spikes_all_electrodes():
+    """GMM should handle zero spikes without crash."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([]), jnp.array([])]
+    spike_features = [jnp.zeros((0, 2)), jnp.zeros((0, 2))]
+    with pytest.warns(UserWarning, match="no effective encoding spikes"):
+        enc, t, pos = _fit_clusterless_gmm(
+            env, spike_times, spike_features, n_components=1
+        )
+
+    assert enc["gpi_models"] == [None, None]
+    assert enc["joint_models"] == [None, None]
+    assert np.all(np.asarray(enc["mean_rates"]) == 0.0)
+
+    # Decode with zero spikes
+    dec_spikes = [jnp.array([]), jnp.array([])]
+    dec_feats = [jnp.zeros((0, 2)), jnp.zeros((0, 2))]
+    ll = _predict_clusterless_gmm(enc, env, dec_spikes, dec_feats, t, pos)
+    # Only each electrode's background rate RATE_EPS_HZ remains.
+    _assert_no_spike_closed_form(ll, env, 2 * RATE_EPS_HZ)
+
+
+# ---------------------------------------------------------------------------
+# Single spike per neuron/electrode
+# ---------------------------------------------------------------------------
+
+
+def test_sorted_kde_single_spike_per_neuron():
+    """Single spike per neuron should fit and predict with finite log likelihoods."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([3.0]), jnp.array([7.0])]
+    enc, t, pos = _fit_sorted_kde(env, spike_times)
+
+    assert jnp.all(enc["place_fields"] >= 0)
+    assert jnp.all(jnp.isfinite(enc["place_fields"]))
+
+    ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+def test_sorted_glm_single_spike_per_neuron():
+    """GLM with single spike per neuron should produce finite output."""
+    env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
+    spike_times = [jnp.array([0.3]), jnp.array([0.7])]
+    enc, t, pos = _fit_sorted_glm(env, spike_times, n_time=101)
+
+    for pf in enc["place_fields"]:
+        assert jnp.all(jnp.isfinite(pf))
+
+    ll = _predict_sorted_glm(enc, env, spike_times, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+def test_clusterless_kde_single_spike_per_electrode():
+    """Single spike per electrode should give finite log likelihoods."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([3.0]), jnp.array([7.0])]
+    spike_features = [jnp.array([[0.5, -0.5]]), jnp.array([[1.0, 1.0]])]
+    enc, t, pos = _fit_clusterless_kde(env, spike_times, spike_features)
+
+    ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+def test_clusterless_gmm_single_spike_per_electrode():
+    """A one-component GMM fit to one spike per electrode (a covariance from
+    ``reg_covar`` alone) predicts finite log likelihoods."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([3.0]), jnp.array([7.0])]
+    spike_features = [jnp.array([[0.5, -0.5]]), jnp.array([[1.0, 1.0]])]
+    enc, t, pos = _fit_clusterless_gmm(env, spike_times, spike_features, n_components=1)
+
+    ll = _predict_clusterless_gmm(enc, env, spike_times, spike_features, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+# ---------------------------------------------------------------------------
+# Extreme bandwidths
+# ---------------------------------------------------------------------------
+
+
+# synthetic tracking jumps are incidental to this test.
+@pytest.mark.filterwarnings("ignore:Tracking moves up to:UserWarning")
+def test_sorted_kde_very_small_bandwidth():
+    """Very small KDE bandwidth should give finite log likelihoods."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([2.0, 5.0, 8.0]), jnp.array([3.0, 6.0])]
+    enc, t, pos = _fit_sorted_kde(env, spike_times, position_std=0.01)
+
+    assert jnp.all(jnp.isfinite(enc["place_fields"]))
+    ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+def test_sorted_kde_very_large_bandwidth():
+    """Very large KDE bandwidth should produce near-uniform place fields."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([2.0, 5.0, 8.0]), jnp.array([3.0, 6.0])]
+    enc, t, pos = _fit_sorted_kde(env, spike_times, position_std=100.0)
+
+    pf = enc["place_fields"]
+    assert jnp.all(jnp.isfinite(pf))
+    # With huge bandwidth, place field should be nearly uniform. Measured
+    # coefficients of variation: 2.0e-7 and 1.4e-4; position_std=10 gives up
+    # to 0.014 and position_std=1 up to 0.74.
+    for i in range(pf.shape[0]):
+        cv = float(jnp.std(pf[i]) / jnp.mean(pf[i]))
+        assert cv < 2e-3, (
+            f"Neuron {i} place field not near-uniform with large bandwidth"
+        )
+
+    ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+def test_clusterless_kde_very_small_waveform_std():
+    """Very small waveform std should give finite log likelihoods."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([2.0, 5.0, 8.0])]
+    spike_features = [jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]])]
+    enc, t, pos = _fit_clusterless_kde(
+        env, spike_times, spike_features, waveform_std=0.001
+    )
+
+    ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+def test_clusterless_kde_very_large_waveform_std():
+    """Very large waveform std should produce finite predictions."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([2.0, 5.0, 8.0])]
+    spike_features = [jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]])]
+    enc, t, pos = _fit_clusterless_kde(
+        env, spike_times, spike_features, waveform_std=1000.0
+    )
+
+    ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+# ---------------------------------------------------------------------------
+# Partial occupancy (some bins never visited)
+# ---------------------------------------------------------------------------
+
+
+def _assert_peaks_in_visited_half(env, fields, ll, t_edges, visited_max=5.0):
+    """Each field, and each spiking row's likelihood, peaks below ``visited_max``.
+
+    The partial-occupancy tests sample positions in [0, 5] of a [0, 10] track
+    and place every spike there (spikes at t = 1-4 s, position t / 2).
+    """
+    interior = env.is_track_interior_.ravel()
+    centers = env.place_bin_centers_[interior, 0]
+    if fields.shape[-1] != centers.size:
+        fields = fields[:, interior]
+    assert np.all(centers[np.argmax(fields, axis=1)] < visited_max)
+    spiking_rows = np.asarray(t_edges)[:-1] < 4.0
+    ll = np.asarray(ll)[spiking_rows]
+    assert np.all(centers[np.argmax(ll, axis=1)] < visited_max)
+
+
+def test_sorted_kde_partial_occupancy():
+    """Position visits only half the track; zero-occupancy bins should not NaN."""
+    env = _make_env_1d(position_range=(0.0, 10.0), bin_size=1.0)
+    # Position only in [0, 5]
+    n_time = 101
+    t = jnp.linspace(0.0, 10.0, n_time)
+    pos = jnp.linspace(0.0, 5.0, n_time)[:, None]
+    weights = jnp.ones_like(t)
+    spike_times = [jnp.array([1.0, 3.0]), jnp.array([2.0, 4.0])]
+
+    enc = fit_sorted_spikes_kde_encoding_model(
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        environment=env,
+        weights=weights,
+        position_std=1.0,
+        block_size=16,
+        disable_progress_bar=True,
+    )
+
+    t_edges = jnp.linspace(0.0, 10.0, 6)
+    ll = predict_sorted_spikes_kde_log_likelihood(
+        time_edges=t_edges,
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        **enc,
+        is_local=False,
+    )
+
+    assert not jnp.any(jnp.isnan(ll))
+    # Log-likelihoods must be finite or -inf, never +inf
+    assert not jnp.any(ll == jnp.inf)
+    # Fields and the most likely bin of every row with spikes are in the
+    # visited half, not in the unvisited bins' occupancy tails.
+    _assert_peaks_in_visited_half(env, np.asarray(enc["place_fields"]), ll, t_edges)
+
+
+def test_clusterless_kde_partial_occupancy():
+    """Zero-occupancy bins should not cause NaN in clusterless KDE."""
+    env = _make_env_1d(position_range=(0.0, 10.0), bin_size=1.0)
+    n_time = 101
+    t = jnp.linspace(0.0, 10.0, n_time)
+    pos = jnp.linspace(0.0, 5.0, n_time)[:, None]  # Only visit [0, 5]
+    spike_times = [jnp.array([1.0, 3.0])]
+    spike_features = [jnp.array([[0.5, -0.5], [1.0, 1.0]])]
+
+    enc = fit_clusterless_kde_encoding_model(
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        spike_waveform_features=spike_features,
+        environment=env,
+        position_std=1.0,
+        waveform_std=1.0,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+
+    t_edges = jnp.linspace(0.0, 10.0, 6)
+    ll = predict_clusterless_kde_log_likelihood(
+        time_edges=t_edges,
+        position_time=t,
+        position=pos,
+        spike_times=spike_times,
+        spike_waveform_features=spike_features,
+        **enc,
+        mark_reference=fit_mark_references(spike_features, 1.0),
+        is_local=False,
+    )
+
+    assert not jnp.any(jnp.isnan(ll))
+    _assert_peaks_in_visited_half(
+        env, np.asarray(enc["summed_ground_process_intensity"])[None], ll, t_edges
+    )
+
+
+# ---------------------------------------------------------------------------
+# GLM regularization extremes
+# ---------------------------------------------------------------------------
+
+
+def test_sorted_glm_high_l2_penalty():
+    """Very strong L2 penalty should produce near-uniform fields, no NaN."""
+    env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
+    rng = np.random.default_rng(42)
+    t = np.linspace(0.0, 1.0, 100)
+    pos = np.linspace(0.0, 100.0, 100)[:, None]
+    spike_times = [jnp.asarray(t[rng.choice(100, 10, replace=False)])]
+
+    enc = fit_sorted_spikes_glm_encoding_model(
+        position_time=jnp.asarray(t),
+        position=jnp.asarray(pos),
+        spike_times=spike_times,
+        environment=env,
+        l2_penalty=1e6,
+        disable_progress_bar=True,
+    )
+
+    for pf in enc["place_fields"]:
+        assert jnp.all(jnp.isfinite(pf))
+        # Strong regularization => near-uniform. Measured coefficient of
+        # variation 2.8e-7 (float32 noise); l2_penalty=1 gives 0.19 and
+        # l2_penalty=1e-10 gives 1.5.
+        cv = float(jnp.std(pf) / (jnp.mean(pf) + 1e-15))
+        assert cv < 1e-4
+
+
+def test_sorted_glm_low_l2_penalty():
+    """Very weak L2 penalty should still converge without NaN."""
+    env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
+    rng = np.random.default_rng(43)
+    t = np.linspace(0.0, 1.0, 100)
+    pos = np.linspace(0.0, 100.0, 100)[:, None]
+    spike_times = [jnp.asarray(t[rng.choice(100, 10, replace=False)])]
+
+    enc = fit_sorted_spikes_glm_encoding_model(
+        position_time=jnp.asarray(t),
+        position=jnp.asarray(pos),
+        spike_times=spike_times,
+        environment=env,
+        l2_penalty=1e-10,
+        disable_progress_bar=True,
+    )
+
+    for pf in enc["place_fields"]:
+        assert jnp.all(jnp.isfinite(pf))
+
+
+# ---------------------------------------------------------------------------
+# Single time bin decoding
+# ---------------------------------------------------------------------------
+
+
+def test_decode_single_time_bin_all_models():
+    """Every registered backend decodes one bin spanning the whole recording."""
+    env = _make_env_1d()
+    t = np.linspace(0.0, 10.0, 101)
+    spike_times = [np.array([2.0, 5.0, 8.0]), np.array([3.0, 6.0])]
+    data = {
+        "position_time": t,
+        "position": t[:, None],
+        "environment": env,
+        "encoding_spike_times": spike_times,
+        "encoding_features": [
+            np.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]]),
+            np.array([[0.2, 0.1], [-0.3, 0.4]]),
+        ],
+    }
+    # Five encoding spikes cannot support the default component counts.
+    fit_params = {
+        "clusterless_gmm": {"gmm_components_occupancy": 1, "gmm_components_joint": 1}
+    }
+    n_interior = int(env.is_track_interior_.sum())
+
+    for name, predict, model, is_clusterless in fit_registered_backends(
+        data, fit_params
+    ):
+        args = [t, t[:, None], spike_times]
+        if is_clusterless:
+            args.append(data["encoding_features"])
+        for is_local, n_columns in ((False, n_interior), (True, 1)):
+            ll = np.asarray(
+                predict(
+                    *args, time_edges=np.array([0.0, 10.0]), is_local=is_local, **model
+                )
+            )
+            assert ll.shape == (1, n_columns), (name, is_local)
+            assert np.all(np.isfinite(ll)), (name, is_local)
+
+
+# ---------------------------------------------------------------------------
+# Identical waveforms (degenerate KDE in feature space)
+# ---------------------------------------------------------------------------
+
+
+def test_clusterless_kde_identical_waveforms():
+    """All spikes with identical features should give finite log likelihoods."""
+    env = _make_env_1d()
+    spike_times = [jnp.array([2.0, 5.0, 8.0])]
+    # Identical waveform features
+    spike_features = [jnp.array([[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]])]
+    enc, t, pos = _fit_clusterless_kde(env, spike_times, spike_features)
+
+    ll = _predict_clusterless_kde(enc, env, spike_times, spike_features, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+
+
+# ---------------------------------------------------------------------------
+# Extreme waveform values
+# ---------------------------------------------------------------------------
+
+
+def test_clusterless_kde_extreme_waveform():
+    """A 100-sigma outlier waveform gives the float64 log-space likelihood.
+
+    Its mark intensity is ~1e4 nats down, far below what float32 represents,
+    so its spike scores ``logaddexp(log intensity, log background)`` at the
+    No-Spike background; every row also pays the ground rate. Both are
+    computed here in float64 from the encoding positions and marks.
+    """
+    env = _make_env_1d()
+    enc_spikes = [jnp.array([2.0, 5.0, 8.0])]
+    enc_feats = [jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0]])]
+    enc, t, pos = _fit_clusterless_kde(env, enc_spikes, enc_feats)
+
+    # Decode with a 100-sigma outlier waveform
+    dec_spikes = [jnp.array([5.0])]
+    dec_feats = [jnp.array([[100.0, 100.0]])]
+    ll = np.asarray(_predict_clusterless_kde(enc, env, dec_spikes, dec_feats, t, pos))
+
+    # Unit-width Gaussian kernels (the fit's position and waveform std); the
+    # animal runs at 1 cm/s from 0 cm, so spike times are positions.
+    centers = env.place_bin_centers_[env.is_track_interior_.ravel(), 0]
+    encoding_positions = np.asarray(enc_spikes[0])
+    log_spatial = norm.logpdf(centers[:, None], loc=encoding_positions)
+    log_mark = norm.logpdf(np.asarray(dec_feats[0]), loc=np.asarray(enc_feats[0])).sum(
+        axis=1
+    )
+    occupancy = norm.pdf(centers[:, None], loc=np.asarray(pos)[:, 0]).mean(axis=1)
+    mean_rate = encoding_positions.size / (t.size * float(t[1] - t[0]))
+    log_intensity = (
+        np.log(mean_rate)
+        + logsumexp(log_spatial + log_mark, axis=1)
+        - np.log(encoding_positions.size)
+        - np.log(occupancy)
+    )
+    ground_rate = mean_rate * np.exp(log_spatial).mean(axis=1) / occupancy
+    assert np.all(log_intensity < np.log(np.finfo(np.float32).tiny))
+
+    t_edges = np.linspace(0.0, 10.0, 6)  # the ``_predict_*`` helpers' edges
+    dt = np.diff(t_edges)
+    # The background is a rate per RATE_REFERENCE_SECONDS, scaled to the bin.
+    log_background = background_log_intensity(
+        enc["mark_reference"][0], np.asarray(dec_feats[0]), LOG_EPS
+    )[0] + np.log(dt[2] / RATE_REFERENCE_SECONDS)
+    expected = -dt[:, None] * ground_rate[None, :]
+    expected[2] += np.logaddexp(log_intensity + np.log(dt[2]), log_background)
+
+    assert np.all(np.isfinite(ll))
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-4)
+
+
+def test_clusterless_gmm_extreme_waveform():
+    """A 100-sigma outlier waveform gives a finite, unfloored log likelihood.
+
+    The outlier is ~1e4 nats down the joint mark tail, so its spike term
+    ``logaddexp(log intensity, log background)`` is the No-Spike background
+    ``log(RATE_EPS_HZ) + log q(mark)``; the mark reference ``q`` puts that
+    far below ``LOG_EPS`` too. A ``LOG_EPS`` floor on the joint log density
+    would instead lift the spike term above ``LOG_EPS``.
+    """
+    env = _make_env_1d()
+    enc_spikes = [jnp.array([2.0, 4.0, 5.0, 6.0, 8.0])]
+    enc_feats = [
+        jnp.array([[0.5, -0.5], [1.0, 1.0], [0.0, 0.0], [0.3, 0.7], [-0.5, 0.5]])
+    ]
+    enc, t, pos = _fit_clusterless_gmm(env, enc_spikes, enc_feats, n_components=2)
+
+    # Decode with a 100-sigma outlier waveform
+    dec_spikes = [jnp.array([5.0])]
+    dec_feats = [jnp.array([[100.0, 100.0]])]
+    ll = _predict_clusterless_gmm(enc, env, dec_spikes, dec_feats, t, pos)
+
+    assert jnp.all(jnp.isfinite(ll))
+    assert jnp.min(ll) < LOG_EPS, "a 100-sigma outlier must not be floored"
+
+
+# ---------------------------------------------------------------------------
+# Many neurons, few spikes
+# ---------------------------------------------------------------------------
+
+
+def test_sorted_kde_many_neurons_few_spikes():
+    """10 neurons with 2 spikes each give the Poisson log likelihood of their
+    spike counts under the fitted place fields."""
+    env = _make_env_1d()
+    rng = np.random.default_rng(99)
+    spike_times = [jnp.array(sorted(rng.uniform(0.5, 9.5, size=2))) for _ in range(10)]
+    enc, t, pos = _fit_sorted_kde(env, spike_times)
+
+    assert enc["place_fields"].shape[0] == 10
+    ll = _predict_sorted_kde(enc, env, spike_times, t, pos)
+    assert jnp.all(jnp.isfinite(ll))
+    expected = poisson_log_likelihood_reference(
+        np.asarray(enc["place_fields"])[:, env.is_track_interior_.ravel()],
+        [np.asarray(spikes) for spikes in spike_times],
+        np.linspace(0.0, 10.0, 6),
+    )
+    # float32 vs float64: measured 3.4e-6 apart (|ll| up to 69); reversing the
+    # neurons' place fields moves it by 48.
+    np.testing.assert_allclose(ll, expected, rtol=1e-5, atol=1e-5)

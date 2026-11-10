@@ -1,0 +1,186 @@
+"""Benchmark references must run float64 arithmetic, not merely enable x64."""
+
+import importlib.util
+from collections.abc import Callable
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import numpy as np
+import pytest
+
+from non_local_detector.core import filter, smoother
+from tests.conftest import precision_mode
+
+pytestmark = pytest.mark.integration
+
+SCRIPT = (
+    Path(__file__).resolve().parents[2] / "benchmarks" / "compare_prediction_modes.py"
+)
+
+
+@pytest.fixture
+def benchmark() -> ModuleType:
+    if not SCRIPT.is_file():
+        pytest.skip("benchmarks/ is not part of this installation")
+    spec = importlib.util.spec_from_file_location("prediction_benchmark", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_float64_reference_matches_dense_and_reports_actual_precision(
+    benchmark: ModuleType,
+    checkpoint_recording: Callable,
+    tmp_path: Path,
+    family: str,
+) -> None:
+    chunk_size = 13
+    with precision_mode(False):
+        model, fit, predict = checkpoint_recording(family)
+        model.fit(**fit, transition_representation="structured")
+        # Float32 likelihood rounding can depend on the query batch shape.
+        # Use the same native likelihood chunks for both float64 HMM paths so
+        # this comparison isolates inference precision rather than comparing
+        # different rounded likelihood inputs.
+        n_rows = len(predict["time_edges"]) - 1
+        likelihood_chunks = []
+        for start in range(0, n_rows, chunk_size):
+            stop = min(start + chunk_size, n_rows)
+            # The checkpoint driver shifts a short final request backwards to
+            # keep a full query batch, then discards its overlapping prefix.
+            first = max(min(start, n_rows - chunk_size), 0)
+            values = np.asarray(
+                model.compute_log_likelihood(
+                    **predict,
+                    row_slice=slice(first, stop),
+                )
+            )
+            likelihood_chunks.append(values[start - first :])
+        likelihood = np.concatenate(likelihood_chunks)
+    with precision_mode(True):
+        interior = model.is_track_interior_state_bins_
+        initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
+        transition = (
+            model.state_space_.transition_operator.restricted(interior)
+            .bind_discrete(model.discrete_state_transitions_)
+            .to_dense(dtype=np.float64)
+        )
+        _, (causal, _) = filter(
+            initial, transition, np.asarray(likelihood, dtype=np.float64)
+        )
+        dense = np.asarray(smoother(transition, causal))
+        labels = model.state_ind_[interior]
+        expected = np.column_stack(
+            [
+                dense[:, labels == state].sum(axis=1)
+                for state in range(len(model.state_names))
+            ]
+        )
+        reference, dtypes = benchmark.reference64_prediction(
+            model,
+            predict,
+            chunk_size=chunk_size,
+            checkpoint_dir=tmp_path / "checkpoints",
+        )
+        import jax
+
+        assert jax.config.x64_enabled
+        assert dtypes == {
+            "likelihood_compute_dtypes": ["float32"],
+            "likelihood_inference_dtypes": ["float64"],
+            "transition_inference_dtypes": ["float64"],
+        }
+        assert reference.acausal_state_probabilities.dtype == np.float64
+        assert dense.dtype == np.float64
+        np.testing.assert_allclose(
+            reference.acausal_state_probabilities,
+            expected,
+            rtol=1e-10,
+            atol=1e-10,
+        )
+        np.testing.assert_allclose(
+            reference.acausal_state_probabilities.sum(axis=1),
+            1.0,
+            rtol=1e-10,
+            atol=1e-10,
+        )
+        native = model.predict(
+            **predict, inference_mode="checkpointed", output_mode="compact"
+        )
+        assert benchmark.output_dtypes(native) == {
+            "acausal_state_probabilities": "float32"
+        }
+
+
+def test_reference_requires_x64(
+    benchmark: ModuleType, checkpoint_recording: Callable, tmp_path: Path
+) -> None:
+    with precision_mode(False):
+        model, fit, predict = checkpoint_recording("sorted")
+        model.fit(**fit, transition_representation="structured")
+        with pytest.raises(ValueError, match="JAX_ENABLE_X64"):
+            benchmark.reference64_prediction(
+                model, predict, chunk_size=13, checkpoint_dir=tmp_path
+            )
+
+
+def test_reference_promotes_float32_likelihood_before_inference(
+    benchmark: ModuleType,
+    checkpoint_recording: Callable,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with precision_mode(True):
+        model, fit, predict = checkpoint_recording("sorted")
+        model.fit(**fit, transition_representation="structured")
+
+        def downgraded(*args: Any, row_slice: slice, **kwargs: Any) -> np.ndarray:
+            rows = row_slice.stop - row_slice.start
+            bins = np.count_nonzero(model.is_track_interior_state_bins_)
+            return np.zeros((rows, bins), dtype=np.float32)
+
+        monkeypatch.setattr(
+            benchmark, "_prepare_reference_likelihood", lambda *a: downgraded
+        )
+        result, dtypes = benchmark.reference64_prediction(
+            model, predict, chunk_size=13, checkpoint_dir=tmp_path
+        )
+        assert result.acausal_state_probabilities.dtype == np.float64
+        assert dtypes["likelihood_compute_dtypes"] == ["float32"]
+        assert dtypes["likelihood_inference_dtypes"] == ["float64"]
+
+
+def test_reference_rejects_float32_posterior(
+    benchmark: ModuleType,
+    checkpoint_recording: Callable,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import xarray as xr
+
+    from non_local_detector import checkpointed_inference
+
+    fake = xr.Dataset(
+        {
+            "acausal_state_probabilities": (
+                ("time", "states"),
+                np.zeros((1, 4), dtype=np.float32),
+            )
+        }
+    )
+    monkeypatch.setattr(
+        checkpointed_inference,
+        "checkpointed_forward_backward",
+        lambda *args, **kwargs: SimpleNamespace(dataset=fake),
+    )
+    with precision_mode(True):
+        model, fit, predict = checkpoint_recording("sorted")
+        model.fit(**fit, transition_representation="structured")
+        with pytest.raises(ValueError, match=r"posterior.*float64"):
+            benchmark.reference64_prediction(
+                model, predict, chunk_size=13, checkpoint_dir=tmp_path
+            )

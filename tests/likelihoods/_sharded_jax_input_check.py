@@ -1,0 +1,257 @@
+"""Run one chunk call per clusterless backend with SHARDED ``jax.Array`` inputs.
+
+Run as a subprocess (``XLA_FLAGS`` must be set before JAX is imported, which a
+pytest process has already done). For every backend, every requested mesh axis
+type and both ``is_local`` values it asserts that a fixed row request neither
+
+* materializes the recording-length decoding FEATURES on the host -- proxied
+  exactly by ``jax.Array._npy_value``, the host value JAX caches on the array the
+  first time anything calls ``np.asarray`` on it and keeps for the array's
+  lifetime -- nor
+* raises on a sharded input (every backend must work on both mesh axis types).
+
+The resident-memory growth across a 50x larger recording is printed as evidence
+but is NOT asserted on: at this scale it is page-granular allocator noise and the
+same code gives different verdicts run to run. The cached-host-value proxy is
+exact and deterministic, so it carries the assertion. The figure comes from
+``resource.getrusage`` rather than ``psutil`` so this child needs nothing beyond
+the package's own dependencies.
+
+Prints one ``OK``/``FAIL`` line per case. Exit codes are distinct so the parent
+test can tell a skip from a failure: 0 all cases passed, 1 a case failed or
+raised, 2 this environment cannot run the check. Only the SETUP phase (device
+count, mesh construction) can produce 2; an exception raised while fitting,
+predicting or asserting propagates as a failure, so a broken backend can never
+be reported as an environment skip.
+
+Usage: ``python _sharded_jax_input_check.py <n_devices> <axis_types>``, where
+``<axis_types>`` is a comma-separated list such as ``Auto,Explicit``.
+
+``NLD_SHARDED_CHECK_INJECT`` (test hook, never set in normal use) forces a
+``RuntimeError`` in the named phase -- ``setup`` or ``run`` -- so the parent test
+can pin the exit-code mapping without a real failure.
+"""
+
+import os
+import sys
+
+N_DEVICES = int(sys.argv[1]) if len(sys.argv) > 1 else 2
+AXIS_TYPES = (sys.argv[2] if len(sys.argv) > 2 else "Auto").split(",")
+os.environ["XLA_FLAGS"] = (
+    f"{os.environ.get('XLA_FLAGS', '')} "
+    f"--xla_force_host_platform_device_count={N_DEVICES}"
+).strip()
+
+import gc  # noqa: E402
+import itertools  # noqa: E402
+import resource  # noqa: E402
+import warnings  # noqa: E402
+
+import jax  # noqa: E402
+import jax.numpy as jnp  # noqa: E402
+import numpy as np  # noqa: E402
+from jax.sharding import NamedSharding  # noqa: E402
+from jax.sharding import PartitionSpec as P  # noqa: E402
+
+warnings.simplefilter("ignore")
+
+from non_local_detector.environment import Environment  # noqa: E402
+from non_local_detector.likelihoods import (  # noqa: E402
+    _CLUSTERLESS_ALGORITHMS,
+    fit_mark_references,
+)
+
+N_TIME = 200
+ROWS = slice(0, 5)
+N_FEATURES = 4
+DURATION = 20.0
+SPIKE_COUNTS = (2_000, 100_000)  # 50x
+# Under Auto-typed mesh axes the selection happens on device and nothing
+# recording-length reaches the host. Under Explicit axes JAX refuses a gather
+# whose output sharding it cannot infer, so ``select_spike_rows`` falls back to
+# gather-then-slice: the call must still succeed, but it does pay (and retain)
+# the host copy. That is the shipped, documented limitation.
+EXPECT_NO_HOST_COPY = {"Auto": True, "Explicit": False}
+RSS_UNIT = "bytes" if sys.platform == "darwin" else "KiB"  # ru_maxrss units
+# Exit codes the parent test distinguishes.
+EXIT_OK = 0
+EXIT_ASSERTION_FAILED = 1
+EXIT_ENVIRONMENT = 2
+FIT_PARAMS = {
+    "clusterless_gmm": {
+        "gmm_components_joint": 8,
+        "gmm_components_occupancy": 4,
+    }
+}
+
+
+def peak_rss() -> int:
+    """Peak resident size from the stdlib, in ``RSS_UNIT``.
+
+    Informational only (see the module docstring). Being a peak it never
+    decreases, so the numbers printed are differences between successive peaks.
+    """
+    gc.collect()
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
+def shard(array: np.ndarray, mesh) -> jax.Array:
+    spec = P("d") if array.ndim == 1 else P("d", None)
+    return jax.device_put(jnp.asarray(array), NamedSharding(mesh, spec))
+
+
+class EnvironmentUnavailable(Exception):
+    """This process cannot run the check (not a failed check)."""
+
+
+def setup():
+    """Everything that can legitimately be unavailable: devices and the meshes.
+
+    Only an ``EnvironmentUnavailable`` raised from here becomes the environment
+    exit code; any other exception (a typo, an API regression) exits 1 like a
+    failure in ``run``, so a broken check cannot hide behind a skip.
+    """
+    injected = os.environ.get("NLD_SHARDED_CHECK_INJECT")
+    if injected == "setup":
+        msg = "injected setup failure"
+        raise EnvironmentUnavailable(msg)
+    if injected == "setup-bug":
+        msg = "injected setup bug"
+        raise RuntimeError(msg)
+    if len(jax.devices()) < N_DEVICES:
+        msg = f"only {len(jax.devices())} device(s) available"
+        raise EnvironmentUnavailable(msg)
+    if not hasattr(jax.sharding, "AxisType"):
+        msg = "this JAX predates jax.sharding.AxisType"
+        raise EnvironmentUnavailable(msg)
+    try:
+        return {
+            axis_type: jax.make_mesh(
+                (N_DEVICES,),
+                ("d",),
+                axis_types=(getattr(jax.sharding.AxisType, axis_type),),
+            )
+            for axis_type in AXIS_TYPES
+        }
+    except TypeError as exc:  # older signature without ``axis_types``
+        msg = f"jax.make_mesh: {exc}"
+        raise EnvironmentUnavailable(msg) from exc
+
+
+def run(meshes) -> int:
+    """Fit, predict and assert. Any exception here is a FAILURE, not a skip."""
+    if os.environ.get("NLD_SHARDED_CHECK_INJECT") == "run":
+        msg = "injected run failure"
+        raise RuntimeError(msg)
+
+    rng = np.random.default_rng(7)
+    position_time = np.linspace(0.0, DURATION, 2_000)
+    position = (50.0 + 40.0 * np.sin(2 * np.pi * position_time / DURATION))[:, None]
+    environment = Environment(
+        environment_name="line", place_bin_size=10.0, position_range=((0.0, 100.0),)
+    ).fit_place_grid(position=position, infer_track_interior=False)
+    time = np.linspace(0.0, DURATION, N_TIME)
+
+    encoding_spike_times = [np.sort(rng.uniform(0.0, DURATION, 300))]
+    encoding_features = [rng.standard_normal((300, N_FEATURES)) * 5.0 + 20.0]
+
+    decoding = {}
+    for n_total in SPIKE_COUNTS:
+        inside = np.array([time[1] + 1e-3, time[3] + 1e-3])
+        outside = np.sort(rng.uniform(time[50], time[-1], n_total))
+        spike_times = np.concatenate([inside, outside]).astype(np.float32)
+        features = (
+            rng.standard_normal((spike_times.shape[0], N_FEATURES)) * 5.0 + 20.0
+        ).astype(np.float32)
+        decoding[n_total] = (spike_times, features)
+
+    failures = 0
+    for name in sorted(_CLUSTERLESS_ALGORITHMS):
+        record = _CLUSTERLESS_ALGORITHMS[name]
+        predict_func = record.predict
+        encoding_model = record.fit(
+            position_time=position_time,
+            position=position,
+            spike_times=encoding_spike_times,
+            spike_waveform_features=encoding_features,
+            environment=environment,
+            **FIT_PARAMS.get(name, {}),
+        )
+        encoding_model["mark_reference"] = fit_mark_references(
+            encoding_features,
+            record.mark_reference_scale(**FIT_PARAMS.get(name, {})),
+        )
+        for (axis_type, mesh), is_local in itertools.product(
+            meshes.items(), (False, True)
+        ):
+            peaks = []
+            cached = False
+            try:
+                for n_total in SPIKE_COUNTS:
+                    host_times, host_features = decoding[n_total]
+                    device_times = [shard(host_times, mesh)]
+                    device_features = [shard(host_features, mesh)]
+                    args = (
+                        position_time,
+                        position,
+                        device_times,
+                        device_features,
+                    )
+                    kwargs = dict(
+                        time_edges=time,
+                        **encoding_model,
+                        is_local=is_local,
+                        row_slice=ROWS,
+                    )
+                    jax.block_until_ready(predict_func(*args, **kwargs))  # warm up
+                    device_times = [shard(host_times, mesh)]
+                    device_features = [shard(host_features, mesh)]
+                    args = (position_time, position, device_times, device_features)
+                    before = peak_rss()
+                    jax.block_until_ready(predict_func(*args, **kwargs))
+                    peaks.append(peak_rss() - before)
+                    # Only the FEATURES are asserted on. The spike times are gathered
+                    # by ``select_spikes_in_rows`` for host-side order validation:
+                    # 1-D 4 B/spike against the 2-D 16 B/spike features. Detector
+                    # predictions reuse this conversion/check across chunks; these
+                    # direct backend calls each validate their own inputs.
+                    cached = cached or any(
+                        getattr(array, "_npy_value", None) is not None
+                        for array in device_features
+                    )
+                    del device_times, device_features
+                    gc.collect()
+            except Exception as exc:
+                # Name the case: the traceback alone does not say which
+                # backend, ``is_local`` value or mesh axis type raised.
+                msg = f"{name} is_local={is_local} axis={axis_type} raised"
+                raise RuntimeError(msg) from exc
+
+            full_copy = (SPIKE_COUNTS[-1] + 2) * N_FEATURES * 4
+            growth = peaks[-1] - peaks[0]
+            # RSS is printed for evidence but never asserted on: at this scale it
+            # is page-granular allocator noise on a CPU build and the same code
+            # gives different verdicts run to run. The cached-host-value proxy is
+            # exact and deterministic, so it carries the assertion.
+            ok = (not cached) if EXPECT_NO_HOST_COPY[axis_type] else True
+            failures += not ok
+            print(  # noqa: T201  # stdout is the protocol the parent test reads
+                f"{'OK  ' if ok else 'FAIL'} {name:22s} is_local={is_local!s:5s} "
+                f"axis={axis_type:8s} features_host_cached={cached!s:5s} "
+                f"peak_rss_growth={growth:12,d} {RSS_UNIT} (informational; one "
+                f"float32 copy of the feature array is {full_copy / 1024:.1f} KiB)"
+            )
+    return EXIT_ASSERTION_FAILED if failures else EXIT_OK
+
+
+if __name__ == "__main__":
+    try:
+        meshes = setup()
+    except EnvironmentUnavailable as exc:
+        # The parent test requires exactly this marker before it skips, so an
+        # unrelated exit status 2 (Python could not open this file, say) fails.
+        print(f"SKIP {type(exc).__name__}: {exc}")  # noqa: T201  # parent reads stdout
+        raise SystemExit(EXIT_ENVIRONMENT) from None
+    # ``run`` is deliberately NOT wrapped: an exception while fitting, predicting
+    # or asserting prints its traceback and exits 1, which the parent test fails.
+    raise SystemExit(run(meshes))

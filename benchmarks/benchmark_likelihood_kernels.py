@@ -108,16 +108,15 @@ def fixture(dtype):
         "coefficients": np.zeros((n_cells, 1)),
         "emission_design_info": None,
     }
-    kde_inputs = []
-    for count in [61, 63, 65, 127, 129, 131]:
-        kde_inputs.append(
-            (
-                jnp.asarray(rng.normal(size=(201, 2)).astype(dtype)),
-                jnp.asarray(rng.normal(size=(count, 2)).astype(dtype)),
-                jnp.ones(2, dtype=dtype),
-                jnp.asarray(rng.uniform(0, 2, count).astype(dtype)),
-            )
+    kde_inputs = [
+        (
+            jnp.asarray(rng.normal(size=(201, 2)).astype(dtype)),
+            jnp.asarray(rng.normal(size=(count, 2)).astype(dtype)),
+            jnp.ones(2, dtype=dtype),
+            jnp.asarray(rng.uniform(0, 2, count).astype(dtype)),
         )
+        for count in [61, 63, 65, 127, 129, 131]
+    ]
     n_enc, n_dec, n_pos, n_marks = 1025, 513, 1024, 4
     clusterless = {
         "decoding_spike_waveform_features": jnp.asarray(
@@ -202,7 +201,8 @@ def compare(name, calls, repeats, output_dir, rng):
             )
             >= 2 * 2**30
         ):
-            raise RuntimeError("Benchmark process exceeded its 2 GiB budget")
+            msg = "Benchmark process exceeded its 2 GiB budget"
+            raise RuntimeError(msg)
     np.savez(output_dir / f"{name}_outputs.npz", **values)
     return report
 

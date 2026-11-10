@@ -15,31 +15,46 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import xarray as xr
+from numpy.typing import ArrayLike, DTypeLike, NDArray
 
 from non_local_detector.core import (
-    _HMM_SCAN_UNROLL,
-    _condition_on,
-    _divide_safe,
+    TransitionOperator,
+    TransitionProducts,
+    _call_log_likelihood_chunk,
+    _check_operator_rows,
+    _check_shape,
+    _CovariateTransition,
+    _degenerate_and_nan_masks_device,
+    _filter_scan,
     _float64_evidence,
-    _normalize,
-    _warn_degenerate_and_nan_timesteps,
+    _report_degenerate_and_nan_timesteps,
+    _require_row_slice_aware,
+    _smoother_scan,
+    _StationaryTransition,
+    _validate_hmm_inputs,
 )
-from non_local_detector.likelihoods.common import decode_bin_centers
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.result_store import (
     DEFAULT_MAX_READ_BYTES,
     IncrementalResultWriter,
     _validate_read_budget,
     open_result_store,
 )
-from non_local_detector.time_edges import uniform_time_edges
+from non_local_detector.time_edges import decode_bin_centers, uniform_time_edges
+from non_local_detector.types import (
+    EvidenceAccumulation,
+    OutputMode,
+    TransitionStatistics,
+)
 
 _SPATIAL = {
     "causal_posterior",
@@ -71,7 +86,7 @@ _CGROUP_UNLIMITED = 2**60
 
 
 def _read_cgroup_value(path: Path) -> int | None:
-    """An integer cgroup memory file, or None if absent, unlimited or unreadable."""
+    """Return a cgroup memory file as an int, or None if absent, unlimited or unreadable."""
     try:
         text = path.read_text().strip()
     except OSError:
@@ -161,7 +176,7 @@ def _available_host_bytes() -> int | None:
         host = int(psutil.virtual_memory().available)
     except ImportError:
         try:
-            with open("/proc/meminfo") as meminfo:
+            with Path("/proc/meminfo").open() as meminfo:
                 for line in meminfo:
                     if line.startswith("MemAvailable:"):
                         host = int(line.split()[1]) * 1024
@@ -178,12 +193,15 @@ def _available_host_bytes() -> int | None:
 
 
 def default_replay_cache_bytes() -> int:
-    """Default replay cache: ``DEFAULT_REPLAY_CACHE_BYTES``, capped at half the
-    available host memory, so the cache cannot exhaust a smaller machine.
+    """Return the default replay cache size, in bytes.
+
+    This is ``DEFAULT_REPLAY_CACHE_BYTES``, capped at half the available host
+    memory, so the cache cannot exhaust a smaller machine.
 
     Returns
     -------
     replay_cache_bytes : int
+        Replay cache budget in bytes.
     """
     available = _available_host_bytes()
     if available is None:
@@ -191,15 +209,15 @@ def default_replay_cache_bytes() -> int:
     return int(min(DEFAULT_REPLAY_CACHE_BYTES, available // 2))
 
 
-def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
-    """Rows per checkpoint chunk so one likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
+def default_chunk_size(n_bins: int, dtype: DTypeLike = np.float32) -> int:
+    """Return rows per chunk so a likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
 
     Parameters
     ----------
     n_bins : int
         Hidden state bins per row.
     dtype : numpy dtype, optional
-        Likelihood dtype.
+        Likelihood dtype, by default ``np.float32``.
 
     Returns
     -------
@@ -211,123 +229,16 @@ def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
     return max(MIN_DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_BYTES // row_bytes)
 
 
-@jax.tree_util.register_pytree_node_class
-class _DenseTransition:
-    def __init__(self, matrix, state_ind, n_states):
-        self.matrix, self.state_ind, self.n_states = matrix, state_ind, n_states
-
-    def _matrix(self, discrete_weights):
-        if discrete_weights is None:
-            return self.matrix
-        return self.matrix * discrete_weights[jnp.ix_(self.state_ind, self.state_ind)]
-
-    def forward(self, probabilities, discrete_weights=None):
-        return jnp.matmul(
-            probabilities,
-            self._matrix(discrete_weights),
-            precision=jax.lax.Precision.HIGHEST,
-        )
-
-    def backward(self, values, discrete_weights=None):
-        return jnp.matmul(
-            self._matrix(discrete_weights),
-            values,
-            precision=jax.lax.Precision.HIGHEST,
-        )
-
-    def pair_products(self, filtered, ratio, discrete_weights=None):
-        """Per-state-pair terms of ``filtered @ T * ratio``; see the block operator."""
-        states = jax.nn.one_hot(self.state_ind, self.n_states, dtype=filtered.dtype)
-        precision = jax.lax.Precision.HIGHEST
-        source_rows = jnp.matmul(
-            (states * filtered[:, None]).T,
-            self._matrix(discrete_weights),
-            precision=precision,
-        )
-        return jnp.matmul(source_rows, states * ratio[:, None], precision=precision)
-
-    def tree_flatten(self):
-        return (self.matrix, self.state_ind), self.n_states
-
-    @classmethod
-    def tree_unflatten(cls, aux, children):
-        return cls(*children, aux)
-
-
-@partial(jax.jit, static_argnames=("keep_rows", "keep_predictive", "keep_increments"))
-def _forward_chunk(
-    initial,
-    evidence,
-    likelihoods,
-    weights,
-    operator,
-    *,
-    keep_rows,
-    keep_predictive,
-    keep_increments=False,
-):
-    def step(carry, args):
-        total, predicted = carry
-        ll, weight = args
-        filtered, increment = _condition_on(predicted, ll)
-        if keep_rows:
-            out = (
-                filtered,
-                predicted if keep_predictive else None,
-                increment if keep_increments else None,
-            )
-        else:
-            out = increment if keep_increments else None
-        return (total + increment, operator.forward(filtered, weight)), out
-
-    return jax.lax.scan(
-        step, (evidence, initial), (likelihoods, weights), unroll=_HMM_SCAN_UNROLL
-    )
-
-
-@partial(jax.jit, static_argnames=("pair_statistics",))
-def _backward_chunk(
-    filtered, weights, operator, next_smoothed, rows, n_time, *, pair_statistics=False
-):
-    """Smooth one chunk in reverse.
-
-    With ``pair_statistics``, also return each row's expected discrete
-    transition counts to the next row, ``operator.pair_products`` of the
-    filtered row and ``smoothed_{t+1} / predicted_{t+1}`` (zero on the last
-    recording row, which has no successor).
-    """
-
-    def step(following, args):
-        current, weight, row = args
-        predicted = operator.forward(current, weight)
-        ratio = _divide_safe(following, predicted)
-        if pair_statistics and hasattr(operator, "backward_and_pairs"):
-            backward, pairs = operator.backward_and_pairs(ratio, current, weight)
-        else:
-            backward = operator.backward(ratio, weight)
-            if pair_statistics:
-                pairs = operator.pair_products(current, ratio, weight)
-        # Keep the core's arithmetic, including terminal and NaN semantics.
-        smoothed = current * backward * (row < n_time - 1) + current * (
-            row == n_time - 1
-        )
-        smoothed, _ = _normalize(smoothed, axis=-1)
-        if not pair_statistics:
-            return smoothed, smoothed
-        pairs = jnp.where(row < n_time - 1, pairs, 0)
-        return smoothed, (smoothed, pairs)
-
-    return jax.lax.scan(
-        step,
-        next_smoothed,
-        (filtered, weights, rows),
-        reverse=True,
-        unroll=_HMM_SCAN_UNROLL,
-    )
+# The chunk kernels are core's filter and smoother scan bodies, compiled
+# without donation: the driver reuses its inputs.
+_forward_chunk = jax.jit(
+    _filter_scan, static_argnames=("keep_rows", "keep_predictive", "keep_increments")
+)
+_backward_chunk = jax.jit(_smoother_scan, static_argnames=("pair_statistics",))
 
 
 @jax.jit
-def _sum_state_rows(values, columns):
+def _sum_state_rows(values: jax.Array, columns: jax.Array) -> jax.Array:
     """Use a tree reduction instead of sequential indexed accumulation.
 
     Only one state's columns from the current chunk are gathered at a time.
@@ -345,23 +256,47 @@ class CheckpointedResult:
     shape (n_bins,). ``transition_statistics`` holds the requested expected
     discrete transition counts, shape (n_states, n_states), or per-row
     responses, shape (n_time - 1, n_states, n_states).
+
+    Attributes
+    ----------
+    dataset : xarray.Dataset
+        Requested outputs for the selected rows, in memory or lazily read
+        from ``result_path``, with the run's diagnostics in ``attrs``.
+    marginal_log_likelihood : float
+        Log marginal likelihood of the whole recording.
+    diagnostics : dict
+        Whole-recording diagnostics, such as counts and indices of degenerate
+        rows and the number of likelihood evaluations.
+    result_path : Path or None
+        Directory of the disk result store, or None for an in-memory result.
+    first_smoothed : np.ndarray or None
+        Smoothed posterior of the first recording row, shape (n_bins,).
+    transition_statistics : np.ndarray or None
+        Expected discrete transition counts, shape (n_states, n_states), or
+        per-row responses, shape (n_time - 1, n_states, n_states); None unless
+        requested.
     """
 
     dataset: xr.Dataset
     marginal_log_likelihood: float
-    diagnostics: dict
+    diagnostics: dict[str, Any]
     result_path: Path | None = None
     first_smoothed: np.ndarray | None = None
     transition_statistics: np.ndarray | None = None
 
 
-def _selected_rows(selected, n_time):
+def _selected_rows(selected: ArrayLike | None, n_time: int) -> NDArray[np.intp]:
     if selected is None:
         return np.arange(n_time)
     selected = np.asarray(selected)
     if selected.dtype.kind == "b":
-        if selected.shape != (n_time,):
-            raise ValueError("selected_rows Boolean mask must match the recording")
+        _check_shape(
+            "selected_rows Boolean mask",
+            selected,
+            (n_time,),
+            "A Boolean mask selects rows of the whole recording, one entry per "
+            "decode bin.",
+        )
         selected = np.flatnonzero(selected)
     if (
         selected.ndim != 1
@@ -370,13 +305,18 @@ def _selected_rows(selected, n_time):
         or np.any(selected >= n_time)
         or np.any(selected[1:] <= selected[:-1])
     ):
-        raise ValueError(
-            "selected_rows must be unique, increasing recording row indices"
+        msg = "selected_rows must be unique, increasing recording row indices"
+        raise ValidationError(
+            msg,
+            expected=f"increasing integers in [0, {n_time})",
+            got=f"shape {selected.shape}, dtype {selected.dtype}",
+            hint="Pass sorted unique row indices, e.g. np.unique(rows), or a "
+            "Boolean mask over the decode bins.",
         )
     return selected.astype(np.intp, copy=False)
 
 
-def _sum_evidence(chunks):
+def _sum_evidence(chunks: Iterable[float]) -> float:
     """Float64 sum of per-chunk evidence with IEEE nonfinite propagation.
 
     Holds one float per chunk. Exceptions raised while producing chunks
@@ -402,7 +342,7 @@ def _sum_evidence(chunks):
     return total
 
 
-def _mix32(bits):
+def _mix32(bits: jax.Array) -> jax.Array:
     """Bijective 32-bit integer hash (lowbias32) in wrapping uint32 arithmetic."""
     bits = bits ^ (bits >> 16)
     bits = bits * jnp.uint32(0x7FEB352D)
@@ -412,7 +352,9 @@ def _mix32(bits):
 
 
 @jax.jit
-def _prepare_chunk(values, missing):
+def _prepare_chunk(
+    values: jax.Array, missing: jax.Array
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Neutralize missing rows; return diagnostic masks and a replay checksum.
 
     The checksum holds two wrapping uint32 sums over the value bits: one
@@ -426,7 +368,10 @@ def _prepare_chunk(values, missing):
     Parameters
     ----------
     values : jax.Array, shape (n_rows, n_bins)
+        Chunk of values; rows flagged in ``missing`` are zeroed before the
+        masks and checksum are computed.
     missing : jax.Array of bool, shape (n_rows,)
+        True for rows to neutralize.
 
     Returns
     -------
@@ -436,8 +381,7 @@ def _prepare_chunk(values, missing):
     checksum : jax.Array of uint32, shape (2,)
     """
     values = jnp.where(missing[:, None], jnp.zeros((), values.dtype), values)
-    degenerate = values.max(axis=-1) == -jnp.inf
-    nan = jnp.any(jnp.isnan(values), axis=-1)
+    degenerate, nan = _degenerate_and_nan_masks_device(values)
     bits = jax.lax.bitcast_convert_type(values, jnp.uint32).ravel()
     positions = jnp.arange(bits.size, dtype=jnp.uint32)
     checksum = jnp.stack(
@@ -453,43 +397,50 @@ def _prepare_chunk(values, missing):
 
 
 def checkpointed_forward_backward(
-    time_edges,
-    initial_distribution,
-    log_likelihood_func,
+    time_edges: ArrayLike,
+    initial_distribution: ArrayLike,
+    log_likelihood_func: Callable[..., Any],
     *,
-    transition_matrix=None,
-    transition_operator=None,
-    discrete_transition_matrix=None,
-    continuous_transition_matrix=None,
-    state_ind=None,
-    n_states=None,
-    is_missing=None,
-    chunk_size=2000,
-    output_mode="compact",
-    result_path=None,
-    checkpoint_dir=None,
-    return_outputs=None,
-    selected_rows=None,
-    dtype=np.float32,
-    max_read_bytes=DEFAULT_MAX_READ_BYTES,
-    result_attrs=None,
-    evidence_accumulation="stable",
-    transition_statistics=None,
-    replay_cache_bytes=0,
-):
+    log_likelihood_args: tuple[Any, ...] = (),
+    transition_matrix: ArrayLike | None = None,
+    transition_operator: TransitionProducts | None = None,
+    discrete_transition_matrix: ArrayLike | None = None,
+    continuous_transition_matrix: ArrayLike | None = None,
+    state_ind: ArrayLike | None = None,
+    n_states: int | None = None,
+    is_missing: ArrayLike | None = None,
+    chunk_size: int = 2000,
+    output_mode: OutputMode = "compact",
+    result_path: str | Path | None = None,
+    checkpoint_dir: str | Path | None = None,
+    return_outputs: str | Iterable[str] | None = None,
+    selected_rows: ArrayLike | None = None,
+    dtype: DTypeLike = np.float32,
+    max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+    result_attrs: dict[str, Any] | Callable[[float], dict[str, Any]] | None = None,
+    evidence_accumulation: EvidenceAccumulation = "stable",
+    transition_statistics: TransitionStatistics | None = None,
+    replay_cache_bytes: int = 0,
+) -> CheckpointedResult:
     """Filter once, replay each chunk in reverse, and emit exact requested rows.
 
-    The likelihood callback receives ``(full_edges, row_slice=global_slice,
-    is_missing=chunk_mask)``. Counts must retain global edge/final-edge ownership.
+    The likelihood callback is called as ``log_likelihood_func(
+    *log_likelihood_args, time_edges=time_edges, is_missing=chunk_mask,
+    row_slice=global_slice)``, as core's drivers call it; with more than one
+    chunk it must be marked :func:`~non_local_detector.core.row_slice_aware`,
+    and an unmarked callback is called without ``row_slice`` for the single
+    chunk. Counts must retain global edge/final-edge ownership.
     Every request spans ``min(chunk_size, n_time)`` rows: a short last chunk is
     requested over the final ``chunk_size`` rows and its earlier rows are
     discarded, so compiled likelihood kernels see one row count.
     This driver applies neutral likelihoods to missing rows and checks replay
-    determinism. ``transition_operator`` is a registered JAX pytree with pure-JAX
-    ``forward(p, weight)`` and ``backward(v, weight)``; ``weight`` is None or the
-    global discrete row.
+    determinism. ``transition_operator`` is a registered JAX pytree implementing
+    :class:`~non_local_detector.core.TransitionProducts` (``forward`` and
+    ``backward``), or :class:`~non_local_detector.core.TransitionOperator` when
+    transition statistics are requested; ``weight`` is None or the global
+    discrete row.
     Alternatively supply a dense stationary matrix, or continuous/discrete
-    factors and ``state_ind`` for the reference covariate path.
+    factors and ``state_ind`` for the covariate path.
 
     Compact outputs are discrete-state marginals. Spatial outputs with a disk
     ``result_path`` remain lazy, without full-session spatial allocations;
@@ -528,67 +479,222 @@ def checkpointed_forward_backward(
     cost two bytes per recording row while computing; exact NumPy index arrays
     cost up to two intp entries per row. Persisted masks use packed bits, avoiding
     per-row Python objects or large JSON index lists.
+
+    Parameters
+    ----------
+    time_edges : array_like, shape (n_time + 1,)
+        Uniform decoding bin boundaries in seconds.
+    initial_distribution : array_like, shape (n_bins,)
+        Initial probability of each hidden state bin: nonnegative, summing
+        to 1.
+    log_likelihood_func : callable
+        Callback ``log_likelihood_func(*log_likelihood_args,
+        time_edges=time_edges, is_missing=..., row_slice=...)`` returning the
+        log likelihood of the requested global rows, shape (n_rows, n_bins).
+        Marked by :func:`~non_local_detector.core.row_slice_aware` unless
+        ``chunk_size`` covers every row.
+    log_likelihood_args : tuple, optional
+        Positional arguments passed to ``log_likelihood_func``; by default
+        none.
+    transition_matrix : array_like, shape (n_bins, n_bins), optional
+        Dense stationary transition matrix, nonnegative with each row summing
+        to at most 1. Used when neither ``transition_operator`` nor
+        ``discrete_transition_matrix`` is given.
+    transition_operator : TransitionProducts, optional
+        Registered JAX pytree used instead of a dense matrix. Filtering and
+        smoothing need only :class:`~non_local_detector.core.TransitionProducts`
+        (``forward`` and ``backward``); ``transition_statistics`` needs a
+        :class:`~non_local_detector.core.TransitionOperator`, which adds
+        ``pair_products`` and ``backward_and_pairs`` (inherited only by
+        subclassing ``TransitionOperator``). Its rows are checked through
+        their sums ``backward(1)``, as ``transition_matrix``'s rows are: at
+        most 1. With ``discrete_transition_matrix``, each bin's row is
+        checked per discrete state, as ``continuous_transition_matrix``'s
+        is, from the product with each weight whose column ``k`` is one.
+    discrete_transition_matrix : array_like, shape (n_time, n_states, n_states), optional
+        Per-row discrete state transition weights for the covariate path,
+        combined with ``continuous_transition_matrix``: nonnegative, each row
+        summing to 1.
+    continuous_transition_matrix : array_like, shape (n_bins, n_bins), optional
+        Dense continuous transition matrix used with
+        ``discrete_transition_matrix``: nonnegative, each bin's row summing to
+        at most 1 over the bins of each discrete state.
+    state_ind : array_like of int, shape (n_bins,), optional
+        Discrete state index of each hidden bin. Required for
+        ``output_mode="compact"``; by default each bin is its own state.
+    n_states : int, optional
+        Number of discrete states; by default the last axis of
+        ``discrete_transition_matrix``, or one more than the largest
+        ``state_ind``.
+    is_missing : array_like of bool, shape (n_time,), optional
+        Rows without observations, which get neutral likelihoods. By default
+        no row is missing.
+    chunk_size : int, optional
+        Number of rows per checkpoint chunk, by default 2000.
+    output_mode : {"compact", "spatial"}, optional
+        ``"compact"`` returns discrete-state probabilities; ``"spatial"``
+        returns per-bin posteriors. By default "compact".
+    result_path : str or Path, optional
+        If given, write the outputs to this new directory and return a lazy
+        view; otherwise outputs are held in memory.
+    checkpoint_dir : str or Path, optional
+        Parent directory for temporary checkpoints, by default the parent of
+        ``result_path`` (or the system temporary directory).
+    return_outputs : str or iterable of str, optional
+        Names of the outputs to return, such as ``"acausal_posterior"``,
+        ``"causal_posterior"``, ``"predictive_posterior"``, ``"log_likelihood"``
+        or the ``*_state_probabilities`` marginals. By default the acausal
+        state probabilities (compact) or posterior (spatial).
+    selected_rows : array_like, optional
+        Increasing row indices, or a boolean mask of shape (n_time,), of the
+        rows to return. Inference still uses all rows. By default all rows.
+    dtype : numpy dtype, optional
+        State-probability dtype, ``float32`` or ``float64`` (the latter
+        requires ``JAX_ENABLE_X64=1``), by default ``np.float32``.
+    max_read_bytes : int, optional
+        Largest single explicit read from a disk result, in bytes, by default
+        512 MiB.
+    result_attrs : dict or callable, optional
+        Attributes added to the returned dataset and store metadata, or a
+        callable mapping the marginal log likelihood to such a dict.
+    evidence_accumulation : {"stable", "reference"}, optional
+        ``"stable"`` sums evidence increments in host float64; ``"reference"``
+        keeps the original cumulative carry. By default "stable".
+    transition_statistics : {"counts", "responses"}, optional
+        Also compute expected discrete transition counts or per-row
+        responses, from the operator's ``backward_and_pairs``. By default
+        None.
+    replay_cache_bytes : int, optional
+        Host memory budget for keeping forward-pass chunks to avoid
+        recomputation in the replay, by default 0 (no cache).
+
+    Returns
+    -------
+    result : CheckpointedResult
+        Dataset of the requested outputs, the marginal log likelihood and
+        diagnostics.
+
+    Raises
+    ------
+    ValidationError
+        If an argument is invalid, such as a non-positive ``chunk_size``, an
+        unrecognized output, an input that breaks the shape, dtype or
+        probability contract of the dense drivers (float64 requires JAX's
+        64-bit mode), a ``transition_operator`` whose row sums break it or
+        that cannot be applied to ``n_bins`` state bins, or a likelihood
+        callback that returns the wrong shape, changes between passes, or is
+        not ``row_slice_aware`` although ``chunk_size`` splits the rows.
+    DataError
+        If a log likelihood outside the bins marked missing is NaN or ``+inf``.
+    TypeError
+        If ``transition_operator`` is not a registered JAX pytree implementing
+        :class:`~non_local_detector.core.TransitionProducts`, or, with
+        ``transition_statistics``, :class:`~non_local_detector.core.TransitionOperator`.
     """
     if (
         isinstance(chunk_size, bool)
-        or not isinstance(chunk_size, (int, np.integer))
+        or not isinstance(chunk_size, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
         or chunk_size <= 0
     ):
-        raise ValueError("chunk_size must be a positive integer")
+        msg = "chunk_size must be a positive integer"
+        raise ValidationError(
+            msg,
+            expected="an integer of at least 1",
+            got=repr(chunk_size),
+            hint="Pass the number of decode bins per checkpoint chunk.",
+        )
     if evidence_accumulation not in ("reference", "stable"):
-        raise ValueError("evidence_accumulation must be reference or stable")
+        msg = "evidence_accumulation must be reference or stable"
+        raise ValidationError(
+            msg,
+            expected="'stable' or 'reference'",
+            got=repr(evidence_accumulation),
+            hint="Use 'stable' (float64 host sums) unless reproducing the "
+            "original cumulative carry.",
+        )
     if transition_statistics not in (None, "counts", "responses"):
-        raise ValueError("transition_statistics must be None, counts or responses")
+        msg = "transition_statistics must be None, counts or responses"
+        raise ValidationError(
+            msg,
+            expected="None, 'counts' or 'responses'",
+            got=repr(transition_statistics),
+            hint="'counts' sums the expected discrete transitions over the "
+            "recording; 'responses' keeps them per row.",
+        )
     if (
         isinstance(replay_cache_bytes, bool)
-        or not isinstance(replay_cache_bytes, (int, np.integer))
+        or not isinstance(replay_cache_bytes, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
         or replay_cache_bytes < 0
     ):
-        raise ValueError("replay_cache_bytes must be a nonnegative integer")
+        msg = "replay_cache_bytes must be a nonnegative integer"
+        raise ValidationError(
+            msg,
+            expected="an integer number of bytes, at least 0",
+            got=repr(replay_cache_bytes),
+            hint="Pass 0 to recompute every chunk in the replay.",
+        )
+    if output_mode not in ("compact", "spatial"):
+        msg = "output_mode must be compact or spatial"
+        raise ValidationError(
+            msg,
+            expected="'compact' or 'spatial'",
+            got=repr(output_mode),
+            hint="'compact' returns discrete-state probabilities; 'spatial' "
+            "returns per-bin posteriors.",
+        )
     max_read_bytes = _validate_read_budget(max_read_bytes)
     edges, _ = uniform_time_edges(time_edges)
-    n_time, dtype = len(edges) - 1, np.dtype(dtype)
-    if dtype not in (np.dtype("float32"), np.dtype("float64")):
-        raise ValueError("dtype must be float32 or float64")
-    if dtype == np.dtype("float64") and not jax.config.x64_enabled:
-        raise ValueError(
-            "float64 requires JAX_ENABLE_X64=1; precision is not silently downgraded"
-        )
-    initial = np.asarray(initial_distribution, dtype=dtype)
-    if initial.ndim != 1 or not len(initial):
-        raise ValueError("initial_distribution must be a nonempty vector")
-    n_bins = len(initial)
+    n_time = len(edges) - 1
     if state_ind is None:
         if output_mode == "compact":
-            raise ValueError("Compact state marginals require state_ind")
-        state_ind = np.arange(n_bins)
+            msg = "Compact state marginals require state_ind"
+            raise ValidationError(
+                msg,
+                expected="state_ind with output_mode='compact'",
+                got="state_ind=None",
+                hint="Pass the discrete state of each hidden bin, or use "
+                "output_mode='spatial'.",
+            )
+        state_ind = np.arange(np.size(initial_distribution))
+        if discrete_transition_matrix is not None and np.shape(
+            discrete_transition_matrix
+        )[-1:] != (len(state_ind),):
+            msg = (
+                "discrete_transition_matrix needs one discrete state per hidden "
+                "bin without state_ind"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"shape ({n_time}, {len(state_ind)}, {len(state_ind)})",
+                got=f"shape {np.shape(discrete_transition_matrix)}",
+                hint="Pass state_ind, the discrete state of each hidden bin, to "
+                "use fewer discrete states than hidden bins.",
+            )
+    covariate = discrete_transition_matrix is not None
+    dense = transition_operator is None
+    dtype, validated_states = _validate_hmm_inputs(
+        n_time=n_time,
+        initial_distribution=initial_distribution,
+        dtype=np.dtype(dtype),
+        state_ind=state_ind,
+        n_states=n_states,
+        transition_matrix=transition_matrix if dense and not covariate else None,
+        discrete_transition_matrix=discrete_transition_matrix,
+        continuous_transition_matrix=(
+            continuous_transition_matrix if dense and covariate else None
+        ),
+        is_missing=is_missing,
+    )
+    assert validated_states is not None  # state_ind is always set here
+    n_states = validated_states
+    initial = np.asarray(initial_distribution, dtype=dtype)
+    n_bins = len(initial)
     state_ind = np.asarray(state_ind)
-    if (
-        state_ind.shape != (n_bins,)
-        or state_ind.dtype.kind not in "iu"
-        or np.any(state_ind < 0)
-    ):
-        raise ValueError(
-            "state_ind must contain one nonnegative integer per hidden bin"
-        )
-    minimum_states = int(state_ind.max()) + 1
-    n_states = minimum_states if n_states is None else n_states
-    if (
-        isinstance(n_states, bool)
-        or not isinstance(n_states, (int, np.integer))
-        or n_states < minimum_states
-    ):
-        raise ValueError("n_states must include every declared state_ind value")
-    n_states = int(n_states)
     missing = (
         np.zeros(n_time, bool)
         if is_missing is None
         else np.asarray(is_missing, dtype=bool)
     )
-    if missing.shape != (n_time,):
-        raise ValueError("is_missing must contain one value per decode bin")
-    if output_mode not in ("compact", "spatial"):
-        raise ValueError("output_mode must be compact or spatial")
     outputs = (
         (
             ("acausal_state_probabilities",)
@@ -600,9 +706,21 @@ def checkpointed_forward_backward(
     )
     outputs = {outputs} if isinstance(outputs, str) else set(outputs)
     if not outputs or outputs - (_SPATIAL | _MARGINAL):
-        raise ValueError("Unrecognized or empty return_outputs")
+        msg = "Unrecognized or empty return_outputs"
+        raise ValidationError(
+            msg,
+            expected=f"a nonempty subset of {sorted(_SPATIAL | _MARGINAL)}",
+            got=repr(sorted(outputs)),
+            hint="Name each output to return.",
+        )
     if output_mode == "compact" and outputs & _SPATIAL:
-        raise ValueError("Compact mode only retains state probabilities")
+        msg = "Compact mode only retains state probabilities"
+        raise ValidationError(
+            msg,
+            expected=f"outputs among {sorted(_MARGINAL)}",
+            got=repr(sorted(outputs & _SPATIAL)),
+            hint="Use output_mode='spatial' for per-bin outputs.",
+        )
     state_columns = (
         tuple(
             jnp.asarray(np.flatnonzero(state_ind == state)) for state in range(n_states)
@@ -611,43 +729,80 @@ def checkpointed_forward_backward(
         else ()
     )
     selected = _selected_rows(selected_rows, n_time)
-    covariate = discrete_transition_matrix is not None
     weights = (
         None if not covariate else np.asarray(discrete_transition_matrix, dtype=dtype)
     )
-    if covariate and weights.shape != (n_time, n_states, n_states):
-        raise ValueError(
-            "Discrete transition rows must match the full recording/state dimensions"
-        )
     if transition_operator is None:
         matrix = continuous_transition_matrix if covariate else transition_matrix
-        if matrix is None or np.shape(matrix) != (n_bins, n_bins):
-            raise ValueError(
-                "A matching dense matrix or transition_operator is required"
+        if matrix is None:
+            needed = (
+                "continuous_transition_matrix" if covariate else "transition_matrix"
             )
-        transition_operator = _DenseTransition(
-            jnp.asarray(matrix, dtype=dtype), jnp.asarray(state_ind), n_states
+            msg = "checkpointed_forward_backward needs a transition"
+            raise ValidationError(
+                msg,
+                expected="transition_matrix, transition_operator, or "
+                "continuous_transition_matrix with discrete_transition_matrix",
+                got=f"no {needed}",
+                hint=f"Pass {needed} or a transition_operator.",
+            )
+        # The covariate operator applies each row's discrete matrix per
+        # discrete state, as core does, without building the joint matrix.
+        transition_operator = (
+            _CovariateTransition.create(
+                jnp.asarray(matrix, dtype=dtype), state_ind, n_states
+            )
+            if covariate
+            else _StationaryTransition(
+                jnp.asarray(matrix, dtype=dtype),
+                jnp.asarray(state_ind),
+                n_states,
+            )
         )
     else:
         leaves, _ = jax.tree_util.tree_flatten(transition_operator)
         if len(leaves) == 1 and leaves[0] is transition_operator:
             # An unregistered object would be a static jit argument: its arrays
             # would be baked into the compiled chunks and later changes ignored.
-            raise TypeError(
+            msg = (
                 "transition_operator must be a registered JAX pytree (for "
                 "example via jax.tree_util.register_pytree_node_class), got "
                 f"{type(transition_operator).__name__}."
             )
-        if transition_statistics is not None and not hasattr(
-            transition_operator, "pair_products"
-        ):
-            raise TypeError(
-                "transition_statistics needs a transition_operator with "
-                f"pair_products; {type(transition_operator).__name__} has none."
+            raise TypeError(msg)
+        protocol, required = (
+            (TransitionProducts, ("forward", "backward"))
+            if transition_statistics is None
+            else (
+                TransitionOperator,
+                ("forward", "backward", "pair_products", "backward_and_pairs"),
             )
+        )
+        if not isinstance(transition_operator, protocol):
+            missing_methods = [  # type: ignore[unreachable]  # runtime check of caller input
+                name
+                for name in required
+                if not callable(getattr(transition_operator, name, None))
+            ]
+            msg = (
+                f"transition_operator must implement "
+                f"non_local_detector.core.{protocol.__name__}"
+                f"{'' if transition_statistics is None else ' for transition_statistics'}; "
+                f"{type(transition_operator).__name__} lacks "
+                f"{', '.join(missing_methods)}. Subclassing TransitionOperator "
+                "provides backward_and_pairs."
+            )
+            raise TypeError(msg)
         # Transfer array leaves once; each jitted chunk call would otherwise
         # convert host leaves again.
         transition_operator = jax.device_put(transition_operator)
+        _check_operator_rows(
+            transition_operator,
+            n_bins,
+            dtype,
+            n_states if covariate else None,
+            pair_states=None if transition_statistics is None else n_states,
+        )
     dims = {
         name: ("time", "state_bins" if name in _SPATIAL else "states")
         for name in outputs
@@ -667,7 +822,7 @@ def checkpointed_forward_backward(
     }
     if outputs & _SPATIAL:
         coordinates["state_bins"] = (("state_bins",), np.arange(n_bins))
-    arrays = (
+    arrays: dict[str, NDArray[Any]] | None = (
         {name: np.empty(shapes[name], dtype=dtype) for name in outputs}
         if result_path is None
         else None
@@ -691,9 +846,14 @@ def checkpointed_forward_backward(
         )
     )
     boundaries = range(0, n_time, int(chunk_size))
-    diagnostics = {
+    _require_row_slice_aware(
+        log_likelihood_func,
+        len(boundaries),
+        chunking=f"chunk_size={chunk_size} for {n_time} rows",
+        hint="Mark the callback, or pass a chunk_size of at least the number of rows.",
+    )
+    diagnostics: dict[str, Any] = {
         "n_degenerate": 0,
-        "n_nan": 0,
         "max_chunk_rows": 0,
         "likelihood_evaluations": 0,
         "checkpoint_bytes": 0,
@@ -703,7 +863,7 @@ def checkpointed_forward_backward(
     }
 
     degenerate_rows = np.zeros(n_time, dtype=bool)
-    nan_rows = np.zeros(n_time, dtype=bool)
+    n_nan = 0
     pair_statistics = transition_statistics is not None
     statistics = (
         np.zeros((n_states, n_states))
@@ -713,26 +873,38 @@ def checkpointed_forward_backward(
         else None
     )
 
-    def likelihood(start, stop):
+    def likelihood(
+        start: int, stop: int
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Return device ``(values, degenerate, nan, checksum)`` for one chunk."""
         # A short last chunk is evaluated over the final chunk_size rows and
         # trimmed, so every callback has one shape and reuses compiled kernels.
         first = max(min(start, n_time - int(chunk_size)), 0)
         values = jnp.asarray(
-            log_likelihood_func(
-                time_edges, row_slice=slice(first, stop), is_missing=missing[first:stop]
+            _call_log_likelihood_chunk(
+                log_likelihood_func,
+                time_edges,
+                log_likelihood_args,
+                slice(first, stop),
+                missing[first:stop],
             ),
             dtype=dtype,
         )
-        if values.shape != (stop - first, n_bins):
-            raise ValueError(
-                "Likelihood callback must return exactly the requested global rows and hidden bins"
-            )
+        _check_shape(
+            "log_likelihood_func output",
+            values,
+            (stop - first, n_bins),
+            "The likelihood callback must return exactly the requested global "
+            "rows (row_slice) and one column per hidden bin.",
+        )
         diagnostics["likelihood_evaluations"] += 1
         diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - first)
-        return _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop]))
+        return cast(
+            "tuple[jax.Array, jax.Array, jax.Array, jax.Array]",
+            _prepare_chunk(values[start - first :], jnp.asarray(missing[start:stop])),
+        )
 
-    def emit(name, start, stop, values):
+    def emit(name: str, start: int, stop: int, values: Any) -> None:
         first, last = np.searchsorted(selected, [start, stop])
         if first == last:
             return
@@ -745,15 +917,22 @@ def checkpointed_forward_backward(
             else values[rows]
         )
         if writer is None:
+            assert arrays is not None  # arrays is built whenever result_path is None
             arrays[name][first:last] = values
         else:
             writer.write(name, int(first), values)
 
-    def emit_chunk(start, stop, chunk_outputs, chunk_statistics=None):
+    def emit_chunk(
+        start: int,
+        stop: int,
+        chunk_outputs: dict[str, Any],
+        chunk_statistics: Any = None,
+    ) -> None:
         for name, value in chunk_outputs.items():
             emit(name, start, stop, value)
         if chunk_statistics is None:
             return
+        assert statistics is not None  # chunk statistics exist only when requested
         if transition_statistics == "counts":
             statistics[...] += np.asarray(chunk_statistics, np.float64)
         else:
@@ -762,8 +941,8 @@ def checkpointed_forward_backward(
     try:
         with tempfile.TemporaryDirectory(
             prefix="checkpoints-", dir=checkpoint_parent
-        ) as folder:
-            folder = Path(folder)
+        ) as folder_name:
+            folder = Path(folder_name)
             predicted, evidence = jnp.asarray(initial), jnp.asarray(0, dtype=dtype)
 
             # Filtered rows suffice unless an output needs the likelihood or the
@@ -773,20 +952,22 @@ def checkpointed_forward_backward(
                 "predictive_posterior",
                 "predictive_state_probabilities",
             }
-            cached_rows, cached_likelihoods = {}, {}
+            cached_rows: dict[int, NDArray[Any]] = {}
+            cached_likelihoods: dict[int, NDArray[Any]] = {}
 
             def finish_forward_chunk(
-                start,
-                stop,
-                predicted,
-                evidence,
-                degenerate,
-                nan,
-                checksum,
-                cached,
-                increments,
-            ):
+                start: int,
+                stop: int,
+                predicted: jax.Array,
+                evidence: jax.Array,
+                degenerate: Any,
+                nan: Any,
+                checksum: jax.Array,
+                cached: jax.Array | None,
+                increments: Any,
+            ) -> Any:
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
+                nonlocal n_nan
                 if cached is not None:
                     (cached_rows if cache_rows else cached_likelihoods)[start] = (
                         np.asarray(cached)
@@ -800,18 +981,17 @@ def checkpointed_forward_backward(
                     checksum=np.asarray(checksum),
                 )
                 diagnostics["checkpoint_bytes"] += checkpoint.stat().st_size
-                degenerate, nan = np.asarray(degenerate), np.asarray(nan)
+                degenerate = np.asarray(degenerate)
                 degenerate_rows[start:stop] = degenerate
-                nan_rows[start:stop] = nan
                 diagnostics["n_degenerate"] += int(degenerate.sum())
-                diagnostics["n_nan"] += int(nan.sum())
+                n_nan += int(np.asarray(nan).sum())
                 return (
                     _float64_evidence(increments)
                     if evidence_accumulation == "stable"
                     else 0.0
                 )
 
-            def forward_increment_sums():
+            def forward_increment_sums() -> Iterator[Any]:
                 nonlocal predicted, evidence
                 # Each chunk's host work runs after the next chunk is dispatched,
                 # so device computation overlaps host transfers and disk writes.
@@ -860,6 +1040,12 @@ def checkpointed_forward_backward(
                 for _ in forward_increment_sums():
                     pass
                 marginal = float(evidence)
+            _report_degenerate_and_nan_timesteps(
+                diagnostics["n_degenerate"],
+                n_nan,
+                n_time,
+                marginal_log_likelihood=marginal,
+            )
             next_smoothed = jnp.asarray(initial)
             # Outputs are emitted after the next chunk is dispatched; each chunk's
             # checksum is verified before its outputs are emitted.
@@ -947,25 +1133,24 @@ def checkpointed_forward_backward(
                 if pending is not None:
                     emit_chunk(*pending)
                 if not np.array_equal(np.asarray(checksum), expected_checksum):
-                    raise ValueError(
-                        "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
+                    msg = (
+                        "Likelihood callback changed during checkpoint replay; "
+                        "deterministic inputs are required"
+                    )
+                    raise ValidationError(
+                        msg,
+                        expected="the same values for a row_slice on every call",
+                        got=f"different values for rows {start} to {stop}",
+                        hint="Make the likelihood callback deterministic: no "
+                        "randomness or state that changes between the forward "
+                        "pass and the replay.",
                     )
                 pending = (start, stop, chunk_outputs, chunk_statistics)
             if pending is not None:
                 emit_chunk(*pending)
-        _warn_degenerate_and_nan_timesteps(
-            diagnostics["n_degenerate"],
-            diagnostics["n_nan"],
-            n_time,
-            marginal_log_likelihood=marginal,
-        )
         diagnostics["degenerate_indices"] = np.flatnonzero(degenerate_rows)
-        diagnostics["nan_indices"] = np.flatnonzero(nan_rows)
         packed_masks = {
             "degenerate_row_mask_hex": np.packbits(degenerate_rows, bitorder="little")
-            .tobytes()
-            .hex(),
-            "nan_row_mask_hex": np.packbits(nan_rows, bitorder="little")
             .tobytes()
             .hex(),
             "diagnostic_row_mask_encoding": "packbits_little_hex",
@@ -994,6 +1179,7 @@ def checkpointed_forward_backward(
             **packed_masks,
         }
         if writer is None:
+            assert arrays is not None  # arrays is built whenever result_path is None
             dataset = xr.Dataset(
                 {name: (dims[name], arrays[name]) for name in outputs},
                 coords=coordinates,
@@ -1001,6 +1187,7 @@ def checkpointed_forward_backward(
             )
         else:
             writer.complete(attrs)
+            assert result_path is not None  # a writer exists only with result_path
             dataset = open_result_store(result_path, max_read_bytes=max_read_bytes)
         return CheckpointedResult(
             dataset,

@@ -38,10 +38,10 @@ def time_function(func, *args, n_warmup=3, n_runs=10, **kwargs):
 
 def profile_configuration(n_features, n_enc=200, n_dec=100, n_pos=500):
     """Profile all implementations for a specific configuration."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"Configuration: {n_features}D features")
     print(f"  Encoding: {n_enc} spikes, Decoding: {n_dec} spikes, Positions: {n_pos}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     rng = np.random.default_rng(42)
 
@@ -66,7 +66,7 @@ def profile_configuration(n_features, n_enc=200, n_dec=100, n_pos=500):
         mean_rate,
         position_distance,
     )
-    print(f"  Time: {mean_orig*1000:.3f} ± {std_orig*1000:.3f} ms")
+    print(f"  Time: {mean_orig * 1000:.3f} ± {std_orig * 1000:.3f} ms")
     results["original"] = (mean_orig, std_orig)
 
     print("\nVectorized + JIT:")
@@ -79,7 +79,7 @@ def profile_configuration(n_features, n_enc=200, n_dec=100, n_pos=500):
         mean_rate,
         position_distance,
     )
-    print(f"  Time: {mean_vec*1000:.3f} ± {std_vec*1000:.3f} ms")
+    print(f"  Time: {mean_vec * 1000:.3f} ± {std_vec * 1000:.3f} ms")
     speedup_vec = mean_orig / mean_vec
     print(f"  Speedup: {speedup_vec:.2f}x")
     results["vectorized"] = (mean_vec, std_vec, speedup_vec)
@@ -94,7 +94,7 @@ def profile_configuration(n_features, n_enc=200, n_dec=100, n_pos=500):
         mean_rate,
         position_distance,
     )
-    print(f"  Time: {mean_log*1000:.3f} ± {std_log*1000:.3f} ms")
+    print(f"  Time: {mean_log * 1000:.3f} ± {std_log * 1000:.3f} ms")
     speedup_log = mean_orig / mean_log
     print(f"  Speedup: {speedup_log:.2f}x")
     results["logspace"] = (mean_log, std_log, speedup_log)
@@ -104,9 +104,9 @@ def profile_configuration(n_features, n_enc=200, n_dec=100, n_pos=500):
 
 def main():
     """Run comprehensive performance profiling."""
-    print("="*70)
+    print("=" * 70)
     print("PERFORMANCE PROFILING: OPTIMIZED KDE IMPLEMENTATIONS")
-    print("="*70)
+    print("=" * 70)
     print("\nComparing:")
     print("  1. Original (Python for-loop in kde_distance)")
     print("  2. Vectorized + JIT (vmap + @jax.jit)")
@@ -124,22 +124,22 @@ def main():
     all_results = []
 
     for n_features, n_enc, n_dec, n_pos, desc in configs:
-        print(f"\n\n{'#'*70}")
+        print(f"\n\n{'#' * 70}")
         print(f"# {desc}")
-        print(f"{'#'*70}")
+        print(f"{'#' * 70}")
         results = profile_configuration(n_features, n_enc, n_dec, n_pos)
         all_results.append((n_features, desc, results))
 
     # Summary table
-    print("\n\n" + "="*70)
+    print("\n\n" + "=" * 70)
     print("SUMMARY: Performance Across Dimensions")
-    print("="*70)
+    print("=" * 70)
 
-    print("\n" + "-"*70)
+    print("\n" + "-" * 70)
     print(f"{'Dim':<6} {'Original':<15} {'Vectorized':<20} {'Log-space':<20}")
-    print("-"*70)
+    print("-" * 70)
 
-    for n_features, desc, results in all_results:
+    for n_features, _desc, results in all_results:
         orig_time = results["original"][0] * 1000
         vec_time, _, vec_speedup = results["vectorized"]
         log_time, _, log_speedup = results["logspace"]
@@ -155,9 +155,9 @@ def main():
         )
 
     # Analysis
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("ANALYSIS")
-    print("="*70)
+    print("=" * 70)
 
     print("\nVectorized + JIT Optimization:")
     vec_speedups = [r[2]["vectorized"][2] for r in all_results]
@@ -195,17 +195,19 @@ def main():
 
     # Comparison: Vectorized vs Log-space
     print("\nLog-space vs Vectorized:")
-    for n_features, desc, results in all_results:
+    for n_features, _desc, results in all_results:
         vec_time = results["vectorized"][0]
         log_time = results["logspace"][0]
         ratio = vec_time / log_time
         faster = "Log" if ratio > 1.0 else "Vec"
-        print(f"  {n_features}D: {abs(ratio):.2f}x {'faster' if ratio != 1.0 else 'same'} ({faster})")
+        print(
+            f"  {n_features}D: {abs(ratio):.2f}x {'faster' if ratio != 1.0 else 'same'} ({faster})"
+        )
 
     # Recommendations
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("RECOMMENDATIONS")
-    print("="*70)
+    print("=" * 70)
 
     vec_avg = np.mean([r[2]["vectorized"][2] for r in all_results])
     log_avg = np.mean([r[2]["logspace"][2] for r in all_results])
@@ -230,7 +232,7 @@ def main():
         print("  ~ Optimization provides moderate benefit")
         print("  ~ Consider for performance-critical applications only")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":

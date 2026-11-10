@@ -1,0 +1,164 @@
+"""Tests for posterior probability mathematical properties.
+
+These tests verify that posterior distributions satisfy mathematical properties
+that must hold regardless of implementation details (normalization, causality,
+entropy bounds). These tests catch numerical issues and implementation bugs.
+"""
+
+from typing import Any
+
+import numpy as np
+import pytest
+
+from non_local_detector.models.decoder import ClusterlessDecoder
+from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+
+# Test configuration constants
+POSITION_STD = 6.0
+WAVEFORM_STD = 24.0
+BLOCK_SIZE = 100
+NORMALIZATION_RTOL = 1e-5
+NORMALIZATION_ATOL = 1e-8
+SIMULATION_SEED = 200
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module")
+def decoder_with_results() -> dict[str, Any]:
+    """Fit decoder and get posterior results for property testing.
+
+    Module-scoped: the tests only read the results.
+
+    Returns dict with keys:
+        - sim: ClusterlessSimOutput with full simulation data
+        - decoder: Fitted ClusterlessDecoder
+        - results: xr.Dataset with posterior results
+        - test_edges: Time bin edges used for decoding
+    """
+    # Generate simulated data (4 tetrodes, 16 neurons, 3 runs)
+    sim = make_simulated_run_data(
+        n_tetrodes=4,
+        place_field_means=np.arange(0, 160, 10),
+        sampling_frequency=500,
+        n_runs=3,
+        seed=SIMULATION_SEED,
+    )
+
+    # 70/30 train/test split
+    n_encode = int(0.7 * len(sim.position_time))
+
+    # Training data
+    encode_position_time = sim.position_time[:n_encode]
+    encode_position = sim.position[:n_encode]
+    encode_spike_times = [st[st <= encode_position_time[-1]] for st in sim.spike_times]
+    encode_spike_waveform_features = [
+        swf[st <= encode_position_time[-1]]
+        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
+    ]
+
+    # Test edges: 50 time bins for decoding. The detector's sampling_frequency
+    # is the rate of these (wide) bins.
+    test_position_time = sim.position_time[n_encode:]
+    test_edges = np.linspace(test_position_time[0], test_position_time[-1], 51)
+
+    # Fit decoder on training data
+    decoder = ClusterlessDecoder(
+        environments=sim.environment,
+        sampling_frequency=1.0 / (test_edges[1] - test_edges[0]),
+        clusterless_algorithm="clusterless_kde",
+        clusterless_algorithm_params={
+            "position_std": POSITION_STD,
+            "waveform_std": WAVEFORM_STD,
+            "block_size": BLOCK_SIZE,
+        },
+    )
+
+    decoder.fit(
+        position_time=encode_position_time,
+        position=encode_position,
+        spike_times=encode_spike_times,
+        spike_waveform_features=encode_spike_waveform_features,
+    )
+
+    # Test data
+    test_spike_times = [st[st > encode_position_time[-1]] for st in sim.spike_times]
+    test_spike_waveform_features = [
+        swf[st > encode_position_time[-1]]
+        for st, swf in zip(sim.spike_times, sim.spike_waveform_features, strict=True)
+    ]
+
+    # Predict on test data
+    results = decoder.predict(
+        time_edges=test_edges,
+        position_time=test_position_time,
+        position=sim.position[n_encode:],
+        spike_times=test_spike_times,
+        spike_waveform_features=test_spike_waveform_features,
+        return_outputs="all",
+    )
+
+    return {
+        "sim": sim,
+        "decoder": decoder,
+        "results": results,
+        "test_edges": test_edges,
+    }
+
+
+def test_posterior_is_normalized_and_nonnegative(
+    decoder_with_results: dict[str, Any],
+) -> None:
+    """Test that the posterior is a probability distribution at each time point.
+
+    Probabilities must be non-negative and sum to 1 over all states and
+    positions. A NaN, Inf, or all-zero posterior fails the sum check.
+    """
+    results = decoder_with_results["results"]
+    acausal_posterior = results.acausal_posterior.values
+
+    assert np.all(acausal_posterior >= 0), (
+        f"Found negative probabilities: min={acausal_posterior.min():.10f}"
+    )
+
+    # Sum over all state bins (includes position and discrete states)
+    posterior_sum = np.sum(acausal_posterior, axis=1)
+
+    # Should be very close to 1.0 at each time point
+    np.testing.assert_allclose(
+        posterior_sum,
+        1.0,
+        rtol=NORMALIZATION_RTOL,
+        atol=NORMALIZATION_ATOL,
+        err_msg=f"Posterior not normalized: min={posterior_sum.min():.10f}, "
+        f"max={posterior_sum.max():.10f}, mean={posterior_sum.mean():.10f}",
+    )
+
+
+def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> None:
+    """Test that acausal posterior has lower entropy than causal.
+
+    The acausal (smoothed) posterior uses both past and future observations,
+    so it should be more concentrated (lower entropy) than the causal
+    (filtered) posterior which only uses past observations.
+    """
+    results = decoder_with_results["results"]
+
+    # Get both posteriors
+    acausal_posterior = results.acausal_posterior.values
+    causal_posterior = results.causal_posterior.values
+
+    # Compute entropy for each time point (adding small epsilon to avoid log(0))
+    eps = 1e-10
+    acausal_entropy = -np.sum(
+        acausal_posterior * np.log(acausal_posterior + eps), axis=1
+    )
+    causal_entropy = -np.sum(causal_posterior * np.log(causal_posterior + eps), axis=1)
+
+    # Mean entropy should be lower for acausal (more information used)
+    mean_acausal_entropy = np.mean(acausal_entropy)
+    mean_causal_entropy = np.mean(causal_entropy)
+
+    assert mean_acausal_entropy <= mean_causal_entropy, (
+        f"Acausal entropy ({mean_acausal_entropy:.3f}) should be <= causal entropy ({mean_causal_entropy:.3f})"
+    )

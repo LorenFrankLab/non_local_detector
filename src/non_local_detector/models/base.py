@@ -1,43 +1,48 @@
+"""Detector base class and the sorted-spikes and clusterless detectors.
+
+This module defines the shared HMM machinery of the package: initializing the
+environments, state space, initial conditions and state transitions; fitting
+encoding models; computing log likelihoods; decoding with the forward-backward
+algorithm (``predict``); estimating parameters with EM
+(``estimate_parameters``); finding the most likely state sequence; and
+saving and loading models and results. ``SortedSpikesDetector`` and
+``ClusterlessDetector`` specialize it for sorted spike trains and for
+unsorted spike waveform features. The model classes in the other modules of
+``non_local_detector.models`` configure these two with specific states and
+transitions.
+
+``_DetectorBase`` inherits its input validation, checkpointed prediction, EM,
+plotting, and saving and loading methods from mixins in the private modules
+``_input_validation``, ``_checkpointed``, ``_em``, ``_plotting`` and
+``_persistence``. The detector classes stay here: saved detectors name this
+module.
+"""
+
 import abc
 import copy
 import inspect
-import pickle
+import textwrap
 import warnings
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from functools import partial
 from logging import getLogger
 from pathlib import Path
+from typing import Any, TypeVar, cast
 
 import jax
 import jax.numpy as jnp
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
-import seaborn as sns  # type: ignore[import-untyped]
-import sklearn  # type: ignore[import-untyped]
+import pandas as pd
 import xarray as xr
-from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-untyped]
+from numpy.typing import ArrayLike
+from patsy import DesignMatrix
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
-from non_local_detector import _validation as val
-from non_local_detector._position_dims import get_position_dim_names
-from non_local_detector.checkpointed_inference import (
-    _available_host_bytes,
-    default_chunk_size,
-    default_replay_cache_bytes,
-)
-from non_local_detector.continuous_state_transitions import (
-    Discrete,
-    EmpiricalMovement,
-    Uniform,
-)
+from non_local_detector._transition_estimation import _row_smoothness
+from non_local_detector._warnings import user_stacklevel
+from non_local_detector.continuous_state_transitions import TransitionContext
 from non_local_detector.core import (
-    accepts_row_slice,
-    check_converged,
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
     most_likely_sequence,
@@ -45,1007 +50,198 @@ from non_local_detector.core import (
     row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
-    _covariate_transition_covariance,
-    _discrete_transition_from_statistics,
-    _discrete_transition_statistics,
-    _is_nonstationary,
-    _max_transition_change,
-    _row_smoothness,
+    _check_initial_discrete_transition,
+    _refuse_untrusted_transition,
     _smoothness_matrix,
     _transition_intervals,
-    _transition_log_prior,
-    centered_softmax_forward,
     predict_discrete_state_transitions,
 )
 from non_local_detector.encoding_time import EncodingSupport
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
     ConfigurationError,
-    DataError,
+    DataQualityWarning,
+    NotFittedError,
+    ParameterWarning,
     ValidationError,
 )
 from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
-    predict_no_spike_log_likelihood,
+    ClusterlessLikelihoodAlgorithm,
+    ClusterlessPredict,
+    LikelihoodAlgorithm,
+    SortedSpikesFit,
+    SortedSpikesPredict,
+    _execution_settings,
+    _resolve_fit_params,
 )
+from non_local_detector.likelihoods.common import SpikeTimeOrder as _SpikeTimeOrder
 from non_local_detector.likelihoods.common import (
-    DEFAULT_WAVEFORM_STD,
-    _SpikeTimeOrder,
-    decode_bin_centers,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_population_lengths,
-    validate_spike_feature_population,
 )
 from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
     fit_mark_references,
     mark_reference_log_likelihood,
 )
-from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
+from non_local_detector.likelihoods.no_spike import (
+    no_spike_time_bin_sizes,
+    predict_no_spike_log_likelihood,
+)
+from non_local_detector.models._checkpointed import (
+    _CheckpointedPredictionMixin,
+    _PosteriorOutputs,
+)
+
+# EM looks these names up in models._em: patch them there, not here.
+from non_local_detector.models._em import (
+    _EMDiagnostics,
+    _EMMixin,
+    _require_observed_bins,
+    _resolve_em_options,
+    _structured_em_options,
+    _validate_encoding_update_damping,
+    _validate_estimation_arguments,
+)
+from non_local_detector.models._input_validation import (
+    _TIME_CONTRACT,
+    _decode_time_edges,
+    _InputValidationMixin,
+    _missing_covariates_error,
+    _normalize_frozen_discrete_transition_rows,
+    _normalize_return_outputs,
+    _require_labeled_environments,
+    _require_sampling_frequency_width,
+    _sample_mask,
+    _validate_covariate_time_length,
+    _validate_inference_arguments,
+    _validate_penalty_params,  # noqa: F401 -- imported from base by tests
+    _validate_prior_weight,
+    _validate_spike_structure,
+    _ValidatedInputs,
+)
+from non_local_detector.models._persistence import (
+    _ModelUnpickler,  # noqa: F401 -- stored-artifact compatibility tests import it from base
+    _PersistenceMixin,
+    _upgrade_saved_state,
+)
+from non_local_detector.models._plotting import _PlottingMixin
+from non_local_detector.models._results import (
+    convert_results_to_xarray,
+    convert_seq_to_df,
+)
+from non_local_detector.models._state_space import (
+    StateSpace,
+    continuous_state_transitions,
+    initial_conditions,
+    recorded_layout_parameters,
+    state_layout,
+)
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.time_edges import (
-    _MAX_RELATIVE_SPACING_TOLERANCE,
     _DecodeTimeGrid,
-    _uniformity_tolerance,
+    _uniform_time_grid,
     calculate_time_edges,
     requires_time_edges,
-    uniform_time_edges,
 )
-from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
-
-try:
-    from non_local_detector._version import __version__ as _PACKAGE_VERSION
-except ImportError:
-    _PACKAGE_VERSION = "unknown"
+from non_local_detector.transition_operators import (
+    DEFAULT_MAX_DENSE_BYTES,
+    LazyDenseTransition,
+)
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
     DiscreteTransitions,
     Environments,
     FrozenTransitionRows,
+    InferenceMode,
     Observations,
+    OutputMode,
+    ReturnOutputs,
     StateNames,
     Stickiness,
+    TransitionRepresentation,
 )
 
+__all__ = [
+    "ClusterlessDetector",
+    "SortedSpikesDetector",
+]
+
 logger = getLogger(__name__)
-sklearn.set_config(print_changed_only=False)
 
-_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
-    "waveform_std": DEFAULT_WAVEFORM_STD,
-    "position_std": 6.0,
-    "block_size": 10_000,
-}
-_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
-    "position_std": 6.0,
-    "block_size": 10_000,
-}
-
-# Valid options for return_outputs parameter
-VALID_OUTPUTS: set[str] = {
-    "filter",
-    "predictive",
-    "predictive_posterior",
-    "log_likelihood",
-    "all",
-}
-
-# Mapping of single string options to sets of outputs
-OUTPUT_INCLUDES: dict[str, set[str]] = {
-    "filter": {"filter"},
-    "predictive": {"predictive", "predictive_posterior"},
-    "predictive_posterior": {"predictive_posterior"},
-    "log_likelihood": {"log_likelihood"},
-    "all": {"filter", "predictive", "predictive_posterior", "log_likelihood"},
-}
+# The detector type of a method that returns ``self`` (``typing.Self`` needs
+# Python 3.11).
+_Detector = TypeVar("_Detector", bound="_DetectorBase")
 
 
 @dataclass(frozen=True)
 class _LikelihoodPositionContext:
     """Tracking preparation shared only during one likelihood prediction."""
 
-    time_edges: np.ndarray
-    source_time: np.ndarray | None
-    source_position: np.ndarray | None
     position: np.ndarray | None
-    is_missing: np.ndarray | None
     all_missing: bool
-    reads_position: bool
 
     @classmethod
     def prepare(
-        cls,
-        time_edges: np.ndarray,
-        position_time: np.ndarray | None,
-        position: np.ndarray | None,
-        *,
-        reads_position: bool = True,
-        warn_outside_tracking: bool = False,
+        cls, position: np.ndarray | None, *, reads_position: bool
     ) -> "_LikelihoodPositionContext":
-        missing = _missing_bins(
-            time_edges,
-            None,
-            position_time,
-            position,
-            reads_position=reads_position,
-            warn_outside_tracking=warn_outside_tracking,
-            # Through this method and compute_log_likelihood to its caller.
-            stacklevel=5,
-        )
         prepared = position
         all_missing = False
         if position is not None:
             prepared = np.asarray(position)
-            prepared = prepared[:, None] if prepared.ndim == 1 else prepared
             finite = np.all(np.isfinite(prepared), axis=1)
             # A model that never reads position decodes even without any.
             all_missing = reads_position and not np.any(finite)
             if np.any(finite) and not np.all(finite):
                 prepared = prepared.copy()
                 prepared[~finite] = prepared[finite][0]
-        return cls(
-            time_edges,
-            position_time,
-            position,
-            prepared,
-            missing,
-            all_missing,
-            reads_position,
-        )
-
-    def matches(self, time_edges, position_time, position, reads_position) -> bool:
-        return (
-            self.time_edges is time_edges
-            and self.source_time is position_time
-            and self.source_position is position
-            and self.reads_position == reads_position
-        )
+        return cls(prepared, all_missing)
 
 
-def _label_checkpointed_result(dataset, metadata):
-    """Attach native labels and a bounded lazy padded view to a stored result."""
-    from non_local_detector.result_store import pad_state_bins
+@dataclass(frozen=True)
+class _DecodeContext:
+    """One likelihood evaluation's validated inputs and shared preparation.
 
-    attrs = dataset.attrs
-    # The JSON metadata of a store EM wrote holds its traces as lists.
-    for name in ("marginal_log_likelihoods", "em_objectives", "em_previous_objectives"):
-        if name in attrs:
-            attrs[name] = np.asarray(attrs[name], dtype=float)
-    attrs.setdefault("marginal_log_likelihoods", attrs["marginal_log_likelihood"])
-    if "time_bin_end_inclusive" not in dataset.coords:
-        dataset = dataset.assign_coords(
-            time_bin_end_inclusive=(
-                "time",
-                np.asarray(dataset.source_row)
-                == int(dataset.attrs["recording_rows"]) - 1,
-            )
-        )
-    states = np.asarray(metadata["state_names"])
-    dataset = dataset.assign_coords(
-        states=states,
-        environments=("states", metadata["environment_names"]),
-        encoding_groups=("states", metadata["encoding_groups"]),
-    )
-    if "state_bins" in dataset.dims:
-        interior = np.asarray(metadata["interior_mask"], dtype=bool)
-        variables = {}
-        for name, variable in dataset.data_vars.items():
-            variables[name] = (
-                pad_state_bins(
-                    variable, interior, max_read_bytes=metadata["max_read_bytes"]
-                )
-                if "state_bins" in variable.dims
-                else variable.variable
-            )
-        coordinates = {
-            name: coord
-            for name, coord in dataset.coords.items()
-            if "state_bins" not in coord.dims
-        }
-        positions = np.asarray(metadata["position"])
-        state_ind = np.asarray(metadata["state_ind"], dtype=int)
-        index = pd.MultiIndex.from_arrays(
-            (states[state_ind], *positions.T),
-            names=("state", *metadata["position_names"]),
-        )
-        coordinates.update(xr.Coordinates.from_pandas_multiindex(index, "state_bins"))
-        coordinates["state_ind"] = state_ind
-        dataset = xr.Dataset(variables, coords=coordinates, attrs=dataset.attrs)
-    if len(states) == 1:
-        dataset = dataset.squeeze("states")
-    return dataset
+    A decoding method builds one per call, from its validated inputs, and
+    every row request of that call (each chunk, or the whole recording)
+    evaluates ``_DetectorBase._log_likelihood_rows`` with it. A direct
+    ``compute_log_likelihood`` call builds its own. Nothing in it is stored
+    on the detector or reused by a later call.
 
-
-def _prepare_likelihood_callback(
-    callback: Callable,
-    time_edges: np.ndarray,
-    *,
-    has_no_spike: bool,
-    log_likelihood_args: tuple = (),
-    _time_grid: _DecodeTimeGrid | None = None,
-    reads_position: bool = True,
-) -> Callable:
-    """Adapt a detector likelihood to core's observation-row callback contract.
-
-    Core indexes observations by row and hands the callback its row
-    coordinates (the bin centers). Detector likelihoods bin spikes against the
-    decode edges instead, so the adapter replaces the coordinates with
-    ``time_edges``:
-
-    * A ``@row_slice_aware`` callback receives the full ``time_edges``, a
-      global ``row_slice``, and an already sliced ``is_missing`` mask, and
-      returns only the requested rows.
-    * An unmarked callback receives the original full edges. Partial row
-      requests are rejected: an edges-only callback cannot represent a chunk's
-      open closing boundary without changing its physical duration and center.
-      Custom callbacks used with chunking must declare ``row_slice_aware`` and
-      forward the global row range to their likelihood implementation.
-
-    Both adapters are marked ``row_slice_aware``, so core hands them the
-    chunk's row range rather than only its row coordinates, and both check
-    that the callback returned one row per requested bin: a callback written
-    for one row per timestamp would otherwise be silently misaligned with the
-    bins.
-
-    Declaring ``_spike_time_order`` or ``_no_spike_time_bin_sizes`` lets this
-    adapter bind shared preparation. ``reads_position`` is the detector's
-    decision whether its decode likelihood reads position; the bound position
-    context marks bins missing for NaN or untracked position only when it
-    does. Each call creates fresh preparation; nothing is stored on the
-    detector or reused by a later prediction. Callers with a precomputed
-    likelihood bypass this adapter entirely.
-    """
-    parameters = inspect.signature(callback).parameters
-    prepared: dict[str, object] = {}
-    if "_spike_time_order" in parameters:
-        prepared["_spike_time_order"] = _SpikeTimeOrder()
-    if "_time_grid" in parameters and _time_grid is not None:
-        prepared["_time_grid"] = _time_grid
-    if "_position_context" in parameters and len(log_likelihood_args) >= 2:
-        prepared["_position_context"] = _LikelihoodPositionContext.prepare(
-            time_edges, *log_likelihood_args[:2], reads_position=reads_position
-        )
-    if has_no_spike and "_no_spike_time_bin_sizes" in parameters:
-        prepared["_no_spike_time_bin_sizes"] = no_spike_time_bin_sizes(time_edges)
-    bound = partial(callback, **prepared) if prepared else callback
-
-    n_bins = len(time_edges) - 1
-    edges_are_keyword_only = (
-        "time_edges" in parameters
-        and parameters["time_edges"].kind is inspect.Parameter.KEYWORD_ONLY
-    )
-
-    def evaluate(edges, *args, **kwargs):
-        if edges_are_keyword_only:
-            return bound(*args, time_edges=edges, **kwargs)
-        return bound(edges, *args, **kwargs)
-
-    def checked(result, n_rows: int):
-        if np.shape(result)[0] != n_rows:
-            raise ValidationError(
-                "log likelihood callback returned the wrong number of rows",
-                expected=f"{n_rows} rows, one per requested decode bin",
-                got=f"{np.shape(result)[0]} rows",
-                hint="Likelihoods receive time_edges (n_bins + 1 edges) and "
-                "return one row per bin, not one per edge.",
-            )
-        return result
-
-    if accepts_row_slice(callback):
-
-        def row_callback(row_time, *args, row_slice=None, **kwargs):
-            row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-            return checked(
-                evaluate(time_edges, *args, row_slice=row_slice, **kwargs),
-                row_stop - row_start,
-            )
-
-        row_slice_aware(row_callback)  # marks the function in place
-        return row_callback
-
-    def chunk_callback(row_time, *args, row_slice=None, **kwargs):
-        row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-        if (row_start, row_stop) != (0, n_bins):
-            raise ValidationError(
-                "Chunked custom likelihoods must be row_slice_aware",
-                hint="Decorate the callback with @row_slice_aware from "
-                "non_local_detector.core and forward row_slice with the full "
-                "time_edges. This preserves durations and counts boundary spikes once.",
-            )
-        return checked(evaluate(time_edges, *args, **kwargs), n_bins)
-
-    row_slice_aware(chunk_callback)  # marks the function in place
-    return chunk_callback
-
-
-def _validate_transition_arguments(
-    transition_representation: str, max_dense_transition_bytes: int
-) -> None:
-    """Reject unsupported transition settings before any fitted state changes."""
-    if not isinstance(transition_representation, str) or (
-        transition_representation not in {"dense", "structured", "auto"}
-    ):
-        raise ValidationError(
-            "transition_representation must be dense, structured, or auto"
-        )
-    if (
-        isinstance(max_dense_transition_bytes, (bool, np.bool_))
-        or not isinstance(max_dense_transition_bytes, (int, np.integer))
-        or max_dense_transition_bytes <= 0
-    ):
-        raise ValidationError("max_dense_transition_bytes must be a positive integer")
-
-
-def _validate_inference_arguments(
-    inference_mode: str,
-    output_mode: str,
-    cache_likelihood: bool,
-    n_chunks: int,
-    chunk_size: int | None,
-    result_path,
-    checkpoint_dir,
-    selected_intervals,
-    replay_cache_bytes=None,
-) -> None:
-    """Reject prediction-mode settings that the chosen inference mode ignores."""
-    if inference_mode not in {"dense", "checkpointed"}:
-        raise ValidationError("inference_mode must be dense or checkpointed")
-    if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
-        raise ValueError(
-            "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
-        )
-    if output_mode not in {"compact", "spatial"}:
-        raise ValidationError("output_mode must be compact or spatial")
-    if inference_mode == "dense" and (
-        output_mode != "spatial"
-        or chunk_size is not None
-        or result_path is not None
-        or checkpoint_dir is not None
-        or selected_intervals is not None
-        or replay_cache_bytes is not None
-    ):
-        raise ValueError(
-            "output selection/storage options require inference_mode='checkpointed'"
-        )
-
-
-def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
-    """Reject any nonzero ``encoding_update_damping``.
-
-    Blending only ``place_fields`` cannot keep a refit encoding model
-    self-consistent: the GLM and KDE local paths read other fitted state, the
-    diffusion/MRF spike term reads ``interior_log_place_fields``, and the
-    clusterless models have no ``place_fields`` at all. Estimation wrappers call
-    this before their initial ``fit`` so a rejected value changes nothing.
-
-    Parameters
-    ----------
-    encoding_update_damping : float
-
-    Raises
-    ------
-    ValidationError
-        If the value is not zero (including NaN).
-    """
-    if encoding_update_damping != 0.0:
-        raise ValidationError(
-            "encoding_update_damping is not supported",
-            expected="encoding_update_damping=0.0",
-            got=str(encoding_update_damping),
-            hint=(
-                "Damped encoding updates are not implemented for any likelihood: "
-                "blending place fields leaves the other fitted encoding state "
-                "stale. Use min_encoding_local_mass / min_encoding_local_ess to "
-                "skip poorly supported encoding updates instead."
-            ),
-        )
-
-
-# EM with transition_representation="auto" runs dense EM up to this many bytes
-# of float32 interior transition. A dense step reads the whole matrix, so its
-# cost grows with this size; a structured step costs about the same at any
-# size. Three warm EM iterations on a 23.6 min clusterless 2-D recording (A100)
-# took 181/216 s dense/structured at 5.7 MB (1,190 interior state bins),
-# 250/276 s at 13.5 MB, 348/255 s at 21.9 MB and 501/362 s at 43.5 MB (3,298
-# bins); interpolating puts the crossover near 15 MB.
-_AUTO_DENSE_TRANSITION_BYTES = 16 * 2**20
-# Dense EM holds about this many float32 (time bins x state bins) arrays on the
-# device (measured device peak 10.0 GB, about seven 709k x 498 arrays, on the
-# clusterless track recording).
-_DENSE_EM_WORKING_ARRAYS = 8
-
-
-# Rows of the full posterior are filled and scattered in blocks of about this
-# many bytes. On a 2 cm 2-D grid (20,178 state bins, 3,298 interior; 177,330
-# rows, 14.3 GB) filling with NaN and then scattering the whole array took
-# 8.9 s; 1 MiB blocks took 3.8 s, 4-16 MiB 4.4 s and 64 MiB 5.7 s.
-_MASKED_POSTERIOR_BLOCK_BYTES = 2**20
-
-# With a prior that changes each E-step (data-adaptive pseudo-counts, REML
-# smoothness), EM also requires the last M-step to move every transition
-# probability by less than this. It is a probability, so it is separate from
-# ``tolerance`` (nats per time bin).
-_TRANSITION_CHANGE_TOLERANCE = 1e-4
-
-
-def _device_memory_limit() -> int | None:
-    """Bytes JAX may allocate on the default device, or None if unknown (CPU)."""
-    stats = jax.local_devices()[0].memory_stats()
-    return None if not stats else stats.get("bytes_limit")
-
-
-def _structured_em_options(chunk_size, result_path, replay_cache_bytes) -> list[str]:
-    """Names of the structured-EM options that were given."""
-    return [
-        name
-        for name, value in (
-            ("chunk_size", chunk_size),
-            ("result_path", result_path),
-            ("replay_cache_bytes", replay_cache_bytes),
-        )
-        if value is not None
-    ]
-
-
-def _validate_em_options(
-    structured: bool,
-    n_chunks: int,
-    chunk_size,
-    result_path=None,
-    store_log_likelihood: bool = False,
-    replay_cache_bytes=None,
-) -> None:
-    """Reject options that do not apply to the EM path.
-
-    Parameters
-    ----------
-    structured : bool
-        Whether EM runs on a structured transition operator.
-    n_chunks : int
-        Dense-EM row chunks.
-    chunk_size : int or None
-        Checkpoint chunk rows for structured EM.
-    result_path : path-like or None
-        Store for structured EM's final outputs.
-    store_log_likelihood : bool
-        Whether EM keeps the full likelihood in memory.
-    replay_cache_bytes : int or None
-        Structured EM's replay cache budget.
-    """
-    for name, value, minimum in (
-        ("chunk_size", chunk_size, 1),
-        ("replay_cache_bytes", replay_cache_bytes, 0),
-    ):
-        if value is not None and (
-            isinstance(value, (bool, np.bool_))
-            or not isinstance(value, (int, np.integer))
-            or value < minimum
-        ):
-            raise ValidationError(
-                f"Invalid {name} for estimate_parameters",
-                expected=f"an integer >= {minimum}, or None for the default",
-                got=f"{value!r} ({type(value).__name__})",
-                hint=(
-                    "Pass whole rows, e.g. chunk_size=20_000."
-                    if name == "chunk_size"
-                    else "Pass bytes as an integer, e.g. replay_cache_bytes=8 * 2**30."
-                ),
-            )
-    if structured and n_chunks != 1:
-        raise ValidationError(
-            "n_chunks applies only to dense EM",
-            got=f"n_chunks={n_chunks} with structured EM",
-            hint=(
-                "Structured EM already bounds memory with checkpoint chunks: set "
-                "chunk_size (rows per chunk) instead, or pass "
-                'transition_representation="dense" to estimate_parameters to '
-                "run dense EM in n_chunks chunks."
-            ),
-        )
-    if not structured:
-        checkpoint_options = _structured_em_options(
-            chunk_size, result_path, replay_cache_bytes
-        )
-        if checkpoint_options:
-            raise ValidationError(
-                f"{', '.join(checkpoint_options)} applies only to structured EM",
-                got=f"{', '.join(checkpoint_options)} with dense EM",
-                hint=(
-                    'Pass transition_representation="structured" or "auto" to '
-                    "estimate_parameters, or drop "
-                    f"{', '.join(checkpoint_options)} for dense EM."
-                ),
-            )
-    if result_path is not None and store_log_likelihood:
-        raise ValidationError(
-            "store_log_likelihood cannot be combined with result_path",
-            got="store_log_likelihood=True and a result_path",
-            hint=(
-                "store_log_likelihood keeps the full likelihood in memory; with "
-                "result_path, request return_outputs='log_likelihood' to write "
-                "it to the store instead."
-            ),
-        )
-
-
-def _dense_em_memory(n_time: int, n_bins: int) -> tuple[int, int | None, str]:
-    """Bytes one-chunk dense EM holds, the memory it draws on, and where.
-
-    ``_DENSE_EM_WORKING_ARRAYS`` float32 time-by-state-bin arrays, against the
-    device limit, or the available host memory on CPU (None if unknown).
-
-    Parameters
-    ----------
-    n_time : int
-        Decode bins.
-    n_bins : int
-        Interior state bins.
-
-    Returns
-    -------
-    needed : int
-    limit : int or None
-    where : {"device", "host"}
-    """
-    needed = _DENSE_EM_WORKING_ARRAYS * n_time * n_bins * 4
-    limit = _device_memory_limit()
-    if limit is not None:
-        return needed, limit, "device"
-    return needed, _available_host_bytes(), "host"
-
-
-def _warn_if_dense_em_exceeds_memory(n_time: int, n_bins: int) -> None:
-    """Warn before one-chunk dense EM whose arrays exceed half the memory.
-
-    The line "auto" uses (see ``_dense_em_memory``). On the 23.6 min 2-D
-    recording (A100) the estimate was 27.0 and 41.8 GB at 4 and 3 cm
-    (measured peaks 23.7 and 36.6 GB) and 53.1 GB at 2.5 cm, which ran out of
-    a 63.8 GB limit, so the full limit is not a safe line. The estimate is
-    approximate, so this warns rather than raising.
-
-    Parameters
-    ----------
-    n_time : int
-        Decode bins.
-    n_bins : int
-        Interior state bins.
-    """
-    needed, limit, where = _dense_em_memory(n_time, n_bins)
-    if limit is None or needed <= limit // 2:
-        return
-    warnings.warn(
-        f"Dense EM needs about {needed / 1e9:.1f} GB of {where} memory for "
-        f"{n_time} time bins x {n_bins} state bins, more than half of the "
-        f"{limit / 1e9:.1f} GB available, and may run out of memory. "
-        'Pass transition_representation="auto" (or "structured") to '
-        "estimate_parameters to bound EM's memory, or n_chunks > 1 for dense EM.",
-        UserWarning,
-        stacklevel=3,
-    )
-
-
-def _resolve_em_options(
-    transition_representation: str,
-    n_chunks: int,
-    chunk_size,
-    result_path,
-    store_log_likelihood: bool,
-    replay_cache_bytes,
-) -> str:
-    """Resolve "auto" with ``n_chunks`` to dense EM, then validate the options.
-
-    ``n_chunks`` is a dense-EM option and ``chunk_size``, ``result_path`` and
-    ``replay_cache_bytes`` are structured-EM options, so with "auto" the one
-    given decides the path; both together are rejected.
-
-    Returns
-    -------
-    transition_representation : str
-    """
-    checkpoint_options = _structured_em_options(
-        chunk_size, result_path, replay_cache_bytes
-    )
-    if transition_representation == "auto" and n_chunks != 1:
-        if checkpoint_options:
-            raise ValidationError(
-                "n_chunks (dense EM) cannot be combined with "
-                f"{', '.join(checkpoint_options)} (structured EM)",
-                got=f"n_chunks={n_chunks} and {', '.join(checkpoint_options)}",
-                hint=(
-                    "Drop n_chunks to run structured EM, or drop "
-                    f"{', '.join(checkpoint_options)} to run dense EM in chunks."
-                ),
-            )
-        transition_representation = "dense"
-    _validate_em_options(
-        transition_representation != "dense",
-        n_chunks,
-        chunk_size,
-        result_path,
-        store_log_likelihood,
-        replay_cache_bytes,
-    )
-    return transition_representation
-
-
-def _validate_estimation_arguments(
-    time_edges: np.ndarray,
-    n_chunks: int,
-    return_outputs: str | list[str] | set[str] | None,
-    save_log_likelihood_to_results: bool | None,
-    min_encoding_local_mass: float,
-    min_encoding_local_ess: float,
-) -> tuple[np.ndarray, float]:
-    """Check ``estimate_parameters`` arguments that need no fitted state.
-
-    The estimation wrappers call this before their initial ``fit`` so an invalid
-    argument cannot leave a fitted detector partly rebuilt.
-
-    Parameters
+    Attributes
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
-    n_chunks : int
-    return_outputs : str or list of str or set of str, optional
-    save_log_likelihood_to_results : bool, optional
-    min_encoding_local_mass : float
-    min_encoding_local_ess : float
-
-    Returns
-    -------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        The validated edges (integers converted to float64).
-    time_bin_width : float
-
-    Raises
-    ------
-    ValidationError, DataError
-        If ``time_edges`` are invalid or not uniform (see
-        :func:`~non_local_detector.time_edges.uniform_time_edges`).
-    ValueError
-        If ``n_chunks`` exceeds the number of bins, ``return_outputs`` is
-        invalid or conflicts with ``save_log_likelihood_to_results``, or an
-        encoding-update threshold is negative.
+        Validated, uniform decode bin edges.
+    time_grid : _DecodeTimeGrid
+        ``time_edges`` with their uniform width, so row requests do not
+        validate the full grid again.
+    position_time : np.ndarray, shape (n_time_position,), or None
+        Tracking times.
+    spike_data : tuple
+        The spike arrays: ``spike_times``, then ``spike_waveform_features``
+        for a clusterless detector.
+    position_context : _LikelihoodPositionContext
+        Tracking positions prepared on ``time_edges``.
+    spike_time_order : _SpikeTimeOrder
+        Spike ordering shared across states and row requests.
+    no_spike_time_bin_sizes : np.ndarray, shape (n_bins,), or None
+        Bin durations shared by every No-Spike row request; None computes
+        them per request.
     """
-    time_edges, time_bin_width = uniform_time_edges(time_edges)
-    n_bins = len(time_edges) - 1
-    if n_chunks > n_bins:
-        raise ValueError(
-            f"n_chunks ({n_chunks}) cannot exceed n_bins ({n_bins}). "
-            f"Each chunk must contain at least one time bin."
-        )
-    if save_log_likelihood_to_results and return_outputs is not None:
-        raise ValueError(
-            "Cannot specify both return_outputs and deprecated "
-            "save_log_likelihood_to_results flag. "
-            "Use return_outputs only."
-        )
-    _normalize_return_outputs(return_outputs)
-    if min_encoding_local_mass < 0:
-        raise ValueError(
-            f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
-        )
-    if min_encoding_local_ess < 0:
-        raise ValueError(
-            f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
-        )
-    return time_edges, time_bin_width
 
-
-def _decode_time_edges(
-    time_edges: np.ndarray,
-    transition_time_bin_width: float | None,
-    transition_time_bin_width_tolerance: float = 0.0,
-    *,
-    _time_grid: _DecodeTimeGrid | None = None,
-    row_slice: slice | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Validate a detector decode grid and derive its bin centers.
-
-    Detector bins must be uniform because the HMM applies one transition per
-    bin. When transitions were learned by ``estimate_parameters``, the grid
-    must also use the bin width they were learned at.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-    transition_time_bin_width : float or None
-        Bin width recorded with learned transitions, or None.
-    transition_time_bin_width_tolerance : float, optional
-        Uniformity tolerance of the grid the width was learned on. The widths
-        match when they differ by no more than the larger of the two grids'
-        tolerances.
-
-    Returns
-    -------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        The validated edges (integers converted to float64).
-    time_centers : np.ndarray, shape (n_bins,)
-
-    Raises
-    ------
-    ValidationError, DataError
-        If the edges are invalid or not uniform, or their width differs from
-        ``transition_time_bin_width`` by more than the timestamp precision.
-    """
-    prepared_uniform_grid = (
-        isinstance(_time_grid, _DecodeTimeGrid)
-        and _time_grid.edges is time_edges
-        and _time_grid.uniform_width is not None
-    )
-    if prepared_uniform_grid:
-        assert _time_grid is not None and _time_grid.uniform_width is not None
-        width = _time_grid.uniform_width
-        uniform_tolerance = _time_grid.uniform_tolerance
-    else:
-        time_edges, width = uniform_time_edges(time_edges)
-        uniform_tolerance = None
-    if (
-        transition_time_bin_width is not None
-        and (
-            not np.isfinite(transition_time_bin_width) or transition_time_bin_width <= 0
-        )
-    ) or (
-        not np.isfinite(transition_time_bin_width_tolerance)
-        or transition_time_bin_width_tolerance < 0
-        or (
-            transition_time_bin_width is not None
-            and transition_time_bin_width_tolerance
-            > _MAX_RELATIVE_SPACING_TOLERANCE * transition_time_bin_width
-        )
-    ):
-        raise ValidationError(
-            "Saved model has invalid transition clock provenance; refit before decoding.",
-            hint="The learned bin width must be finite and positive, with a "
-            "finite nonnegative timestamp tolerance within the existing "
-            "precision bound. Call fit(...) or "
-            "estimate_parameters(..., time_edges=...) with the original recording.",
-        )
-    if transition_time_bin_width is not None and abs(
-        width - transition_time_bin_width
-    ) > max(
-        (
-            uniform_tolerance
-            if uniform_tolerance is not None
-            else _uniformity_tolerance(time_edges, width)
-        ),
-        transition_time_bin_width_tolerance,
-    ):
-        raise ValidationError(
-            "time_edges bin width differs from the learned transitions",
-            expected=f"bin width {transition_time_bin_width!r} s",
-            got=f"bin width {width!r} s",
-            hint="The discrete transitions were estimated per bin at that width "
-            "and are not valid at another rate. Decode at the same bin width, "
-            "or refit the detector for the new width.",
-        )
-    start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
-    return time_edges, decode_bin_centers(time_edges, start, stop)
-
-
-def _require_observed_bins(is_missing: np.ndarray | None) -> None:
-    """Reject EM when every decode bin is missing: there is nothing to fit.
-
-    Run anyway, EM moves the transitions on the prior dynamics alone (on a
-    simulated recording every stay probability went to 1) and then reports
-    non-convergence, pointing at ``max_iter`` instead of the mask.
-
-    Parameters
-    ----------
-    is_missing : np.ndarray of bool, shape (n_bins,), or None
-        Missing bins from ``_missing_bins``.
-
-    Raises
-    ------
-    DataError
-        If every bin is missing.
-    """
-    if is_missing is not None and is_missing.size and bool(np.all(is_missing)):
-        raise DataError(
-            "Cannot estimate parameters: every decode time bin is missing, so "
-            "EM has no observations to fit",
-            data_name="is_missing",
-            hint=(
-                "Check that is_missing is True only for missing bins, and that "
-                "position is tracked (finite) during time_edges, since bins "
-                "without tracked position are missing too."
-            ),
-        )
-
-
-def _missing_bins(
-    time_edges: np.ndarray,
-    is_missing: np.ndarray | None,
-    position_time: np.ndarray | None,
-    position: np.ndarray | None,
-    *,
-    reads_position: bool = True,
-    warn_outside_tracking: bool = False,
-    stacklevel: int = 4,
-) -> np.ndarray | None:
-    """Combine the caller's missing mask with bins that lack tracked position.
-
-    Missing tracking is a break in support. Likelihoods read the position by
-    linear interpolation (extrapolating from the end intervals) at the bin
-    centers and, for local clusterless models, at every decoding spike time.
-    A read is non-finite exactly when its time lies in ``[t[k - 1], t[k + 1])``
-    for a non-finite sample ``k``: at ``t[k - 1]`` the sample still enters
-    with weight zero (``0 * nan``), while at ``t[k + 1]`` it no longer does.
-    The span extends to infinity for a sample in an end interval. A read more
-    than half a sample before ``t[0]`` or after ``t[-1]`` is an extrapolation,
-    not tracking, so it is missing too; the half sample keeps bins centered on
-    the tracking samples, whose outer edges lie half a sample beyond them. The
-    half sample is half the median sampling interval, plus the timestamp
-    uniformity tolerance. A bin is decoded as missing when any time it owns
-    (``[edges[i], edges[i + 1])``, plus ``edges[-1]`` for the final bin) lies
-    in such a span, so the center and every spike of a non-missing bin have
-    tracked, finite positions. Both rules apply only when the decode
-    likelihood reads position (``reads_position``); a model without Local
-    states or a non-local position penalty decodes every bin. This concerns
-    decoding only: encoding fits use position for their support.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-    is_missing : np.ndarray, shape (n_bins,), optional
-    position_time : np.ndarray, shape (n_time_position,), optional
-    position : np.ndarray, shape (n_time_position, n_position_dims), optional
-    reads_position : bool, optional
-        Whether the decode likelihood reads position, by default True. When
-        False, position marks no bin missing; only ``is_missing`` does.
-    warn_outside_tracking : bool, optional
-        Warn when bins are missing because they extend outside the tracked
-        period, by default False. Public decode entry points set it, so one
-        call warns once however many chunks or EM iterations it runs.
-    stacklevel : int, optional
-        Passed to ``warnings.warn``, by default 4 (the caller of a public
-        method decorated with ``requires_time_edges``).
-
-    Returns
-    -------
-    is_missing : np.ndarray of bool, shape (n_bins,), or None
-        None when nothing is missing and no mask was given.
-
-    Warns
-    -----
-    UserWarning
-        If ``warn_outside_tracking`` and some bins extend outside the tracked
-        period.
-
-    Raises
-    ------
-    ValidationError
-        If ``is_missing`` does not have one entry per bin, or ``position`` does
-        not have one row per ``position_time`` sample.
-    DataError
-        If ``position_time`` is not finite and non-decreasing.
-    """
-    n_bins = len(time_edges) - 1
-    if is_missing is not None:
-        is_missing = np.asarray(is_missing, dtype=bool)
-        if is_missing.shape != (n_bins,):
-            raise ValidationError(
-                "is_missing must have one entry per decode bin",
-                expected=f"shape ({n_bins},)",
-                got=f"shape {is_missing.shape}",
-                hint="time_edges has n_bins + 1 entries; is_missing has n_bins.",
-            )
-    if position is None or position_time is None:
-        return is_missing
-    position = np.asarray(position)
-    position_time = np.asarray(position_time)
-    if position.shape[0] != position_time.shape[0]:
-        raise ValidationError(
-            "position must have one row per position_time sample",
-            expected=f"{position_time.shape[0]} rows",
-            got=f"{position.shape[0]} rows",
-        )
-    val.ensure_all_finite(position_time, "position_time")
-    val.ensure_monotonic_increasing(position_time, "position_time")
-    if not reads_position:
-        return is_missing
-    affected = _bins_outside_tracking(time_edges, position_time)
-    if warn_outside_tracking and np.any(affected):
-        warnings.warn(
-            f"{int(affected.sum())} of {n_bins} decode bins extend more than half "
-            "a position sample outside the tracked period "
-            f"[{position_time[0]:.6g}, {position_time[-1]:.6g}] s. Position there "
-            "could only be extrapolated from the first or last tracking interval, "
-            "so these bins are decoded as missing, like bins with NaN position: "
-            "their log likelihood is 0 and the posterior follows the transitions "
-            "alone. Pass position covering the decode time_edges, or restrict "
-            "time_edges to the tracked period.",
-            UserWarning,
-            stacklevel=stacklevel,
-        )
-    is_nan = ~np.all(np.isfinite(position.reshape(position.shape[0], -1)), axis=1)
-    if np.any(is_nan):
-        affected |= _bins_reading_nan_position(time_edges, position_time, is_nan)
-    if not np.any(affected):
-        return is_missing
-    return affected if is_missing is None else is_missing | affected
-
-
-def _bins_outside_tracking(
-    time_edges: np.ndarray, position_time: np.ndarray
-) -> np.ndarray:
-    """Bins owning a time more than half a sample outside the tracking.
-
-    See :func:`_missing_bins` for the rule.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-    position_time : np.ndarray, shape (n_time_position,)
-        Finite and non-decreasing.
-
-    Returns
-    -------
-    is_outside : np.ndarray of bool, shape (n_bins,)
-    """
-    n_bins = len(time_edges) - 1
-    if position_time.size < 2:
-        return np.zeros(n_bins, dtype=bool)
-    sample_interval = float(np.median(np.diff(position_time)))
-    half_sample = sample_interval / 2 + _uniformity_tolerance(
-        position_time, sample_interval
-    )
-    # Bin i owns [edges[i], edges[i + 1]) (the final bin also edges[-1]), so it
-    # reaches before ``start`` iff edges[i] < start and after ``stop`` iff
-    # edges[i + 1] > stop.
-    start = position_time[0] - half_sample
-    stop = position_time[-1] + half_sample
-    return (time_edges[:-1] < start) | (time_edges[1:] > stop)
-
-
-def _bins_reading_nan_position(
-    time_edges: np.ndarray, position_time: np.ndarray, is_nan: np.ndarray
-) -> np.ndarray:
-    """Bins owning a time whose interpolated position is non-finite.
-
-    See :func:`_missing_bins` for the rule.
-
-    Parameters
-    ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-    position_time : np.ndarray, shape (n_time_position,)
-    is_nan : np.ndarray of bool, shape (n_time_position,)
-        Samples with a non-finite position; at least one is True.
-
-    Returns
-    -------
-    affected : np.ndarray of bool, shape (n_bins,)
-    """
-    n_bins = len(time_edges) - 1
-    nan_index = np.flatnonzero(is_nan)
-    # Spans of consecutive NaN samples, widened to the neighbouring samples.
-    # Positions before the first sample (after the last) are extrapolated from
-    # the first (last) interval, so a NaN in an end interval reaches every bin
-    # beyond that end.
-    n_samples = position_time.size
-    run_starts = nan_index[np.r_[True, np.diff(nan_index) > 1]]
-    run_ends = nan_index[np.r_[np.diff(nan_index) > 1, True]]
-    lower = np.where(
-        run_starts > 1, position_time[np.maximum(run_starts - 1, 0)], -np.inf
-    )
-    upper = np.where(
-        run_ends < n_samples - 2,
-        position_time[np.minimum(run_ends + 1, n_samples - 1)],
-        np.inf,
-    )
-    # Bin i owns [edges[i], edges[i + 1]) and meets [lower, upper) iff
-    # edges[i + 1] > lower and edges[i] < upper; the final bin also owns
-    # edges[-1], so a read exactly there (lower == edges[-1]) marks it.
-    first = np.searchsorted(time_edges[1:], lower, side="right")
-    first = np.where(lower == time_edges[-1], n_bins - 1, first)
-    stop = np.maximum(np.searchsorted(time_edges[:-1], upper, side="left"), first)
-    change = np.zeros(n_bins + 1, dtype=int)
-    np.add.at(change, first, 1)
-    np.add.at(change, stop, -1)
-    return np.cumsum(change[:-1]) > 0
+    time_edges: np.ndarray
+    time_grid: _DecodeTimeGrid
+    position_time: np.ndarray | None
+    spike_data: tuple[Any, ...]
+    position_context: _LikelihoodPositionContext
+    spike_time_order: _SpikeTimeOrder
+    no_spike_time_bin_sizes: np.ndarray | None
 
 
 def _group_spike_mask(
@@ -1067,9 +263,16 @@ def _group_spike_mask(
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
+        Spike times.
     position_time : np.ndarray, shape (n_time_position,)
+        Times of the position samples (the full position timeline).
     group_weights : np.ndarray, shape (n_time_position,)
         Per-sample weights of this group (mask times any EM weight).
+    encoding_support : EncodingSupport, optional
+        Support of the encoding fit: decides which spikes are in bounds and
+        bounds the segments within which ``group_weights`` are interpolated to
+        spike times; by default None, which uses the ends of
+        ``position_time``.
 
     Returns
     -------
@@ -1091,7 +294,7 @@ def _group_spike_mask(
 def _group_weights(
     is_group: np.ndarray,
     weights: np.ndarray | None,
-    likelihood_name: tuple,
+    likelihood_name: tuple[Any, ...],
     encoding_support: EncodingSupport,
 ) -> np.ndarray:
     """Per-sample weights of one encoding group on the full position timeline.
@@ -1107,6 +310,7 @@ def _group_weights(
     Parameters
     ----------
     is_group : np.ndarray of bool, shape (n_time_position,)
+        Mask of the samples belonging to the group.
     weights : np.ndarray, shape (n_time_position,), optional
         Extra per-sample weights (e.g. EM local-state weights).
     likelihood_name : tuple
@@ -1131,201 +335,21 @@ def _group_weights(
             "background rate (clusterless). Check is_training, "
             "encoding_group_labels, environment_labels, NaN positions, and "
             "encoding_time_range / valid_position_intervals.",
-            UserWarning,
-            stacklevel=3,
+            DataQualityWarning,
+            stacklevel=user_stacklevel(),
         )
     return group_weights
 
 
-def _validate_penalty_params(
-    non_local_position_penalty: float, non_local_penalty_std: float
-) -> None:
-    """Validate non-local position penalty parameters.
-
-    Parameters
-    ----------
-    non_local_position_penalty : float
-        Magnitude of the Gaussian penalty. Must be non-negative.
-    non_local_penalty_std : float
-        Standard deviation of the penalty Gaussian in position units.
-        Must be strictly positive.
-
-    Raises
-    ------
-    ValidationError
-        If ``non_local_position_penalty`` is negative or NaN, or
-        ``non_local_penalty_std`` is not positive (including NaN).
-    """
-    # Written as "not >=" / "not >" so NaN, which compares False, fails.
-    if not non_local_position_penalty >= 0:
-        raise ValidationError(
-            "non_local_position_penalty must be >= 0",
-            expected="non_local_position_penalty >= 0",
-            got=f"{non_local_position_penalty}",
-            hint="A negative penalty would reward non-local states near the animal's "
-            "position instead of suppressing them. Use 0.0 to disable the penalty.",
-        )
-    if not non_local_penalty_std > 0:
-        raise ValidationError(
-            "non_local_penalty_std must be > 0",
-            expected="non_local_penalty_std > 0",
-            got=f"{non_local_penalty_std}",
-            hint="Standard deviation controls the width of the Gaussian penalty "
-            "and is used as a divisor. A value <= 0 would cause divide-by-zero "
-            "or invalid behavior.",
-        )
-
-
-def _normalize_frozen_discrete_transition_rows(
-    frozen_rows: FrozenTransitionRows,
-    is_no_spike_state: np.ndarray,
-) -> np.ndarray | None:
-    """Normalize ``frozen_discrete_transition_rows`` to a boolean row mask.
-
-    Accepts ``"no_spike"`` (the rows of the No-Spike states), a sequence of
-    integer row indices, a boolean mask of shape ``(n_states,)``, or
-    ``None``/empty (no frozen rows). Returns a boolean mask of shape
-    ``(n_states,)`` where ``True`` marks rows to freeze, or ``None`` if no
-    rows are frozen.
-
-    Parameters
-    ----------
-    frozen_rows : {"no_spike"}, np.ndarray, list of int, tuple of int, or None
-        Rows to freeze.
-    is_no_spike_state : np.ndarray of bool, shape (n_states,)
-        Which discrete states have a No-Spike observation model.
-
-    Returns
-    -------
-    np.ndarray of bool, shape (n_states,), or None
-
-    Raises
-    ------
-    ValueError
-        If the input is an unknown string, has the wrong shape or dtype, or
-        has out-of-range indices.
-    """
-    n_states = len(is_no_spike_state)
-    if isinstance(frozen_rows, str):
-        if frozen_rows != "no_spike":
-            raise ValueError(
-                "frozen_discrete_transition_rows must be 'no_spike', row "
-                f"indices, a boolean mask or None, got {frozen_rows!r}"
-            )
-        frozen_rows = np.asarray(is_no_spike_state, dtype=bool)
-        return frozen_rows.copy() if frozen_rows.any() else None
-    if frozen_rows is None:
-        return None
-    arr = np.asarray(frozen_rows)
-    if arr.size == 0:
-        return None
-    if arr.dtype == bool:
-        if arr.shape != (n_states,):
-            raise ValueError(
-                f"frozen_discrete_transition_rows boolean mask must have "
-                f"shape ({n_states},), got {arr.shape}"
-            )
-        return arr.copy()
-    if not np.issubdtype(arr.dtype, np.integer):
-        raise ValueError(
-            f"frozen_discrete_transition_rows must be integer indices or "
-            f"a boolean mask, got dtype {arr.dtype}"
-        )
-    if arr.ndim != 1:
-        raise ValueError(
-            f"frozen_discrete_transition_rows index array must be 1D, "
-            f"got shape {arr.shape}"
-        )
-    if np.any(arr < 0) or np.any(arr >= n_states):
-        raise ValueError(
-            f"frozen_discrete_transition_rows indices must be in "
-            f"[0, {n_states}), got {arr.tolist()}"
-        )
-    mask = np.zeros(n_states, dtype=bool)
-    mask[arr] = True
-    return mask
-
-
-def _validate_covariate_time_length(
-    predicted_transitions: np.ndarray, time: np.ndarray
-) -> None:
-    """Validate that covariate-derived transitions match decode time length.
-
-    Parameters
-    ----------
-    predicted_transitions : np.ndarray, shape (n_covariate_time, n_states, n_states)
-    time : np.ndarray, shape (n_bins,)
-        Decode bin centers.
-
-    Raises
-    ------
-    ValueError
-        If the number of covariate time steps does not match decode time.
-    """
-    n_covariate_time = predicted_transitions.shape[0]
-    n_decode_time = len(time)
-    if n_covariate_time != n_decode_time:
-        raise ValueError(
-            f"Covariate data has {n_covariate_time} time steps but "
-            f"decode time has {n_decode_time} time steps. "
-            f"These must match."
-        )
-
-
-def _normalize_return_outputs(
-    return_outputs: str | list[str] | set[str] | None,
-) -> set[str]:
-    """Convert return_outputs to canonical set of output names.
-
-    Parameters
-    ----------
-    return_outputs : str, list of str, set of str, or None
-        Controls which optional outputs are included.
-
-    Returns
-    -------
-    set of str
-        Normalized set containing any of: 'filter', 'predictive',
-        'predictive_posterior', 'log_likelihood'
-
-    Raises
-    ------
-    ValueError
-        If return_outputs contains invalid option names.
-    TypeError
-        If return_outputs is not str, list, set, or None.
-    """
-    if return_outputs is None:
-        return set()
-
-    if isinstance(return_outputs, str):
-        if return_outputs not in VALID_OUTPUTS:
-            raise ValueError(
-                f"Invalid return_outputs='{return_outputs}'. "
-                f"Must be one of: {sorted(VALID_OUTPUTS)}"
-            )
-        return OUTPUT_INCLUDES.get(return_outputs, {return_outputs})
-
-    if isinstance(return_outputs, list | set):
-        outputs_set = set(return_outputs)
-        invalid = outputs_set - VALID_OUTPUTS
-        if invalid:
-            raise ValueError(
-                f"Invalid outputs: {sorted(invalid)}. "
-                f"Valid options are: {sorted(VALID_OUTPUTS)}"
-            )
-        # Expand 'all' if present
-        if "all" in outputs_set:
-            return OUTPUT_INCLUDES["all"]
-        return outputs_set
-
-    raise TypeError(
-        f"return_outputs must be str, list of str, set of str, or None. "
-        f"Got {type(return_outputs).__name__}"
-    )
-
-
-class _DetectorBase(BaseEstimator, abc.ABC):
+class _DetectorBase(
+    _InputValidationMixin,
+    _CheckpointedPredictionMixin,
+    _EMMixin,
+    _PlottingMixin,
+    _PersistenceMixin,
+    BaseEstimator,  # type: ignore[misc]  # sklearn is untyped (BaseEstimator is Any)
+    abc.ABC,
+):
     """Base class for detector objects.
 
     Attributes
@@ -1333,39 +357,62 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     converged_ : bool
         True if EM converged within max_iter iterations and the final E-step,
         which evaluates the returned parameters, did not decrease the
-        penalized log-likelihood. Set by ``estimate_parameters``.
+        penalized log-likelihood. Read-only, set by ``estimate_parameters``
+        and cleared by ``fit``, as are the next two and
+        ``degenerate_timesteps_``.
     n_iter_ : int
-        Number of EM iterations actually performed. Set by
-        ``estimate_parameters``.
+        Number of EM iterations actually performed.
     em_monotonicity_violations_ : list[int]
         Iteration indices (1-based) where the penalized log-likelihood
         (marginal log-likelihood plus the discrete-transition log prior)
         decreased; the final E-step counts as iteration ``n_iter_ + 1``.
-        Empty list when EM is well-behaved. Set by ``estimate_parameters``.
+        Empty list when EM is well-behaved.
     degenerate_timesteps_ : np.ndarray
         Time indices (0-based) where the final E-step had all-``-inf``
         log-likelihoods (every state impossible) and the posterior fell back
-        to the predicted distribution. Empty array when none occur. Set by
-        ``estimate_parameters`` (reflects the training data); ``predict`` does
-        not refresh it, though it still logs a degenerate-timestep warning for
-        the data it is given.
+        to the predicted distribution. Empty array when none occur. Reflects
+        the training data; ``predict`` does not refresh it, though it still
+        logs a degenerate-timestep warning for the data it is given.
     discrete_initial_conditions_ : np.ndarray, shape (n_states,)
         Fitted initial-condition distribution over discrete states. Set by
-        ``estimate_parameters``; initially equal to the user-supplied
-        ``discrete_initial_conditions`` constructor argument.
+        ``estimate_parameters``, starting from the user-supplied
+        ``discrete_initial_conditions`` constructor argument, and cleared by
+        ``fit``.
+    continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
+        Each state's initial distribution over its own bins. ``fit`` sets
+        what ``continuous_initial_conditions_types`` give, for every state.
+        ``estimate_parameters`` replaces it with each state's share of the
+        first bin's smoothed posterior, normalized within the state; a state
+        whose fitted discrete initial probability is exactly zero has no such
+        distribution and holds zeros. Such a state adds nothing to the joint
+        ``initial_conditions_`` either way, so decoding does not depend on
+        what it holds.
+    state_space_ : StateSpace
+        The fit's state bins and continuous transition, with the
+        ``state_names``, ``observation_models``,
+        ``continuous_transition_types`` and ``local_position_std`` they were
+        built from, and the ``discrete_transition_type``,
+        ``discrete_initial_conditions`` and ``environments`` configuration
+        the fit used. Set by ``fit``; decoding reads it rather than the current
+        parameters, so ``set_params`` takes effect at the next fit.
+        ``state_ind_``, ``n_state_bins_``, ``n_discrete_states_``,
+        ``bin_sizes_``, ``is_track_interior_state_bins_`` and
+        ``continuous_state_transitions_`` are read-only views of it.
     """
 
     # Type annotations for attributes assigned during fit
     discrete_state_transitions_: np.ndarray
     discrete_transition_coefficients_: np.ndarray | None
     discrete_transition_design_matrix_: DesignMatrix | None
-    converged_: bool
-    n_iter_: int
-    em_monotonicity_violations_: list[int]
-    degenerate_timesteps_: np.ndarray
+    discrete_transition_smoothness_matrix_: np.ndarray | None
+    discrete_transition_smoothness_: np.ndarray | None
+    discrete_transition_coefficient_covariance_: np.ndarray | None
+    state_space_: StateSpace
+    initial_conditions_: np.ndarray
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         discrete_transition_type: DiscreteTransitions,
@@ -1411,7 +458,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         state_names : StateNames, optional
             Names of the states, by default None.
         sampling_frequency : float, optional
-            Sampling frequency, by default 500.0.
+            Rate in Hz of the decode bins; decoding ``time_edges`` must be
+            ``1 / sampling_frequency`` wide. By default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
         discrete_transition_prior_weight : float or np.ndarray, optional
@@ -1419,9 +467,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             the Dirichlet prior pseudo-counts are scaled by expected transition
             counts, making regularization strength approximately invariant to
             temporal resolution. Can be a scalar (same weight for all rows) or
-            an array of shape ``(n_states,)`` for per-row control. When 0.0
-            (default), the fixed-count prior from concentration and stickiness
-            is used directly.
+            an array of shape ``(n_states,)`` for per-row control; each weight
+            must be finite and >= 0. When 0.0 (default), the fixed-count prior
+            from concentration and stickiness is used directly.
         frozen_discrete_transition_rows : {"no_spike"}, np.ndarray, list, tuple, or None, optional
             Rows of the discrete transition matrix to freeze during EM
             re-estimation. ``"no_spike"`` (default) freezes the rows of the
@@ -1451,6 +499,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
               typically centimeters) on the shortest-path track-graph
               distance; models spatial uncertainty.
         """
+        # A list or tuple is stored as an array, which fitting indexes; an
+        # array is stored as given, as ``sklearn.clone`` requires.
+        discrete_initial_conditions = np.asarray(discrete_initial_conditions)
         # Validate all parameters early
         self._validate_initial_conditions(
             discrete_initial_conditions,
@@ -1467,6 +518,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         self._validate_discrete_transition_type(
             discrete_transition_type, len(discrete_initial_conditions)
+        )
+        _validate_prior_weight(
+            discrete_transition_prior_weight, len(discrete_initial_conditions)
         )
 
         # Initial conditions parameters
@@ -1490,7 +544,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         # Observation model parameters
         self.observation_models = self._initialize_observation_models(
-            observation_models, continuous_transition_types, environments
+            observation_models, continuous_transition_types, self.environments
         )
         self._validate_observation_models(
             self.observation_models, len(discrete_initial_conditions)
@@ -1519,8 +573,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # subnormals to 0, a silent divide-by-zero.
         if local_position_std is not None:
             if not np.isfinite(local_position_std):
+                msg = "local_position_std must be finite"
                 raise ValidationError(
-                    "local_position_std must be finite",
+                    msg,
                     expected="finite float >= 0 or None",
                     got=str(local_position_std),
                     hint=(
@@ -1530,8 +585,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     ),
                 )
             if local_position_std < 0:
+                msg = "local_position_std must be non-negative"
                 raise ValidationError(
-                    "local_position_std must be non-negative",
+                    msg,
                     expected="float >= 0 or None",
                     got=str(local_position_std),
                     hint=(
@@ -1543,8 +599,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
             f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
             if 0 < float(local_position_std) < f32_min_sigma:
+                msg = "local_position_std**2 underflows to 0 in float32"
                 raise ValidationError(
-                    "local_position_std**2 underflows to 0 in float32",
+                    msg,
                     expected=(
                         "0.0, or a positive value with a representable float32 "
                         f"square (>= sqrt(float32 tiny) ~{f32_min_sigma:.3e})"
@@ -1557,6 +614,119 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     ),
                 )
         self.local_position_std = local_position_std
+
+    def __repr__(self) -> str:
+        """Show the constructor parameters that differ from the defaults.
+
+        The constructors replace ``None`` defaults with the model's states,
+        transitions and observation models, so scikit-learn's repr, which
+        compares against the signature's ``None``, listed all of them for a
+        default model. This compares against a model of the same class built
+        from only this model's required parameters, by ``repr`` as
+        scikit-learn does; required parameters are always shown.
+
+        Returns
+        -------
+        str
+            ``ClassName(param=value, ...)``, one parameter per line when it
+            does not fit on one line.
+        """
+        params = self.get_params(deep=False)
+        signature = inspect.signature(type(self).__init__)
+        required = {
+            name: params[name]
+            for name, parameter in signature.parameters.items()
+            if name in params and parameter.default is inspect.Parameter.empty
+        }
+        defaults = type(self)(**required).get_params(deep=False)
+        changed = [
+            f"{name}={value!r}"
+            for name, value in params.items()
+            if name in required or repr(value) != repr(defaults[name])
+        ]
+        class_name = type(self).__name__
+        one_line = f"{class_name}({', '.join(changed)})"
+        if len(one_line) <= 79 and "\n" not in one_line:
+            return one_line
+        body = "".join(textwrap.indent(f"{item},", "    ") + "\n" for item in changed)
+        return f"{class_name}(\n{body})"
+
+    def set_params(self: _Detector, **params: Any) -> _Detector:
+        """Set constructor parameters, applying the constructor's rules.
+
+        The merged parameters (current values updated with ``params``) are
+        passed through the model's own constructor, so defaults resolution,
+        normalization (``environments`` becomes a tuple, ``observation_models``
+        a tuple when given as None or one ``ObservationModel`` and otherwise
+        stays the list or tuple given, ``state_names=None`` becomes generated
+        names) and validation are exactly those of ``__init__``. The new values are applied only if the
+        constructor accepts them; on error the detector is unchanged. Fitted
+        attributes, including the fitted environments in ``environments_``
+        and the state bins in ``state_space_``, are not touched, and decoding
+        reads them: a change to ``environments``, ``state_names``,
+        ``observation_models``, ``continuous_transition_types``,
+        ``local_position_std`` or any other parameter a fit depends on takes
+        effect at the next fit. Decoding a detector whose ``state_names``,
+        ``observation_models``, ``continuous_transition_types``,
+        ``local_position_std``, ``discrete_transition_type``,
+        ``discrete_initial_conditions`` or ``environments`` changed after
+        fitting warns (``ParameterWarning``), and ``save_model`` refuses it.
+
+        As with the constructor, parameters that must agree (for example
+        ``discrete_initial_conditions``, ``observation_models``,
+        ``continuous_transition_types`` and ``state_names``, which each have
+        one entry per discrete state) must be changed together.
+
+        Parameters
+        ----------
+        **params : Any
+            Constructor parameters to change. Nested ``component__parameter``
+            keys are validated first, then handled by scikit-learn after the
+            top-level ones.
+
+        Returns
+        -------
+        self
+            The detector with the updated parameters, of its own class.
+
+        Raises
+        ------
+        ValidationError
+            If the resulting parameters are invalid, as in the constructor, or
+            a parameter name is not a constructor parameter.
+        """
+        if not params:
+            return self
+        current = self.get_params(deep=False)
+        top_level = {k: v for k, v in params.items() if "__" not in k}
+        nested = {k: v for k, v in params.items() if "__" in k}
+        # Validate every name before applying anything, so any error leaves the
+        # detector unchanged.
+        invalid = sorted(
+            [k for k in top_level if k not in current]
+            + [
+                k
+                for k in nested
+                if not hasattr(current.get(k.split("__", 1)[0]), "set_params")
+            ]
+        )
+        if invalid:
+            msg = (
+                f"Invalid parameter(s) {invalid!r} for estimator "
+                f"{type(self).__name__}. Valid parameters are: "
+                f"{sorted(current)!r}."
+            )
+            raise ValidationError(msg)
+        if top_level:
+            # Build a fresh detector first so a rejected value leaves ``self``
+            # untouched.
+            validated = type(self)(**{**current, **top_level})
+            resolved = validated.get_params(deep=False)
+            for name in current:
+                setattr(self, name, resolved[name])
+        if nested:
+            super().set_params(**nested)
+        return self
 
     @property
     def _frozen_discrete_transition_rows_mask_(self) -> np.ndarray | None:
@@ -1579,56 +749,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             np.array([obs.is_no_spike for obs in self.observation_models]),
         )
 
-    def _validate_position_dimensionality(
-        self, position: np.ndarray, context: str = "fit"
-    ) -> None:
-        """Check that position shape matches the environment type.
-
-        When any environment has a ``track_graph``, positions must be
-        raw 2D ``(x, y)`` coordinates — the detector linearizes
-        internally via ``get_position_at_time``. Passing already-
-        linearized 1D position in this case causes the internal
-        linearization step to silently produce garbage coordinates,
-        which mis-centers the local kernel and non-local penalty.
-
-        This check raises a clear ``ValidationError`` when the shape
-        does not match the environment type, rather than allowing
-        silent numerical corruption downstream.
-
-        Parameters
-        ----------
-        position : np.ndarray
-            Position array to validate.
-        context : str, optional
-            Name of the calling context (``"fit"`` or ``"predict"``)
-            for error messages.
-        """
-        is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
-        if not is_1d:
-            return
-
-        has_track_graph = any(env.track_graph is not None for env in self.environments)
-        if has_track_graph:
-            raise ValidationError(
-                "Environment has a track_graph but position is 1D "
-                f"(shape {position.shape}). Track-graph environments "
-                "require raw 2D (x, y) position — the detector "
-                "linearizes internally. Passing pre-linearized 1D "
-                "position silently corrupts internal coordinates.",
-                expected="shape (n_time, 2) or (n_time, n_dims) with n_dims >= 2",
-                got=f"shape {position.shape}",
-                hint=(
-                    "If you already called get_linearized_position() to "
-                    "get 1D position, pass the raw 2D (x, y) array "
-                    "instead — the detector linearizes via the track_graph "
-                    "during both fit() and predict()."
-                ),
-                example=(
-                    "    # Raw 2D position, not pre-linearized\n"
-                    f"    detector.{context}(..., position=position_2d)"
-                ),
-            )
-
     def _non_local_position_penalty(self) -> float:
         """Non-local position penalty, in nats; 0.0 for models without one.
 
@@ -1641,7 +761,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """
         return 0.0
 
-    def _decode_reads_position(self) -> bool:
+    def _decode_reads_position(
+        self, observation_models: Sequence[ObservationModel]
+    ) -> bool:
         """Whether the decode likelihood reads the animal's position.
 
         Local observation models and a positive ``non_local_position_penalty``
@@ -1649,18 +771,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         only shapes Local states). Fitting and EM encoding refits always use
         position for the encoding support, whatever this returns.
 
+        Parameters
+        ----------
+        observation_models : sequence of ObservationModel
+            The decoded states' observation models: the fit's
+            (``state_space_.observation_models``), or the parameters' before
+            EM's internal fit.
+
         Returns
         -------
         reads_position : bool
         """
         return bool(
-            any(obs.is_local for obs in self.observation_models)
+            any(obs.is_local for obs in observation_models)
             or self._non_local_position_penalty() > 0
         )
 
     def _compute_non_local_position_penalty(
-        self, time, position_time, position, environment
-    ):
+        self,
+        time: np.ndarray,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        environment: "Environment",
+    ) -> jax.Array:
         """Compute position-dependent penalty for non-local states.
 
         Returns a ``(n_time, n_interior_bins)`` array of log-likelihood
@@ -1687,11 +820,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Parameters
         ----------
-        time : jnp.ndarray, shape (n_bins,)
+        time : jax.Array, shape (n_bins,)
             Decode bin centers at which the animal's position is evaluated.
-        position_time : jnp.ndarray, shape (n_time_position,)
+        position_time : jax.Array, shape (n_time_position,)
             Position sampling times.
-        position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        position : jax.Array, shape (n_time_position, n_position_dims)
             Position samples.
         environment : Environment
             The spatial environment with place_bin_centers_ and
@@ -1699,7 +832,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Returns
         -------
-        penalty : jnp.ndarray, shape (n_time, n_interior_bins)
+        penalty : jax.Array, shape (n_time, n_interior_bins)
             Non-positive penalty values (to be added to log-likelihood).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
@@ -1735,18 +868,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # NaN animal positions produce zero penalty (no constraint during
         # tracking dropouts) rather than a spurious penalty at a searchsorted-
         # dependent bin.
-        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty)
+        return cast("jax.Array", jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty))
 
     def _compute_local_position_kernel(
         self,
-        time: jnp.ndarray,
-        position_time: jnp.ndarray,
-        position: jnp.ndarray,
+        time: jax.Array | np.ndarray,
+        position_time: jax.Array | np.ndarray,
+        position: jax.Array | np.ndarray,
         environment: "Environment",
-    ) -> jnp.ndarray:
+        local_position_std: float,
+    ) -> jax.Array:
         """Compute log position kernel for the local state.
 
-        Dispatches to one of two paths based on ``self.local_position_std``:
+        Dispatches to one of two paths based on ``local_position_std``:
 
         - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
           ``-inf`` elsewhere (one-hot).
@@ -1776,24 +910,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Parameters
         ----------
-        time : jnp.ndarray, shape (n_bins,)
+        time : jax.Array, shape (n_bins,)
             Decode bin centers at which the animal's position is evaluated.
-        position_time : jnp.ndarray, shape (n_time_position,)
+        position_time : jax.Array, shape (n_time_position,)
             Position sampling times.
-        position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        position : jax.Array, shape (n_time_position, n_position_dims)
             Position samples.
         environment : Environment
             The spatial environment.
+        local_position_std : float
+            Width of the kernel, the fit's ``local_position_std``: 0 for the
+            delta kernel.
 
         Returns
         -------
-        log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
+        log_kernel : jax.Array, shape (n_time, n_interior_bins)
             Log kernel. exp(log_kernel) sums to n_interior_bins per
             time step (not 1).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
-
-        assert self.local_position_std is not None  # narrowing for type checker
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
@@ -1814,7 +949,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # gap-bin assignments to the nearest interior bin, so the only
         # remaining case needing uniform fallback is a truly NaN animal
         # position (tracking dropout).
-        if self.local_position_std == 0:
+        if local_position_std == 0:
             interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
             # Replace NaN animal positions with 0 before get_bin_ind (it
             # has no NaN guard); nan_mask below masks those rows.
@@ -1824,8 +959,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
             )
             log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
-            log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
-            return log_kernel
+            return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
         # Gaussian kernel path (σ > 0). Uses topology-aware distance via
         # Environment.get_distances_to_interior_bins(). After the
@@ -1841,7 +975,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # avoids inf/NaN propagation through the arithmetic ops below.
         reachable = jnp.isfinite(sq_dist)
         log_kernel = jnp.where(
-            reachable, -0.5 * sq_dist / (self.local_position_std**2), -jnp.inf
+            reachable, -0.5 * sq_dist / (local_position_std**2), -jnp.inf
         )
         # Normalize to sum to n_bins (not 1) per time step. This compensates
         # for the 1/n_bins uniform continuous IC of the multi-bin local state
@@ -1855,218 +989,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         # NaN animal positions (tracking dropout) fall back to a uniform
         # kernel: each bin's exp value is 1, so log_kernel = 0 per bin.
-        log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
-
-        return log_kernel
-
-    def _validate_initial_conditions(
-        self,
-        discrete_initial_conditions: np.ndarray,
-        continuous_initial_conditions_types: ContinuousInitialConditions,
-        continuous_transition_types: ContinuousTransitions,
-        discrete_transition_stickiness: Stickiness,
-    ) -> None:
-        """
-        Validate the initial conditions.
-
-        Parameters
-        ----------
-        discrete_initial_conditions : np.ndarray
-            Initial conditions for discrete states.
-        continuous_initial_conditions_types : ContinuousInitialConditions
-            Types of continuous initial conditions.
-        continuous_transition_types : ContinuousTransitions
-            Types of continuous state transitions.
-        discrete_transition_stickiness : Stickiness
-            Stickiness parameter for discrete state transitions.
-
-        Raises
-        ------
-        ValidationError
-            If the number of discrete initial conditions does not match the number of continuous initial conditions or transition types.
-        """
-        n_discrete = len(discrete_initial_conditions)
-        n_continuous_init = len(continuous_initial_conditions_types)
-        n_continuous_trans = len(continuous_transition_types)
-
-        if n_discrete != n_continuous_init:
-            raise ValidationError(
-                "Mismatch between discrete initial conditions and continuous initial conditions",
-                expected=f"{n_continuous_init} discrete initial condition(s) (one per continuous initial condition type)",
-                got=f"{n_discrete} discrete initial condition(s)",
-                hint="Each continuous initial condition type needs a corresponding discrete initial probability",
-                example=f"    discrete_initial_conditions=np.array([{', '.join(['1.0/' + str(n_continuous_init)] * n_continuous_init)}])",
-            )
-
-        if n_discrete != n_continuous_trans:
-            state_names_str = (
-                f" ({self.state_names})"
-                if hasattr(self, "state_names") and self.state_names
-                else ""
-            )
-            raise ValidationError(
-                "Mismatch between discrete initial conditions and continuous transition types",
-                expected=f"{n_continuous_trans} discrete initial condition(s) (one per state{state_names_str})",
-                got=f"{n_discrete} discrete initial condition(s)",
-                hint="Each state needs an initial probability. Check that your discrete_initial_conditions array has the same length as continuous_transition_types list.",
-                example=f"    # For {n_continuous_trans} states:\n    discrete_initial_conditions=np.array([{', '.join(['1.0/' + str(n_continuous_trans)] * n_continuous_trans)}])",
-            )
-
-        if not isinstance(discrete_transition_stickiness, float) and len(
-            discrete_initial_conditions
-        ) != len(discrete_transition_stickiness):
-            raise ValidationError(
-                f"Discrete transition stickiness must be set for all {n_discrete} states or be a single float",
-                expected=f"Either a float or array of length {n_discrete}",
-                got=f"Array of length {len(discrete_transition_stickiness)}",
-                hint="Use a float for uniform stickiness across all states, or an array with one value per state",
-                example=f"    discrete_transition_stickiness=0.0  # uniform\n    # OR\n    discrete_transition_stickiness=np.array([{', '.join(['0.0'] * n_discrete)}])  # per-state",
-            )
-
-    def _validate_probability_distributions(
-        self, discrete_initial_conditions: np.ndarray
-    ) -> None:
-        """Validate that probability distributions sum to 1.
-
-        Parameters
-        ----------
-        discrete_initial_conditions : np.ndarray
-            Initial conditions for discrete states
-
-        Raises
-        ------
-        ValidationError
-            If discrete_initial_conditions is not 1D, contains invalid values,
-            or does not sum to 1
-        DataError
-            If array contains NaN or Inf values
-        """
-        # Check array is 1D
-        val.ensure_array_1d(discrete_initial_conditions, "discrete_initial_conditions")
-
-        # Check for NaN/Inf
-        val.ensure_all_finite(
-            discrete_initial_conditions, "discrete_initial_conditions"
-        )
-
-        # Check non-negative
-        val.ensure_all_non_negative(
-            discrete_initial_conditions, "discrete_initial_conditions"
-        )
-
-        # Check sums to 1
-        val.ensure_probability_distribution(
-            discrete_initial_conditions, "discrete_initial_conditions"
-        )
-
-    def _validate_numerical_parameters(
-        self,
-        discrete_transition_concentration: float,
-        discrete_transition_regularization: float,
-        sampling_frequency: float,
-        no_spike_rate: float,
-    ) -> None:
-        """Validate numerical parameters are in valid ranges.
-
-        Parameters
-        ----------
-        discrete_transition_concentration : float
-            Concentration parameter (must be >= 1.0 for the MAP transition update).
-            This ensures the pseudo-count update adds non-negative values.
-        discrete_transition_regularization : float
-            Regularization parameter (must be >= 0)
-        sampling_frequency : float
-            Sampling frequency in Hz (must be > 0)
-        no_spike_rate : float
-            No-spike rate (must be > 0)
-
-        Raises
-        ------
-        ValidationError
-            If any parameter is outside its valid range
-        """
-        val.ensure_positive_scalar(
-            discrete_transition_concentration,
-            "discrete_transition_concentration",
-            minimum=1.0,
-            strict=False,
-        )
-
-        val.ensure_positive_scalar(
-            discrete_transition_regularization,
-            "discrete_transition_regularization",
-            minimum=0.0,
-            strict=False,  # Can be exactly 0
-        )
-
-        val.ensure_positive_scalar(
-            sampling_frequency,
-            "sampling_frequency",
-            minimum=0.0,
-            strict=True,
-        )
-
-        val.ensure_positive_scalar(
-            no_spike_rate,
-            "no_spike_rate",
-            minimum=0.0,
-            strict=True,
-        )
-
-    def _validate_discrete_transition_type(
-        self, discrete_transition_type, n_states: int
-    ) -> None:
-        """Validate discrete transition type configuration.
-
-        Parameters
-        ----------
-        discrete_transition_type : DiscreteTransitions
-            Discrete transition type object
-        n_states : int
-            Number of states in the model
-
-        Raises
-        ------
-        ValidationError
-            If transition matrix is invalid (wrong shape, doesn't sum to 1, etc.)
-        DataError
-            If transition matrix contains NaN or Inf
-        """
-        # Deferred to avoid circular import: base.py -> discrete_state_transitions.py -> base.py
-        from non_local_detector.discrete_state_transitions import (
-            DiscreteStationaryCustom,
-        )
-
-        # If it's a custom transition matrix, validate it
-        if isinstance(discrete_transition_type, DiscreteStationaryCustom):
-            matrix = discrete_transition_type.values
-
-            # Check it's a numpy array
-            val.ensure_ndarray(matrix, "discrete_transition_type.values")
-
-            # Check for NaN/Inf
-            val.ensure_all_finite(matrix, "discrete_transition_type.values")
-
-            # Check square
-            val.ensure_square_matrix(matrix, "discrete_transition_type.values")
-
-            # Check correct size
-            if matrix.shape[0] != n_states:
-                raise ValidationError(
-                    "Discrete transition matrix size must match number of states",
-                    expected=f"matrix with shape ({n_states}, {n_states})",
-                    got=f"matrix with shape {matrix.shape}",
-                    hint=f"Your model has {n_states} states, so transition matrix needs {n_states}x{n_states} shape",
-                )
-
-            # Check non-negative
-            val.ensure_all_non_negative(matrix, "discrete_transition_type.values")
-
-            # Check values in [0, 1]
-            val.ensure_in_range(matrix, "discrete_transition_type.values", 0.0, 1.0)
-
-            # Check row-stochastic (rows sum to 1)
-            val.ensure_stochastic_matrix(matrix, "discrete_transition_type.values")
+        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
     def _initialize_environments(
         self, environments: Environments
@@ -2082,20 +1005,24 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         tuple[Environment, ...]
-            Initialized environments as a tuple.
+            Initialized environments as a tuple. A tuple is returned as is, so
+            the parameter round-trips through scikit-learn's ``clone``.
         """
-        if environments is None:
-            environments = (Environment(),)
-        if not hasattr(environments, "__iter__"):
-            environments = (environments,)
-        return environments
+        normalized: Any = environments
+        if normalized is None:
+            normalized = (Environment(),)
+        if not hasattr(normalized, "__iter__"):
+            normalized = (normalized,)
+        if not isinstance(normalized, tuple):
+            normalized = tuple(normalized)
+        return cast("tuple[Environment, ...]", normalized)
 
     def _initialize_observation_models(
         self,
         observation_models: Observations,
         continuous_transition_types: ContinuousTransitions,
-        environments: Environments,
-    ) -> tuple[ObservationModel, ...]:
+        environments: tuple[Environment, ...],
+    ) -> list[ObservationModel] | tuple[ObservationModel, ...]:
         """
         Initialize observation models.
 
@@ -2105,72 +1032,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Observation models for the detector.
         continuous_transition_types : ContinuousTransitions
             Types of continuous state transitions.
-        environments : Environments
-            Environments in which the detector operates.
+        environments : tuple[Environment, ...]
+            Normalized environments in which the detector operates.
 
         Returns
         -------
-        tuple[ObservationModel, ...]
-            Initialized observation models as a tuple.
+        list or tuple of ObservationModel
+            One observation model per state: a list or tuple is returned as
+            given, so the parameter round-trips through ``get_params`` and
+            scikit-learn's ``clone``; None or a single ``ObservationModel``
+            gives a tuple.
         """
-        if observation_models is None:
+        normalized: Any = observation_models
+        if normalized is None:
             n_states = len(continuous_transition_types)
             env_name = environments[0].environment_name
-            observation_models = (ObservationModel(env_name),) * n_states
-        elif isinstance(observation_models, ObservationModel):
-            observation_models = (observation_models,) * len(
-                continuous_transition_types
-            )
-        return observation_models
-
-    @staticmethod
-    def _validate_observation_models(observation_models, n_states: int) -> None:
-        """Require one ``ObservationModel`` per discrete state.
-
-        The state roles (Local, No-Spike) are read from these models, so a
-        non-model entry or a count that differs from the number of states
-        would misassign them.
-
-        Parameters
-        ----------
-        observation_models : list, tuple or np.ndarray of ObservationModel
-            Output of ``_initialize_observation_models``.
-        n_states : int
-            Number of discrete states.
-
-        Raises
-        ------
-        ValidationError
-            If ``observation_models`` is not a list, tuple or array, holds
-            anything but ``ObservationModel`` instances, or does not have
-            ``n_states`` entries.
-        """
-        if not isinstance(observation_models, (list, tuple, np.ndarray)):
-            raise ValidationError(
-                "observation_models must be a list, tuple or array of "
-                "ObservationModel instances",
-                expected="an ObservationModel, a list, tuple or array of them, or None",
-                got=type(observation_models).__name__,
-            )
-        wrong_types = sorted(
-            {
-                type(obs).__name__
-                for obs in observation_models
-                if not isinstance(obs, ObservationModel)
-            }
-        )
-        if wrong_types:
-            raise ValidationError(
-                "observation_models entries must be ObservationModel instances",
-                expected="ObservationModel entries",
-                got=f"entries of type {', '.join(wrong_types)}",
-            )
-        if len(observation_models) != n_states:
-            raise ValidationError(
-                "observation_models must have one observation model per discrete state",
-                expected=f"{n_states} observation models",
-                got=f"{len(observation_models)}",
-            )
+            normalized = (ObservationModel(env_name),) * n_states
+        elif isinstance(normalized, ObservationModel):
+            normalized = (normalized,) * len(continuous_transition_types)
+        return cast("list[ObservationModel] | tuple[ObservationModel, ...]", normalized)
 
     def _initialize_state_names(
         self, state_names: StateNames, discrete_initial_conditions: np.ndarray
@@ -2191,7 +1071,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Raises
         ------
-        ValueError
+        ValidationError
             If the number of state names does not match the number of discrete initial conditions.
         """
         if state_names is None:
@@ -2200,8 +1080,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 for state_ind in range(len(discrete_initial_conditions))
             ]
         if len(state_names) != len(discrete_initial_conditions):
+            msg = "Number of state names must match number of states"
             raise ValidationError(
-                "Number of state names must match number of states",
+                msg,
                 expected=f"{len(discrete_initial_conditions)} state name(s)",
                 got=f"{len(state_names)} state name(s)",
                 hint="Provide one name per state in your model",
@@ -2218,14 +1099,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> None:
         """
-        Fits the Environment class on the position data to get information about the spatial environment.
+        Fit copies of the environments on the position data.
+
+        Each environment is rebuilt from its configuration
+        (``Environment.get_params``) and the copy is fitted, so the
+        environments passed to the model, which other models may share, are
+        never changed. ``self.environments`` keeps the configuration and
+        ``self.environments_`` holds the fitted copies afterwards.
+
+        This is for an unfitted detector, such as one built to inspect its
+        environments' grids; ``fit`` fits its own.
 
         Parameters
         ----------
         position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
+            Position data.
         environment_labels : np.ndarray, optional, shape (n_time,)
-            Labels for each time points about which environment it corresponds to, by default None
+            Labels for each time points about which environment it corresponds to, by default None.
         compute_all_pairs_distances : bool, optional
             By default True, which builds each environment's all-pairs graph
             distances. False keeps an exact sparse query view for Cartesian
@@ -2233,25 +1123,68 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         max_dense_distance_bytes : int, optional
             Byte limit for dense reads of the deferred distance view, by
             default 256 MiB. Used only when compute_all_pairs_distances=False.
+
+        Raises
+        ------
+        ValidationError
+            If the detector is fitted, as its state space, encoding model and
+            transitions were built on the fitted grids, or
+            ``environment_labels`` label no sample with an environment's
+            ``environment_name``.
         """
-        for environment in self.environments:
+        if "state_space_" in self.__dict__:
+            msg = "initialize_environments would replace a fitted detector's grids"
+            raise ValidationError(
+                msg,
+                hint="Call fit to refit the detector on new position data, or "
+                "sklearn.base.clone(detector) for an unfitted copy.",
+            )
+        self._fit_environments(
+            position,
+            environment_labels,
+            compute_all_pairs_distances=compute_all_pairs_distances,
+            max_dense_distance_bytes=max_dense_distance_bytes,
+        )
+
+    def _fit_environments(
+        self,
+        position: np.ndarray,
+        environment_labels: np.ndarray | None,
+        *,
+        compute_all_pairs_distances: bool,
+        max_dense_distance_bytes: int,
+    ) -> None:
+        """Set ``environments_``; see ``initialize_environments``.
+
+        Parameters are those of ``initialize_environments``.
+
+        Raises
+        ------
+        ValidationError
+            If ``environment_labels`` label no sample with an environment's
+            ``environment_name``.
+        """
+        if environment_labels is not None:
+            _require_labeled_environments(
+                environment_labels,
+                [env.environment_name for env in self.environments],
+            )
+        fitted_environments = []
+        for given_environment in self.environments:
+            environment = type(given_environment)(
+                **copy.deepcopy(given_environment.get_params())
+            )
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
             else:
                 is_environment = environment_labels == environment.environment_name
 
             env_position = position[is_environment]
-            env_position = env_position[np.all(np.isfinite(env_position), axis=1)]
-            if environment.track_graph is not None:
-                # convert to 1D
-                env_position = get_linearized_position(
-                    env_position,
-                    environment.track_graph,
-                    edge_order=environment.edge_order,
-                    edge_spacing=environment.edge_spacing,
-                ).linear_position.to_numpy()
+            env_position = environment.decoding_position(
+                env_position[np.all(np.isfinite(env_position), axis=1)]
+            )
 
-            distance_options = (
+            distance_options: dict[str, Any] = (
                 {}
                 if compute_all_pairs_distances
                 else {
@@ -2264,325 +1197,126 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 infer_track_interior=self.infer_track_interior,
                 **distance_options,
             )
+            fitted_environments.append(environment)
+        self.environments_ = tuple(fitted_environments)
 
-    def initialize_state_index(self) -> None:
-        """Initialize indices and parameters related to the combined state space.
+    def _fitted_state_space(self, name: str) -> StateSpace:
+        """``state_space_``, or NotFittedError naming the attribute ``name``."""
+        state_space = self.__dict__.get("state_space_")
+        if state_space is None:
+            msg = f"{name} is set by fit, and this detector is not fitted"
+            raise NotFittedError(msg, hint="Call fit(...) first.")
+        return cast("StateSpace", state_space)
 
-        Determines the total number of bins across all discrete states (spatial
-        bins for continuous states, 1 for discrete states like 'Local' or
-        'No-Spike') and creates mappings between these combined bins and the
-        original discrete states. Also identifies which combined bins correspond
-        to the track interior.
+    @property
+    def n_discrete_states_(self) -> int:
+        """Number of discrete states of the fit (``state_space_.n_states``)."""
+        return self._fitted_state_space("n_discrete_states_").n_states
 
-        Attributes
-        ----------
-        n_discrete_states_ : int
-            Total number of discrete states defined in the model.
-        state_ind_ : np.ndarray, shape (n_total_bins,)
-            Index mapping each combined bin to its corresponding discrete state index.
-        n_state_bins_ : int
-            Total number of bins across all states (sum of spatial bins for
-            continuous states and 1 for discrete states). Referred to as
-            `n_total_bins` in the shape description here for clarity.
-        bin_sizes_ : np.ndarray, shape (n_discrete_states_,)
-             Number of bins associated with each discrete state (e.g., number
-             of place bins for spatial states, 1 for non-spatial states).
-        is_track_interior_state_bins_ : np.ndarray, shape (n_total_bins,)
-             Boolean array indicating if a combined state bin corresponds to the
-             track interior. For non-spatial states, this is typically True.
+    @property
+    def state_ind_(self) -> np.ndarray:
+        """Discrete state of each state bin, shape (n_state_bins,).
 
+        The fit's ``state_space_.state_ind``.
         """
-        self.n_discrete_states_ = len(self.state_names)
-        bin_sizes = []
-        state_ind = []
-        is_track_interior = []
-        for ind, obs in enumerate(self.observation_models):
-            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
-                bin_sizes.append(1)
-                state_ind.append(np.full(1, ind, dtype=int))
-                is_track_interior.append(np.ones(1, dtype=bool))
-            else:
-                environment = self._get_environment_by_name(obs.environment_name)
-                if environment.place_bin_centers_ is not None:
-                    bin_sizes.append(environment.place_bin_centers_.shape[0])
-                    state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
-                else:
-                    raise ValueError("Environment place_bin_centers_ cannot be None")
-                if environment.is_track_interior_ is not None:
-                    is_track_interior.append(environment.is_track_interior_.ravel())
-                else:
-                    # Default fallback: all positions are track interior
-                    is_track_interior.append(np.ones(bin_sizes[-1], dtype=bool))
+        return self._fitted_state_space("state_ind_").state_ind
 
-        self.state_ind_ = np.concatenate(state_ind)
-        self.n_state_bins_ = len(self.state_ind_)
-        self.bin_sizes_ = np.array(bin_sizes)
-        self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
+    @property
+    def n_state_bins_(self) -> int:
+        """Number of state bins of the fit (``state_space_.n_state_bins``)."""
+        return self._fitted_state_space("n_state_bins_").n_state_bins
 
-    def initialize_initial_conditions(self) -> None:
-        """Constructs the initial probability for the state and each spatial bin.
+    @property
+    def bin_sizes_(self) -> np.ndarray:
+        """Number of bins of each discrete state, shape (n_states,).
 
-        Attributes
-        ----------
-        continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
-            Initial probability distribution over the bins within each state.
-        initial_conditions_ : np.ndarray, shape (n_state_bins,)
-            Overall initial probability distribution across all state bins.
+        The fit's ``state_space_.bin_sizes``.
         """
-        logger.info("Fitting initial conditions...")
-        from dataclasses import replace
+        return self._fitted_state_space("bin_sizes_").bin_sizes
 
-        ic_parts = []
-        for obs, cont_ic in zip(
-            self.observation_models,
-            self.continuous_initial_conditions_types,
-            strict=False,
-        ):
-            # Multi-bin local uses full spatial initial conditions
-            effective_obs = obs
-            if obs.is_local and self.local_position_std is not None:
-                effective_obs = replace(obs, is_local=False)
-            ic_parts.append(
-                cont_ic.make_initial_conditions(effective_obs, self.environments)
+    @property
+    def is_track_interior_state_bins_(self) -> np.ndarray:
+        """Whether each state bin is on the track interior, shape (n_state_bins,).
+
+        The fit's ``state_space_.is_track_interior``.
+        """
+        return self._fitted_state_space(
+            "is_track_interior_state_bins_"
+        ).is_track_interior
+
+    @property
+    def continuous_state_transitions_(self) -> np.ndarray | LazyDenseTransition:
+        """Continuous transition between state bins, shape (n_state_bins, n_state_bins).
+
+        The fit's ``state_space_.continuous_transitions``: a dense matrix, or
+        a budgeted lazy view of a structured operator.
+        """
+        return self._fitted_state_space(
+            "continuous_state_transitions_"
+        ).continuous_transitions
+
+    def _fitted_em_diagnostics(self, name: str) -> _EMDiagnostics:
+        """Diagnostics of the last EM run, or NotFittedError naming ``name``."""
+        diagnostics = self.__dict__.get("_em_diagnostics_")
+        if diagnostics is None:
+            msg = (
+                f"{name} is set by estimate_parameters, and this detector's "
+                "last fit did not run it"
             )
-        self.continuous_initial_conditions_ = np.concatenate(ic_parts)
-        self.initial_conditions_ = (
-            self.continuous_initial_conditions_
-            * self.discrete_initial_conditions[self.state_ind_]
+            raise NotFittedError(msg, hint="Call estimate_parameters(...) first.")
+        return cast("_EMDiagnostics", diagnostics)
+
+    @property
+    def n_iter_(self) -> int:
+        """Number of EM iterations performed by the last ``estimate_parameters``."""
+        return self._fitted_em_diagnostics("n_iter_").n_iter
+
+    @property
+    def converged_(self) -> bool:
+        """Whether the last ``estimate_parameters`` converged.
+
+        EM must converge within max_iter iterations and the final E-step must
+        not decrease the penalized log-likelihood.
+        """
+        return self._fitted_em_diagnostics("converged_").converged
+
+    @property
+    def em_monotonicity_violations_(self) -> list[int]:
+        """Iterations (1-based) whose penalized log-likelihood decreased.
+
+        The final E-step counts as iteration ``n_iter_ + 1``.
+        """
+        return list(
+            self._fitted_em_diagnostics(
+                "em_monotonicity_violations_"
+            ).monotonicity_violations
         )
 
-    def initialize_continuous_state_transition(
-        self,
-        continuous_transition_types: ContinuousTransitions,
-        position: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        *,
-        transition_representation: str = "dense",
-        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> None:
-        """
-        Constructs the transition matrices for the continuous states.
+    @property
+    def degenerate_timesteps_(self) -> np.ndarray:
+        """Time indices (0-based) the final E-step found all-impossible."""
+        return self._fitted_em_diagnostics("degenerate_timesteps_").degenerate_timesteps
 
-        Parameters
-        ----------
-        continuous_transition_types : ContinuousTransitions
-            Types of transition models.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
-        is_training : np.ndarray, optional, shape (n_time,)
-            Boolean array that determines what data to train the place fields on, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time,), optional
-            If place fields should correspond to each state, label each time point with the group name, by default None.
-        environment_labels : np.ndarray, shape (n_time,), optional
-            If there are multiple environments, label each time point with the environment name, by default None.
-        transition_representation : {"dense", "structured", "auto"}, optional
-            By default "dense", which builds the full matrix. "structured"
-            requires exact supported state-block operators; "auto" permits
-            budgeted dense fallback blocks.
-        max_dense_transition_bytes : int, optional
-            Byte limit for retained fallback blocks, temporary dense graph
-            distances, and explicit reads of the lazy view, by default
-            256 MiB. Does not limit "dense".
-
-        Attributes
-        ----------
-        continuous_state_transitions_ : np.ndarray or LazyDenseTransition, shape (n_state_bins, n_state_bins)
-            Probability of transitioning between bins, assuming a transition between the corresponding discrete states occurs.
-            A budgeted lazy view of the operator unless transition_representation="dense".
-        continuous_transition_types : ContinuousTransitions
-            Stores the continuous transition types used.
-        """
-        logger.info("Fitting continuous state transition...")
-
-        self.continuous_transition_types = continuous_transition_types
-
-        _validate_transition_arguments(
-            transition_representation, max_dense_transition_bytes
-        )
-        self._transition_representation_ = transition_representation
-        self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
-        self.__dict__.pop("_continuous_transition_operator_", None)
-        if transition_representation != "dense":
-            from non_local_detector.transition_operators import (
-                LazyDenseTransition,
-                build_transition_operator,
-            )
-
-            operator = build_transition_operator(
-                self.continuous_transition_types,
-                self.environments,
-                self.bin_sizes_,
-                observation_models=self.observation_models,
-                local_position_std=self.local_position_std,
-                allow_dense_fallback=transition_representation == "auto",
-                max_dense_bytes=int(max_dense_transition_bytes),
-                position=position,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
-            )
-            self._continuous_transition_operator_ = operator
-            self.continuous_state_transitions_ = LazyDenseTransition(
-                operator, max_bytes=int(max_dense_transition_bytes)
-            )
-            return
-
-        n_total_bins = len(self.state_ind_)
-        self.continuous_state_transitions_ = np.zeros((n_total_bins, n_total_bins))
-
-        for from_state, row in enumerate(self.continuous_transition_types):
-            for to_state, transition in enumerate(row):
-                inds = np.ix_(
-                    self.state_ind_ == from_state, self.state_ind_ == to_state
-                )
-
-                if isinstance(transition, EmpiricalMovement):
-                    if is_training is None:
-                        if position is not None:
-                            n_time = position.shape[0]
-                            is_training = np.ones((n_time,), dtype=bool)
-                        else:
-                            raise ValueError(
-                                "Position cannot be None when is_training is None"
-                            )
-
-                    if encoding_group_labels is None:
-                        if position is not None:
-                            n_time = position.shape[0]
-                            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
-                        else:
-                            raise ValueError(
-                                "Position cannot be None when encoding_group_labels is None"
-                            )
-
-                    is_training = np.asarray(is_training).squeeze()
-                    if position is None:
-                        raise ValueError(
-                            "position must not be None for EmpiricalMovement transitions"
-                        )
-                    self.continuous_state_transitions_[inds] = (
-                        transition.make_state_transition(
-                            self.environments,
-                            position,
-                            is_training,
-                            encoding_group_labels,
-                            environment_labels,
-                        )
-                    )
-                else:
-                    # Auto-upgrade Discrete() for multi-bin local states.
-                    # Must happen BEFORE make_state_transition() to avoid
-                    # (1,1) -> (n,n) broadcast corruption.
-                    if (
-                        isinstance(transition, Discrete)
-                        and self.local_position_std is not None
-                    ):
-                        from_obs = self.observation_models[from_state]
-                        to_obs = self.observation_models[to_state]
-                        if from_obs.is_local or to_obs.is_local:
-                            # Cross-environment transitions with multi-bin
-                            # local are not supported in v1.
-                            if from_obs.environment_name != to_obs.environment_name:
-                                raise ValueError(
-                                    f"Cross-environment Discrete() transition "
-                                    f"between '{from_obs.environment_name}' and "
-                                    f"'{to_obs.environment_name}' is not "
-                                    f"supported with multi-bin local "
-                                    f"(local_position_std is set). Use explicit "
-                                    f"Uniform(environment_name=..., "
-                                    f"environment2_name=...) instead."
-                                )
-                            local_obs = from_obs if from_obs.is_local else to_obs
-                            transition = Uniform(
-                                environment_name=local_obs.environment_name
-                            )
-
-                    n_row_bins = np.max(inds[0].shape)
-                    n_col_bins = np.max(inds[1].shape)
-
-                    if np.logical_and(n_row_bins == 1, n_col_bins > 1):
-                        # transition from discrete to continuous
-                        # ASSUME uniform for now
-                        if hasattr(transition, "environment_name"):
-                            environment = self._get_environment_by_name(
-                                transition.environment_name
-                            )
-                        else:
-                            raise ValueError(
-                                "Transition must have an environment_name attribute for discrete to continuous transitions"
-                            )
-                        if environment.is_track_interior_ is not None:
-                            self.continuous_state_transitions_[inds] = (
-                                environment.is_track_interior_.ravel()
-                                / environment.is_track_interior_.sum()
-                            ).astype(float)
-                        else:
-                            # Default fallback: uniform transition
-                            if environment.place_bin_centers_ is not None:
-                                n_bins = environment.place_bin_centers_.shape[0]
-                                self.continuous_state_transitions_[inds] = 1.0 / n_bins
-                            else:
-                                raise ValueError(
-                                    "Environment must have place_bin_centers_ for discrete to continuous transitions"
-                                )
-                    elif n_row_bins > 1 and n_col_bins == 1:
-                        # Spatial to non-spatial: each source bin transitions
-                        # to the single target bin with probability 1.
-                        self.continuous_state_transitions_[inds] = np.ones(
-                            (n_row_bins, 1)
-                        )
-                    else:
-                        self.continuous_state_transitions_[inds] = (
-                            transition.make_state_transition(self.environments)
-                        )
-
-    def __getstate__(self) -> dict:
+    def __getstate__(self) -> dict[str, Any]:
         """Pickle without the patsy design matrix, which cannot be pickled.
 
         ``__setstate__`` rebuilds it from the fitted covariates.
         """
-        state = super().__getstate__()
+        state: dict[str, Any] = super().__getstate__()
         if state.get("discrete_transition_design_matrix_") is not None:
             state = dict(state)
             state["discrete_transition_design_matrix_"] = None
         return state
 
-    def __setstate__(self, state: dict) -> None:
+    def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)
-        covariate_data = state.get("_discrete_transition_covariate_data_")
-        if covariate_data is not None and (
-            self.discrete_transition_design_matrix_ is None
-        ):
-            self.discrete_transition_design_matrix_ = (
-                self.discrete_transition_type.make_state_transition(covariate_data)[2]
-            )
-        # Detectors fitted before transition smoothing existed: no penalty
-        # strengths and no covariance, so EM and intervals see an unsmoothed
-        # fit that has not estimated its uncertainty.
-        if "discrete_transition_coefficient_covariance_" not in state:
-            self.discrete_transition_coefficient_covariance_ = None
-        if "discrete_transition_smoothness_matrix_" not in state:
-            design = getattr(self, "discrete_transition_design_matrix_", None)
-            if design is None:
-                self.discrete_transition_smoothness_matrix_ = None
-                self.discrete_transition_smoothness_ = None
-            else:
-                penalties = _smoothness_matrix(design.design_info)
-                self.discrete_transition_smoothness_matrix_ = penalties
-                self.discrete_transition_smoothness_ = _row_smoothness(
-                    0.0,
-                    None,
-                    penalties,
-                    self.discrete_transition_coefficients_.shape[1],
-                )[0]
+        _upgrade_saved_state(self, state)
 
-    def initialize_discrete_state_transition(
-        self, covariate_data: pd.DataFrame | dict | None = None
+    def _initialize_discrete_state_transition(
+        self, covariate_data: pd.DataFrame | dict[str, Any] | None = None
     ) -> None:
         """
-        Constructs the transition matrix for the discrete states.
+        Construct the transition matrix for the discrete states.
 
         Parameters
         ----------
@@ -2612,33 +1346,36 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             of a covariate-dependent transition; None before one.
         """
         logger.info("Fitting discrete state transition")
-        (
-            self.discrete_state_transitions_,
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        ) = self.discrete_transition_type.make_state_transition(covariate_data)
+        transition_type = self.discrete_transition_type
+        initial = transition_type.make_state_transition(covariate_data)
+        _check_initial_discrete_transition(initial, transition_type)
+        self.discrete_state_transitions_ = initial.transition_matrix
+        self.discrete_transition_coefficients_ = initial.coefficients
+        self.discrete_transition_design_matrix_ = initial.design_matrix
         # patsy design matrices cannot be pickled or deep-copied; keep a copy
         # of the covariates so ``__setstate__`` can rebuild the design matrix
         # with the fitted knots even if the caller later changes them.
         self._discrete_transition_covariate_data_ = (
-            None
-            if self.discrete_transition_design_matrix_ is None
-            else copy.deepcopy(covariate_data)
+            None if transition_type.is_stationary else copy.deepcopy(covariate_data)
         )
         # Curvature penalty of each of the formula's spline terms, the
         # strengths of each row's penalties (fixed, or REML's starting value until an
         # M-step chooses it) and, once an M-step has fit them, the Laplace
         # covariance of each row's coefficients.
         self.discrete_transition_coefficient_covariance_ = None
-        if self.discrete_transition_design_matrix_ is None:
+        if transition_type.is_stationary:
             self.discrete_transition_smoothness_matrix_ = None
             self.discrete_transition_smoothness_ = None
         else:
+            # A covariate-dependent transition has a design matrix and
+            # coefficients (checked above).
+            assert self.discrete_transition_design_matrix_ is not None
+            assert self.discrete_transition_coefficients_ is not None
             self.discrete_transition_smoothness_matrix_ = _smoothness_matrix(
                 self.discrete_transition_design_matrix_.design_info
             )
             self.discrete_transition_smoothness_ = _row_smoothness(
-                getattr(self.discrete_transition_type, "smoothness", 0.0),
+                transition_type.smoothness,
                 None,
                 self.discrete_transition_smoothness_matrix_,
                 self.discrete_transition_coefficients_.shape[1],
@@ -2649,7 +1386,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # instead keep their coefficients: the M-step skips them.
         if (
             self._frozen_discrete_transition_rows_mask_ is not None
-            and self.discrete_state_transitions_.ndim == 2
+            and transition_type.is_stationary
         ):
             self._frozen_discrete_transition_rows_baseline_ = (
                 self.discrete_state_transitions_[
@@ -2661,7 +1398,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
     def discrete_transition_intervals(
         self,
-        covariate_data: pd.DataFrame | dict,
+        covariate_data: pd.DataFrame | dict[str, Any],
         coverage: float = 0.95,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Fitted covariate-dependent transitions with pointwise intervals.
@@ -2688,22 +1425,37 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         Raises
         ------
-        ValueError
-            If the transitions do not depend on covariates, or were not
-            estimated by EM (no covariance yet).
+        ConfigurationError
+            If the transitions do not depend on covariates.
+        NotFittedError
+            If EM has not estimated the transitions (no covariance yet).
+        ValidationError
+            If the transition formula was read from a saved model file and
+            not trusted (see ``load_model``).
         """
+        _refuse_untrusted_transition(
+            self.discrete_transition_type, "compute transition intervals"
+        )
         if self.discrete_transition_design_matrix_ is None:
-            raise ValueError(
-                "The discrete transitions do not depend on covariates; use a "
-                "DiscreteNonStationaryCustom or DiscreteNonStationaryDiagonal "
-                "transition type."
+            msg = "The discrete transitions do not depend on covariates."
+            raise ConfigurationError(
+                msg,
+                hint=(
+                    "Use a DiscreteNonStationaryCustom or "
+                    "DiscreteNonStationaryDiagonal transition type."
+                ),
             )
         if self.discrete_transition_coefficient_covariance_ is None:
-            raise ValueError(
-                "No transition covariance yet: it comes from an EM M-step, so "
-                "run estimate_parameters with estimate_discrete_transition=True "
-                "and max_iter >= 1."
+            msg = "No transition covariance yet: it comes from an EM M-step."
+            raise NotFittedError(
+                msg,
+                hint=(
+                    "Run estimate_parameters with "
+                    "estimate_discrete_transition=True and max_iter >= 1."
+                ),
             )
+        # The coefficients are set together with the design matrix.
+        assert self.discrete_transition_coefficients_ is not None
         return _transition_intervals(
             self.discrete_transition_design_matrix_,
             self.discrete_transition_coefficients_,
@@ -2712,230 +1464,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             coverage,
         )
 
-    def plot_discrete_state_transition(
-        self,
-        cmap: str = "Oranges",
-        ax: matplotlib.axes.Axes | None = None,
-        convert_to_seconds: bool = False,
-        sampling_frequency: int = 1,
-        covariate_data: pd.DataFrame | dict | None = None,
-    ) -> None:
-        """
-        Plot heatmap of discrete transition matrix.
-
-        Parameters
-        ----------
-        cmap : str, optional
-            Matplotlib colormap, by default "Oranges".
-        ax : matplotlib.axes.Axes, optional
-            Plotting axis, by default plots to current axis.
-        convert_to_seconds : bool, optional
-            Convert the probabilities of state to expected duration of state, by default False.
-        sampling_frequency : int, optional
-            Number of samples per second, by default 1.
-        covariate_data: dict or pd.DataFrame, optional
-            Dictionary or DataFrame of covariate data, by default None.
-            Keys are covariate names and values are 1D arrays.
-        """
-
-        if self.discrete_state_transitions_.ndim == 2:
-            if ax is None:
-                ax = plt.gca()
-
-            if convert_to_seconds:
-                discrete_state_transition = (
-                    1 / (1 - self.discrete_state_transitions_)
-                ) / sampling_frequency
-                vmin, vmax, fmt = 0.0, None, "0.03f"
-                label = "Seconds"
-            else:
-                discrete_state_transition = self.discrete_state_transitions_
-                vmin, vmax, fmt = 0.0, 1.0, "0.03f"
-                label = "Probability"
-
-            sns.heatmap(
-                data=discrete_state_transition,
-                vmin=vmin,
-                vmax=vmax,
-                annot=True,
-                fmt=fmt,
-                cmap=cmap,
-                xticklabels=self.state_names,
-                yticklabels=self.state_names,
-                ax=ax,
-                cbar_kws={"label": label},
-            )
-            ax.set_ylabel("Previous State", fontsize=12)
-            ax.set_xlabel("Current State", fontsize=12)
-            ax.set_title("Discrete State Transition", fontsize=16)
-        else:
-            discrete_transition_design_matrix = self.discrete_transition_design_matrix_
-            discrete_transition_coefficients = self.discrete_transition_coefficients_
-            state_names = self.state_names
-
-            if discrete_transition_design_matrix is None:
-                raise ValueError(
-                    "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
-                )
-
-            predict_matrix = build_design_matrices(
-                [discrete_transition_design_matrix.design_info],
-                covariate_data,  # type: ignore[union-attr]
-            )[0]
-
-            n_states = len(state_names)
-
-            for covariate in covariate_data:  # type: ignore[union-attr]
-                fig, axes = plt.subplots(
-                    1, n_states, sharex=True, constrained_layout=True, figsize=(10, 5)
-                )
-
-                for from_state_ind, (ax, from_state) in enumerate(
-                    zip(axes.flat, state_names, strict=False)
-                ):
-                    from_local_transition = centered_softmax_forward(
-                        predict_matrix
-                        @ discrete_transition_coefficients[:, from_state_ind]
-                    )
-
-                    ax.plot(covariate_data[covariate], from_local_transition)
-                    ax.set_xlabel(covariate)
-                    ax.set_ylabel("Prob.")
-                    if from_state_ind == n_states - 1:
-                        ax.legend(state_names)
-                    ax.set_title(f"From {from_state}")
-                fig.suptitle(f"Predicted transitions: {covariate}")
-
-    def plot_continuous_state_transition(
-        self, figsize_scaling: float = 1.5, vmax: float = 0.3
-    ) -> None:
-        """
-        Plot heatmap of continuous state transition matrices.
-
-        Parameters
-        ----------
-        figsize_scaling : float, optional
-            Scaling factor for figure size, by default 1.5.
-        vmax : float, optional
-            Maximum value for color scale, by default 0.3.
-        """
-        GOLDEN_RATIO = 1.618
-
-        fig, axes = plt.subplots(
-            self.n_discrete_states_,
-            self.n_discrete_states_,
-            gridspec_kw={
-                "width_ratios": self.bin_sizes_,
-                "height_ratios": self.bin_sizes_,
-            },
-            constrained_layout=True,
-            figsize=(
-                self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO,
-                (self.n_discrete_states_ * figsize_scaling),
-            ),
-        )
-
-        try:
-            for from_state, ax_row in enumerate(axes):
-                for to_state, ax in enumerate(ax_row):
-                    ind = np.ix_(
-                        self.state_ind_ == from_state, self.state_ind_ == to_state
-                    )
-                    ax.pcolormesh(
-                        self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
-                    )
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-
-                    if to_state == 0:
-                        ax.set_ylabel(
-                            self.state_names[from_state],
-                            rotation=0,
-                            ha="right",
-                            va="center",
-                        )
-
-                    if from_state == self.n_discrete_states_ - 1:
-                        ax.set_xlabel(
-                            self.state_names[to_state],
-                            rotation=45,
-                            ha="right",
-                            va="top",
-                            labelpad=1.0,
-                        )
-            fig.supylabel("From State")
-            fig.supxlabel("To State")
-        except TypeError:
-            axes.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
-            axes.set_xticks([])
-            axes.set_yticks([])
-
-    def plot_initial_conditions(
-        self, figsize_scaling: float = 1.5, vmax: float = 0.3
-    ) -> None:
-        """
-        Plot heatmap of initial conditions.
-
-        Parameters
-        ----------
-        figsize_scaling : float, optional
-            Scaling factor for figure size, by default 1.5.
-        vmax : float, optional
-            Maximum value for color scale, by default 0.3.
-        """
-        GOLDEN_RATIO = 1.618
-        fig, axes = plt.subplots(
-            1,
-            self.n_discrete_states_,
-            gridspec_kw={"width_ratios": self.bin_sizes_},
-            constrained_layout=True,
-            figsize=(self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO, 1.1),
-        )
-
-        try:
-            for state, ax in enumerate(axes):
-                ind = self.state_ind_ == state
-                ax.pcolormesh(
-                    self.initial_conditions_[ind][:, np.newaxis], vmin=0.0, vmax=vmax
-                )
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.set_xlabel(
-                    self.state_names[state],
-                    rotation=45,
-                    ha="right",
-                    va="top",
-                    labelpad=0.0,
-                )
-        except TypeError:
-            axes.pcolormesh(
-                self.initial_conditions_[:, np.newaxis], vmin=0.0, vmax=vmax
-            )
-            axes.set_xticks([])
-            axes.set_yticks([])
-            axes.set_xlabel(
-                self.state_names[0],
-                rotation=45,
-                ha="right",
-                va="top",
-                labelpad=0.0,
-            )
-
-        fig.suptitle("Initial Conditions")
-
     def _fit(
         self,
-        position: np.ndarray | None = None,
+        position: np.ndarray,
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         *,
-        transition_representation: str = "dense",
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "_DetectorBase":
         """
         Fit the model to the data.
+
+        The public ``fit`` methods check the arguments first (see
+        ``_validated_inputs``).
 
         Parameters
         ----------
@@ -2948,169 +1492,147 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         environment_labels : np.ndarray, optional, shape (n_time,)
             If there are multiple environments, label each time point with the environment name, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            training values of the covariates named in the transition formula,
+            which place its spline knots (``quantile_bs``) and are kept to
+            rebuild its design. Any number of rows, e.g. one per position
+            sample: decoding evaluates the transitions on its own covariates.
+            By default None.
+        transition_representation : {"dense", "structured", "auto"}, optional
+            By default "dense", which builds the full matrix. "structured"
+            requires exact supported state-block operators; "auto" permits
+            budgeted dense fallback blocks.
+        max_dense_transition_bytes : int, optional
+            Byte limit for retained fallback blocks, temporary dense graph
+            distances, and explicit reads of the lazy view, by default
+            ``DEFAULT_MAX_DENSE_BYTES``. Does not limit "dense".
 
         Returns
         -------
         _DetectorBase
             Fitted model.
         """
-        _validate_transition_arguments(
-            transition_representation, max_dense_transition_bytes
-        )
-        # Validate required parameters
-        if position is None:
-            raise ValidationError(
-                "Missing required parameter: position",
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide the animal's position data during training",
-                example="    detector.fit(position_time, position, spike_times)",
-            )
-
-        # Validate data types and properties
-        val.ensure_ndarray(position, "position")
-        val.ensure_all_finite(position[~np.isnan(position)], "position")
-        if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
-            raise ValidationError(
-                "At least one finite position sample is required for fitting"
-            )
-
-        # Raises ValidationError if position is 1D but env has track_graph.
-        self._validate_position_dimensionality(position, context="fit")
-
-        if position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1):
-            has_track_graph = any(
-                env.track_graph is not None for env in self.environments
-            )
-            if not has_track_graph:
-                warnings.warn(
-                    "Position data appears to be 1D but no track_graph was "
-                    "provided. This will be treated as a 1D open field. If "
-                    "you are working with a linear track, you likely want to "
-                    "pass 2D position (x, y) along with a track_graph, "
-                    "edge_order, and edge_spacing in your Environment so "
-                    "that the track topology is properly linearized. See the "
-                    "Environment docstring for details.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-
-        position = position[:, np.newaxis] if position.ndim == 1 else position
         self._invalidate_stored_log_likelihood()  # stale after a refit
-        self.initialize_environments(
-            position=position,
-            environment_labels=environment_labels,
+        # A refit replaces every structure a loaded detector rebuilt, and what
+        # an earlier estimation found no longer describes the detector.
+        self.__dict__.pop("_rebuild_check_", None)
+        self.__dict__.pop("_em_diagnostics_", None)
+        self.__dict__.pop("discrete_initial_conditions_", None)
+        self._fit_environments(
+            position,
+            environment_labels,
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
-        self.initialize_state_index()
-        self.initialize_initial_conditions()
-        self.initialize_discrete_state_transition(
+        state_ind, bin_sizes, is_track_interior = state_layout(
+            self.observation_models, self.environments_, self.local_position_std
+        )
+        self.continuous_initial_conditions_, self.initial_conditions_ = (
+            initial_conditions(
+                observation_models=self.observation_models,
+                continuous_initial_conditions_types=self.continuous_initial_conditions_types,
+                environments=self.environments_,
+                local_position_std=self.local_position_std,
+                state_names=self.state_names,
+                discrete_initial_conditions=self.discrete_initial_conditions,
+                state_ind=state_ind,
+                is_track_interior=is_track_interior,
+            )
+        )
+        self._initialize_discrete_state_transition(
             covariate_data=discrete_transition_covariate_data
         )
         # The transitions are rebuilt from their configuration, not learned.
         self.transition_time_bin_width_: float | None = None
         self._transition_time_bin_width_tolerance = 0.0
-        self.initialize_continuous_state_transition(
-            continuous_transition_types=self.continuous_transition_types,
+        transitions, operator = continuous_state_transitions(
+            self.continuous_transition_types,
+            self.environments_,
+            self.observation_models,
+            self.local_position_std,
+            state_ind,
+            bin_sizes,
+            context=TransitionContext(
+                position, is_training, encoding_group_labels, environment_labels
+            ),
             transition_representation=transition_representation,
             max_dense_transition_bytes=max_dense_transition_bytes,
-            position=position,
-            is_training=is_training,
-            encoding_group_labels=encoding_group_labels,
-            environment_labels=environment_labels,
         )
-
+        self.state_space_ = StateSpace(
+            **recorded_layout_parameters(self),
+            state_ind=state_ind,
+            bin_sizes=bin_sizes,
+            is_track_interior=is_track_interior,
+            continuous_transitions=transitions,
+            transition_operator=operator,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=int(max_dense_transition_bytes),
+        )
         return self
 
     @abc.abstractmethod
     @requires_time_edges
-    def compute_log_likelihood(self):
+    def compute_log_likelihood(self) -> Any:
         """Compute the log likelihood. To be implemented by inheriting class."""
 
-    def _validate_time_contract(self) -> None:
-        """Reject unknown encoding units and unknown learned transition clocks."""
-        if not hasattr(self, "encoding_model_"):
-            raise ValidationError(
-                "Detector is not fitted; call fit(...) before decoding."
-            )
-        if (
-            getattr(self, "time_contract_", None)
-            != {
-                "version": 1,
-                "rate_units": "Hz",
-                "encoding_time_units": "seconds",
-            }
-            or not hasattr(self, "transition_time_bin_width_")
-            or not isinstance(self.encoding_model_, Mapping)
-        ):
-            raise ValidationError(
-                "Saved model has a legacy or unknown time contract; refit before decoding.",
-                hint="Load for inspection, then call fit(...) or estimate_parameters(..., time_edges=...) with the original recording. Old rates and learned transition clocks cannot be inferred safely.",
-            )
-        # Validate the complete dispatch set before any state is evaluated.
-        # Scanning existing values alone misses a deleted active entry and
-        # wrongly rejects unused entries, including No-Spike-only keys.
-        required_keys = {
-            (obs.environment_name, obs.encoding_group)
-            for obs in self.observation_models
-            if not obs.is_no_spike
-        }
-        for key in required_keys:
-            model = self.encoding_model_.get(key)
-            units = model.get("rate_units") if isinstance(model, Mapping) else None
-            if not isinstance(units, str) or units != "Hz":
-                raise ValidationError(
-                    f"Encoding entry {key!r} is missing or has unknown rate units; refit before decoding.",
-                    hint="Each environment/encoding-group used by a spike state "
-                    "needs a fitted encoding dictionary with rate_units='Hz'. "
-                    "Call fit(...) or estimate_parameters(..., time_edges=...) "
-                    "with the original recording. No-Spike uses its constructor rate in Hz.",
-                )
-        if isinstance(self, ClusterlessDetector) and not hasattr(
-            self, "mark_reference_"
-        ):
-            raise ValidationError(
-                "Saved clusterless model has no mark reference; refit before decoding.",
-                hint="Clusterless states score waveform marks against a reference "
-                "density fitted from training spikes. Call fit(...) with the "
-                "original recording.",
-            )
-
-    def _validate_decode_population(self, spike_times, spike_waveform_features=None):
+    def _validate_decode_population(
+        self,
+        spike_times: Any,
+        spike_waveform_features: Any = None,
+    ) -> None:
         """Validate active fitted populations before missing-data shortcuts."""
         is_clusterless = isinstance(self, ClusterlessDetector)
-        if is_clusterless:
-            validate_spike_feature_population(spike_times, spike_waveform_features)
-        else:
-            for neuron, times in enumerate(spike_times):
-                if len(np.shape(times)) != 1:
-                    raise ValidationError(
-                        f"spike_times for neuron {neuron} must be 1-D",
-                        expected="one array with shape (n_spikes,) per neuron",
-                        got=f"shape {np.shape(times)}",
-                    )
-        field = "mean_rates" if is_clusterless else "place_fields"
-        for key in {
+        active_keys = {
             (obs.environment_name, obs.encoding_group)
-            for obs in self.observation_models
+            for obs in self.state_space_.observation_models
             if not obs.is_no_spike
-        }:
+        }
+        # Each encoding model unpacks into its own algorithm's predict, which
+        # the algorithm parameter selects; another predict would reject or
+        # misread its keys.
+        parameter = (
+            "clusterless_algorithm" if is_clusterless else "sorted_spikes_algorithm"
+        )
+        current = getattr(self, parameter)
+        for key in sorted(active_keys, key=repr):
+            fitted = self.encoding_model_[key].get("algorithm")
+            if fitted == current:
+                continue
+            if fitted is None:
+                msg = (
+                    f"Encoding entry {key!r} does not record the algorithm that "
+                    "fitted it; refit before decoding."
+                )
+                hint = "Call fit(...) with the original recording."
+                expected = "an encoding entry that records its algorithm"
+                got = "no recorded algorithm"
+            else:
+                msg = (
+                    f"Encoding entry {key!r} was fitted by {fitted!r}, but "
+                    f"{parameter} is now {current!r}; refit before decoding."
+                )
+                hint = (
+                    f"Call fit(...) again to fit {current!r}, or set "
+                    f"{parameter}={fitted!r} to decode with the fitted model."
+                )
+                expected = f"{parameter}={fitted!r}"
+                got = f"{parameter}={current!r}"
+            raise ValidationError(msg, expected=expected, got=got, hint=hint)
+        _validate_spike_structure(
+            spike_times, spike_waveform_features, clusterless=is_clusterless
+        )
+        # The per-unit rates every fit of the family stores (see
+        # ``SortedSpikesEncodingModel`` and ``ClusterlessEncodingModel``).
+        field = "mean_rates" if is_clusterless else "place_fields"
+        for key in active_keys:
             model = self.encoding_model_[key]
             validate_population_lengths(
                 "electrode" if is_clusterless else "neuron",
                 spike_times=spike_times,
-                **{field: model.get(field)},
+                **{field: model[field]},
             )
             if is_clusterless:
-                if "mark_dimensions" in model:
-                    dimensions = model["mark_dimensions"]
-                else:
-                    encoded_marks = model.get(
-                        "encoding_spike_waveform_features", model.get("encoding_marks")
-                    )
-                    dimensions = [np.shape(marks)[1] for marks in encoded_marks]
+                dimensions = model["mark_dimensions"]
                 validate_population_lengths(
                     "electrode", spike_times=spike_times, mark_dimensions=dimensions
                 )
@@ -3118,14 +1640,805 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     zip(spike_waveform_features, dimensions, strict=True)
                 ):
                     if np.shape(features)[1] != expected:
-                        raise ValidationError(
+                        msg = (
                             f"Waveform-feature dimensionality for electrode {electrode} "
-                            "does not match the fitted encoding model",
+                            "does not match the fitted encoding model"
+                        )
+                        raise ValidationError(
+                            msg,
                             expected=f"{expected} waveform features",
                             got=f"{np.shape(features)[1]} waveform features",
                             hint="Use the same waveform-feature selection for encoding "
                             "and decoding, including when tracking is missing.",
                         )
+
+    _PREDICT_EXAMPLE: str = ""
+    """Example ``predict`` call shown in validation errors."""
+
+    def _likelihood_predict_function(self) -> SortedSpikesPredict | ClusterlessPredict:
+        """Return the predict function of the detector's likelihood algorithm."""
+        raise NotImplementedError
+
+    def _likelihood_predict_kwargs(self) -> dict[str, Any]:
+        """Keyword arguments passed to every state's likelihood prediction."""
+        return {}
+
+    def _likelihood_execution_settings(self) -> dict[str, Any]:
+        """Return the execution settings of the current algorithm params, over the fitted ones."""
+        return {}
+
+    def _no_spike_mark_log_likelihood(
+        self,
+        spike_data: tuple[Any, ...],  # noqa: ARG002 -- subclasses override and use them
+        time_edges: np.ndarray,  # noqa: ARG002 -- subclasses override and use them
+        row_slice: slice | None,  # noqa: ARG002 -- subclasses override and use them
+        spike_time_order: _SpikeTimeOrder | None,  # noqa: ARG002 -- subclasses override and use them
+    ) -> jax.Array | None:
+        """Term added to the No-Spike log likelihood, or None when there is none."""
+        return None
+
+    def _warn_if_layout_parameters_changed(self) -> None:
+        """Warn when a parameter the fit recorded was changed since.
+
+        Decoding uses the recorded values and what the fit built from them
+        (``state_space_``). A parameter a saved model cannot hold cannot be
+        compared and does not warn.
+        """
+        from non_local_detector.model_format._detector import (
+            changed_layout_parameters,
+        )
+
+        changed = changed_layout_parameters(self)
+        if changed:
+            warnings.warn(
+                f"The detector's {changed} changed after it was fitted; "
+                "decoding uses the values from the last fit. Refit to apply them.",
+                ParameterWarning,
+                stacklevel=user_stacklevel(),
+            )
+
+    def _compute_spike_log_likelihood(
+        self,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
+        spike_data: tuple[Any, ...],
+        is_missing: np.ndarray | None,
+        row_slice: slice | None,
+        *,
+        time_edges: ArrayLike,
+        valid_position_intervals: ArrayLike | None,
+    ) -> jax.Array:
+        """Body of the detectors' ``compute_log_likelihood``.
+
+        ``spike_data`` holds ``spike_times``, then ``spike_waveform_features``
+        for a clusterless detector,
+        and the other arguments are those of ``compute_log_likelihood``. It
+        checks the model and inputs, as the public decoding methods do once
+        per call, then evaluates the requested rows.
+        """
+        inputs = self._validated_inputs(
+            "likelihood",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            row_slice=row_slice,
+            is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+        )
+        context = self._decode_context(
+            cast("np.ndarray", inputs.time_edges),
+            (inputs.position_time, inputs.position, *spike_data),
+            share_no_spike_bin_sizes=False,
+        )
+        return self._log_likelihood_rows(
+            context, row_slice, is_missing, position_is_missing=inputs.is_missing
+        )
+
+    def _decode_context(
+        self,
+        time_edges: np.ndarray,
+        log_likelihood_args: tuple[Any, ...],
+        *,
+        share_no_spike_bin_sizes: bool = True,
+    ) -> _DecodeContext:
+        """Prepare one likelihood evaluation over validated ``time_edges``.
+
+        Parameters
+        ----------
+        time_edges : np.ndarray, shape (n_bins + 1,)
+            Edges already validated by ``_decode_time_edges``.
+        log_likelihood_args : tuple
+            ``(position_time, position, *spike_data)``, position coerced by
+            ``_validated_inputs``.
+        share_no_spike_bin_sizes : bool, optional
+            Compute the No-Spike bin durations once for every row request, by
+            default True.
+
+        Returns
+        -------
+        context : _DecodeContext
+        """
+        position_time, position, *spike_data = log_likelihood_args
+        has_no_spike = any(
+            obs.is_no_spike for obs in self.state_space_.observation_models
+        )
+        return _DecodeContext(
+            time_edges=time_edges,
+            time_grid=_uniform_time_grid(time_edges),
+            position_time=position_time,
+            spike_data=tuple(spike_data),
+            position_context=_LikelihoodPositionContext.prepare(
+                position,
+                reads_position=self._decode_reads_position(
+                    self.state_space_.observation_models
+                ),
+            ),
+            spike_time_order=_SpikeTimeOrder(),
+            no_spike_time_bin_sizes=(
+                no_spike_time_bin_sizes(time_edges)
+                if share_no_spike_bin_sizes and has_no_spike
+                else None
+            ),
+        )
+
+    def _replaced_log_likelihood(self) -> Callable[..., Any] | None:
+        """``compute_log_likelihood`` when it is not the package's own.
+
+        A replacement on the instance, in a subclass, or on a detector
+        family class is returned. None when it is the family's own method,
+        which decoding evaluates through ``_log_likelihood_rows`` with its
+        prepared context.
+        """
+        callback = self.compute_log_likelihood
+        if getattr(callback, "__func__", None) in _PACKAGE_LOG_LIKELIHOODS:
+            return None
+        return callback
+
+    def _decode_likelihood_callback(
+        self, time_edges: np.ndarray, log_likelihood_args: tuple[Any, ...]
+    ) -> Callable[..., Any]:
+        """Core's observation-row likelihood callback for one decoding call.
+
+        The detector's own likelihood is a ``row_slice_aware`` callback that
+        evaluates the rows with one ``_DecodeContext`` prepared here. A
+        replaced ``compute_log_likelihood`` is returned as is: core calls it
+        with its public arguments, as ``(*log_likelihood_args,
+        time_edges=..., is_missing=...)`` plus ``row_slice`` when it is
+        marked ``row_slice_aware``, and it prepares its own.
+
+        Parameters
+        ----------
+        time_edges : np.ndarray, shape (n_bins + 1,)
+            Edges already validated by ``_decode_time_edges``.
+        log_likelihood_args : tuple
+            ``(position_time, position, *spike_data)``, as core passes them to
+            the callback.
+        """
+        replaced = self._replaced_log_likelihood()
+        if replaced is not None:
+            return replaced
+        context = self._decode_context(time_edges, log_likelihood_args)
+
+        @row_slice_aware
+        def row_callback(
+            *args: Any,  # noqa: ARG001 -- the context holds them
+            time_edges: np.ndarray,  # noqa: ARG001 -- the context holds them
+            row_slice: slice | None = None,
+            is_missing: np.ndarray | None = None,
+        ) -> Any:
+            return self._log_likelihood_rows(context, row_slice, is_missing)
+
+        return row_callback
+
+    def _log_likelihood_rows(
+        self,
+        context: _DecodeContext,
+        row_slice: slice | None,
+        is_missing: np.ndarray | None,
+        *,
+        position_is_missing: np.ndarray | None = None,
+    ) -> jax.Array:
+        """Log likelihood of the requested decode bins.
+
+        Parameters
+        ----------
+        context : _DecodeContext
+            The decoding call's inputs and preparation.
+        row_slice : slice or None
+            Contiguous rows of the full-time likelihood; None requests all.
+        is_missing : np.ndarray of bool, shape (n_rows,), or None
+            Missing bins among the requested rows. A decoding method has
+            already marked here the bins without tracked position, whose rows
+            hold a placeholder in the prepared position.
+        position_is_missing : np.ndarray of bool, shape (n_bins,), optional
+            Bins without tracked position, of the full grid, for a direct
+            ``compute_log_likelihood`` call, whose ``is_missing`` lacks them.
+
+        Returns
+        -------
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
+        """
+        time_edges, row_time = _decode_time_edges(
+            context.time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
+            _time_grid=context.time_grid,
+            row_slice=row_slice,
+        )
+        position_time, spike_data = context.position_time, context.spike_data
+        self._validate_decode_population(*spike_data)
+        logger.info("Computing log likelihood...")
+        non_local_penalty = self._non_local_position_penalty()
+
+        row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
+        n_rows = row_stop - row_start
+        # Position interpolation, local kernels and the non-local penalty are
+        # pointwise in the decoding time, so they are evaluated at the requested
+        # bins' centers; the spike likelihoods bin against the full edges.
+        if is_missing is None:
+            is_missing = np.zeros(n_rows, dtype=bool)
+        else:
+            is_missing = _sample_mask(
+                is_missing,
+                n_rows,
+                "is_missing",
+                entry="requested decode bin",
+                example=None,
+            )
+        if position_is_missing is not None:
+            is_missing = is_missing | position_is_missing[row_start:row_stop]
+        if context.position_context.all_missing:
+            return jnp.zeros((n_rows, int(self.state_space_.is_track_interior.sum())))
+        position = context.position_context.position
+
+        likelihood_func = self._likelihood_predict_function()
+        execution_settings = self._likelihood_execution_settings()
+        state_space = self.state_space_
+
+        # Interior state bins per state. state_ind_ is built state by state, so
+        # each state's bins are one contiguous block of columns.
+        n_state_columns = np.bincount(
+            state_space.interior_state_ind, minlength=state_space.n_states
+        )
+
+        # Use dict for O(1) lookup instead of list
+        computed_likelihoods: dict[Any, int] = {}
+
+        # Compute all likelihoods first (stays in JAX/GPU if available)
+        likelihood_results: dict[int, Any] = {}
+        for state_id, obs in enumerate(state_space.observation_models):
+            # Multi-bin local computes full spatial likelihood (is_local=False)
+            # then adds position kernel afterward
+            effective_is_local = state_space.likelihood_is_local(state_id)
+
+            likelihood_name = (
+                obs.environment_name,
+                obs.encoding_group,
+                effective_is_local,
+                obs.is_no_spike,
+            )
+
+            if obs.is_no_spike:
+                no_spike_log_likelihood = predict_no_spike_log_likelihood(
+                    spike_data[0],
+                    self.no_spike_rate,
+                    time_edges=time_edges,
+                    row_slice=row_slice,
+                    # The setting the other likelihoods receive. No-Spike may
+                    # have no encoding entry; default to showing the bar.
+                    disable_progress_bar=execution_settings.get(
+                        "disable_progress_bar",
+                        self.encoding_model_.get(likelihood_name[:2], {}).get(
+                            "disable_progress_bar", False
+                        ),
+                    ),
+                    _time_bin_sizes=context.no_spike_time_bin_sizes,
+                    _spike_time_order=context.spike_time_order,
+                    _time_grid=context.time_grid,
+                )
+                mark_log_likelihood = self._no_spike_mark_log_likelihood(
+                    spike_data, time_edges, row_slice, context.spike_time_order
+                )
+                likelihood_results[state_id] = (
+                    no_spike_log_likelihood
+                    if mark_log_likelihood is None
+                    else no_spike_log_likelihood + mark_log_likelihood
+                )
+            elif likelihood_name not in computed_likelihoods:
+                likelihood_results[state_id] = likelihood_func(
+                    position_time,
+                    position,
+                    *spike_data,
+                    time_edges=time_edges,
+                    **{
+                        **self.encoding_model_[likelihood_name[:2]],
+                        **execution_settings,
+                    },
+                    **self._likelihood_predict_kwargs(),
+                    is_local=effective_is_local,
+                    row_slice=row_slice,
+                    _spike_time_order=context.spike_time_order,
+                    _time_grid=context.time_grid,
+                )
+                computed_likelihoods[likelihood_name] = state_id
+            else:
+                # Will reuse previously computed likelihood
+                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
+
+        # Assemble the per-state column blocks in one concatenation. As the
+        # scatters into a float32 array did, each block is cast to float32 and
+        # its penalty or local kernel added at the term's precision, then the
+        # sum rounded to float32 once.
+        env_penalties: dict[str, jax.Array] = {}
+        env_kernels: dict[str, jax.Array] = {}
+        blocks: list[jax.Array] = []
+        for state_id, obs in enumerate(state_space.observation_models):
+            result = likelihood_results[state_id]
+            if isinstance(result, int):
+                # Reuse the likelihood computed for an earlier state
+                result = likelihood_results[result]
+            expected_shape = (n_rows, int(n_state_columns[state_id]))
+            if jnp.shape(result) != expected_shape:
+                raise self._wrong_likelihood_shape(
+                    state_id, jnp.shape(result), expected_shape
+                )
+            block = jnp.asarray(result, dtype=jnp.float32)
+            if non_local_penalty > 0 and not obs.is_local and not obs.is_no_spike:
+                env_name = obs.environment_name
+                if env_name not in env_penalties:
+                    env = self._get_environment_by_name(env_name)
+                    env_penalties[env_name] = self._compute_non_local_position_penalty(
+                        row_time,
+                        cast("np.ndarray", position_time),
+                        cast("np.ndarray", position),
+                        env,
+                    )
+                block = (block + jnp.asarray(env_penalties[env_name])).astype(
+                    jnp.float32
+                )
+            if state_space.local_position_std is not None and obs.is_local:
+                env_name = obs.environment_name
+                if env_name not in env_kernels:
+                    env = self._get_environment_by_name(env_name)
+                    env_kernels[env_name] = self._compute_local_position_kernel(
+                        row_time,
+                        cast("np.ndarray", position_time),
+                        cast("np.ndarray", position),
+                        env,
+                        state_space.local_position_std,
+                    )
+                block = (block + jnp.asarray(env_kernels[env_name])).astype(jnp.float32)
+            blocks.append(block)
+        log_likelihood = jnp.concatenate(blocks, axis=1)
+
+        # Apply missing data mask
+        return jnp.where(jnp.asarray(is_missing)[:, jnp.newaxis], 0.0, log_likelihood)
+
+    def _wrong_likelihood_shape(
+        self,
+        state_id: int,
+        shape: tuple[int, ...],
+        expected_shape: tuple[int, int],
+    ) -> ValidationError:
+        """Build the error for a state's log likelihood of the wrong shape.
+
+        Parameters
+        ----------
+        state_id : int
+            Index of the state.
+        shape : tuple of int
+            Shape of the state's log likelihood.
+        expected_shape : tuple of int
+            ``(n_rows, n_columns)`` of the state's block.
+
+        Returns
+        -------
+        error : ValidationError
+        """
+        state_space = self.state_space_
+        obs = state_space.observation_models[state_id]
+        algorithm = (
+            "predict_no_spike_log_likelihood"
+            if obs.is_no_spike
+            else self.encoding_model_[(obs.environment_name, obs.encoding_group)][
+                "algorithm"
+            ]
+        )
+        msg = (
+            f"{algorithm} returned the wrong log likelihood shape for state "
+            f"{state_space.state_names[state_id]!r}"
+        )
+        return ValidationError(
+            msg,
+            expected=f"shape {expected_shape}, (n_rows, n_interior_bins) or "
+            "(n_rows, 1) when is_local",
+            got=f"shape {shape}",
+            hint="Predict returns one row per requested decode bin "
+            "(row_slice) and one column per interior bin.",
+        )
+
+    def _decode_discrete_transitions(
+        self,
+        covariate_data: pd.DataFrame | dict[str, Any] | None,
+        time_centers: np.ndarray,
+        *,
+        method: str,
+    ) -> np.ndarray:
+        """Discrete transitions at the decode bins of one decoding call.
+
+        Covariate-dependent transitions are evaluated on the call's own
+        covariates: the transitions fitted on the training covariates
+        describe the training recording, not the decoded one.
+
+        Parameters
+        ----------
+        covariate_data : dict or pd.DataFrame or None
+            The call's ``discrete_transition_covariate_data``.
+        time_centers : np.ndarray, shape (n_bins,)
+            Decode bin centers.
+        method : str
+            The public method, for the error message.
+
+        Returns
+        -------
+        discrete_transitions : np.ndarray
+            Shape (n_bins, n_states, n_states), or
+            ``discrete_state_transitions_`` for transitions that do not depend
+            on covariates, shape (n_states, n_states).
+
+        Raises
+        ------
+        ValidationError
+            If the transitions depend on covariates and none are given, or
+            the covariates do not have one row per decode bin.
+        ConfigurationError
+            If covariates are given but the transitions do not depend on them.
+        """
+        if covariate_data is None:
+            if self.discrete_transition_coefficients_ is None:
+                return self.discrete_state_transitions_
+            raise _missing_covariates_error(
+                reason="the discrete transitions depend on covariates",
+                expected=(
+                    "the covariates named in the transition formula, one row per "
+                    f"decode bin ({len(time_centers)} rows)"
+                ),
+                hint=(
+                    "The transitions fitted on the training covariates describe "
+                    "the training recording only. Pass the covariates of the "
+                    "decoded recording at the decode bin centers, "
+                    "(time_edges[:-1] + time_edges[1:]) / 2."
+                ),
+                example=(
+                    f"    detector.{method}(..., discrete_transition_covariate_data"
+                    "={'speed': speed_at_bin_centers})"
+                ),
+            )
+        if self.discrete_transition_coefficients_ is None:
+            msg = (
+                "discrete_transition_coefficients_ is None but covariate data provided"
+            )
+            raise ConfigurationError(
+                msg,
+                hint=(
+                    "The discrete transition does not depend on covariates; "
+                    "drop discrete_transition_covariate_data or use a "
+                    "covariate-dependent transition type."
+                ),
+            )
+        transitions = predict_discrete_state_transitions(
+            self.discrete_transition_design_matrix_,
+            self.discrete_transition_coefficients_,
+            covariate_data,
+        )
+        _validate_covariate_time_length(transitions, time_centers)
+        return transitions
+
+    def _predict_spikes(
+        self,
+        spike_data: tuple[Any, ...],
+        *,
+        time_edges: ArrayLike,
+        position: ArrayLike | None,
+        position_time: ArrayLike | None,
+        is_missing: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
+        cache_likelihood: bool,
+        n_chunks: int,
+        inference_mode: InferenceMode,
+        output_mode: OutputMode,
+        chunk_size: int | None,
+        result_path: str | Path | None,
+        checkpoint_dir: str | Path | None,
+        selected_intervals: np.ndarray | None,
+        max_read_bytes: int,
+        replay_cache_bytes: int | None,
+        return_outputs: ReturnOutputs,
+    ) -> xr.Dataset:
+        """Body of the detectors' ``predict``; see ``_compute_spike_log_likelihood``."""
+        inputs = self._validated_inputs(
+            "decode",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+            example=self._PREDICT_EXAMPLE,
+        )
+        position_time, position = inputs.position_time, inputs.position
+        time_edges = cast("np.ndarray", inputs.time_edges)
+        time_centers = cast("np.ndarray", inputs.time_centers)
+        is_missing = inputs.is_missing
+
+        # Normalize return_outputs to canonical set
+        requested_outputs = _normalize_return_outputs(return_outputs)
+
+        # The log likelihood has to be materialized when the caller asks for it.
+        # Unchunked, that means caching the single full-time evaluation. Chunked,
+        # caching is not available (``_predict`` disables it), so the chunked
+        # path accumulates the per-chunk rows instead -- which allocates the
+        # same full (n_time, n_state_bins) array, the documented exception to
+        # per-chunk allocation.
+        _validate_inference_arguments(
+            inference_mode,
+            output_mode,
+            cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            replay_cache_bytes=replay_cache_bytes,
+        )
+        return_log_likelihood = "log_likelihood" in requested_outputs
+        if (
+            inference_mode == "dense"
+            and return_log_likelihood
+            and not cache_likelihood
+            and n_chunks == 1
+        ):
+            cache_likelihood = True
+
+        predicted_transitions = self._decode_discrete_transitions(
+            discrete_transition_covariate_data, time_centers, method="predict"
+        )
+        if inference_mode == "checkpointed":
+            results, _ = self._predict_checkpointed(
+                time_edges=time_edges,
+                log_likelihood_args=(
+                    position_time,
+                    position,
+                    *spike_data,
+                ),
+                is_missing=is_missing,
+                discrete_transitions=predicted_transitions,
+                output_mode=output_mode,
+                chunk_size=chunk_size,
+                result_path=result_path,
+                checkpoint_dir=checkpoint_dir,
+                selected_intervals=selected_intervals,
+                requested_outputs=requested_outputs,
+                max_read_bytes=max_read_bytes,
+                replay_cache_bytes=replay_cache_bytes,
+            )
+            return results
+
+        posterior = self._predict(
+            time_edges=time_edges,
+            log_likelihood_args=(
+                position_time,
+                position,
+                *spike_data,
+            ),
+            is_missing=is_missing,
+            cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
+            discrete_state_transitions=predicted_transitions,
+            accumulate_log_likelihoods=return_log_likelihood,
+        )
+
+        return convert_results_to_xarray(
+            self,
+            time_centers,
+            np.asarray(posterior.acausal_posterior),
+            cast("np.ndarray", posterior.acausal_state_probabilities),
+            posterior.marginal_log_likelihood,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            **posterior.requested_results(requested_outputs),
+        )
+
+    def _estimate_spike_parameters(
+        self,
+        position_time: ArrayLike,
+        position: ArrayLike,
+        spike_data: tuple[Any, ...],
+        *,
+        time_edges: ArrayLike,
+        is_missing: np.ndarray | None,
+        is_training: ArrayLike | None,
+        encoding_group_labels: ArrayLike | None,
+        environment_labels: ArrayLike | None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
+        estimate_initial_conditions: bool,
+        estimate_discrete_transition: bool,
+        estimate_encoding_model: bool,
+        max_iter: int,
+        tolerance: float,
+        cache_likelihood: bool,
+        store_log_likelihood: bool,
+        n_chunks: int,
+        return_outputs: ReturnOutputs,
+        min_encoding_local_mass: float,
+        min_encoding_local_ess: float,
+        encoding_update_damping: float,
+        encoding_time_range: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
+        transition_representation: TransitionRepresentation,
+        max_dense_transition_bytes: int,
+        chunk_size: int | None,
+        result_path: str | Path | None,
+        replay_cache_bytes: int | None,
+    ) -> xr.Dataset:
+        """Body of the detectors' ``estimate_parameters``; see ``_compute_spike_log_likelihood``."""
+        _validate_encoding_update_damping(encoding_update_damping)
+        # Before the internal fit, which replaces the fitted state.
+        transition_representation = _resolve_em_options(
+            transition_representation,
+            n_chunks,
+            chunk_size,
+            result_path,
+            store_log_likelihood=store_log_likelihood,
+            replay_cache_bytes=replay_cache_bytes,
+        )
+        time_edges, time_bin_width = _validate_estimation_arguments(
+            time_edges,
+            n_chunks,
+            return_outputs,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
+        )
+        _require_sampling_frequency_width(
+            time_edges, time_bin_width, self.sampling_frequency
+        )
+        # EM estimates covariate transitions at the decode bins. Their rows,
+        # which come from the columns the formula reads, are counted here,
+        # before the internal fit.
+        time_centers = 0.5 * (time_edges[:-1] + time_edges[1:])
+        if (
+            discrete_transition_covariate_data is not None
+            and not self.discrete_transition_type.is_stationary
+        ):
+            _validate_covariate_time_length(
+                self.discrete_transition_type.make_state_transition(
+                    discrete_transition_covariate_data
+                ).transition_matrix,
+                time_centers,
+            )
+        inputs = self._validated_inputs(
+            "estimate",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            valid_position_intervals=valid_position_intervals,
+            time_edges=time_edges,
+            is_missing=is_missing,
+        )
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        spike_data, is_missing = inputs.spike_data, inputs.is_missing
+        # Before the internal fit, so a refused estimate leaves the model as is.
+        _require_observed_bins(is_missing)
+        # Every run drops the stored likelihood of the previous fit. Drop it
+        # before the snapshot, which would otherwise keep that
+        # (n_time, n_state_bins) array alive through EM; a failed run leaves
+        # it dropped too.
+        self._invalidate_stored_log_likelihood()
+        # EM is atomic: if the internal fit or any EM step raises, the detector
+        # and its environments are left as they were before this call (see
+        # _restore_state_on_error for the invariant the EM steps keep).
+        with self._restore_state_on_error():
+            self._fit_em_model(
+                lambda representation: self.fit(
+                    position_time,
+                    position,
+                    *spike_data,
+                    is_training=inputs.is_training,
+                    encoding_group_labels=inputs.encoding_group_labels,
+                    environment_labels=inputs.environment_labels,
+                    discrete_transition_covariate_data=discrete_transition_covariate_data,
+                    encoding_time_range=encoding_time_range,
+                    valid_position_intervals=valid_position_intervals,
+                    transition_representation=representation,
+                    max_dense_transition_bytes=max_dense_transition_bytes,
+                ),
+                transition_representation,
+                len(time_edges) - 1,
+                structured_required=bool(
+                    _structured_em_options(chunk_size, result_path, replay_cache_bytes)
+                ),
+            )
+            return self._run_em(
+                time_edges=time_edges,
+                log_likelihood_args=(
+                    position_time,
+                    position,
+                    *spike_data,
+                ),
+                is_missing=is_missing,
+                estimate_initial_conditions=estimate_initial_conditions,
+                estimate_discrete_transition=estimate_discrete_transition,
+                estimate_encoding_model=estimate_encoding_model,
+                max_iter=max_iter,
+                tolerance=tolerance,
+                cache_likelihood=cache_likelihood,
+                store_log_likelihood=store_log_likelihood,
+                n_chunks=n_chunks,
+                return_outputs=return_outputs,
+                min_encoding_local_mass=min_encoding_local_mass,
+                min_encoding_local_ess=min_encoding_local_ess,
+                chunk_size=chunk_size,
+                result_path=result_path,
+                replay_cache_bytes=replay_cache_bytes,
+                encoding_fit_arguments={
+                    "position_time": position_time,
+                    "position": position,
+                    "spike_data": spike_data,
+                    "is_training": inputs.is_training,
+                    "encoding_group_labels": inputs.encoding_group_labels,
+                    "environment_labels": inputs.environment_labels,
+                    "encoding_time_range": encoding_time_range,
+                    "valid_position_intervals": valid_position_intervals,
+                },
+            )
+
+    def _most_likely_spike_sequence(
+        self,
+        spike_data: tuple[Any, ...],
+        *,
+        time_edges: ArrayLike,
+        position: ArrayLike | None,
+        position_time: ArrayLike | None,
+        is_missing: np.ndarray | None,
+        valid_position_intervals: ArrayLike | None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
+        n_chunks: int,
+    ) -> pd.DataFrame:
+        """Body of the detectors' ``most_likely_sequence``; see ``_compute_spike_log_likelihood``."""
+        inputs = self._validated_inputs(
+            "decode",
+            spike_data,
+            position_time=position_time,
+            position=position,
+            time_edges=time_edges,
+            is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+        )
+        position_time, position = inputs.position_time, inputs.position
+        time_edges = cast("np.ndarray", inputs.time_edges)
+        time_centers = cast("np.ndarray", inputs.time_centers)
+        is_missing = inputs.is_missing
+        return self._run_viterbi(
+            time_edges=time_edges,
+            log_likelihood_args=(
+                position_time,
+                position,
+                *spike_data,
+            ),
+            is_missing=is_missing,
+            n_chunks=n_chunks,
+            discrete_state_transitions=self._decode_discrete_transitions(
+                discrete_transition_covariate_data,
+                time_centers,
+                method="most_likely_sequence",
+            ),
+        )
 
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
         """Bin width the discrete transitions were learned at, and its precision.
@@ -3141,23 +2454,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def _predict(
         self,
         time_edges: np.ndarray,
-        log_likelihood_args: tuple = (),
+        log_likelihood_args: tuple[Any, ...] = (),
         is_missing: np.ndarray | None = None,
         log_likelihoods: np.ndarray | None = None,
+        *,
         cache_likelihood: bool = True,
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
         accumulate_log_likelihoods: bool = False,
-    ) -> tuple[
-        np.ndarray,
-        np.ndarray,
-        float,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-    ]:
+        transition_responses: bool = False,
+    ) -> _PosteriorOutputs:
         """
         Compute the posterior probabilities.
 
@@ -3187,24 +2493,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             and is intended only for a caller that explicitly requested the log
             likelihood; when the likelihood is not requested the chunk arrays
             are not retained. By default False.
+        transition_responses : bool, optional
+            If True, the covariate-dependent smoother also returns the
+            expected discrete transitions between consecutive bins (EM's
+            responses). Only for covariate-dependent transitions. By default
+            False.
 
         Returns
         -------
-        acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        marginal_log_likelihood : float
-        causal_state_probabilities : np.ndarray, shape (n_time, n_states)
-        predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
-        log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
-        causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        posterior : _PosteriorOutputs
+            Every output. ``log_likelihood`` is None when the log likelihoods
+            were neither given, cached nor accumulated. The three posteriors
+            over state bins stay on the device: callers copy to the host only
+            the ones they return or need there.
         """
-        if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
-            self, "encoding_model_"
-        ):
-            self._validate_time_contract()
+        # The public methods have checked already; EM reaches here after its
+        # own fit. Kept as the engine's guard for direct calls.
+        self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         # Disable caching when using multiple chunks (memory optimization)
         if n_chunks > 1 and cache_likelihood:
@@ -3212,9 +2521,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             cache_likelihood = False
 
         logger.info("Computing posterior...")
-        is_track_interior = self.is_track_interior_state_bins_
+        state_space = self.state_space_
+        is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+        state_ind = state_space.interior_state_ind
 
         # Use provided transitions or fall back to fitted attribute
         discrete_transitions = (
@@ -3225,8 +2535,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if discrete_transitions.ndim == 3 and discrete_transitions.shape[0] != len(
             time_centers
         ):
+            msg = "Predict covariate transitions must have one row per decode bin"
             raise ValidationError(
-                "Predict covariate transitions must have one row per decode bin",
+                msg,
                 expected=f"{len(time_centers)} transition rows",
                 got=f"{discrete_transitions.shape[0]} rows",
                 hint="Pass discrete_transition_covariate_data aligned to the "
@@ -3235,33 +2546,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         log_likelihood_func = self.compute_log_likelihood
         if log_likelihoods is None:
-            time_grid = _DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            )
-            log_likelihood_func = _prepare_likelihood_callback(
-                log_likelihood_func,
-                time_edges,
-                has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-                log_likelihood_args=log_likelihood_args,
-                reads_position=self._decode_reads_position(),
-                _time_grid=time_grid,
+            log_likelihood_func = self._decode_likelihood_callback(
+                time_edges, log_likelihood_args
             )
 
-        # Collect degenerate (all-impossible) timestep indices during the
-        # forward pass. This is reliable regardless of n_chunks/caching,
-        # unlike the returned log-likelihoods (which are None when uncached,
-        # e.g. for n_chunks > 1). Stored transiently for estimate_parameters
-        # to copy into the public degenerate_timesteps_ attribute.
-        degenerate_out: list[int] = []
         if discrete_transitions.ndim == 2:
             result = chunked_filter_smoother(
-                time=time_centers,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    state_space.continuous_transitions[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
@@ -3271,15 +2566,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
-                degenerate_indices_out=degenerate_out,
+                host_outputs=False,
             )
         else:
             result = chunked_filter_smoother_covariate_dependent(
-                time=time_centers,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 discrete_transition_matrix=discrete_transitions,
-                continuous_transition_matrix=self.continuous_state_transitions_[
+                continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],
                 log_likelihood_func=log_likelihood_func,
@@ -3289,357 +2584,50 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
-                degenerate_indices_out=degenerate_out,
+                host_outputs=False,
+                transition_responses=transition_responses,
             )
-        self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
-        return result
-
-    def _checkpointed_likelihood(self, edges, centers, log_likelihood_args):
-        """Row-slice likelihood callback for the checkpointed driver."""
-        time_grid = _DecodeTimeGrid.from_validated_edges(
-            edges, uniform_width=(float(edges[-1]) - float(edges[0])) / (len(edges) - 1)
+        return _PosteriorOutputs(
+            marginal_log_likelihood=result.marginal_log_likelihood,
+            degenerate_indices=np.asarray(result.degenerate_indices, dtype=int),
+            acausal_posterior=result.acausal_posterior,
+            acausal_state_probabilities=result.acausal_state_probabilities,
+            causal_state_probabilities=result.causal_state_probabilities,
+            predictive_state_probabilities=result.predictive_state_probabilities,
+            log_likelihood=result.log_likelihoods,
+            causal_posterior=result.causal_posterior,
+            predictive_posterior=result.predictive_posterior,
+            transition_responses=result.transition_responses,
         )
-        prepared = _prepare_likelihood_callback(
-            self.compute_log_likelihood,
-            edges,
-            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-            log_likelihood_args=log_likelihood_args,
-            reads_position=self._decode_reads_position(),
-            _time_grid=time_grid,
-        )
-
-        def likelihood(full_edges, *, row_slice, is_missing):
-            return prepared(
-                centers,
-                *log_likelihood_args,
-                row_slice=row_slice,
-                is_missing=is_missing,
-            )
-
-        return likelihood
-
-    def _checkpointed_transition_args(self, discrete, n_rows):
-        """Checkpointed-driver transition arguments over the interior state bins.
-
-        Structured fits pass the fused operator; dense fits pass the dense
-        interior matrices. Covariate transitions pass their per-row discrete
-        matrices separately and must have one row per decode bin.
-        """
-        if discrete.ndim == 3 and discrete.shape[0] != n_rows:
-            raise ValidationError(
-                "Predict covariate transitions must have one row per decode bin"
-            )
-        interior = self.is_track_interior_state_bins_
-        states = self.state_ind_[interior]
-        transition_args = {}
-        operator = getattr(self, "_continuous_transition_operator_", None)
-        if operator is not None:
-            operator = operator.restricted(interior)
-            if discrete.ndim == 2:
-                operator = operator.bind_discrete(discrete)
-            else:
-                transition_args["discrete_transition_matrix"] = discrete
-            transition_args["transition_operator"] = operator.fused(
-                self._max_dense_transition_bytes_
-            )
-        else:
-            continuous = self.continuous_state_transitions_[np.ix_(interior, interior)]
-            if discrete.ndim == 2:
-                transition_args["transition_matrix"] = (
-                    continuous * discrete[np.ix_(states, states)]
-                )
-            else:
-                transition_args.update(
-                    continuous_transition_matrix=continuous,
-                    discrete_transition_matrix=discrete,
-                )
-        return transition_args
-
-    def _checkpointed_e_step(
-        self,
-        time_edges,
-        log_likelihood_args,
-        is_missing,
-        chunk_size,
-        *,
-        outputs=("acausal_state_probabilities",),
-        transition_statistics=None,
-        replay_cache_bytes,
-    ):
-        """One whole-recording E-step on the checkpointed driver.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_time + 1,)
-        log_likelihood_args : tuple
-        is_missing : np.ndarray, shape (n_time,), or None
-        chunk_size : int
-            Rows per checkpoint chunk.
-        outputs : iterable of str
-            Driver outputs. Spatial outputs are held in memory.
-        transition_statistics : {None, "counts", "responses"}
-        replay_cache_bytes : int
-            Host bytes for forward-pass rows reused by the replay.
-
-        Returns
-        -------
-        result : CheckpointedResult
-        """
-        from non_local_detector.checkpointed_inference import (
-            _SPATIAL,
-            checkpointed_forward_backward,
-        )
-
-        self._validate_time_contract()
-        edges, centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        interior = self.is_track_interior_state_bins_
-        outputs = set(outputs)
-        return checkpointed_forward_backward(
-            edges,
-            self.initial_conditions_[interior],
-            self._checkpointed_likelihood(edges, centers, log_likelihood_args),
-            state_ind=self.state_ind_[interior],
-            n_states=len(self.state_names),
-            is_missing=is_missing,
-            chunk_size=chunk_size,
-            output_mode="spatial" if outputs & _SPATIAL else "compact",
-            return_outputs=outputs,
-            dtype=np.float32,
-            transition_statistics=transition_statistics,
-            replay_cache_bytes=replay_cache_bytes,
-            **self._checkpointed_transition_args(
-                self.discrete_state_transitions_, len(centers)
-            ),
-        )
-
-    def _predict_checkpointed(
-        self,
-        *,
-        time_edges,
-        log_likelihood_args,
-        is_missing,
-        discrete_transitions,
-        output_mode,
-        chunk_size,
-        result_path,
-        checkpoint_dir,
-        selected_intervals,
-        requested_outputs,
-        return_outputs,
-        max_read_bytes,
-        replay_cache_bytes,
-        em_attrs=None,
-    ) -> xr.Dataset:
-        """Decode with complete conditioning and bounded spatial working memory.
-
-        ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
-        ``em_attrs`` maps this pass's marginal log-likelihood to EM's
-        attributes, which a result store keeps with the rest so that
-        ``load_results`` returns them.
-        """
-        from non_local_detector.checkpointed_inference import (
-            checkpointed_forward_backward,
-        )
-
-        if replay_cache_bytes is None:
-            replay_cache_bytes = default_replay_cache_bytes()
-
-        if (
-            output_mode == "compact"
-            and isinstance(return_outputs, str)
-            and return_outputs == "predictive"
-        ):
-            # The string "predictive" also names the spatial predictive
-            # posterior, which compact output cannot hold.
-            requested_outputs = requested_outputs - {"predictive_posterior"}
-        if output_mode == "spatial" and result_path is None:
-            raise ValueError("Checkpointed spatial prediction requires result_path")
-        if output_mode == "compact" and requested_outputs & {
-            "log_likelihood",
-            "predictive_posterior",
-        }:
-            raise ValueError(
-                "Spatial outputs (including return_outputs='all') require output_mode='spatial'"
-            )
-        self._validate_time_contract()
-        edges, centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        interior = self.is_track_interior_state_bins_
-        states = self.state_ind_[interior]
-        if chunk_size is None:
-            chunk_size = default_chunk_size(np.count_nonzero(interior), np.float32)
-        discrete = (
-            self.discrete_state_transitions_
-            if discrete_transitions is None
-            else discrete_transitions
-        )
-        transition_args = self._checkpointed_transition_args(discrete, len(centers))
-        likelihood = self._checkpointed_likelihood(edges, centers, log_likelihood_args)
-        selected = None
-        if selected_intervals is not None:
-            intervals = np.asarray(selected_intervals, dtype=float)
-            if (
-                intervals.ndim != 2
-                or intervals.shape[1] != 2
-                or not np.isfinite(intervals).all()
-                or np.any(intervals[:, 0] >= intervals[:, 1])
-                or np.any(intervals[1:, 0] < intervals[:-1, 1])
-            ):
-                raise ValidationError(
-                    "selected_intervals must be ordered non-overlapping start/stop pairs"
-                )
-            mask = np.zeros(len(centers), dtype=bool)
-            # The tolerances are under 1% of a bin width, so bins more than one
-            # bin outside an interval can never be selected; apply the rule only
-            # from one bin before each start to one bin after each stop.
-            firsts = np.maximum(np.searchsorted(edges[:-1], intervals[:, 0]) - 1, 0)
-            lasts = np.minimum(
-                np.searchsorted(edges[1:], intervals[:, 1], side="right") + 1,
-                len(centers),
-            )
-            for (start, stop), first, last in zip(
-                intervals, firsts, lasts, strict=True
-            ):
-                lower, upper = edges[first:last], edges[first + 1 : last + 1]
-                width = upper - lower
-                lower_tol = np.minimum(
-                    4 * np.maximum(np.spacing(abs(start)), np.spacing(abs(lower))),
-                    width * 0.01,
-                )
-                upper_tol = np.minimum(
-                    4 * np.maximum(np.spacing(abs(stop)), np.spacing(abs(upper))),
-                    width * 0.01,
-                )
-                mask[first:last] |= (lower >= start - lower_tol) & (
-                    upper <= stop + upper_tol
-                )
-            selected = np.flatnonzero(mask)
-            if selected.size == 0:
-                raise ValidationError(
-                    "selected_intervals select no complete decode bins",
-                    got=f"{len(intervals)} interval(s)",
-                    hint=(
-                        "Intervals are in seconds and select bins whose start and "
-                        f"stop edges both lie inside one; the recording spans "
-                        f"[{edges[0]}, {edges[-1]}] in bins of {edges[1] - edges[0]}."
-                    ),
-                )
-        outputs = {"acausal_state_probabilities"}
-        if output_mode == "spatial":
-            outputs.add("acausal_posterior")
-        if "filter" in requested_outputs:
-            outputs.add("causal_state_probabilities")
-            if output_mode == "spatial":
-                outputs.add("causal_posterior")
-        if "predictive" in requested_outputs:
-            outputs.add("predictive_state_probabilities")
-        if "predictive_posterior" in requested_outputs:
-            outputs.add("predictive_posterior")
-        if "log_likelihood" in requested_outputs:
-            outputs.add("log_likelihood")
-        positions = []
-        n_dimensions = self.environments[0].place_bin_centers_.shape[1]
-        for observation in self.observation_models:
-            if observation.is_no_spike or (
-                observation.is_local and self.local_position_std is None
-            ):
-                positions.append(np.full((1, n_dimensions), np.nan))
-            else:
-                positions.append(
-                    self._get_environment_by_name(
-                        observation.environment_name
-                    ).place_bin_centers_
-                )
-        metadata = {
-            "state_names": list(self.state_names),
-            "environment_names": [
-                obs.environment_name for obs in self.observation_models
-            ],
-            "encoding_groups": [
-                obs.encoding_group.item()
-                if isinstance(obs.encoding_group, np.generic)
-                else obs.encoding_group
-                for obs in self.observation_models
-            ],
-            "position": np.concatenate(positions).tolist(),
-            "position_names": get_position_dim_names(n_dimensions),
-            "state_ind": self.state_ind_.tolist(),
-            "interior_mask": interior.tolist(),
-            "max_read_bytes": int(max_read_bytes),
-        }
-        attrs = {
-            "non_local_detector_version": _PACKAGE_VERSION,
-            "time_units": "seconds",
-            "time_bin_convention": "left_closed_right_open_final_closed",
-            "conditioning": "whole_recording",
-            "_native_metadata": metadata,
-            "recording_rows": len(centers),
-            "transition_representation": getattr(
-                self, "_transition_representation_", "dense"
-            ),
-        }
-        result = checkpointed_forward_backward(
-            edges,
-            self.initial_conditions_[interior],
-            likelihood,
-            state_ind=states,
-            n_states=len(self.state_names),
-            is_missing=is_missing,
-            chunk_size=chunk_size,
-            output_mode=output_mode,
-            result_path=result_path,
-            checkpoint_dir=checkpoint_dir,
-            return_outputs=outputs,
-            selected_rows=selected,
-            dtype=np.float32,
-            max_read_bytes=max_read_bytes,
-            result_attrs=(
-                attrs
-                if em_attrs is None
-                else lambda marginal: {**attrs, **em_attrs(marginal)}
-            ),
-            replay_cache_bytes=replay_cache_bytes,
-            **transition_args,
-        )
-        dataset = result.dataset
-        self._degenerate_timesteps_ = np.asarray(
-            result.diagnostics.get("degenerate_indices", []), dtype=int
-        )
-        return _label_checkpointed_result(dataset, metadata)
 
     @contextmanager
     def _restore_state_on_error(self) -> Iterator[None]:
-        """Restore this detector and its environments if the block raises.
+        """Restore this detector if the block raises.
 
-        ``fit`` rebuilds the environments (in place), transitions, and encoding
-        model in stages. If a later stage fails, the earlier stages must not
-        leave the previously fitted detector paired with a refit grid. Both the
-        detector and ``Environment.fit_place_grid`` rebind attributes rather than
-        edit arrays in place, so shallow attribute snapshots are enough.
+        ``fit`` rebuilds the environments, transitions, and encoding model in
+        stages. If a later stage fails, the earlier stages must not leave the
+        previously fitted detector paired with a refit grid. The detector
+        rebinds attributes rather than edit arrays in place, and fits new
+        environment copies rather than changing its environments, so a shallow
+        snapshot of the detector's attributes is enough.
+
+        ``estimate_parameters`` runs its internal fit and EM in one block. The
+        EM steps rebind attributes, and edit in place only arrays the internal
+        fit has just rebuilt (``initial_conditions_``, the frozen rows of the
+        M-step's new ``discrete_state_transitions_``), so the snapshot still
+        holds the previous values. An EM step must keep to this: an in-place
+        edit of an array the internal fit does not rebuild could not be undone.
+
+        The snapshot keeps every attribute it holds alive until the block
+        exits; drop attributes the block always discards before entering it.
         """
         detector_state = dict(self.__dict__)
-        environment_states = [(env, dict(env.__dict__)) for env in self.environments]
         try:
             yield
         except BaseException:
-            for env, env_state in environment_states:
-                env.__dict__.clear()
-                env.__dict__.update(env_state)
             self.__dict__.clear()
             self.__dict__.update(detector_state)
             raise
-
-    def _refit_encoding_model(self, weights: np.ndarray) -> None:
-        """EM M-step: refit the encoding model with posterior ``weights``.
-
-        Parameters
-        ----------
-        weights : np.ndarray, shape (n_time_position,)
-        """
-        self.fit_encoding_model(**self._encoding_model_data, weights=weights)
 
     def _invalidate_stored_log_likelihood(self) -> None:
         """Drop ``log_likelihood_``, which no longer describes this model.
@@ -3651,953 +2639,149 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         model or the data it describes can have changed -- at the start of every
         estimation run and on any refit.
         """
-        try:
+        with suppress(AttributeError):
             del self.log_likelihood_
-        except AttributeError:
-            pass
 
-    def fit_predict(self) -> xr.Dataset:
-        """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
-        raise NotImplementedError
+    def _encoding_masks(
+        self, inputs: _ValidatedInputs
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Training mask and labels of an encoding fit, with their defaults.
 
-    @abc.abstractmethod
-    def fit_encoding_model(self):
-        """Fit the encoding model. To be implemented by inheriting class."""
-
-    def _fit_em_model(
-        self, fit, transition_representation, n_time, structured_required
-    ):
-        """Run EM's internal fit and, for "auto", choose dense or structured EM.
-
-        "auto" cannot build some transitions in bounded form that the dense
-        constructor accepts (opaque custom constructors with deferred graph
-        distances, or dense fallback blocks over ``max_dense_transition_bytes``).
-        Unless a structured-EM option requires the operator, those run dense EM;
-        otherwise ``_choose_em_representation`` picks the path.
-
-        Parameters
-        ----------
-        fit : callable
-            ``fit(transition_representation)`` runs the detector's ``fit``.
-        transition_representation : str
-            Resolved by ``_resolve_em_options``.
-        n_time : int
-            Decode bins.
-        structured_required : bool
-            Whether ``chunk_size``, ``result_path`` or ``replay_cache_bytes``
-            was given.
-        """
-        from non_local_detector.transition_operators import (
-            DenseTransitionBudgetError,
-            UnsupportedTransitionError,
-        )
-
-        try:
-            fit(transition_representation)
-        except (UnsupportedTransitionError, DenseTransitionBudgetError) as error:
-            if transition_representation != "auto" or structured_required:
-                raise
-            logger.info("EM with transition_representation='auto': dense (%s)", error)
-            fit("dense")
-            return
-        if transition_representation == "auto" and not structured_required:
-            self._choose_em_representation(n_time)
-
-    def _choose_em_representation(self, n_time: int) -> None:
-        """Run EM dense when it is faster and fits; otherwise keep the operator.
-
-        Called after an ``"auto"`` fit. Dense EM is chosen when the float32
-        interior transition is at most ``_AUTO_DENSE_TRANSITION_BYTES``, the
-        full dense transition it stores (every state bin, float64, as the
-        dense constructor builds it) fits ``max_dense_transition_bytes``, and
-        dense EM's arrays fit in half the device memory, or half the available
-        host memory on CPU (see ``_dense_em_memory``; unchecked when unknown).
-        The dense matrix comes from the fitted operator, which matches the
-        dense constructor. When memory alone rules dense EM out, it warns:
-        structured EM recomputes the likelihood on every E-step, which made EM
-        about 9x slower per E-step on a 567k-bin clusterless track decode.
-
-        Parameters
-        ----------
-        n_time : int
-            Decode bins.
-        """
-        n_bins = int(np.count_nonzero(self.is_track_interior_state_bins_))
-        working, limit, where = _dense_em_memory(n_time, n_bins)
-        n_total = int(self.state_ind_.shape[0])
-        dense_preferred = (
-            n_bins * n_bins * 4 <= _AUTO_DENSE_TRANSITION_BYTES
-            and n_total * n_total * 8 <= self._max_dense_transition_bytes_
-        )
-        dense_fits = limit is None or working <= limit // 2
-        use_dense = dense_preferred and dense_fits
-        if dense_preferred and not dense_fits:
-            warnings.warn(
-                'EM with transition_representation="auto" runs structured EM '
-                f"because dense EM needs about {working / 1e9:.1f} GB of {where} "
-                f"memory for {n_time} time bins x {n_bins} state bins, more than "
-                f"half of the {limit / 1e9:.1f} GB available. Structured EM "
-                "bounds memory by recomputing the likelihood on every E-step, "
-                "which can make EM several times slower. The estimate is "
-                "approximate: if dense EM fits, pass "
-                'transition_representation="dense" to estimate_parameters.',
-                UserWarning,
-                # Through _fit_em_model, estimate_parameters and its
-                # requires_time_edges wrapper to the caller.
-                stacklevel=5,
-            )
-        logger.info(
-            "EM with transition_representation='auto': %s (%d interior state "
-            "bins, %d time bins)",
-            "dense" if use_dense else "structured",
-            n_bins,
-            n_time,
-        )
-        if use_dense:
-            self.continuous_state_transitions_ = np.asarray(
-                self.continuous_state_transitions_
-            )
-            self.__dict__.pop("_continuous_transition_operator_", None)
-            self._transition_representation_ = "dense"
-
-    def estimate_parameters(
-        self,
-        time_edges: np.ndarray,
-        log_likelihood_args: tuple | None = None,
-        is_missing: np.ndarray | None = None,
-        estimate_initial_conditions: bool = True,
-        estimate_discrete_transition: bool = True,
-        estimate_encoding_model: bool = False,
-        max_iter: int = 20,
-        tolerance: float = 1e-5,
-        cache_likelihood: bool = True,
-        store_log_likelihood: bool = False,
-        n_chunks: int = 1,
-        return_outputs: str | list[str] | set[str] | None = None,
-        save_log_likelihood_to_results: bool | None = None,
-        min_encoding_local_mass: float = 1.0,
-        min_encoding_local_ess: float = 1.0,
-        chunk_size: int | None = None,
-        result_path: str | Path | None = None,
-        replay_cache_bytes: int | None = None,
-    ) -> xr.Dataset:
-        """
-        Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
-            Uniform decode bin edges. Results have one row per bin, at the bin
-            centers, and the bin width is recorded with the learned transitions
-            as ``transition_time_bin_width_``.
-        log_likelihood_args : tuple, optional
-            Arguments for the log likelihood function, by default None.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
-        estimate_initial_conditions : bool, optional
-            Whether to estimate the initial conditions, by default True.
-        estimate_discrete_transition : bool, optional
-            Whether to estimate the discrete transition matrix, by default True.
-        estimate_encoding_model : bool, optional
-            Re-fit the place fields in each M-step, weighted by the summed
-            posterior of observations with ``is_local=True``, independently
-            of their state names, by default False. Without local observations
-            this update is skipped. Every state shares the encoding model, so
-            weighting it by local observations alone is not
-            an exact M-step: it can lower the penalized log-likelihood, which
-            EM reports as a monotonicity violation and never counts as
-            convergence. Off by default for that reason.
-        max_iter : int, optional
-            Maximum number of EM iterations, by default 20.
-        tolerance : float, optional
-            Convergence tolerance for the EM algorithm, in nats per time
-            bin, by default 1e-5. EM stops when the penalized log-likelihood
-            (marginal log-likelihood plus the discrete-transition log prior)
-            rises by less than ``tolerance`` times the number of time bins in
-            one iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` or REML smoothness the
-            last M-step must also change every transition probability by less
-            than 1e-4.
-        cache_likelihood : bool, optional
-            If True, log likelihoods are cached instead of recomputed for each chunk, by default True
-            Caching is disabled automatically when ``n_chunks > 1``; asking to
-            keep the likelihood there (``store_log_likelihood=True`` or
-            ``return_outputs='log_likelihood'``) makes the FINAL E-step
-            accumulate the per-chunk rows into the full (n_time, n_state_bins)
-            array instead. In-loop E-steps never retain a chunk array.
-        store_log_likelihood : bool, optional
-            Whether to store the log likelihoods in self.log_likelihood_, by default False.
-        n_chunks : int, optional
-            Dense EM only: the number of row chunks the filter and smoother
-            process, by default 1. Structured EM uses ``chunk_size`` (rows per
-            chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
-            Controls which optional outputs are returned.
-
-            Options:
-            - 'filter' : causal (filtered) posterior and state probabilities
-            - 'predictive' : predictive state probabilities and posterior
-            - 'predictive_posterior' : predictive posterior only
-            - 'log_likelihood' : log likelihoods
-            - 'all' : all of the above
-
-            By default None (only smoother posterior and state probabilities).
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead.
-            Whether to save the log likelihood to the results, by default None.
-        min_encoding_local_mass : float, optional
-            Minimum sum of local state weights required to update the encoding
-            model. If the total mass is below this threshold, the encoding
-            M-step is skipped for that iteration. By default 1.0.
-        min_encoding_local_ess : float, optional
-            Minimum effective sample size (ESS) of local state weights required
-            to update the encoding model. ESS = sum(w)^2 / sum(w^2). If ESS
-            is below this threshold, the encoding M-step is skipped. By default 1.0.
-        chunk_size : int, optional
-            Rows per checkpoint chunk when the model was fit with structured
-            transitions (``transition_representation="structured"`` or
-            ``"auto"``). Such models run every E-step on the checkpointed
-            driver: one forward pass that keeps a checkpoint per chunk and a
-            backward replay, so working memory scales with ``chunk_size``
-            times the state bins instead of the recording length, and the
-            M-steps use the expected transition statistics accumulated in
-            the replay. The final E-step returns the same outputs as dense
-            EM, held in memory unless ``result_path`` is given. ``n_chunks``
-            must then be 1 and ``cache_likelihood`` has no effect: each
-            uncached chunk evaluates the likelihood twice (see
-            ``replay_cache_bytes``). By default None, which sizes chunks so one
-            chunk of float32 likelihoods takes about 256 MiB.
-        result_path : str or Path, optional
-            Structured-transition EM only: write the final E-step's outputs
-            (the requested ``return_outputs`` plus the acausal posterior) to
-            an atomic directory store here, as checkpointed ``predict`` does,
-            and return it lazily, so host memory does not hold the full
-            posterior. ``marginal_log_likelihoods`` in the returned attributes
-            lists every iteration; the store itself records the final one.
-            ``store_log_likelihood`` cannot be combined with it.
-        replay_cache_bytes : int, optional
-            Structured-transition EM only: host memory for keeping each
-            E-step's forward-pass rows (filtered rows, or likelihoods when the
-            final outputs need them), so the backward replay does not filter
-            and evaluate them again. Chunks beyond the budget are recomputed.
-            By default None, which uses 16 GiB or half the available host
-            memory (counting a container's limit), whichever is smaller.
+        Without them every sample trains encoding group 0 of the first
+        environment.
 
         Returns
         -------
-        results : xr.Dataset
-            Results of the decoding, including posterior probabilities.
-            ``attrs["marginal_log_likelihoods"]`` and ``attrs["em_objectives"]``
-            give each E-step's marginal log-likelihood and penalized
-            log-likelihood (plus the discrete-transition log prior), the
-            quantity EM's convergence and monotonicity checks use. Each check
-            compares two E-steps under the prior of the M-step between them:
-            ``check_converged(em_objectives[k + 1], em_previous_objectives[k],
-            tolerance, n_time_bins=n_time_bins)`` reproduces it, with
-            ``attrs["em_previous_objectives"]`` the earlier E-step's objective
-            under that prior and ``n_time_bins`` the number of decode bins
-            not marked missing. With
-            ``discrete_transition_prior_weight > 0`` or REML smoothness the
-            prior changes with each E-step, so ``em_previous_objectives[k]``
-            can differ from ``em_objectives[k]``. With ``max_iter=0`` there is no M-step
-            prior; the sole objective is the final marginal log-likelihood
-            and ``em_previous_objectives`` is empty. A ``result_path`` store
-            keeps these attributes, so ``load_results`` returns them too.
+        is_training : np.ndarray of bool, shape (n_time_position,)
+        encoding_group_labels : np.ndarray, shape (n_time_position,)
+        environment_labels : np.ndarray, shape (n_time_position,)
         """
-        marginal_log_likelihoods = []
-        # EM monitors the marginal log-likelihood plus the log prior of the
-        # discrete transitions, the objective a MAP M-step never decreases;
-        # the likelihood alone can fall when the prior pulls the transitions.
-        # Each check compares two E-steps under the prior of the M-step between
-        # them (data-adaptive pseudo-counts change per E-step), so an iteration
-        # hands the next one its objective and the log prior of its M-step's
-        # output.
-        objectives: list[float] = []
-        # The objective each check compared objectives[k + 1] with.
-        previous_objectives: list[float] = []
-        # The log prior of the next E-step's parameters under the last M-step's
-        # prior; there is none before the first M-step.
-        next_log_prior = 0.0
-        n_iter = 0
-        converged = False
-        objective_converged = False
-        is_increasing = True
-        objective_change = np.inf
-        transition_change = np.inf
-
-        time_edges, time_bin_width = _validate_estimation_arguments(
-            time_edges,
-            n_chunks,
-            return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
+        n_time = len(cast("np.ndarray", inputs.position_time))
+        return (
+            np.ones((n_time,), dtype=bool)
+            if inputs.is_training is None
+            else inputs.is_training,
+            np.zeros((n_time,), dtype=np.int32)
+            if inputs.encoding_group_labels is None
+            else inputs.encoding_group_labels,
+            np.asarray([self.environments[0].environment_name] * n_time)
+            if inputs.environment_labels is None
+            else inputs.environment_labels,
         )
-        checkpointed = (
-            getattr(self, "_continuous_transition_operator_", None) is not None
-        )
-        _validate_em_options(
-            checkpointed,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
-        )
-        # Resolved once and recorded on the results, so users can tell which
-        # EM path ran and with what chunks.
-        if checkpointed:
-            if chunk_size is None:
-                chunk_size = default_chunk_size(
-                    np.count_nonzero(self.is_track_interior_state_bins_), np.float32
-                )
-            if replay_cache_bytes is None:
-                replay_cache_bytes = default_replay_cache_bytes()
-            em_attrs = {
-                "em_transition_representation": "structured",
-                "em_chunk_size": int(chunk_size),
-                "em_replay_cache_bytes": int(replay_cache_bytes),
-            }
-        else:
-            em_attrs = {
-                "em_transition_representation": "dense",
-                "em_n_chunks": n_chunks,
-            }
-            if n_chunks == 1:
-                _warn_if_dense_em_exceeds_memory(
-                    len(time_edges) - 1,
-                    int(np.count_nonzero(self.is_track_interior_state_bins_)),
-                )
-        # Subclasses have already combined ``is_missing`` with the bins
-        # without tracked position via ``_missing_bins``.
-        time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
-        # Units of ``tolerance``. Subclasses refuse to estimate with every bin
-        # missing (``_require_observed_bins``), so at least one is observed.
-        n_missing = 0 if is_missing is None else int(np.count_nonzero(is_missing))
-        n_observed_bins = len(time_centers) - n_missing
 
-        if log_likelihood_args is None:
-            log_likelihood_args = ()
-
-        # Handle deprecated boolean flag
-        if save_log_likelihood_to_results is not None:
-            warnings.warn(
-                "save_log_likelihood_to_results is deprecated. "
-                "Use return_outputs='log_likelihood' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if save_log_likelihood_to_results:
-                return_outputs = "log_likelihood"
-
-        # Normalize return_outputs to canonical set
-        requested_outputs = _normalize_return_outputs(return_outputs)
-
-        # A requested log likelihood has to be materialized. Unchunked that
-        # means caching the full-time evaluation; with n_chunks > 1 caching is
-        # disabled by _predict and the final E-step accumulates the per-chunk
-        # rows instead (see below).
-        if (
-            "log_likelihood" in requested_outputs
-            and not cache_likelihood
-            and n_chunks == 1
-        ):
-            cache_likelihood = True
-
-        covariate_transitions = _is_nonstationary(
-            self.discrete_transition_coefficients_,
-            self.discrete_transition_design_matrix_,
-        )
-        # Structured EM accumulates the discrete M-step's statistics in its
-        # replay: per-row responses for covariate transitions, else counts.
-        transition_statistics = None
-        if checkpointed and estimate_discrete_transition:
-            transition_statistics = "responses" if covariate_transitions else "counts"
-        # Data-adaptive pseudo-counts (prior_weight > 0 on a stationary
-        # transition) scale with each E-step's expected counts. Any other prior
-        # is fixed, so an M-step's input has the log prior the previous M-step
-        # computed for its output.
-        prior_tracks_counts = (
-            estimate_discrete_transition
-            and not covariate_transitions
-            and bool(np.any(np.asarray(self.discrete_transition_prior_weight) > 0))
-        )
-        # REML chooses each covariate row's smoothness in its M-step, so that
-        # M-step's prior is known only after it, and EM checks the M-step's
-        # input against its output under it.
-        smoothness_setting = getattr(self.discrete_transition_type, "smoothness", 0.0)
-        prior_set_in_m_step = (
-            estimate_discrete_transition
-            and covariate_transitions
-            and isinstance(smoothness_setting, str)
-        )
-        prior_changes = prior_tracks_counts or prior_set_in_m_step
-        if estimate_discrete_transition and not checkpointed:
-            interior_state_bins = self.is_track_interior_state_bins_
-            interior_state_ind = self.state_ind_[interior_state_bins]
-            interior_continuous_transition = self.continuous_state_transitions_[
-                np.ix_(interior_state_bins, interior_state_bins)
-            ]
-        prior = (
-            self.discrete_transition_concentration,
-            self.discrete_transition_stickiness,
-            self.discrete_transition_regularization,
-            self.discrete_transition_prior_weight,
-        )
-        # Frozen rows are not estimated (covariate-dependent rows are skipped,
-        # stationary rows restored after each M-step), so they do not enter the
-        # objective it maximizes.
-        frozen_rows = self._frozen_discrete_transition_rows_mask_
-        free_rows = None if frozen_rows is None else ~frozen_rows
-
-        def transition_log_prior(
-            statistics: np.ndarray, coefficients: np.ndarray | None = None
-        ) -> float:
-            """Log prior of the current transitions (or covariate
-            ``coefficients``) under one M-step's prior."""
-            return _transition_log_prior(
-                statistics,
-                self.discrete_state_transitions_,
-                (
-                    self.discrete_transition_coefficients_
-                    if coefficients is None
-                    else coefficients
-                ),
-                self.discrete_transition_design_matrix_,
-                *prior,
-                free_rows=free_rows,
-                smoothness=(
-                    0.0
-                    if self.discrete_transition_smoothness_ is None
-                    else self.discrete_transition_smoothness_
-                ),
-                smoothness_matrix=self.discrete_transition_smoothness_matrix_,
-            )
-
-        # Initialize the EM-result attributes together, after validation, so a
-        # validation failure above leaves NONE of them set (all-or-nothing).
-        # converged_/n_iter_ are updated to their final values after the loop;
-        # degenerate_timesteps_ is filled from the final E-step's likelihoods.
-        self.converged_ = False
-        self.n_iter_ = 0
-        self.em_monotonicity_violations_ = []
-        self.degenerate_timesteps_ = np.array([], dtype=int)
-        # Any likelihood stored by an EARLIER run describes that run's data and
-        # encoding model, not this one's. Drop it now, and reuse within this run
-        # only a likelihood computed inside this run (``run_log_likelihoods``).
-        self._invalidate_stored_log_likelihood()
-        run_log_likelihoods: np.ndarray | None = None
-        # Fitted initial-condition distribution starts at the user-supplied
-        # constructor argument; overwritten with the fitted distribution below
-        # when ``estimate_initial_conditions`` is True.
-        self.discrete_initial_conditions_ = np.asarray(self.discrete_initial_conditions)
-
-        while not converged and (n_iter < max_iter):
-            # Expectation step
-            logger.info("Expectation step...")
-            if checkpointed:
-                e_step = self._checkpointed_e_step(
-                    time_edges,
-                    log_likelihood_args,
-                    is_missing,
-                    chunk_size,
-                    transition_statistics=transition_statistics,
-                    replay_cache_bytes=replay_cache_bytes,
-                )
-                acausal_state_probabilities = e_step.dataset[
-                    "acausal_state_probabilities"
-                ].values
-                marginal_log_likelihood = e_step.marginal_log_likelihood
-                first_smoothed = e_step.first_smoothed
-                log_likelihood = None
-            else:
-                (
-                    acausal_posterior,
-                    acausal_state_probabilities,
-                    marginal_log_likelihood,
-                    causal_state_probabilities,
-                    predictive_state_probabilities,
-                    log_likelihood,
-                    causal_posterior,
-                    predictive_posterior,
-                ) = self._predict(
-                    time_edges=time_edges,
-                    log_likelihood_args=log_likelihood_args,
-                    is_missing=is_missing,
-                    cache_likelihood=cache_likelihood,
-                    log_likelihoods=run_log_likelihoods,
-                    n_chunks=n_chunks,
-                )
-                first_smoothed = acausal_posterior[0]
-            # Reusable by the next iteration: the likelihood depends only on the
-            # data and the encoding model, and the M-step below clears this when
-            # it updates the encoding model. ``None`` when the likelihood was not
-            # materialized (n_chunks > 1 disables caching), i.e. recompute.
-            if cache_likelihood:
-                run_log_likelihoods = log_likelihood
-
-            # Maximization step
-            logger.info("Maximization step...")
-
-            if estimate_encoding_model:
-                local_state_indices = [
-                    index
-                    for index, observation in enumerate(self.observation_models)
-                    if observation.is_local
-                ]
-
-                if local_state_indices:
-                    logger.info("Estimating encoding model...")
-                    local_state_weights = acausal_state_probabilities[
-                        :, local_state_indices
-                    ].sum(axis=1)
-                    # Weights live on the decode bins; the encoding model is
-                    # fit on the position samples. Interpolate from the bin
-                    # centers even when the counts match: equal lengths do not
-                    # mean equal coordinates. Samples outside the decoded edges
-                    # have no posterior and get no weight.
-                    position_time = self._encoding_model_data.get("position_time")
-                    if position_time is not None:
-                        position_time = np.asarray(position_time)
-                        local_state_weights = np.where(
-                            (position_time >= time_edges[0])
-                            & (position_time <= time_edges[-1]),
-                            np.interp(position_time, time_centers, local_state_weights),
-                            0.0,
-                        )
-
-                    # ESS / mass guard: skip encoding update when local
-                    # state has effectively disappeared
-                    mass = float(np.sum(local_state_weights))
-                    sum_sq = float(np.sum(local_state_weights**2))
-                    ess = (mass**2 / sum_sq) if sum_sq > 0 else 0.0
-
-                    if mass < min_encoding_local_mass or ess < min_encoding_local_ess:
-                        logger.info(
-                            "Skipping encoding update: local mass=%.4g, "
-                            "ESS=%.4g (thresholds: mass>=%.4g, ESS>=%.4g)",
-                            mass,
-                            ess,
-                            min_encoding_local_mass,
-                            min_encoding_local_ess,
-                        )
-                    else:
-                        # Re-fit the encoding model using the posterior weights.
-                        # Known limitation (issue #31): the encoding model (the
-                        # emission) is shared across states but is re-fit here
-                        # using only the Local-state marginal as weights, so this
-                        # M-step does not strictly maximize the full-model
-                        # expected complete-data log-likelihood and can break the
-                        # EM monotonicity guarantee. The monotonicity-violation /
-                        # final-E-step warnings now surface this when it occurs.
-                        self._refit_encoding_model(local_state_weights)
-
-                        # The encoding model changed, so the likelihood
-                        # computed from the previous one is stale.
-                        # (``fit_encoding_model`` also drops any stored
-                        # ``log_likelihood_``.)
-                        run_log_likelihoods = None
-
-            if estimate_discrete_transition:
-                statistics = (
-                    e_step.transition_statistics
-                    if checkpointed
-                    else _discrete_transition_statistics(
-                        causal_posterior,
-                        predictive_posterior,
-                        acausal_posterior,
-                        interior_continuous_transition,
-                        interior_state_ind,
-                        self.discrete_state_transitions_,
-                        self.discrete_transition_coefficients_,
-                        self.discrete_transition_design_matrix_,
-                    )
-                )
-                log_prior_before = (
-                    transition_log_prior(statistics)
-                    if n_iter == 0 or prior_tracks_counts
-                    else next_log_prior
-                )
-                if prior_changes:
-                    coefficients_before = self.discrete_transition_coefficients_
-                    # Covariate transitions are compared from their
-                    # coefficients, without copying (n_time, n_states, n_states).
-                    if not covariate_transitions:
-                        transitions_before = np.array(self.discrete_state_transitions_)
-                m_step = _discrete_transition_from_statistics(
-                    statistics,
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                    *prior,
-                    frozen_rows=frozen_rows,
-                    smoothness=smoothness_setting,
-                    smoothness_matrix=self.discrete_transition_smoothness_matrix_,
-                    initial_smoothness=self.discrete_transition_smoothness_,
-                )
-                self.discrete_state_transitions_ = m_step.transition
-                self.discrete_transition_coefficients_ = m_step.coefficients
-                if covariate_transitions:
-                    self.discrete_transition_smoothness_ = m_step.smoothness
-                if prior_set_in_m_step:
-                    log_prior_before = transition_log_prior(
-                        statistics, coefficients_before
-                    )
-                # The learned transitions are per bin at this width.
-                self.transition_time_bin_width_ = time_bin_width
-                self._transition_time_bin_width_tolerance = _uniformity_tolerance(
-                    time_edges, time_bin_width
-                )
-                # Restore frozen rows: overwrite the M-step result with
-                # the initial snapshot for rows the user wants pinned.
-                # This is a constrained M-step; EM converges to the
-                # constrained fixed point rather than the unconstrained
-                # maximizer, which is the desired behavior here.
-                if self._frozen_discrete_transition_rows_baseline_ is not None:
-                    self.discrete_state_transitions_[
-                        self._frozen_discrete_transition_rows_mask_
-                    ] = self._frozen_discrete_transition_rows_baseline_
-                log_prior_after = transition_log_prior(statistics)
-                if prior_changes and covariate_transitions:
-                    transition_change = _max_transition_change(
-                        self.discrete_transition_design_matrix_,
-                        coefficients_before,
-                        self.discrete_transition_coefficients_,
-                    )
-                elif prior_changes:
-                    moved = self.discrete_state_transitions_ - transitions_before
-                    transition_change = float(np.max(np.abs(moved)))
-            else:
-                log_prior_before = log_prior_after = 0.0
-
-            if estimate_initial_conditions:
-                self.initial_conditions_[self.is_track_interior_state_bins_] = (
-                    first_smoothed
-                )
-                self.discrete_initial_conditions_ = np.asarray(
-                    acausal_state_probabilities[0]
-                )
-
-                expanded_discrete_ic = acausal_state_probabilities[0][self.state_ind_]
-                is_zero = np.isclose(expanded_discrete_ic, 0.0)
-                safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
-                self.continuous_initial_conditions_ = np.where(
-                    is_zero,
-                    0.0,
-                    self.initial_conditions_ / safe_discrete_ic,
-                )
-
-            # Stats
-            logger.info("Computing stats..")
-            n_iter += 1
-
-            marginal_log_likelihoods.append(marginal_log_likelihood)
-            # This E-step evaluated the last M-step's output, under that
-            # M-step's prior; the first E-step has only its own M-step's.
-            objectives.append(
-                marginal_log_likelihood
-                + (next_log_prior if n_iter > 1 else log_prior_before)
-            )
-            if n_iter > 1:
-                objective_change = objectives[-1] - previous_objectives[-1]
-                objective_converged, is_increasing = check_converged(
-                    objectives[-1],
-                    previous_objectives[-1],
-                    tolerance,
-                    n_time_bins=n_observed_bins,
-                )
-                # A data-adaptive prior (or REML smoothness) changes with
-                # every E-step, so a flat objective alone does not mean the
-                # transitions have settled.
-                converged = objective_converged and (
-                    not prior_changes
-                    or transition_change < _TRANSITION_CHANGE_TOLERANCE
-                )
-
-                if not is_increasing:
-                    # Surfaced via warnings.warn(UserWarning) to match the
-                    # other EM/GMM/GLM fit-quality diagnostics (decode-time
-                    # degenerate-timestep warnings use logger.warning instead;
-                    # see core._warn_degenerate_and_nan_timesteps).
-                    warnings.warn(
-                        f"EM iteration {n_iter}: penalized log-likelihood "
-                        f"decreased from {previous_objectives[-1]:.6f} to "
-                        f"{objectives[-1]:.6f} (change={objective_change:.6e}; "
-                        f"marginal log-likelihood + transition log prior). "
-                        f"A MAP M-step cannot lower it; re-fitting the encoding "
-                        f"model inside EM, a covariate transition fit stopping "
-                        f"early, or a numerical instability can.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                    self.em_monotonicity_violations_.append(n_iter)
-
-                logger.info(
-                    f"iteration {n_iter}, "
-                    f"likelihood: {marginal_log_likelihoods[-1]}, "
-                    f"penalized: {objectives[-1]}, "
-                    f"change: {objective_change}"
-                    + (
-                        f", transition change: {transition_change}"
-                        if prior_changes
-                        else ""
-                    )
-                )
-            else:
-                logger.info(
-                    f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
-                )
-            # The next E-step evaluates this M-step's output; it is checked
-            # against this E-step, both under this M-step's prior.
-            previous_objectives.append(marginal_log_likelihood + log_prior_before)
-            next_log_prior = log_prior_after
-
-        if estimate_discrete_transition and covariate_transitions and n_iter > 0:
-            # The last M-step's statistics and output.
-            self.discrete_transition_coefficient_covariance_ = (
-                _covariate_transition_covariance(
-                    self.discrete_transition_coefficients_,
-                    self.discrete_transition_design_matrix_,
-                    np.asarray(statistics),
-                    self.discrete_transition_concentration,
-                    self.discrete_transition_stickiness,
-                    self.discrete_transition_regularization,
-                    self.discrete_transition_smoothness_,
-                    self.discrete_transition_smoothness_matrix_,
-                    frozen_rows,
-                )
-            )
-
-        # converged_ is set after the final E-step, which evaluates the
-        # returned parameters and can still find a decrease.
-        self.n_iter_ = int(n_iter)
-
-        if not converged:
-            if not is_increasing:
-                advice = (
-                    "The penalized log-likelihood decreased in the last "
-                    "iteration, and EM never counts a decrease as convergence, "
-                    "so a looser tolerance will not help; see the monotonicity "
-                    "warnings above for likely causes."
-                )
-            elif n_iter > 1 and objectives[-1] == -np.inf:
-                advice = (
-                    "The penalized log-likelihood is -inf, so its change cannot "
-                    "be judged; this usually means degenerate timesteps (every "
-                    "state impossible), listed in degenerate_timesteps_ after "
-                    "the fit."
-                )
-            elif objective_converged:
-                advice = (
-                    "The penalized log-likelihood changed by less than "
-                    "tolerance, but with discrete_transition_prior_weight > 0 "
-                    "or REML smoothness the last M-step must also move every "
-                    "transition probability by less than "
-                    f"{_TRANSITION_CHANGE_TOLERANCE:g}, and it "
-                    f"moved one by {transition_change:.3e}; consider "
-                    "increasing max_iter."
-                )
-            else:
-                advice = "Consider increasing max_iter or relaxing tolerance."
-            warnings.warn(
-                f"EM did not converge after max_iter={max_iter} iterations "
-                f"(final penalized log-likelihood change per time bin="
-                f"{objective_change / n_observed_bins:.3e}, "
-                f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
-                f"{advice}",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        def em_traces(final_log_likelihood: float) -> dict[str, list[float]]:
-            """EM's traces, given the final E-step's marginal log-likelihood.
-
-            The final E-step evaluates the returned parameters, the last
-            M-step's output, under that M-step's prior (none with max_iter=0).
-            """
-            return {
-                "marginal_log_likelihoods": [
-                    *marginal_log_likelihoods,
-                    final_log_likelihood,
-                ],
-                "em_objectives": [*objectives, final_log_likelihood + next_log_prior],
-                "em_previous_objectives": list(previous_objectives),
-            }
-
-        # Final E-step after the last M-step so the returned posterior reflects
-        # the final fitted parameters. Without this, the returned arrays are
-        # the E-step computed *before* the last M-step and disagree with
-        # predict() on the same data.
-        logger.info("Final E-step after EM...")
-        if result_path is not None:
-            stored = self._predict_checkpointed(
-                time_edges=time_edges,
-                log_likelihood_args=log_likelihood_args,
-                is_missing=is_missing,
-                discrete_transitions=None,
-                output_mode="spatial",
-                chunk_size=chunk_size,
-                result_path=result_path,
-                checkpoint_dir=None,
-                selected_intervals=None,
-                requested_outputs=requested_outputs,
-                return_outputs=return_outputs,
-                max_read_bytes=DEFAULT_MAX_READ_BYTES,
-                replay_cache_bytes=replay_cache_bytes,
-                # The store is complete before its marginal log-likelihood
-                # reaches this method, so it writes the traces itself.
-                em_attrs=lambda marginal: {**em_attrs, **em_traces(marginal)},
-            )
-            marginal_log_likelihood = float(stored.attrs["marginal_log_likelihood"])
-        elif checkpointed:
-            outputs = {"acausal_posterior", "acausal_state_probabilities"}
-            if "filter" in requested_outputs:
-                outputs |= {"causal_posterior", "causal_state_probabilities"}
-            if "predictive" in requested_outputs:
-                outputs.add("predictive_state_probabilities")
-            if "predictive_posterior" in requested_outputs:
-                outputs.add("predictive_posterior")
-            if store_log_likelihood or "log_likelihood" in requested_outputs:
-                outputs.add("log_likelihood")
-            final = self._checkpointed_e_step(
-                time_edges,
-                log_likelihood_args,
-                is_missing,
-                chunk_size,
-                outputs=outputs,
-                replay_cache_bytes=replay_cache_bytes,
-            )
-            values = {name: final.dataset[name].values for name in final.dataset}
-            acausal_posterior = values["acausal_posterior"]
-            acausal_state_probabilities = values["acausal_state_probabilities"]
-            causal_state_probabilities = values.get("causal_state_probabilities")
-            predictive_state_probabilities = values.get(
-                "predictive_state_probabilities"
-            )
-            log_likelihood = values.get("log_likelihood")
-            causal_posterior = values.get("causal_posterior")
-            predictive_posterior = values.get("predictive_posterior")
-            marginal_log_likelihood = final.marginal_log_likelihood
-            self._degenerate_timesteps_ = final.diagnostics["degenerate_indices"]
-        else:
-            (
-                acausal_posterior,
-                acausal_state_probabilities,
-                marginal_log_likelihood,
-                causal_state_probabilities,
-                predictive_state_probabilities,
-                log_likelihood,
-                causal_posterior,
-                predictive_posterior,
-            ) = self._predict(
-                time_edges=time_edges,
-                log_likelihood_args=log_likelihood_args,
-                is_missing=is_missing,
-                cache_likelihood=cache_likelihood,
-                log_likelihoods=run_log_likelihoods,
-                n_chunks=n_chunks,
-                # Final E-step only: this is the likelihood the caller can ask to
-                # keep. With n_chunks > 1 caching is unavailable, so the chunked
-                # path accumulates the per-chunk rows (the documented T x N
-                # exception) instead of returning None. The in-loop E-steps never
-                # need the array, so they keep the per-chunk allocation.
-                accumulate_log_likelihoods=(
-                    store_log_likelihood or "log_likelihood" in requested_outputs
-                ),
-            )
-        traces = em_traces(marginal_log_likelihood)
-
-        # The preceding final E-step's _predict recorded the degenerate
-        # (all-impossible) timesteps during its forward pass; expose them as a
-        # fitted attribute. Sourced from the forward-pass collector rather than
-        # the returned log-likelihoods, so it is reliable even when caching is
-        # disabled (n_chunks > 1), where the returned log-likelihoods are None.
-        self.degenerate_timesteps_ = self._degenerate_timesteps_
-
-        # Check the final E-step like an in-loop iteration (there is none when
-        # max_iter=0). It counts as iteration n_iter + 1, and a decrease here
-        # means the fit has not converged.
-        final_objective = traces["em_objectives"][-1]
-        final_is_increasing = True
-        if n_iter > 0:
-            _, final_is_increasing = check_converged(
-                final_objective,
-                previous_objectives[-1],
-                tolerance,
-                n_time_bins=n_observed_bins,
-            )
-            if not final_is_increasing:
-                self.em_monotonicity_violations_.append(n_iter + 1)
-                decrease = previous_objectives[-1] - final_objective
-                warnings.warn(
-                    f"Final E-step penalized log-likelihood (marginal log-likelihood "
-                    f"+ transition log prior) decreased by {decrease:.3e}. This "
-                    f"indicates an inconsistency between the E-step and the M-step "
-                    f"output and is unusual; the returned posterior may not reflect "
-                    f"the fitted parameters. converged_ is False and iteration "
-                    f"{n_iter + 1} is recorded in em_monotonicity_violations_.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        self.converged_ = bool(converged) and final_is_increasing
-
-        if store_log_likelihood:
-            self.log_likelihood_ = log_likelihood
-
-        if hasattr(self, "_encoding_model_data"):
-            del self._encoding_model_data
-
-        if result_path is not None:
-            # The store already holds the EM attributes and traces.
-            return stored
-        em_attrs["em_objectives"] = np.asarray(traces["em_objectives"])
-        em_attrs["em_previous_objectives"] = np.asarray(
-            traces["em_previous_objectives"]
-        )
-        results = self._convert_results_to_xarray(
-            time_centers,
-            acausal_posterior,
-            acausal_state_probabilities,
-            traces["marginal_log_likelihoods"],
-            time_edges=time_edges,
-            is_missing=is_missing,
-            log_likelihood=(
-                log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
-            ),
-            causal_state_probabilities=(
-                causal_state_probabilities if "filter" in requested_outputs else None
-            ),
-            predictive_state_probabilities=(
-                predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                predictive_posterior
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
-        )
-        results.attrs.update(em_attrs)
-        return results
-
-    def most_likely_sequence(
+    def _fit_encoding_groups(
         self,
-        time_edges: np.ndarray,
-        log_likelihood_args: tuple | None = None,
-        is_missing: np.ndarray | None = None,
-        n_chunks: int = 1,
-    ) -> np.ndarray:
-        """Find the most likely sequence of states.
-
-        The likelihood is always recomputed from the data passed here; a
-        stored ``log_likelihood_`` belongs to the run that produced it.
+        fit_group: Callable[[Environment, np.ndarray], Any],
+        *,
+        is_training: np.ndarray,
+        encoding_group_labels: np.ndarray,
+        environment_labels: np.ndarray,
+        weights: np.ndarray | None,
+        support: EncodingSupport,
+    ) -> dict[tuple[Any, ...], Any]:
+        """Fit one encoding model per environment and encoding group.
 
         Parameters
         ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        fit_group : callable
+            ``fit_group(environment, group_weights)`` fits the family's
+            algorithm to one group's spikes and returns its encoding model.
+        is_training : np.ndarray of bool, shape (n_time_position,)
+            Samples the encoding models are trained on.
+        encoding_group_labels : np.ndarray, shape (n_time_position,)
+            Encoding group label of each sample.
+        environment_labels : np.ndarray, shape (n_time_position,)
+            From ``_encoding_masks``.
+        weights : np.ndarray, shape (n_time_position,), or None
+            Training weights.
+        support : EncodingSupport
+            Support of the encoding fit (exposure of each sample).
+
+        Returns
+        -------
+        encoding_model : dict
+            Encoding model of each ``(environment_name, encoding_group)``.
+            Built here, so a failed refit keeps the previous encoding model
+            and its stored log likelihood.
+        """
+        encoding_model: dict[tuple[Any, ...], Any] = {}
+
+        # An encoding model is shared by ``(environment_name, encoding_group)``;
+        # ``is_local`` / ``is_no_spike`` do not affect the fit, so each key is
+        # fit once. The keys are not sorted: an encoding group may be a string
+        # or an integer, and those do not compare.
+        likelihood_names = dict.fromkeys(
+            (obs.environment_name, obs.encoding_group)
+            for obs in self.observation_models
+        )
+        for likelihood_name in likelihood_names:
+            environment_name, encoding_group = likelihood_name
+            environment = self._get_environment_by_name(environment_name)
+
+            is_encoding = np.isin(encoding_group_labels, encoding_group)
+            is_environment = environment_labels == environment_name
+            is_group = is_training & is_encoding & is_environment
+            # The mask is this model's exposure: a sample outside the selection
+            # must contribute no occupancy, because only in-group spikes are
+            # counted. Passing ``weights=None`` means "uniform over every
+            # supplied sample", which is only true when the mask selects
+            # everything -- otherwise occupancy accumulates over held-out
+            # samples and other environments / encoding groups while the spike
+            # count does not, biasing every place field low. The position array
+            # stays full-length so it remains aligned with the weights and with
+            # the grid used to interpolate per-spike weights.
+            group_weights = _group_weights(is_group, weights, likelihood_name, support)
+            encoding_model[likelihood_name] = fit_group(environment, group_weights)
+        return encoding_model
+
+    @abc.abstractmethod
+    def fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
+        """Fit the encoding model. To be implemented by inheriting class.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments of the subclass implementation; see
+            ``SortedSpikesDetector.fit_encoding_model`` and
+            ``ClusterlessDetector.fit_encoding_model``.
+        **kwargs
+            Keyword arguments of the subclass implementation.
+        """
+
+    @abc.abstractmethod
+    def _fit_encoding_model(self, *args: Any, **kwargs: Any) -> None:
+        """Body of ``fit_encoding_model``, which EM encoding updates call.
+
+        The public method is a thin wrapper, so overriding it does not change
+        EM refits in either family.
+
+        Parameters
+        ----------
+        *args
+            The ``_ValidatedInputs`` of the fit.
+        **kwargs
+            Keyword arguments of the subclass implementation.
+        """
+
+    def _run_viterbi(
+        self,
+        time_edges: ArrayLike,
+        log_likelihood_args: tuple[Any, ...] | None = None,
+        is_missing: np.ndarray | None = None,
+        n_chunks: int = 1,
+        *,
+        discrete_state_transitions: np.ndarray,
+    ) -> pd.DataFrame:
+        """Viterbi engine: the most likely sequence of states.
+
+        The detectors' ``most_likely_sequence`` validate the data, then call
+        this with the ``compute_log_likelihood`` arguments. The likelihood is
+        always recomputed from the data passed here; a stored
+        ``log_likelihood_`` belongs to the run that produced it.
+
+        Parameters
+        ----------
+        time_edges : array_like, shape (n_bins + 1,)
             Validated decode bin edges.
         log_likelihood_args : tuple, optional
             Arguments for the log likelihood function, by default None.
@@ -4605,58 +2789,42 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Boolean array indicating missing data, by default None.
         n_chunks : int, optional
             Number of chunks, by default 1.
+        discrete_state_transitions : np.ndarray
+            The call's transitions (``_decode_discrete_transitions``): shape
+            (n_states, n_states), or (n_bins, n_states, n_states) with
+            covariates.
 
         Returns
         -------
         pd.DataFrame, shape (n_bins, n_columns)
             DataFrame containing the most likely sequence of states
             and corresponding positions/metadata at each time step.
-
         """
-        if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
-            self, "encoding_model_"
-        ):
-            self._validate_time_contract()
+        # As in _predict, a guard for direct calls of the engine.
+        self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            sampling_frequency=self.sampling_frequency,
         )
         # Validate parameters
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
-        if (
-            self.discrete_state_transitions_.ndim == 3
-            and self.discrete_state_transitions_.shape[0] != len(time_edges) - 1
-        ):
-            raise ValidationError(
-                "Viterbi covariate transitions must have one row per decode bin",
-                expected=f"{len(time_edges) - 1} transition rows",
-                got=f"{self.discrete_state_transitions_.shape[0]} rows",
-                hint="Viterbi uses the fitted covariate transitions. Fit or estimate with covariates aligned to this grid; predict(..., discrete_transition_covariate_data=...) accepts new aligned prediction covariates.",
-            )
-
-        log_likelihood_func = _prepare_likelihood_callback(
-            self.compute_log_likelihood,
-            time_edges,
-            has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
-            log_likelihood_args=log_likelihood_args,
-            reads_position=self._decode_reads_position(),
-            _time_grid=_DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            ),
+        log_likelihood_func = self._decode_likelihood_callback(
+            time_edges, log_likelihood_args
         )
-        is_track_interior = self.is_track_interior_state_bins_
+        state_space = self.state_space_
+        is_track_interior = state_space.is_track_interior
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
-        if self.discrete_state_transitions_.ndim == 2:
+        state_ind = state_space.interior_state_ind
+        if discrete_state_transitions.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
-                time=time_centers,
+                time_edges=time_edges,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
-                    * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
+                    state_space.continuous_transitions[cross_is_track_interior]
+                    * discrete_state_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=log_likelihood_func,
                 log_likelihood_args=log_likelihood_args,
@@ -4665,11 +2833,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             )
         else:
             sequence_ind, _ = most_likely_sequence_covariate_dependent(
-                time=time_centers,
+                time_edges=time_edges,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
-                discrete_transition_matrix=self.discrete_state_transitions_,
-                continuous_transition_matrix=self.continuous_state_transitions_[
+                discrete_transition_matrix=discrete_state_transitions,
+                continuous_transition_matrix=state_space.continuous_transitions[
                     cross_is_track_interior
                 ],
                 log_likelihood_func=log_likelihood_func,
@@ -4678,10 +2846,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
             )
 
-        return self._convert_seq_to_df(sequence_ind, time_centers)
+        return convert_seq_to_df(self, sequence_ind, time_centers)
 
     def calculate_time_edges(
-        self, time_range: np.ndarray, trim: bool = False
+        self, time_range: np.ndarray, *, trim: bool = False
     ) -> np.ndarray:
         """Uniform decode edges at ``1 / sampling_frequency`` spanning a range.
 
@@ -4708,130 +2876,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """
         return calculate_time_edges(time_range, self.sampling_frequency, trim=trim)
 
-    def save_model(self, filename: str = "model.pkl") -> None:
+    def copy(self: _Detector) -> _Detector:
         """
-        Save the detector to a pickled file.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Filename to save the model, by default "model.pkl".
-        """
-        with open(filename, "wb") as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    @staticmethod
-    def load_model(filename: str = "model.pkl") -> "_DetectorBase":
-        """
-        Load the detector from a file.
-
-        .. warning::
-
-            Only load models from trusted sources. Pickle files can execute
-            arbitrary code during deserialization.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Filename to load the model from, by default "model.pkl"
+        Make a copy of the detector.
 
         Returns
         -------
-        _DetectorBase
-            Loaded detector instance
-        """
-        with open(filename, "rb") as f:
-            return pickle.load(f)
-
-    @staticmethod
-    def save_results(results: xr.Dataset, filename: str = "results.nc") -> None:
-        """
-        Save the results to a netCDF file.
-
-        ``state_bins`` is a MultiIndex, which netCDF does not support, so it
-        is converted before saving. Boolean attributes are stored as integers
-        and the internal ``_native_metadata`` attribute is dropped.
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Decoding results
-        filename : str, optional
-            Name to save, by default "results.nc"
-        """
-        export = (
-            results.reset_index("state_bins")
-            if "state_bins" in results.indexes
-            else results.copy(deep=False)
-        )
-        export.attrs = {
-            name: int(value) if isinstance(value, (bool, np.bool_)) else value
-            for name, value in export.attrs.items()
-            if name != "_native_metadata"
-        }
-        export.to_netcdf(filename)
-
-    @staticmethod
-    def load_results(
-        filename: str | Path = "results.nc",
-        *,
-        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
-    ) -> xr.Dataset:
-        """
-        Load results saved by ``save_results`` or a checkpointed result_path.
-
-        A netCDF file gets its ``state_bins`` MultiIndex back. A directory is
-        opened as a checkpointed result store with lazy arrays.
-
-        Parameters
-        ----------
-        filename : str or Path, optional
-            netCDF file or checkpointed result directory, by default
-            "results.nc"
-        max_read_bytes : int, optional
-            Maximum bytes in one explicit read of a result directory's lazy
-            arrays, by default 512 MiB. Ignored for netCDF files.
-
-        Returns
-        -------
-        xr.Dataset
-            Decoding results
-        """
-        if Path(filename).is_dir():
-            from non_local_detector.result_store import open_result_store
-
-            results = open_result_store(filename, max_read_bytes=max_read_bytes)
-            metadata = results.attrs.get("_native_metadata")
-            if metadata:
-                metadata = {**metadata, "max_read_bytes": max_read_bytes}
-                return _label_checkpointed_result(results, metadata)
-            return results
-        results = xr.open_dataset(filename)
-        if "state_bins" not in results.dims:
-            return results
-        # Scalar state/environment coordinates are also attached to this array,
-        # but only the original one-dimensional levels form its spatial index.
-        coord_names = [
-            name
-            for name, coordinate in results.coords.items()
-            if name != "state_bins" and coordinate.dims == ("state_bins",)
-        ]
-        return results.set_index(state_bins=coord_names)
-
-    def copy(self) -> "_DetectorBase":
-        """
-        Makes a copy of the detector.
-
-        Returns
-        -------
-        _DetectorBase
-            Deep copy of the detector instance.
+        detector
+            Deep copy of the detector, of its own class.
         """
         return copy.deepcopy(self)
 
     def _get_environment_by_name(self, environment_name: str) -> Environment:
         """
-        Get environment by name with O(1) lookup using cached dictionary.
+        Get one of this model's fitted environments by name.
 
         Parameters
         ----------
@@ -4841,308 +2899,31 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         Environment
-            The environment object.
+            The fitted copy in ``environments_``.
 
         Raises
         ------
-        ValueError
+        ValidationError
             If environment not found.
         """
-        # Create cached lookup dict if not exists
-        if not hasattr(self, "_env_lookup_cache_"):
-            self._env_lookup_cache_ = {
-                env.environment_name: env for env in self.environments
-            }
-
-        environment = self._env_lookup_cache_.get(environment_name)
-        if environment is None:
-            raise ValueError(
-                f"Environment '{environment_name}' not found in environments list"
-            )
-        return environment
-
-    @staticmethod
-    def _create_masked_posterior(
-        data: np.ndarray, is_track_interior: np.ndarray, n_total_bins: int
-    ) -> np.ndarray:
-        """
-        Create full posterior array with NaN for non-interior bins.
-
-        Parameters
-        ----------
-        data : np.ndarray, shape (n_time, n_interior_bins)
-            Posterior data for interior bins only.
-        is_track_interior : np.ndarray, shape (n_total_bins,)
-            Boolean mask indicating which bins are track interior.
-        n_total_bins : int
-            Total number of bins including non-interior.
-
-        Returns
-        -------
-        full_array : np.ndarray, shape (n_time, n_total_bins)
-            Full array with NaN for non-interior bins.
-        """
-        n_time = data.shape[0]
-        columns = np.flatnonzero(is_track_interior)
-        rows = max(1, _MASKED_POSTERIOR_BLOCK_BYTES // max(4 * n_total_bins, 1))
-        full_array = np.empty((n_time, n_total_bins), dtype=np.float32)
-        # Fill and scatter one cache-sized block at a time, so each output
-        # byte is written to memory once instead of twice.
-        for start in range(0, n_time, rows):
-            block = full_array[start : start + rows]
-            block.fill(np.nan)
-            block[:, columns] = data[start : start + rows]
-        return full_array
-
-    def _convert_results_to_xarray(
-        self,
-        time: np.ndarray,
-        acausal_posterior: np.ndarray,
-        acausal_state_probabilities: np.ndarray,
-        marginal_log_likelihoods: list[float],
-        log_likelihood: np.ndarray | None = None,
-        causal_posterior: np.ndarray | None = None,
-        causal_state_probabilities: np.ndarray | None = None,
-        predictive_state_probabilities: np.ndarray | None = None,
-        predictive_posterior: np.ndarray | None = None,
-        *,
-        time_edges: np.ndarray,
-        is_missing: np.ndarray | None = None,
-    ) -> xr.Dataset:
-        """
-        Convert the results to an xarray Dataset.
-
-        Parameters
-        ----------
-        time : np.ndarray, shape (n_time,)
-            Decode bin centers, the ``time`` coordinate of the results.
-        acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
-            Acausal posterior probabilities.
-        acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-            Acausal state probabilities.
-        marginal_log_likelihoods : list of float
-            Marginal log likelihoods for each iteration.
-        log_likelihood : np.ndarray, optional, shape (n_time, n_state_bins)
-            Log likelihoods, by default None.
-        causal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
-            Causal (filtered) posterior probabilities, by default None.
-        causal_state_probabilities : np.ndarray, optional, shape (n_time, n_states)
-            Causal state probabilities, by default None.
-        predictive_state_probabilities : np.ndarray, optional, shape (n_time, n_states)
-            One-step-ahead predicted state probabilities, by default None.
-        predictive_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
-            One-step-ahead predicted posterior probabilities over state bins, by default None.
-
-        Returns
-        -------
-        xr.Dataset
-            Decoding results in an xarray Dataset.
-        """
-        is_track_interior = self.is_track_interior_state_bins_
-
-        # Extract environment and encoding group names in single pass
-        environment_names = [obs.environment_name for obs in self.observation_models]
-        encoding_group_names = [obs.encoding_group for obs in self.observation_models]
-
-        # Create environment lookup dict for O(1) access
-        env_dict = {env.environment_name: env for env in self.environments}
-
-        # Get position dimensionality
-        if not self.environments:
-            raise ConfigurationError(
-                "No environments found in model",
-                hint="Environments are set up during fit(). Either fit the model first, or check that position data was provided",
-            )
-        n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
-
-        # Build position array
-        position = []
-        for obs in self.observation_models:
-            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
-                position.append(np.full((1, n_position_dims), np.nan))
-            else:
-                environment = env_dict.get(obs.environment_name)
-                if environment is None:
-                    raise ValueError(
-                        f"Environment '{obs.environment_name}' not found in environments list"
-                    )
-                if environment.place_bin_centers_ is None:
-                    raise ValueError(
-                        f"place_bin_centers_ is None for environment {obs.environment_name}"
-                    )
-                position.append(environment.place_bin_centers_)
-        position = np.concatenate(position, axis=0)
-
-        states = np.asarray(self.state_names)
-
-        # Generate position dimension names (canonical convention)
-        position_names = get_position_dim_names(n_position_dims)
-        # Create MultiIndex for state_bins coordinate
-        state_bins_mindex = pd.MultiIndex.from_arrays(
-            ((states[self.state_ind_], *position.T)),
-            names=("state", *position_names),
-        )
-
-        # Returned provenance must survive reuse or mutation of caller inputs.
-        bin_edges = np.array(time_edges, copy=True)
-        saved_missing = (
-            np.zeros(len(time), dtype=bool)
-            if is_missing is None
-            else np.array(is_missing, dtype=bool, copy=True)
-        )
-        coords = {
-            "time": time,
-            "time_bin_start": ("time", bin_edges[:-1]),
-            "time_bin_end": ("time", bin_edges[1:]),
-            "time_bin_end_inclusive": ("time", np.arange(len(time)) == len(time) - 1),
-            "is_missing": (
-                "time",
-                saved_missing,
-            ),
-            "state_ind": self.state_ind_,
-            "states": states,
-            "environments": ("states", environment_names),
-            "encoding_groups": ("states", encoding_group_names),
-        }
-
-        mindex_coords = xr.Coordinates.from_pandas_multiindex(
-            state_bins_mindex, "state_bins"
-        )
-
-        attrs = {
-            "marginal_log_likelihoods": np.asarray(marginal_log_likelihoods),
-            "time_bin_convention": "left_closed_right_open_final_closed",
-            "non_local_detector_version": _PACKAGE_VERSION,
-            "time_units": "seconds",
-        }
-
-        # Build data_vars dict with masked posteriors
-        n_total_bins = len(is_track_interior)
-        data_vars = {
-            "acausal_posterior": (
-                ("time", "state_bins"),
-                self._create_masked_posterior(
-                    acausal_posterior, is_track_interior, n_total_bins
-                ),
-            ),
-            "acausal_state_probabilities": (
-                ("time", "states"),
-                acausal_state_probabilities,
-            ),
-        }
-
-        if log_likelihood is not None:
-            data_vars["log_likelihood"] = (
-                ("time", "state_bins"),
-                self._create_masked_posterior(
-                    log_likelihood, is_track_interior, n_total_bins
-                ),
-            )
-
-        if causal_posterior is not None:
-            data_vars["causal_posterior"] = (
-                ("time", "state_bins"),
-                self._create_masked_posterior(
-                    causal_posterior, is_track_interior, n_total_bins
-                ),
-            )
-
-        if causal_state_probabilities is not None:
-            data_vars["causal_state_probabilities"] = (
-                ("time", "states"),
-                causal_state_probabilities,
-            )
-
-        if predictive_state_probabilities is not None:
-            data_vars["predictive_state_probabilities"] = (
-                ("time", "states"),
-                predictive_state_probabilities,
-            )
-
-        if predictive_posterior is not None:
-            data_vars["predictive_posterior"] = (
-                ("time", "state_bins"),
-                self._create_masked_posterior(
-                    predictive_posterior, is_track_interior, n_total_bins
-                ),
-            )
-
-        # Create Dataset with MultiIndex coordinates
-        results = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
-
-        results = results.assign_coords(mindex_coords)
-
-        return results.squeeze(
-            dim=[
-                dim
-                for dim, size in results.sizes.items()
-                if size == 1 and dim not in {"time", "state_bins"}
-            ]
-        )
-
-    def _convert_seq_to_df(
-        self, sequence_ind: np.ndarray, time: np.ndarray
-    ) -> pd.DataFrame:
-        """Converts the sequence indices to a DataFrame.
-
-        Parameters
-        ----------
-        sequence_ind : np.ndarray, shape (n_time,)
-            Most likely sequence indices.
-        time : np.ndarray, shape (n_time,)
-
-        Returns
-        -------
-        results : pd.DataFrame, shape (n_time, n_cols)
-        """
-        position = []
-        n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
-        environment_names = []
-        encoding_group_names = []
-        for obs in self.observation_models:
-            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
-                position.append(np.full((1, n_position_dims), np.nan))
-                environment_names.append([None])
-                encoding_group_names.append([None])
-            else:
-                environment = self._get_environment_by_name(obs.environment_name)
-                if environment.place_bin_centers_ is None:
-                    raise ValueError(
-                        f"place_bin_centers_ is None for environment {obs.environment_name}"
-                    )
-                position.append(environment.place_bin_centers_)
-                environment_names.append(
-                    [obs.environment_name] * environment.place_bin_centers_.shape[0]
-                )
-                encoding_group_names.append(
-                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]
-                )
-
-        position = np.concatenate(position, axis=0)
-        environment_names = np.concatenate(environment_names, axis=0)
-        encoding_group_names = np.concatenate(encoding_group_names, axis=0)
-
-        states = np.asarray(self.state_names)
-        position_names = get_position_dim_names(n_position_dims)
-        state_bins = pd.DataFrame(
-            {
-                "state": states[self.state_ind_],
-                **dict(zip(position_names, position.T, strict=False)),
-                "environment": environment_names,
-                "encoding_group_names": encoding_group_names,
-            }
-        ).iloc[self.is_track_interior_state_bins_]
-
-        return state_bins.iloc[sequence_ind].set_index(pd.Index(time, name="time"))
+        # Looked up in ``self.environments_`` on every call: each fit replaces
+        # them with new fitted copies, so a stored lookup would go stale.
+        return find_environment_by_name(self.environments_, environment_name)
 
 
 class ClusterlessDetector(_DetectorBase):
     """
     Detector class for clusterless spikes.
+
+    Decodes from spike waveform features (marks) without spike sorting. The
+    constructor parameters are documented on ``__init__``.
     """
+
+    mark_reference_: list[MarkReference | None]
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         discrete_transition_type: DiscreteTransitions,
@@ -5153,7 +2934,7 @@ class ClusterlessDetector(_DetectorBase):
         observation_models: Observations,
         environments: Environments,
         clusterless_algorithm: str = "clusterless_kde",
-        clusterless_algorithm_params: dict | None = None,
+        clusterless_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
@@ -5190,18 +2971,21 @@ class ClusterlessDetector(_DetectorBase):
         clusterless_algorithm_params : dict or None, optional
             Parameters for the clusterless algorithm. Stored as-is (``None``
             stays ``None``) to keep sklearn's ``clone()`` contract intact. If
-            ``None`` (the default), the module-level
-            ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied into a
-            fresh dict **at fit time**; a user-supplied dict is **stored by
-            reference** and copied on use. Mutations the caller makes to their
-            own dict between construction and fit are therefore observed by the
-            fit — pass ``dict(my_params)`` for an isolated copy.
+            ``None`` (the default), the algorithm's registered
+            ``default_params`` are copied into a fresh dict **at
+            fit time**; a user-supplied dict replaces those defaults, is
+            **stored by reference** and copied on use. At fit time a key the
+            algorithm's fit does not accept raises ``ValidationError``.
+            Mutations the caller makes to their own dict between construction
+            and fit are therefore observed by the fit — pass
+            ``dict(my_params)`` for an isolated copy.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
             Names of the states, by default None.
         sampling_frequency : float, optional
-            Sampling frequency, by default 500.0.
+            Rate in Hz of the decode bins; decoding ``time_edges`` must be
+            ``1 / sampling_frequency`` wide. By default 500.0.
         no_spike_rate : float, optional
             No-Spike firing rate per electrode in Hz, by default 1e-10. Its
             spikes' marks are scored with the training-fitted reference
@@ -5218,30 +3002,36 @@ class ClusterlessDetector(_DetectorBase):
             local state. See ``_DetectorBase`` for details.
         """
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
-            discrete_transition_concentration,
-            discrete_transition_stickiness,
-            discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
-            infer_track_interior,
-            state_names,
-            sampling_frequency,
-            no_spike_rate,
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_concentration=discrete_transition_concentration,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            discrete_transition_regularization=discrete_transition_regularization,
+            continuous_transition_types=continuous_transition_types,
+            observation_models=observation_models,
+            environments=environments,
+            infer_track_interior=infer_track_interior,
+            state_names=state_names,
+            sampling_frequency=sampling_frequency,
+            no_spike_rate=no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,
         )
         self.clusterless_algorithm = clusterless_algorithm
+        # A removed name that stored parameter sets, such as Spyglass rows,
+        # still hold: they construct, for inspection, and fitting raises.
+        if clusterless_algorithm != "clusterless_kde_log":
+            self._clusterless_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
         # ``_resolve_clusterless_algorithm_params`` at fit time.
         self.clusterless_algorithm_params = clusterless_algorithm_params
 
-    def _refit_encoding_model(self, weights: np.ndarray) -> None:
+    def _refit_encoding_model(
+        self, weights: np.ndarray, encoding_fit_arguments: dict[str, Any]
+    ) -> None:
         """EM M-step: refit the encoding model with posterior ``weights``.
 
         Posterior weights update the encoding process, not the
@@ -5250,26 +3040,33 @@ class ClusterlessDetector(_DetectorBase):
         Parameters
         ----------
         weights : np.ndarray, shape (n_time_position,)
+            Posterior weight of each time sample in the refit.
+        encoding_fit_arguments : dict
+            Keyword arguments of ``_validated_inputs``.
         """
-        self.fit_encoding_model(
-            **self._encoding_model_data, weights=weights, _refit_mark_reference=False
+        self._fit_encoding_model(
+            self._validated_inputs("refit", **encoding_fit_arguments, weights=weights),
+            refit_mark_reference=False,
         )
 
-    def _resolve_clusterless_algorithm_params(self) -> dict:
-        """Return a fresh copy of the clusterless algorithm params.
+    def _resolve_clusterless_algorithm_params(self) -> dict[str, Any]:
+        """Return a fresh, validated copy of the clusterless algorithm params.
 
-        Resolves a ``None`` user spec to a copy of
-        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS``; otherwise returns a copy
-        of the user's dict. Always returns a fresh dict, so mutating the
-        returned value does not leak into the default or into the user's
-        original dict.
+        Resolves a ``None`` user spec to the algorithm's registered
+        ``default_params``; otherwise copies the user's dict.
+        Raises ``ValidationError`` for a key the registered fit does not
+        accept.
         """
-        if self.clusterless_algorithm_params is None:
-            return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
-        return dict(self.clusterless_algorithm_params)
+        self._clusterless_algorithm()  # validates the algorithm name
+        return _resolve_fit_params(
+            _CLUSTERLESS_ALGORITHMS,
+            self.clusterless_algorithm,
+            self.clusterless_algorithm_params,
+            "clusterless_algorithm_params",
+        )
 
-    def _clusterless_algorithm_functions(self) -> tuple:
-        """The registered (fit, predict) pair of ``clusterless_algorithm``."""
+    def _clusterless_algorithm(self) -> ClusterlessLikelihoodAlgorithm:
+        """Return the registered record of ``clusterless_algorithm``."""
         try:
             return _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         except KeyError:
@@ -5278,8 +3075,9 @@ class ClusterlessDetector(_DetectorBase):
                 if self.clusterless_algorithm == "clusterless_kde_log"
                 else None
             )
+            msg = f"Unknown clusterless_algorithm {self.clusterless_algorithm!r}"
             raise ValidationError(
-                f"Unknown clusterless_algorithm {self.clusterless_algorithm!r}",
+                msg,
                 expected=f"one of {sorted(_CLUSTERLESS_ALGORITHMS)}",
                 got=repr(self.clusterless_algorithm),
                 hint=hint,
@@ -5294,14 +3092,15 @@ class ClusterlessDetector(_DetectorBase):
         environment_labels: np.ndarray,
         weights: np.ndarray | None,
         support: EncodingSupport,
-        algorithm_params: dict,
-    ) -> list:
+        algorithm_params: dict[str, Any],
+    ) -> list[Any]:
         """Fit each electrode's mark reference from its training spikes.
 
         Training weights span every encoding group of the requested
         environments, are formed on the full tracking timeline, and are
         interpolated to spike times within the encoding support, as for the
-        encoding models.
+        encoding models. The environments are those of the current
+        ``observation_models``, not those of the last fit (``state_space_``).
         """
         requested_environments = [
             obs.environment_name for obs in self.observation_models
@@ -5314,8 +3113,9 @@ class ClusterlessDetector(_DetectorBase):
 
         # The reference adds the mark bandwidth, in waveform units, to each
         # feature's training spread.
-        kernel_scale = _CLUSTERLESS_MARK_REFERENCE_SCALES[self.clusterless_algorithm](
-            **algorithm_params
+        mark_reference_scale = self._clusterless_algorithm().mark_reference_scale
+        kernel_scale = cast(
+            "float | np.ndarray", mark_reference_scale(**algorithm_params)
         )
         spike_weights = [
             interpolate_weights_at_spike_times(
@@ -5327,50 +3127,62 @@ class ClusterlessDetector(_DetectorBase):
 
     def fit_encoding_model(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        weights: np.ndarray | None = None,
         *,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        _refit_mark_reference: bool = True,
+        valid_position_intervals: ArrayLike | None = None,
     ) -> None:
         """
         Fit the encoding model to the data.
 
+        Fits one model per ``(environment_name, encoding_group)`` of the
+        current ``observation_models``, not those of the last fit
+        (``state_space_``).
+
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array or weights indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,) optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, optional
-            Environment labels, by default None.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         weights : np.ndarray, optional, shape (n_time_position,)
             Weights for training data, by default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         Attributes
         ----------
@@ -5389,87 +3201,76 @@ class ClusterlessDetector(_DetectorBase):
             ``RATE_EPS_HZ * q(mark)``. None marks an electrode without such
             spikes. It is kept unchanged by posterior-weighted encoding updates.
         """
-        logger.info("Fitting clusterless spikes...")
-        # Validate before any state changes and before the collections are
-        # paired electrode by electrode (``fit`` also checks first, before
-        # ``_fit`` rebuilds its own state).
-        validate_spike_feature_population(spike_times, spike_waveform_features)
-        n_time = position.shape[0]
-        position = position if position.ndim > 1 else position[:, np.newaxis]
-
-        if is_training is None:
-            is_training = np.ones((n_time,), dtype=bool)
-
-        if encoding_group_labels is None:
-            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
-
-        if environment_labels is None:
-            environment_labels = np.asarray(
-                [self.environments[0].environment_name] * n_time
-            )
-
-        is_training = np.asarray(is_training).squeeze()
-
-        support = EncodingSupport(
-            position_time,
-            position,
+        inputs = self._validated_inputs(
+            "encoding",
+            (spike_times, spike_waveform_features),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            weights=weights,
             encoding_time_range=encoding_time_range,
             valid_position_intervals=valid_position_intervals,
         )
+        self._fit_encoding_model(inputs, refit_mark_reference=True)
+
+    def _fit_encoding_model(
+        self, inputs: _ValidatedInputs, *, refit_mark_reference: bool
+    ) -> None:
+        """Body of ``fit_encoding_model``.
+
+        ``refit_mark_reference=False`` keeps the existing ``mark_reference_``,
+        as posterior-weighted encoding updates do.
+        """
+        logger.info("Fitting clusterless spikes...")
+        spike_times, spike_waveform_features = inputs.spike_data
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        support = cast("EncodingSupport", inputs.encoding_support)
+        weights = inputs.weights
+        is_training, encoding_group_labels, environment_labels = self._encoding_masks(
+            inputs
+        )
 
         kwargs = self._resolve_clusterless_algorithm_params()
+        encoding_algorithm = self._clusterless_algorithm().fit
 
-        # Build the new models locally so a failed refit keeps the previous
-        # encoding model and its stored log likelihood.
-        encoding_model: dict = {}
-
-        # An encoding model is shared by ``(environment_name, encoding_group)``;
-        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
-        # ``ObservationModel`` equality now distinguishes those flags,
-        # ``np.unique`` can return several entries that map to the same
-        # ``likelihood_name`` — fit each key once to avoid redundant work.
-        fitted_likelihood_names: set = set()
-        for obs in np.unique(self.observation_models):
-            likelihood_name = (obs.environment_name, obs.encoding_group)
-            if likelihood_name in fitted_likelihood_names:
-                continue
-            fitted_likelihood_names.add(likelihood_name)
-
-            environment = self._get_environment_by_name(obs.environment_name)
-
-            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
-
-            encoding_algorithm, _ = self._clusterless_algorithm_functions()
-            is_group = is_training & is_encoding & is_environment
-            # The mask is this model's exposure on the full timeline, as for
-            # sorted spikes: a subset timeline would let spike-weight
-            # interpolation bridge the mask's gaps.
-            group_weights = _group_weights(is_group, weights, likelihood_name, support)
+        def fit_group(environment: Environment, group_weights: np.ndarray) -> Any:
+            # The group's weights are its exposure on the full timeline: a
+            # subset timeline would let spike-weight interpolation bridge the
+            # mask's gaps.
             is_group_spike = [
                 _group_spike_mask(times, position_time, group_weights, support)
                 for times in spike_times
             ]
-            group_spike_times = [
-                times[mask]
-                for times, mask in zip(spike_times, is_group_spike, strict=True)
-            ]
-            group_spike_waveform_features = [
-                features[mask]
-                for features, mask in zip(
-                    spike_waveform_features, is_group_spike, strict=True
-                )
-            ]
-            encoding_model[likelihood_name] = encoding_algorithm(
+            return encoding_algorithm(
                 position_time=position_time,
                 position=position,
-                spike_times=group_spike_times,
-                spike_waveform_features=group_spike_waveform_features,
+                spike_times=[
+                    times[mask]
+                    for times, mask in zip(spike_times, is_group_spike, strict=True)
+                ],
+                spike_waveform_features=[
+                    features[mask]
+                    for features, mask in zip(
+                        spike_waveform_features, is_group_spike, strict=True
+                    )
+                ],
                 environment=environment,
                 _encoding_support=support,
                 weights=group_weights,
                 **kwargs,
             )
+
+        encoding_model = self._fit_encoding_groups(
+            fit_group,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            weights=weights,
+            support=support,
+        )
 
         mark_reference = (
             self._fit_mark_reference(
@@ -5482,66 +3283,76 @@ class ClusterlessDetector(_DetectorBase):
                 support,
                 kwargs,
             )
-            if _refit_mark_reference
+            if refit_mark_reference
             else self.mark_reference_
         )
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
         self.mark_reference_ = mark_reference
-        self.time_contract_ = {
-            "version": 1,
-            "rate_units": "Hz",
-            "encoding_time_units": "seconds",
-        }
+        self.time_contract_ = dict(_TIME_CONTRACT)
 
     def fit(
-        self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        self: _Detector,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         *,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "dense",
+        valid_position_intervals: ArrayLike | None = None,
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> "ClusterlessDetector":
+    ) -> _Detector:
         """
         Fit the detector to the data.
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Environment labels, by default None.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            training values of the covariates named in the transition formula,
+            which place its spline knots (``quantile_bs``) and are kept to
+            rebuild its design. Any number of rows, e.g. one per position
+            sample: decoding evaluates the transitions on its own covariates.
+            By default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -5556,52 +3367,147 @@ class ClusterlessDetector(_DetectorBase):
 
         Returns
         -------
-        ClusterlessDetector
-            Fitted detector instance.
+        self
+            The fitted detector, of its own class.
         """
-        validate_spike_feature_population(spike_times, spike_waveform_features)
+        inputs = self._validated_inputs(
+            "fit",
+            (spike_times, spike_waveform_features),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
+        )
         with self._restore_state_on_error():
             self._fit(
-                position,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                cast("np.ndarray", inputs.position),
+                inputs.is_training,
+                inputs.encoding_group_labels,
+                inputs.environment_labels,
                 discrete_transition_covariate_data,
                 transition_representation=transition_representation,
                 max_dense_transition_bytes=max_dense_transition_bytes,
             )
             self.fit_encoding_model(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                inputs.position_time,
+                inputs.position,
+                *inputs.spike_data,
+                is_training=inputs.is_training,
+                encoding_group_labels=inputs.encoding_group_labels,
+                environment_labels=inputs.environment_labels,
                 encoding_time_range=encoding_time_range,
                 valid_position_intervals=valid_position_intervals,
             )
         return self
 
+    _PREDICT_EXAMPLE = (
+        "    results = detector.predict(\n"
+        "        spike_times=spike_times, spike_waveform_features=features,\n"
+        "        time_edges=time_edges, position=position,\n"
+        "        position_time=position_time\n"
+        "    )"
+    )
+
+    def _likelihood_predict_function(self) -> ClusterlessPredict:
+        return self._clusterless_algorithm().predict
+
+    def _likelihood_execution_settings(self) -> dict[str, Any]:
+        return _execution_settings(
+            self._clusterless_algorithm(), self.clusterless_algorithm_params
+        )
+
+    def _likelihood_predict_kwargs(self) -> dict[str, Any]:
+        # One reference for every state and No-Spike, so their
+        # mark densities cancel consistently between states.
+        return {"mark_reference": self.mark_reference_}
+
+    def _no_spike_mark_log_likelihood(
+        self,
+        spike_data: tuple[Any, ...],
+        time_edges: np.ndarray,
+        row_slice: slice | None,
+        spike_time_order: _SpikeTimeOrder | None,
+    ) -> jax.Array:
+        # Marked No-Spike intensity: no_spike_rate * q(mark).
+        return mark_reference_log_likelihood(
+            self.mark_reference_,
+            *cast("tuple[Any, Any]", spike_data),  # (spike_times, features)
+            time_edges,
+            row_slice=row_slice,
+            _spike_time_order=spike_time_order,
+        )
+
+    def _validate_time_contract(self) -> None:
+        super()._validate_time_contract()
+        if not hasattr(self, "mark_reference_"):
+            msg = (
+                "Saved clusterless model has no mark reference; refit before decoding."
+            )
+            raise NotFittedError(
+                msg,
+                hint="Clusterless states score waveform marks against a reference "
+                "density fitted from training spikes. Call fit(...) with the "
+                "original recording.",
+            )
+
     @row_slice_aware
     @requires_time_edges
     def compute_log_likelihood(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray | None,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
         *,
-        time_edges: np.ndarray,
-        _no_spike_time_bin_sizes: np.ndarray | None = None,
-        _time_grid: _DecodeTimeGrid | None = None,
-        _position_context: _LikelihoodPositionContext | None = None,
-        _spike_time_order: _SpikeTimeOrder | None = None,
-    ) -> jnp.ndarray:
+        time_edges: ArrayLike,
+        valid_position_intervals: ArrayLike | None = None,
+    ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
+
+        Parameters
+        ----------
+        position_time : array_like, shape (n_time_position,), or None
+            Time points for position data.
+        position : array_like, shape (n_time_position, n_position_dims), or None
+            Position data.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        is_missing : array_like of bool, shape (n_rows,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            requested decode bin, by default None.
+        row_slice : slice | None, optional
+            Contiguous range of rows of the full-time likelihood to compute, by
+            default None (all rows). ``time_edges`` stay the FULL decoding edges,
+            so a decoding spike is owned by its global row no matter how the
+            rows were chunked, and the result equals the full-time likelihood
+            sliced by ``row_slice``.
+        time_edges : array_like, shape (n_bins + 1,)
+            Uniform decode bin edges. Results have one row per bin, at the
+            bin centers.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
+
+        Returns
+        -------
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
+            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
 
         Notes
         -----
@@ -5632,241 +3538,16 @@ class ClusterlessDetector(_DetectorBase):
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
         — they include the kernel and mass-balance terms.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
-            Uniform decode bin edges. Results have one row per bin, at the
-            bin centers.
-        position_time : np.ndarray, shape (n_time_position,)
-            Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        is_missing : np.ndarray, shape (n_rows,), optional
-            Boolean array indicating missing data for the requested rows, by
-            default None.
-        row_slice : slice | None, optional
-            Contiguous range of rows of the full-time likelihood to compute, by
-            default None (all rows). ``time_edges`` stay the FULL decoding edges,
-            so a decoding spike is owned by its global row no matter how the
-            rows were chunked, and the result equals the full-time likelihood
-            sliced by ``row_slice``.
-        _no_spike_time_bin_sizes : np.ndarray | None, optional
-            Internal full-timeline array of bin durations, prepared once by ``_predict``
-            and reused for No-Spike in every chunk. None computes it on demand.
-        _spike_time_order : _SpikeTimeOrder | None, optional
-            Internal ordering preparation shared across states and chunks. None
-            creates fresh preparation for this likelihood call.
-
-        Returns
-        -------
-        log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
-            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
-        self._validate_time_contract()
-        time_edges, row_time = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            _time_grid=_time_grid,
-            row_slice=row_slice,
+        return self._compute_spike_log_likelihood(
+            position_time,
+            position,
+            (spike_times, spike_waveform_features),
+            is_missing,
+            row_slice,
+            time_edges=time_edges,
+            valid_position_intervals=valid_position_intervals,
         )
-        if (
-            not isinstance(_time_grid, _DecodeTimeGrid)
-            or _time_grid.edges is not time_edges
-        ):
-            _time_grid = _DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            )
-        if position is not None and position_time is None:
-            raise ValidationError("position_time is required when position is provided")
-        needs_position = self._decode_reads_position()
-        if not isinstance(
-            _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(
-            time_edges, position_time, position, needs_position
-        ):
-            # Without a prepared context this is a direct call, so it warns
-            # like the other public decode entry points.
-            _position_context = _LikelihoodPositionContext.prepare(
-                time_edges,
-                position_time,
-                position,
-                reads_position=needs_position,
-                warn_outside_tracking=_position_context is None,
-            )
-        self._validate_decode_population(spike_times, spike_waveform_features)
-        position_missing = _position_context.is_missing
-        logger.info("Computing log likelihood...")
-        if _spike_time_order is None:
-            _spike_time_order = _SpikeTimeOrder()
-        non_local_penalty = self._non_local_position_penalty()
-        if position is None and needs_position:
-            reason = []
-            if np.any([obs.is_local for obs in self.observation_models]):
-                reason.append("local observation models")
-            if non_local_penalty > 0:
-                reason.append("non_local_position_penalty > 0")
-            raise ValidationError(
-                f"Missing required parameter: position (needed for {', '.join(reason)})",
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
-                example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
-            )
-        if position is not None:
-            self._validate_position_dimensionality(position, context="predict")
-
-        row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
-        n_rows = row_stop - row_start
-        # Position interpolation, local kernels and the non-local penalty are
-        # pointwise in the decoding time, so they are evaluated at the requested
-        # bins' centers; the spike likelihoods bin against the full edges.
-        if is_missing is None:
-            is_missing = np.zeros(n_rows, dtype=bool)
-        else:
-            is_missing = np.asarray(is_missing, dtype=bool)
-            if is_missing.shape != (n_rows,):
-                raise ValidationError(
-                    "is_missing must have one entry per requested decode bin"
-                )
-        if position_missing is not None:
-            is_missing = is_missing | position_missing[row_start:row_stop]
-        if _position_context.all_missing:
-            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
-        position = _position_context.position
-
-        _, likelihood_func = self._clusterless_algorithm_functions()
-
-        # Pre-compute state bins mask for all states (avoid recomputation in loop)
-        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
-        state_bin_masks = {
-            state_id: interior_state_ind == state_id
-            for state_id in range(len(self.observation_models))
-        }
-
-        # Use dict for O(1) lookup instead of list
-        computed_likelihoods = {}
-
-        # Compute all likelihoods first (stays in JAX/GPU if available)
-        likelihood_results = {}
-        for state_id, obs in enumerate(self.observation_models):
-            # Multi-bin local computes full spatial likelihood (is_local=False)
-            # then adds position kernel afterward
-            effective_is_local = obs.is_local and self.local_position_std is None
-
-            likelihood_name = (
-                obs.environment_name,
-                obs.encoding_group,
-                effective_is_local,
-                obs.is_no_spike,
-            )
-
-            if obs.is_no_spike:
-                # Marked No-Spike intensity: no_spike_rate * q(mark).
-                likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    spike_times,
-                    self.no_spike_rate,
-                    time_edges=time_edges,
-                    row_slice=row_slice,
-                    # The fitted setting, as the other likelihoods receive it.
-                    # No-Spike may have no encoding entry; default to showing the bar.
-                    disable_progress_bar=self.encoding_model_.get(
-                        likelihood_name[:2], {}
-                    ).get("disable_progress_bar", False),
-                    _time_bin_sizes=_no_spike_time_bin_sizes,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                ) + mark_reference_log_likelihood(
-                    self.mark_reference_,
-                    spike_times,
-                    spike_waveform_features,
-                    time_edges,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                )
-            elif likelihood_name not in computed_likelihoods:
-                likelihood_results[state_id] = likelihood_func(
-                    position_time,
-                    position,
-                    spike_times,
-                    spike_waveform_features,
-                    time_edges=time_edges,
-                    **self.encoding_model_[likelihood_name[:2]],
-                    # One reference for every state and No-Spike, so their
-                    # mark densities cancel consistently between states.
-                    mark_reference=self.mark_reference_,
-                    is_local=effective_is_local,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                )
-                computed_likelihoods[likelihood_name] = state_id
-            else:
-                # Will reuse previously computed likelihood
-                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
-
-        # Assemble final array (single pass, stays in JAX)
-        log_likelihood = jnp.zeros(
-            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
-        )
-
-        for state_id in range(len(self.observation_models)):
-            is_state_bin = state_bin_masks[state_id]
-            result = likelihood_results[state_id]
-
-            if isinstance(result, int):
-                # Reuse from previously computed state
-                source_mask = state_bin_masks[result]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, source_mask]
-                )
-            else:
-                # Set new likelihood values
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
-
-        # Apply non-local position penalty if configured
-        if non_local_penalty > 0:
-            # Cache penalties per environment to avoid recomputation
-            env_penalties = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if not obs.is_local and not obs.is_no_spike:
-                    env_name = obs.environment_name
-                    if env_name not in env_penalties:
-                        env = self._get_environment_by_name(env_name)
-                        env_penalties[env_name] = (
-                            self._compute_non_local_position_penalty(
-                                row_time, position_time, position, env
-                            )
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_penalties[env_name]
-                    )
-
-        # Apply local position kernel if configured
-        if self.local_position_std is not None:
-            env_kernels = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if obs.is_local:
-                    env_name = obs.environment_name
-                    if env_name not in env_kernels:
-                        env = self._get_environment_by_name(env_name)
-                        env_kernels[env_name] = self._compute_local_position_kernel(
-                            row_time, position_time, position, env
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_kernels[env_name]
-                    )
-
-        # Apply missing data mask
-        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     @requires_time_edges
     def predict(
@@ -5874,47 +3555,61 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        time_edges: ArrayLike,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
-        inference_mode: str = "dense",
-        output_mode: str = "spatial",
+        inference_mode: InferenceMode = "dense",
+        output_mode: OutputMode = "spatial",
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         replay_cache_bytes: int | None = None,
-        return_outputs: str | list[str] | set[str] | None = None,
-        save_log_likelihood_to_results: bool | None = None,
-        save_causal_posterior_to_results: bool | None = None,
+        return_outputs: ReturnOutputs = None,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
 
         Parameters
         ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
-        position_time : np.ndarray, shape (n_time_position,), optional
+        position_time : array_like, shape (n_time_position,), optional
             Time points for position data, by default None.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
-        discrete_transition_covariate_data : dict-like, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         cache_likelihood : bool, optional
-            If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+            Whether to cache the log likelihoods, by default False.
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
             ``return_outputs='log_likelihood'`` with ``n_chunks > 1`` instead
             accumulates the per-chunk rows into the full
@@ -5922,41 +3617,7 @@ class ClusterlessDetector(_DetectorBase):
             likelihood allocation; when the log likelihood is not requested, no
             chunk array is retained.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
-        return_outputs : str, list of str, set of str, or None, optional
-            Controls which optional outputs are returned.
-
-            Options:
-            - None: smoother only (default, minimal memory)
-            - 'filter': filtered (causal) posterior and state probabilities
-            - 'predictive': both aggregated and full predictive distributions
-            - 'predictive_posterior': only full predictive posterior (state bins)
-            - 'log_likelihood': per-timepoint log likelihoods
-            - 'all': all outputs above
-            - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
-
-            acausal_state_probabilities and marginal_log_likelihood are always
-            included; acausal_posterior is included except in checkpointed
-            compact output. Compact output holds state probabilities only, so
-            'log_likelihood' and 'predictive_posterior' (and 'all') require
-            output_mode='spatial'.
-
-            When to use each output:
-            - 'filter': Online/causal decoding, debugging forward pass
-            - 'predictive': Model evaluation, predictive checks (includes both formats)
-            - 'predictive_posterior': When you only need full distribution, not aggregated
-            - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
-
-            Memory warning: 'log_likelihood', 'filter', 'predictive', and
-            'predictive_posterior' can be very large (~400 GB for 1M timepoints × 100k
-            spatial bins). Use checkpointed compact mode to bound spatial memory.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead.
-            Whether to save the log likelihood to the results, by default None.
-        save_causal_posterior_to_results : bool, optional
-            DEPRECATED. Use return_outputs='filter' instead.
-            Whether to save the causal (filtered) posterior to the results, by default None.
-
+            Splits data into chunks for processing, by default 1.
         inference_mode : {"dense", "checkpointed"}, optional
             By default "dense", the in-memory driver. "checkpointed" stores
             boundary messages on disk and replays chunks for exact smoothing;
@@ -5991,6 +3652,36 @@ class ClusterlessDetector(_DetectorBase):
             them. Chunks beyond the budget are recomputed. By default None,
             which uses 16 GiB or half the available host memory, whichever is
             smaller.
+        return_outputs : str, collection of str, or None, optional
+            Controls which optional outputs are returned.
+
+            Options:
+            - None: smoother only (default, minimal memory)
+            - 'filter': filtered (causal) posterior and state probabilities
+            - 'predictive': one-step-ahead (predictive) state probabilities
+            - 'predictive_posterior': one-step-ahead posterior over state bins
+            - 'log_likelihood': per-timepoint log likelihoods
+            - 'all': all outputs above
+            - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
+
+            A name adds the same outputs alone or in a list or set; ask for
+            both predictive outputs with ['predictive', 'predictive_posterior'].
+            acausal_state_probabilities and marginal_log_likelihood are always
+            included; acausal_posterior is included except in checkpointed
+            compact output. Compact output holds state probabilities only, so
+            'log_likelihood' and 'predictive_posterior' (and 'all') require
+            output_mode='spatial'.
+
+            When to use each output:
+            - 'filter': Online/causal decoding, debugging forward pass
+            - 'predictive': Model evaluation, predictive checks of the states
+            - 'predictive_posterior': Predictive checks over position
+            - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
+
+            Memory warning: 'log_likelihood', 'filter' and 'predictive_posterior'
+            hold (n_time, n_state_bins) arrays, which can be very large (~400 GB
+            for 1M timepoints × 100k spatial bins). Use checkpointed compact mode
+            to bound spatial memory.
 
         Returns
         -------
@@ -6018,18 +3709,29 @@ class ClusterlessDetector(_DetectorBase):
             - log_likelihood : (n_time, n_state_bins) - if 'log_likelihood'
                 Per-timepoint observation log likelihoods
 
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
         Examples
         --------
         Get only smoother (default, minimal memory):
 
-        >>> results = model.predict(spike_times, time_edges=time_edges)
+        >>> results = model.predict(
+        ...     spike_times, spike_waveform_features, time_edges=time_edges
+        ... )
         >>> results.acausal_posterior.shape
         (10000, 50000)
 
         Include filtered posterior for online decoding:
 
         >>> results = model.predict(
-        ...     spike_times, time_edges=time_edges, return_outputs='filter'
+        ...     spike_times,
+        ...     spike_waveform_features,
+        ...     time_edges=time_edges,
+        ...     return_outputs='filter',
         ... )
         >>> results.causal_posterior.shape
         (10000, 50000)
@@ -6037,215 +3739,71 @@ class ClusterlessDetector(_DetectorBase):
         Get multiple outputs for analysis:
 
         >>> results = model.predict(
-        ...     spike_times, time_edges=time_edges,
-        ...     return_outputs=['filter', 'predictive']
+        ...     spike_times,
+        ...     spike_waveform_features,
+        ...     time_edges=time_edges,
+        ...     return_outputs=['filter', 'predictive'],
         ... )
 
         Get everything for debugging:
 
         >>> results = model.predict(
-        ...     spike_times, time_edges=time_edges, return_outputs='all'
+        ...     spike_times,
+        ...     spike_waveform_features,
+        ...     time_edges=time_edges,
+        ...     return_outputs='all',
         ... )
         """
-        if position is not None and position_time is None:
-            raise ValidationError(
-                "position_time is required when position is provided",
-                expected="position_time array with shape (n_time_position,)",
-                got="None",
-                hint="Provide position_time corresponding to the position samples",
-                example="    results = detector.predict(\n"
-                "        spike_times=spike_times, spike_waveform_features=features,\n"
-                "        time_edges=time_edges, position=position,\n"
-                "        position_time=position_time\n"
-                "    )",
-            )
-
-        self._validate_time_contract()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-
-        # Handle deprecated boolean flags
-        if (
-            save_log_likelihood_to_results is not None
-            or save_causal_posterior_to_results is not None
-        ):
-            warnings.warn(
-                "save_log_likelihood_to_results and save_causal_posterior_to_results "
-                "are deprecated. Use return_outputs parameter instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-            # Convert old flags to new format
-            outputs_from_flags = set()
-            if save_log_likelihood_to_results:
-                outputs_from_flags.add("log_likelihood")
-            if save_causal_posterior_to_results:
-                outputs_from_flags.add("filter")
-
-            if return_outputs is not None:
-                raise ValueError(
-                    "Cannot specify both return_outputs and deprecated "
-                    "save_*_to_results flags. Use return_outputs only."
-                )
-            return_outputs = outputs_from_flags if outputs_from_flags else None
-
-        # Normalize return_outputs to canonical set
-        requested_outputs = _normalize_return_outputs(return_outputs)
-
-        # The log likelihood has to be materialized when the caller asks for it.
-        # Unchunked, that means caching the single full-time evaluation. Chunked,
-        # caching is not available (``_predict`` disables it), so the chunked
-        # path accumulates the per-chunk rows instead -- which allocates the
-        # same full (n_time, n_state_bins) array, the documented exception to
-        # per-chunk allocation.
-        _validate_inference_arguments(
-            inference_mode,
-            output_mode,
-            cache_likelihood,
-            n_chunks,
-            chunk_size,
-            result_path,
-            checkpoint_dir,
-            selected_intervals,
-            replay_cache_bytes,
-        )
-        return_log_likelihood = "log_likelihood" in requested_outputs
-        if (
-            inference_mode == "dense"
-            and return_log_likelihood
-            and not cache_likelihood
-            and n_chunks == 1
-        ):
-            cache_likelihood = True
-
-        predicted_transitions = None
-        if discrete_transition_covariate_data is not None:
-            if self.discrete_transition_coefficients_ is None:
-                raise ValueError(
-                    "discrete_transition_coefficients_ is None but covariate data provided"
-                )
-            predicted_transitions = predict_discrete_state_transitions(
-                self.discrete_transition_design_matrix_,
-                self.discrete_transition_coefficients_,
-                discrete_transition_covariate_data,
-            )
-            _validate_covariate_time_length(predicted_transitions, time_centers)
-        if inference_mode == "checkpointed":
-            return self._predict_checkpointed(
-                time_edges=time_edges,
-                log_likelihood_args=(
-                    position_time,
-                    position,
-                    spike_times,
-                    spike_waveform_features,
-                ),
-                is_missing=is_missing,
-                discrete_transitions=predicted_transitions,
-                output_mode=output_mode,
-                chunk_size=chunk_size,
-                result_path=result_path,
-                checkpoint_dir=checkpoint_dir,
-                selected_intervals=selected_intervals,
-                requested_outputs=requested_outputs,
-                return_outputs=return_outputs,
-                max_read_bytes=max_read_bytes,
-                replay_cache_bytes=replay_cache_bytes,
-            )
-
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-        ) = self._predict(
+        return self._predict_spikes(
+            (spike_times, spike_waveform_features),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
-            discrete_state_transitions=predicted_transitions,
-            accumulate_log_likelihoods=return_log_likelihood,
-        )
-
-        return self._convert_results_to_xarray(
-            time_centers,
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            time_edges=time_edges,
-            is_missing=is_missing,
-            log_likelihood=(
-                log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
-            ),
-            causal_state_probabilities=(
-                causal_state_probabilities if "filter" in requested_outputs else None
-            ),
-            predictive_state_probabilities=(
-                predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                predictive_posterior
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
+            inference_mode=inference_mode,
+            output_mode=output_mode,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            max_read_bytes=max_read_bytes,
+            replay_cache_bytes=replay_cache_bytes,
+            return_outputs=return_outputs,
         )
 
     @requires_time_edges
     def estimate_parameters(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         is_missing: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
-        max_iter: int = 20,
+        max_iter: int = 100,
         tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        return_outputs: str | list[str] | set[str] | None = None,
-        save_log_likelihood_to_results: bool | None = None,
+        return_outputs: ReturnOutputs = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "auto",
+        valid_position_intervals: ArrayLike | None = None,
+        transition_representation: TransitionRepresentation = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
@@ -6256,27 +3814,38 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        position : array_like, shape (n_time_position, n_position_dims)
+            Position data.
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Environment labels, by default None.
-        discrete_transition_covariate_data : dict-like, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None. This concerns the E-steps only: it
+            does not exclude encoding data, in the initial fit or the encoding
+            refits. Leave samples out of those with ``is_training``.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin of ``time_edges``, each the covariate's value at the bin
+            center. EM estimates the transitions on them, and they place the
+            formula's spline knots. By default None.
         estimate_initial_conditions : bool, optional
             Whether to estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
@@ -6289,16 +3858,15 @@ class ClusterlessDetector(_DetectorBase):
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
         max_iter : int, optional
-            Maximum number of EM iterations, by default 20.
+            Maximum number of EM iterations, by default 100. EM stops earlier once it converges.
         tolerance : float, optional
             Convergence tolerance for the EM algorithm, in nats per time
             bin, by default 1e-5. EM stops when the penalized log-likelihood
             (marginal log-likelihood plus the discrete-transition log prior)
             rises by less than ``tolerance`` times the number of time bins in
-            one iteration, without decreasing. With
-            ``discrete_transition_prior_weight > 0`` or REML smoothness the
-            last M-step must also change every transition probability by less
-            than 1e-4.
+            one iteration, without decreasing. When EM estimates the discrete
+            transitions, the last M-step must also change every transition
+            probability by less than 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
             Caching is disabled automatically when ``n_chunks > 1``; asking to
@@ -6312,11 +3880,9 @@ class ClusterlessDetector(_DetectorBase):
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
         min_encoding_local_mass : float, optional
             Minimum sum of local state weights to update encoding model. By default 1.0.
         min_encoding_local_ess : float, optional
@@ -6328,14 +3894,18 @@ class ClusterlessDetector(_DetectorBase):
             ``min_encoding_local_ess`` to skip poorly supported updates.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Bins outside them are missing in every E-step, as in ``predict``.
         transition_representation : {"auto", "dense", "structured"}, optional
             Which EM to run, by default "auto"; keep the default unless you
             need one path. "dense" EM holds several (time bins x state bins)
@@ -6383,81 +3953,37 @@ class ClusterlessDetector(_DetectorBase):
         -------
         results : xr.Dataset
             Results of the decoding.
-        """
-        _validate_encoding_update_damping(encoding_update_damping)
-        # Before the internal fit, which replaces the fitted state.
-        transition_representation = _resolve_em_options(
-            transition_representation,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
-        )
-        time_edges, _ = _validate_estimation_arguments(
-            time_edges,
-            n_chunks,
-            return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
-        )
-        # Mirror predict(): bins without tracked position are missing
-        # observations in the E-step.
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            None
-            if position is None
-            else (position[:, np.newaxis] if position.ndim == 1 else position),
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        # Before the internal fit, so a refused estimate leaves the model as is.
-        _require_observed_bins(is_missing)
-        self._fit_em_model(
-            lambda representation: self.fit(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
-                discrete_transition_covariate_data=discrete_transition_covariate_data,
-                encoding_time_range=encoding_time_range,
-                valid_position_intervals=valid_position_intervals,
-                transition_representation=representation,
-                max_dense_transition_bytes=max_dense_transition_bytes,
-            ),
-            transition_representation,
-            len(time_edges) - 1,
-            structured_required=bool(
-                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
-            ),
-        )
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "spike_waveform_features": spike_waveform_features,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-            "encoding_time_range": encoding_time_range,
-            "valid_position_intervals": valid_position_intervals,
-        }
 
-        return super().estimate_parameters(
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
+        Notes
+        -----
+        If the call raises after its arguments are validated, the detector and
+        its environments are restored to their state before the call, except
+        that a stored ``log_likelihood_`` is dropped. This includes a warning
+        promoted to an error (``-W error`` or
+        ``warnings.simplefilter("error")``), such as EM's convergence or
+        monotonicity warnings. A ``result_path`` store that the final E-step
+        has written is not removed. Until the call returns, the detector keeps
+        the previous fit (continuous and discrete transitions, initial
+        conditions, encoding model and environment grids) for that restore,
+        so EM holds this second copy; a dense continuous transition has
+        ``n_state_bins ** 2`` float64 values.
+        """
+        return self._estimate_spike_parameters(
+            position_time,
+            position,
+            (spike_times, spike_waveform_features),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-            ),
             is_missing=is_missing,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
@@ -6467,9 +3993,13 @@ class ClusterlessDetector(_DetectorBase):
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+            encoding_update_damping=encoding_update_damping,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
             chunk_size=chunk_size,
             result_path=result_path,
             replay_cache_bytes=replay_cache_bytes,
@@ -6481,59 +4011,71 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        time_edges: ArrayLike,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,), optional
-            Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
-            Position data
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        spike_times : list of np.ndarray, len (n_electrodes,)
+            One 1-D array of spike times per electrode, in seconds; NaN or
+            infinite times raise ``DataError``.
+        spike_waveform_features : list of np.ndarray, len (n_electrodes,)
+            One array of shape (n_spikes, n_features) per electrode: the
+            waveform features of each spike in ``spike_times``.
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
+        position : array_like, shape (n_time_position, n_position_dims), optional
+            Position data.
+        position_time : array_like, shape (n_time_position,), optional
+            Time points for position data.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+            Splits data into chunks for processing, by default 1.
 
         Returns
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
+            Most likely state and position at each decode bin, indexed by
+            the bin center time.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
-        self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        return super().most_likely_sequence(
+        return self._most_likely_spike_sequence(
+            (spike_times, spike_waveform_features),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-                spike_waveform_features,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )
 
@@ -6541,10 +4083,14 @@ class ClusterlessDetector(_DetectorBase):
 class SortedSpikesDetector(_DetectorBase):
     """
     Detector class for sorted spikes.
+
+    Decodes from the spike times of sorted units. The constructor parameters
+    are documented on ``__init__``.
     """
 
     def __init__(
         self,
+        *,
         discrete_initial_conditions: np.ndarray,
         continuous_initial_conditions_types: ContinuousInitialConditions,
         discrete_transition_type: DiscreteTransitions,
@@ -6555,7 +4101,7 @@ class SortedSpikesDetector(_DetectorBase):
         observation_models: Observations,
         environments: Environments,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
-        sorted_spikes_algorithm_params: dict | None = None,
+        sorted_spikes_algorithm_params: dict[str, Any] | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
@@ -6592,18 +4138,21 @@ class SortedSpikesDetector(_DetectorBase):
         sorted_spikes_algorithm_params : dict or None, optional
             Parameters for the sorted spikes algorithm. Stored as-is (``None``
             stays ``None``) to keep sklearn's ``clone()`` contract intact. If
-            ``None`` (the default), the module-level
-            ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied into
-            a fresh dict **at fit time**; a user-supplied dict is **stored by
-            reference** and copied on use. Mutations the caller makes to their
-            own dict between construction and fit are therefore observed by the
-            fit — pass ``dict(my_params)`` for an isolated copy.
+            ``None`` (the default), the algorithm's registered
+            ``default_params`` are copied into a fresh dict **at
+            fit time**; a user-supplied dict replaces those defaults, is
+            **stored by reference** and copied on use. At fit time a key the
+            algorithm's fit does not accept raises ``ValidationError``.
+            Mutations the caller makes to their own dict between construction
+            and fit are therefore observed by the fit — pass
+            ``dict(my_params)`` for an isolated copy.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
             Names of the states, by default None.
         sampling_frequency : float, optional
-            Sampling frequency, by default 500.0.
+            Rate in Hz of the decode bins; decoding ``time_edges`` must be
+            ``1 / sampling_frequency`` wide. By default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
         discrete_transition_prior_weight : float or np.ndarray, optional
@@ -6618,84 +4167,113 @@ class SortedSpikesDetector(_DetectorBase):
             local state. See ``_DetectorBase`` for details.
         """
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
-            discrete_transition_concentration,
-            discrete_transition_stickiness,
-            discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
-            infer_track_interior,
-            state_names,
-            sampling_frequency,
-            no_spike_rate,
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_concentration=discrete_transition_concentration,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            discrete_transition_regularization=discrete_transition_regularization,
+            continuous_transition_types=continuous_transition_types,
+            observation_models=observation_models,
+            environments=environments,
+            infer_track_interior=infer_track_interior,
+            state_names=state_names,
+            sampling_frequency=sampling_frequency,
+            no_spike_rate=no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
+        self._sorted_spikes_algorithm()  # rejects an unregistered name
         # Stored as-is to keep sklearn's clone() contract intact; the dict
         # copy + default resolution happens lazily in
         # ``_resolve_sorted_spikes_algorithm_params`` at fit time.
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
 
-    def _resolve_sorted_spikes_algorithm_params(self) -> dict:
-        """Return a fresh copy of the sorted-spikes algorithm params.
+    def _resolve_sorted_spikes_algorithm_params(self) -> dict[str, Any]:
+        """Return a fresh, validated copy of the sorted-spikes algorithm params.
 
-        Resolves a ``None`` user spec to a copy of
-        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS``; otherwise returns a
-        copy of the user's dict. Always returns a fresh dict, so mutating
-        the returned value does not leak into the default or into the
-        user's original dict.
+        Resolves a ``None`` user spec to the algorithm's registered
+        ``default_params``; otherwise copies the user's dict.
+        Raises ``ValidationError`` for a key the registered fit does not
+        accept.
         """
-        if self.sorted_spikes_algorithm_params is None:
-            return dict(_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS)
-        return dict(self.sorted_spikes_algorithm_params)
+        return _resolve_fit_params(
+            _SORTED_SPIKES_ALGORITHMS,
+            self.sorted_spikes_algorithm,
+            self.sorted_spikes_algorithm_params,
+            "sorted_spikes_algorithm_params",
+        )
+
+    def _sorted_spikes_algorithm(
+        self,
+    ) -> LikelihoodAlgorithm[SortedSpikesFit, SortedSpikesPredict]:
+        """Return the registered record of ``sorted_spikes_algorithm``."""
+        try:
+            return _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
+        except KeyError:
+            msg = f"Unknown sorted_spikes_algorithm {self.sorted_spikes_algorithm!r}"
+            raise ValidationError(
+                msg,
+                expected=f"one of {sorted(_SORTED_SPIKES_ALGORITHMS)}",
+                got=repr(self.sorted_spikes_algorithm),
+            ) from None
 
     def fit_encoding_model(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        weights: np.ndarray | None = None,
         *,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
     ) -> None:
         """
         Fit place fields to the data.
 
+        Fits one model per ``(environment_name, encoding_group)`` of the
+        current ``observation_models``, not those of the last fit
+        (``state_space_``).
+
         Parameters
         ----------
-        position_time : np.ndarray
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
-            Position data
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        is_training : np.ndarray, optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, optional
-            Environment labels, by default None.
+        position : array_like, shape (n_time_position, n_position_dims)
+            Position data.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         weights : np.ndarray, optional, shape (n_time_position,)
             Weights for training data, by default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         Attributes
         ----------
@@ -6704,84 +4282,38 @@ class SortedSpikesDetector(_DetectorBase):
             observation model configuration (environment, encoding group).
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
-        logger.info("Fitting place fields...")
-        n_time = position.shape[0]
-        position = position if position.ndim > 1 else position[:, np.newaxis]
-        if is_training is None:
-            is_training = np.ones((n_time,), dtype=bool)
-
-        if encoding_group_labels is None:
-            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
-
-        if environment_labels is None:
-            environment_labels = np.asarray(
-                [self.environments[0].environment_name] * n_time
+        self._fit_encoding_model(
+            self._validated_inputs(
+                "encoding",
+                (spike_times,),
+                position_time=position_time,
+                position=position,
+                is_training=is_training,
+                encoding_group_labels=encoding_group_labels,
+                environment_labels=environment_labels,
+                weights=weights,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
             )
+        )
 
-        is_training = np.asarray(is_training).squeeze()
-        support = EncodingSupport(
-            position_time,
-            position,
-            encoding_time_range=encoding_time_range,
-            valid_position_intervals=valid_position_intervals,
+    def _fit_encoding_model(self, inputs: _ValidatedInputs) -> None:
+        """Body of ``fit_encoding_model``, which EM encoding updates call."""
+        logger.info("Fitting place fields...")
+        (spike_times,) = inputs.spike_data
+        position_time = cast("np.ndarray", inputs.position_time)
+        position = cast("np.ndarray", inputs.position)
+        support = cast("EncodingSupport", inputs.encoding_support)
+        weights = inputs.weights
+        is_training, encoding_group_labels, environment_labels = self._encoding_masks(
+            inputs
         )
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
+        encoding_algorithm = self._sorted_spikes_algorithm().fit
 
-        # Build the new models locally so a failed refit keeps the previous
-        # encoding model and its stored log likelihood.
-        encoding_model: dict = {}
-
-        # An encoding model is shared by ``(environment_name, encoding_group)``;
-        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
-        # ``ObservationModel`` equality now distinguishes those flags,
-        # ``np.unique`` can return several entries that map to the same
-        # ``likelihood_name`` — fit each key once to avoid redundant work.
-        fitted_likelihood_names: set = set()
-        for obs in np.unique(self.observation_models):
-            likelihood_name = (obs.environment_name, obs.encoding_group)
-            if likelihood_name in fitted_likelihood_names:
-                continue
-            fitted_likelihood_names.add(likelihood_name)
-
-            environment = self._get_environment_by_name(obs.environment_name)
-
-            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
-            encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
-                self.sorted_spikes_algorithm
-            ]
-            is_group = is_training & is_encoding & is_environment
-            # The mask is this model's exposure: a sample outside the selection
-            # must contribute no occupancy, because only in-group spikes are
-            # counted. Passing ``weights=None`` means "uniform over every
-            # supplied sample", which is only true when the mask selects
-            # everything -- otherwise occupancy accumulates over held-out
-            # samples and other environments / encoding groups while the spike
-            # count does not, biasing every place field low. The position array
-            # stays full-length so it remains aligned with the weights and with
-            # the grid used to interpolate per-spike weights.
-            group_weights = _group_weights(is_group, weights, likelihood_name, support)
-
-            # GLM requires environment geometry that KDE derives internally
-            glm_kwargs = {}
-            if self.sorted_spikes_algorithm == "sorted_spikes_glm":
-                glm_kwargs = {
-                    "place_bin_edges": environment.place_bin_edges_,
-                    "edges": environment.edges_,
-                    "is_track_interior": environment.is_track_interior_,
-                    "is_track_boundary": environment.is_track_boundary_,
-                }
-
-            # Filter algorithm_params to only those accepted by the
-            # encoding function (KDE and GLM have different signatures).
-            # Exclude glm_kwargs keys so user params can't override
-            # environment geometry.
-            sig = inspect.signature(encoding_algorithm)
-            valid_params = set(sig.parameters.keys()) - set(glm_kwargs.keys())
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
-
-            encoding_model[likelihood_name] = encoding_algorithm(
+        def fit_group(environment: Environment, group_weights: np.ndarray) -> Any:
+            return encoding_algorithm(
                 position_time=position_time,
                 position=position,
                 spike_times=[
@@ -6795,62 +4327,79 @@ class SortedSpikesDetector(_DetectorBase):
                 environment=environment,
                 _encoding_support=support,
                 weights=group_weights,
-                **glm_kwargs,
-                **filtered_kwargs,
+                **kwargs,
             )
+
+        encoding_model = self._fit_encoding_groups(
+            fit_group,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            weights=weights,
+            support=support,
+        )
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
-        self.time_contract_ = {
-            "version": 1,
-            "rate_units": "Hz",
-            "encoding_time_units": "seconds",
-        }
+        self.time_contract_ = dict(_TIME_CONTRACT)
 
     def fit(
-        self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        self: _Detector,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         *,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "dense",
+        valid_position_intervals: ArrayLike | None = None,
+        transition_representation: TransitionRepresentation = "dense",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
-    ) -> "SortedSpikesDetector":
+    ) -> _Detector:
         """
         Fit the detector to the data.
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : array_like, shape (n_time_position,)
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : array_like, shape (n_time_position, n_position_dims)
             Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            Group labels for encoding, by default None.
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Environment labels, by default None.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            training values of the covariates named in the transition formula,
+            which place its spline knots (``quantile_bs``) and are kept to
+            rebuild its design. Any number of rows, e.g. one per position
+            sample: decoding evaluates the transitions on its own covariates.
+            By default None.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Encoding support does not mark decode bins missing: pass the
+            tracking intervals of the decoded period to ``predict``.
 
         transition_representation : {"dense", "structured", "auto"}, optional
             By default "dense", which builds the full transition matrix.
@@ -6865,49 +4414,108 @@ class SortedSpikesDetector(_DetectorBase):
 
         Returns
         -------
-        SortedSpikesDetector
-            Fitted detector instance.
+        self
+            The fitted detector, of its own class.
         """
+        inputs = self._validated_inputs(
+            "fit",
+            (spike_times,),
+            position_time=position_time,
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
+        )
         with self._restore_state_on_error():
             self._fit(
-                position,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                cast("np.ndarray", inputs.position),
+                inputs.is_training,
+                inputs.encoding_group_labels,
+                inputs.environment_labels,
                 discrete_transition_covariate_data,
                 transition_representation=transition_representation,
                 max_dense_transition_bytes=max_dense_transition_bytes,
             )
             self.fit_encoding_model(
-                position_time,
-                position,
-                spike_times,
-                is_training,
-                encoding_group_labels,
-                environment_labels,
+                inputs.position_time,
+                inputs.position,
+                *inputs.spike_data,
+                is_training=inputs.is_training,
+                encoding_group_labels=inputs.encoding_group_labels,
+                environment_labels=inputs.environment_labels,
                 encoding_time_range=encoding_time_range,
                 valid_position_intervals=valid_position_intervals,
             )
         return self
 
+    _PREDICT_EXAMPLE = (
+        "    results = detector.predict(\n"
+        "        spike_times=spike_times, time_edges=time_edges,\n"
+        "        position=position, position_time=position_time\n"
+        "    )"
+    )
+
+    def _likelihood_predict_function(self) -> SortedSpikesPredict:
+        return self._sorted_spikes_algorithm().predict
+
+    def _likelihood_execution_settings(self) -> dict[str, Any]:
+        return _execution_settings(
+            self._sorted_spikes_algorithm(), self.sorted_spikes_algorithm_params
+        )
+
     @row_slice_aware
     @requires_time_edges
     def compute_log_likelihood(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray | None,
+        position_time: ArrayLike | None,
+        position: ArrayLike | None,
         spike_times: list[np.ndarray],
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
         *,
-        time_edges: np.ndarray,
-        _no_spike_time_bin_sizes: np.ndarray | None = None,
-        _time_grid: _DecodeTimeGrid | None = None,
-        _position_context: _LikelihoodPositionContext | None = None,
-        _spike_time_order: _SpikeTimeOrder | None = None,
-    ) -> jnp.ndarray:
+        time_edges: ArrayLike,
+        valid_position_intervals: ArrayLike | None = None,
+    ) -> jax.Array:
         """
         Compute the log likelihood for the given data.
+
+        Parameters
+        ----------
+        position_time : array_like, shape (n_time_position,), or None
+            Time points for position data.
+        position : array_like, shape (n_time_position, n_position_dims), or None
+            Position data.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        is_missing : array_like of bool, shape (n_rows,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            requested decode bin, by default None.
+        row_slice : slice | None, optional
+            Contiguous range of rows of the full-time likelihood to compute, by
+            default None (all rows). ``time_edges`` stay the FULL decoding edges,
+            so a decoding spike is owned by its global row no matter how the
+            rows were chunked, and the result equals the full-time likelihood
+            sliced by ``row_slice``.
+        time_edges : array_like, shape (n_bins + 1,)
+            Uniform decode bin edges. Results have one row per bin, at the
+            bin centers.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
+
+        Returns
+        -------
+        log_likelihood : jax.Array, shape (n_rows, n_state_bins)
+            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
 
         Notes
         -----
@@ -6938,272 +4546,72 @@ class SortedSpikesDetector(_DetectorBase):
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
         — they include the kernel and mass-balance terms.
-
-        Parameters
-        ----------
-        time_edges : np.ndarray, shape (n_bins + 1,)
-            Uniform decode bin edges. Results have one row per bin, at the
-            bin centers.
-        position_time : np.ndarray, shape (n_time_position,)
-            Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
-            Position data.
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        is_missing : np.ndarray, shape (n_rows,), optional
-            Boolean array indicating missing data for the requested rows, by
-            default None.
-        row_slice : slice | None, optional
-            Contiguous range of rows of the full-time likelihood to compute, by
-            default None (all rows). ``time_edges`` stay the FULL decoding edges,
-            so a decoding spike is owned by its global row no matter how the
-            rows were chunked, and the result equals the full-time likelihood
-            sliced by ``row_slice``.
-        _no_spike_time_bin_sizes : np.ndarray | None, optional
-            Internal full-timeline array of bin durations, prepared once by ``_predict``
-            and reused for No-Spike in every chunk. None computes it on demand.
-        _spike_time_order : _SpikeTimeOrder | None, optional
-            Internal ordering preparation shared across states and chunks. None
-            creates fresh preparation for this likelihood call.
-
-        Returns
-        -------
-        log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
-            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
-        self._validate_time_contract()
-        time_edges, row_time = _decode_time_edges(
-            time_edges,
-            *self._learned_transition_time_bin_width(),
-            _time_grid=_time_grid,
-            row_slice=row_slice,
+        return self._compute_spike_log_likelihood(
+            position_time,
+            position,
+            (spike_times,),
+            is_missing,
+            row_slice,
+            time_edges=time_edges,
+            valid_position_intervals=valid_position_intervals,
         )
-        if (
-            not isinstance(_time_grid, _DecodeTimeGrid)
-            or _time_grid.edges is not time_edges
-        ):
-            _time_grid = _DecodeTimeGrid.from_validated_edges(
-                time_edges,
-                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
-                / (len(time_edges) - 1),
-            )
-        if position is not None and position_time is None:
-            raise ValidationError("position_time is required when position is provided")
-        needs_position = self._decode_reads_position()
-        if not isinstance(
-            _position_context, _LikelihoodPositionContext
-        ) or not _position_context.matches(
-            time_edges, position_time, position, needs_position
-        ):
-            # Without a prepared context this is a direct call, so it warns
-            # like the other public decode entry points.
-            _position_context = _LikelihoodPositionContext.prepare(
-                time_edges,
-                position_time,
-                position,
-                reads_position=needs_position,
-                warn_outside_tracking=_position_context is None,
-            )
-        self._validate_decode_population(spike_times)
-        position_missing = _position_context.is_missing
-        logger.info("Computing log likelihood...")
-        if _spike_time_order is None:
-            _spike_time_order = _SpikeTimeOrder()
-        row_start, row_stop = resolve_row_slice(row_slice, len(time_edges) - 1)
-        n_rows = row_stop - row_start
-        # Position interpolation, local kernels and the non-local penalty are
-        # pointwise in the decoding time, so they are evaluated at the requested
-        # bins' centers; the spike likelihoods bin against the full edges.
-
-        non_local_penalty = self._non_local_position_penalty()
-        if position is None and needs_position:
-            reason = []
-            if np.any([obs.is_local for obs in self.observation_models]):
-                reason.append("local observation models")
-            if non_local_penalty > 0:
-                reason.append("non_local_position_penalty > 0")
-            raise ValidationError(
-                f"Missing required parameter: position (needed for {', '.join(reason)})",
-                expected="position array with shape (n_time, n_dims)",
-                got="None",
-                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
-                example="    results = detector.predict(..., time_edges=time_edges, position=position, position_time=position_time)",
-            )
-        if position is not None:
-            self._validate_position_dimensionality(position, context="predict")
-
-        if is_missing is None:
-            is_missing = np.zeros(n_rows, dtype=bool)
-        else:
-            is_missing = np.asarray(is_missing, dtype=bool)
-            if is_missing.shape != (n_rows,):
-                raise ValidationError(
-                    "is_missing must have one entry per requested decode bin"
-                )
-        if position_missing is not None:
-            is_missing = is_missing | position_missing[row_start:row_stop]
-        if _position_context.all_missing:
-            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
-        position = _position_context.position
-
-        _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
-
-        # Pre-compute state bins mask for all states (avoid recomputation in loop)
-        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
-        state_bin_masks = {
-            state_id: interior_state_ind == state_id
-            for state_id in range(len(self.observation_models))
-        }
-
-        # Use dict for O(1) lookup instead of list
-        computed_likelihoods = {}
-
-        # Compute all likelihoods first (stays in JAX/GPU if available)
-        likelihood_results = {}
-        for state_id, obs in enumerate(self.observation_models):
-            # Multi-bin local computes full spatial likelihood (is_local=False)
-            # then adds position kernel afterward
-            effective_is_local = obs.is_local and self.local_position_std is None
-
-            likelihood_name = (
-                obs.environment_name,
-                obs.encoding_group,
-                effective_is_local,
-                obs.is_no_spike,
-            )
-
-            if obs.is_no_spike:
-                likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    spike_times,
-                    self.no_spike_rate,
-                    time_edges=time_edges,
-                    row_slice=row_slice,
-                    # The fitted setting, as the other likelihoods receive it.
-                    # No-Spike may have no encoding entry; default to showing the bar.
-                    disable_progress_bar=self.encoding_model_.get(
-                        likelihood_name[:2], {}
-                    ).get("disable_progress_bar", False),
-                    _time_bin_sizes=_no_spike_time_bin_sizes,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                )
-            elif likelihood_name not in computed_likelihoods:
-                likelihood_results[state_id] = likelihood_func(
-                    position_time,
-                    position,
-                    spike_times,
-                    time_edges=time_edges,
-                    **self.encoding_model_[likelihood_name[:2]],
-                    is_local=effective_is_local,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                    _time_grid=_time_grid,
-                )
-                computed_likelihoods[likelihood_name] = state_id
-            else:
-                # Will reuse previously computed likelihood
-                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
-
-        # Assemble final array (single pass, stays in JAX)
-        log_likelihood = jnp.zeros(
-            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
-        )
-
-        for state_id in range(len(self.observation_models)):
-            is_state_bin = state_bin_masks[state_id]
-            result = likelihood_results[state_id]
-
-            if isinstance(result, int):
-                # Reuse from previously computed state
-                source_mask = state_bin_masks[result]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, source_mask]
-                )
-            else:
-                # Set new likelihood values
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
-
-        # Apply non-local position penalty if configured
-        if non_local_penalty > 0:
-            # Cache penalties per environment to avoid recomputation
-            env_penalties = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if not obs.is_local and not obs.is_no_spike:
-                    env_name = obs.environment_name
-                    if env_name not in env_penalties:
-                        env = self._get_environment_by_name(env_name)
-                        env_penalties[env_name] = (
-                            self._compute_non_local_position_penalty(
-                                row_time, position_time, position, env
-                            )
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_penalties[env_name]
-                    )
-
-        # Apply local position kernel if configured
-        if self.local_position_std is not None:
-            env_kernels = {}
-            for state_id, obs in enumerate(self.observation_models):
-                if obs.is_local:
-                    env_name = obs.environment_name
-                    if env_name not in env_kernels:
-                        env = self._get_environment_by_name(env_name)
-                        env_kernels[env_name] = self._compute_local_position_kernel(
-                            row_time, position_time, position, env
-                        )
-                    is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
-                        env_kernels[env_name]
-                    )
-
-        # Apply missing data mask
-        is_missing = jnp.asarray(is_missing)
-        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     @requires_time_edges
     def predict(
         self,
         spike_times: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        time_edges: ArrayLike,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
-        inference_mode: str = "dense",
-        output_mode: str = "spatial",
+        inference_mode: InferenceMode = "dense",
+        output_mode: OutputMode = "spatial",
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
         max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         replay_cache_bytes: int | None = None,
-        return_outputs: str | list[str] | set[str] | None = None,
-        save_log_likelihood_to_results: bool | None = None,
-        save_causal_posterior_to_results: bool | None = None,
+        return_outputs: ReturnOutputs = None,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
 
         Parameters
         ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        time_edges : np.ndarray, shape (n_bins + 1,)
+        spike_times : list of np.ndarray, len (n_neurons,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+        position : array_like, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
-        position_time : np.ndarray, shape (n_time_position,), optional
+        position_time : array_like, shape (n_time_position,), optional
             Time points for position data, by default None.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
-            Covariate data for covariate-dependent discrete transition, by default None.
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default False.
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
@@ -7213,15 +4621,7 @@ class SortedSpikesDetector(_DetectorBase):
             likelihood allocation; when the log likelihood is not requested, no
             chunk array is retained.
         n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
-        return_outputs : str, list of str, set of str, or None, optional
-            Controls which optional outputs are returned. See ClusterlessDetector.predict
-            for full documentation. By default None.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
-        save_causal_posterior_to_results : bool, optional
-            DEPRECATED. Use return_outputs='filter' instead. By default None.
-
+            Splits data into chunks for processing, by default 1.
         inference_mode : {"dense", "checkpointed"}, optional
             By default "dense", the in-memory driver. "checkpointed" stores
             boundary messages on disk and replays chunks for exact smoothing;
@@ -7256,241 +4656,114 @@ class SortedSpikesDetector(_DetectorBase):
             them. Chunks beyond the budget are recomputed. By default None,
             which uses 16 GiB or half the available host memory, whichever is
             smaller.
+        return_outputs : str, collection of str, or None, optional
+            Controls which optional outputs are returned. See ClusterlessDetector.predict
+            for full documentation. By default None.
 
         Returns
         -------
         xr.Dataset
             Predicted posterior probabilities.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
-        if position is not None and position_time is None:
-            raise ValidationError(
-                "position_time is required when position is provided",
-                expected="position_time array with shape (n_time_position,)",
-                got="None",
-                hint="Provide position_time corresponding to the position samples",
-                example="    results = detector.predict(\n"
-                "        spike_times=spike_times, time_edges=time_edges,\n"
-                "        position=position, position_time=position_time\n"
-                "    )",
-            )
-
-        self._validate_time_contract()
-        time_edges, time_centers = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-
-        # Handle deprecated boolean flags
-        if (
-            save_log_likelihood_to_results is not None
-            or save_causal_posterior_to_results is not None
-        ):
-            warnings.warn(
-                "save_log_likelihood_to_results and save_causal_posterior_to_results "
-                "are deprecated. Use return_outputs parameter instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-            # Convert old flags to new format
-            outputs_from_flags = set()
-            if save_log_likelihood_to_results:
-                outputs_from_flags.add("log_likelihood")
-            if save_causal_posterior_to_results:
-                outputs_from_flags.add("filter")
-
-            if return_outputs is not None:
-                raise ValueError(
-                    "Cannot specify both return_outputs and deprecated "
-                    "save_*_to_results flags. Use return_outputs only."
-                )
-            return_outputs = outputs_from_flags if outputs_from_flags else None
-
-        # Normalize return_outputs to canonical set
-        requested_outputs = _normalize_return_outputs(return_outputs)
-
-        # The log likelihood has to be materialized when the caller asks for it.
-        # Unchunked, that means caching the single full-time evaluation. Chunked,
-        # caching is not available (``_predict`` disables it), so the chunked
-        # path accumulates the per-chunk rows instead -- which allocates the
-        # same full (n_time, n_state_bins) array, the documented exception to
-        # per-chunk allocation.
-        _validate_inference_arguments(
-            inference_mode,
-            output_mode,
-            cache_likelihood,
-            n_chunks,
-            chunk_size,
-            result_path,
-            checkpoint_dir,
-            selected_intervals,
-            replay_cache_bytes,
-        )
-        return_log_likelihood = "log_likelihood" in requested_outputs
-        if (
-            inference_mode == "dense"
-            and return_log_likelihood
-            and not cache_likelihood
-            and n_chunks == 1
-        ):
-            cache_likelihood = True
-
-        predicted_transitions = None
-        if discrete_transition_covariate_data is not None:
-            if self.discrete_transition_coefficients_ is None:
-                raise ValueError(
-                    "discrete_transition_coefficients_ is None but covariate data provided"
-                )
-            predicted_transitions = predict_discrete_state_transitions(
-                self.discrete_transition_design_matrix_,
-                self.discrete_transition_coefficients_,
-                discrete_transition_covariate_data,
-            )
-            _validate_covariate_time_length(predicted_transitions, time_centers)
-
-        if inference_mode == "checkpointed":
-            return self._predict_checkpointed(
-                time_edges=time_edges,
-                log_likelihood_args=(position_time, position, spike_times),
-                is_missing=is_missing,
-                discrete_transitions=predicted_transitions,
-                output_mode=output_mode,
-                chunk_size=chunk_size,
-                result_path=result_path,
-                checkpoint_dir=checkpoint_dir,
-                selected_intervals=selected_intervals,
-                requested_outputs=requested_outputs,
-                return_outputs=return_outputs,
-                max_read_bytes=max_read_bytes,
-                replay_cache_bytes=replay_cache_bytes,
-            )
-
-        (
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            log_likelihood,
-            causal_posterior,
-            predictive_posterior,
-        ) = self._predict(
+        return self._predict_spikes(
+            (spike_times,),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
-            discrete_state_transitions=predicted_transitions,
-            accumulate_log_likelihoods=return_log_likelihood,
-        )
-
-        return self._convert_results_to_xarray(
-            time_centers,
-            acausal_posterior,
-            acausal_state_probabilities,
-            marginal_log_likelihood,
-            time_edges=time_edges,
-            is_missing=is_missing,
-            log_likelihood=(
-                log_likelihood if "log_likelihood" in requested_outputs else None
-            ),
-            causal_posterior=(
-                causal_posterior if "filter" in requested_outputs else None
-            ),
-            causal_state_probabilities=(
-                causal_state_probabilities if "filter" in requested_outputs else None
-            ),
-            predictive_state_probabilities=(
-                predictive_state_probabilities
-                if "predictive" in requested_outputs
-                else None
-            ),
-            predictive_posterior=(
-                predictive_posterior
-                if "predictive_posterior" in requested_outputs
-                else None
-            ),
+            inference_mode=inference_mode,
+            output_mode=output_mode,
+            chunk_size=chunk_size,
+            result_path=result_path,
+            checkpoint_dir=checkpoint_dir,
+            selected_intervals=selected_intervals,
+            max_read_bytes=max_read_bytes,
+            replay_cache_bytes=replay_cache_bytes,
+            return_outputs=return_outputs,
         )
 
     @requires_time_edges
     def estimate_parameters(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
+        position_time: ArrayLike,
+        position: ArrayLike,
         spike_times: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
+        time_edges: ArrayLike,
         is_missing: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
-        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        is_training: ArrayLike | None = None,
+        encoding_group_labels: ArrayLike | None = None,
+        environment_labels: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
-        max_iter: int = 20,
+        max_iter: int = 100,
         tolerance: float = 1e-5,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        return_outputs: str | list[str] | set[str] | None = None,
-        save_log_likelihood_to_results: bool | None = None,
+        return_outputs: ReturnOutputs = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
         encoding_time_range: np.ndarray | None = None,
-        valid_position_intervals: np.ndarray | None = None,
-        transition_representation: str = "auto",
+        valid_position_intervals: ArrayLike | None = None,
+        transition_representation: TransitionRepresentation = "auto",
         max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
         chunk_size: int | None = None,
         result_path: str | Path | None = None,
         replay_cache_bytes: int | None = None,
     ) -> xr.Dataset:
-        """
-        Estimate the initial conditions and transition probabilities
-         using the Expectation-Maximization (EM) algorithm.
+        """Estimate the initial conditions and transition probabilities.
+
+        Uses the Expectation-Maximization (EM) algorithm.
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
-            Time of each position sample
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
-            Position data, by default None.
+        position_time : array_like, shape (n_time_position,)
+            Time points for position data.
+        position : array_like, shape (n_time_position, n_position_dims)
+            Position data.
         spike_times : list of np.ndarray, len (n_neurons,)
-            Each element of the list is an array of spike times for a neuron
-        time_edges : np.ndarray, shape (n_bins + 1,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Denote missing samples, None includes all samples, by default None
-        is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array where True values include the sample in estimating the firing rate by
-            position, None includes all samples, by default None
-        encoding_group_labels : np.ndarray, shape (n_time_position,), optional
-            If place fields should correspond to each state, label each time point with the group name
-            For example, some points could correspond to inbound trajectories and some outbound, by default None
-        environment_labels : np.ndarray, shape (n_time_position,), optional
-            Labels denoting which environment the sample corresponds to, by default None
-        discrete_transition_covariate_data : dict, optional
-            Covariate data for a covariate dependent discrete transition.
-            A dict-like object that can be used to look up variables, by default None
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None. This concerns the E-steps only: it
+            does not exclude encoding data, in the initial fit or the encoding
+            refits. Leave samples out of those with ``is_training``.
+        is_training : array_like of bool, shape (n_time_position,), optional
+            True (or 1) for the position samples to train the encoding model
+            on, one entry per sample, by default None (every sample).
+        encoding_group_labels : array_like of int or str, shape (n_time_position,), optional
+            Encoding group of each position sample, matched to the observation
+            models' ``encoding_group``, by default None (group 0).
+        environment_labels : array_like of str, shape (n_time_position,), optional
+            Environment name of each position sample, by default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin of ``time_edges``, each the covariate's value at the bin
+            center. EM estimates the transitions on them, and they place the
+            formula's spline knots. By default None.
         estimate_initial_conditions : bool, optional
-            Estimate the initial conditions, by default True
+            Estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
-            Estimate the discrete transition matrix, by default True
+            Estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
             Re-fit the place fields in each M-step, weighted by the Local
             state's posterior, by default False. Every state shares the
@@ -7499,7 +4772,7 @@ class SortedSpikesDetector(_DetectorBase):
             EM reports as a monotonicity violation and never counts as
             convergence. Off by default for that reason.
         max_iter : int, optional
-            Maximuim number of EM iterations, by default 20
+            Maximum number of EM iterations, by default 100. EM stops earlier once it converges.
         tolerance : float, optional
             Convergence tolerance for EM, in nats per time bin, by default
             1e-5. EM stops when the penalized log-likelihood (marginal
@@ -7522,11 +4795,9 @@ class SortedSpikesDetector(_DetectorBase):
             Dense EM only: the number of row chunks the filter and smoother
             process, by default 1. Structured EM uses ``chunk_size`` (rows per
             chunk) instead.
-        return_outputs : str, list of str, set of str, or None, optional
+        return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
-        save_log_likelihood_to_results : bool, optional
-            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
         min_encoding_local_mass : float, optional
             Minimum sum of local state weights to update encoding model. By default 1.0.
         min_encoding_local_ess : float, optional
@@ -7538,14 +4809,18 @@ class SortedSpikesDetector(_DetectorBase):
             ``min_encoding_local_ess`` to skip poorly supported updates.
 
         encoding_time_range : array_like, shape (2,), optional
-            Acquisition start/stop in seconds. Clips encoding support using the
-            original interpolation basis. Uniform samples otherwise include endpoint
-            half-cells; a singleton requires explicit bounds or a tracking interval.
+            Acquisition start/stop in seconds, replacing the outer bounds of
+            the encoding support. A range inside the samples clips it, using
+            the original interpolation basis; a range past them extends it,
+            holding position at the first or last sample. A range over one
+            sample interval past them warns. Uniform samples otherwise include
+            endpoint half-cells; a singleton requires explicit bounds or a
+            tracking interval.
         valid_position_intervals : array_like, shape (n_intervals, 2), optional
             Ordered, non-overlapping continuous tracking intervals in seconds.
             Required for irregular timestamps; each interval needs a finite sample.
             Positions are held at segment endpoints and NaN rows split support.
-            Encoding support does not automatically mark decode bins missing.
+            Bins outside them are missing in every E-step, as in ``predict``.
         transition_representation : {"auto", "dense", "structured"}, optional
             Which EM to run, by default "auto"; keep the default unless you
             need one path. "dense" EM holds several (time bins x state bins)
@@ -7591,79 +4866,39 @@ class SortedSpikesDetector(_DetectorBase):
 
         Returns
         -------
-        xr.Dataset
-            Results of the decoding
+        results : xr.Dataset
+            Results of the decoding.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
+
+        Notes
+        -----
+        If the call raises after its arguments are validated, the detector and
+        its environments are restored to their state before the call, except
+        that a stored ``log_likelihood_`` is dropped. This includes a warning
+        promoted to an error (``-W error`` or
+        ``warnings.simplefilter("error")``), such as EM's convergence or
+        monotonicity warnings. A ``result_path`` store that the final E-step
+        has written is not removed. Until the call returns, the detector keeps
+        the previous fit (continuous and discrete transitions, initial
+        conditions, encoding model and environment grids) for that restore,
+        so EM holds this second copy; a dense continuous transition has
+        ``n_state_bins ** 2`` float64 values.
         """
-        _validate_encoding_update_damping(encoding_update_damping)
-        # Before the internal fit, which replaces the fitted state.
-        transition_representation = _resolve_em_options(
-            transition_representation,
-            n_chunks,
-            chunk_size,
-            result_path,
-            store_log_likelihood,
-            replay_cache_bytes,
-        )
-        time_edges, _ = _validate_estimation_arguments(
-            time_edges,
-            n_chunks,
-            return_outputs,
-            save_log_likelihood_to_results,
-            min_encoding_local_mass,
-            min_encoding_local_ess,
-        )
-        position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Mirror predict(): bins without tracked position are missing
-        # observations in the E-step.
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
+        return self._estimate_spike_parameters(
             position_time,
             position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        # Before the internal fit, so a refused estimate leaves the model as is.
-        _require_observed_bins(is_missing)
-        self._fit_em_model(
-            lambda representation: self.fit(
-                position_time,
-                position,
-                spike_times,
-                is_training=is_training,
-                encoding_group_labels=encoding_group_labels,
-                environment_labels=environment_labels,
-                discrete_transition_covariate_data=discrete_transition_covariate_data,
-                encoding_time_range=encoding_time_range,
-                valid_position_intervals=valid_position_intervals,
-                transition_representation=representation,
-                max_dense_transition_bytes=max_dense_transition_bytes,
-            ),
-            transition_representation,
-            len(time_edges) - 1,
-            structured_required=bool(
-                _structured_em_options(chunk_size, result_path, replay_cache_bytes)
-            ),
-        )
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-            "encoding_time_range": encoding_time_range,
-            "valid_position_intervals": valid_position_intervals,
-        }
-
-        return super().estimate_parameters(
+            (spike_times,),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-            ),
             is_missing=is_missing,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
@@ -7673,9 +4908,13 @@ class SortedSpikesDetector(_DetectorBase):
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
             return_outputs=return_outputs,
-            save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
+            encoding_update_damping=encoding_update_damping,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+            transition_representation=transition_representation,
+            max_dense_transition_bytes=max_dense_transition_bytes,
             chunk_size=chunk_size,
             result_path=result_path,
             replay_cache_bytes=replay_cache_bytes,
@@ -7686,55 +4925,77 @@ class SortedSpikesDetector(_DetectorBase):
         self,
         spike_times: list[np.ndarray],
         *,
-        time_edges: np.ndarray,
-        position: np.ndarray | None = None,
-        position_time: np.ndarray | None = None,
+        time_edges: ArrayLike,
+        position: ArrayLike | None = None,
+        position_time: ArrayLike | None = None,
         is_missing: np.ndarray | None = None,
+        valid_position_intervals: ArrayLike | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,), optional
-            Time of each position sample
-        position : np.ndarray, shape (n_time_position, n_position_dims), optional
-            Position data, by default None.
         spike_times : list of np.ndarray, len (n_neurons,)
-            Each element of the list is an array of spike times for a neuron
-        time_edges : np.ndarray, shape (n_bins + 1,)
+            One 1-D array of spike times per neuron, in seconds; NaN or
+            infinite times raise ``DataError``.
+        time_edges : array_like, shape (n_bins + 1,)
             Uniform decode bin edges. Results have one row per bin, at the
             bin centers.
-        is_missing : np.ndarray, shape (n_bins,), optional
-            Denote missing samples, None includes all samples, by default None
+        position : array_like, shape (n_time_position, n_position_dims), optional
+            Position data, by default None.
+        position_time : array_like, shape (n_time_position,), optional
+            Time of each position sample.
+        is_missing : array_like of bool, shape (n_bins,), optional
+            True (or 1) for the bins to decode as missing, one entry per
+            decode bin, by default None.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping ``(start, stop)`` spans of continuous
+            tracking in seconds, as ``fit`` takes. A bin owning a time more
+            than half a position sample outside them decodes as missing,
+            whole. Pass them when tracking stopped: position is otherwise
+            interpolated across the gap, with a ``DataQualityWarning`` for a
+            gap of five or more samples. A
+            model that does not read position ignores them. By default None.
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
+            Required when the discrete transitions depend on covariates: the
+            covariates named in the transition formula, one row per decode
+            bin, each the covariate's value at the bin center (e.g. speed
+            interpolated at ``(time_edges[:-1] + time_edges[1:]) / 2``). By
+            default None, for transitions that do not depend on covariates.
         n_chunks : int, optional
-            Number of chunks for processing, by default 1
+            Number of chunks for processing, by default 1.
 
         Returns
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
+            Most likely state and position at each decode bin, indexed by
+            the bin center time.
+
+        Raises
+        ------
+        DataError
+            If a log likelihood outside the bins marked missing is NaN or
+            ``+inf``.
         """
-        self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
-        )
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
-        is_missing = _missing_bins(
-            time_edges,
-            is_missing,
-            position_time,
-            position,
-            reads_position=self._decode_reads_position(),
-            warn_outside_tracking=True,
-        )
-        return super().most_likely_sequence(
+        return self._most_likely_spike_sequence(
+            (spike_times,),
             time_edges=time_edges,
-            log_likelihood_args=(
-                position_time,
-                position,
-                spike_times,
-            ),
+            position=position,
+            position_time=position_time,
             is_missing=is_missing,
+            valid_position_intervals=valid_position_intervals,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
             n_chunks=n_chunks,
         )
+
+
+# The families' own ``compute_log_likelihood``, recorded when the classes are
+# defined so that a later replacement on a family class is told apart from it.
+_PACKAGE_LOG_LIKELIHOODS: frozenset[Callable[..., Any]] = frozenset(
+    {
+        ClusterlessDetector.__dict__["compute_log_likelihood"],
+        SortedSpikesDetector.__dict__["compute_log_likelihood"],
+    }
+)

@@ -9,18 +9,32 @@ These functions are for internal use only (note the leading underscore in module
 from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from non_local_detector.exceptions import DataError, ValidationError
 
+# Absolute tolerance on the probability sums that transitions, initial
+# conditions and the HMM drivers check. Storing a
+# normalized row in float32 shifts its sum by at most eps32 / 2 = 6e-8, and
+# normalizing it in float32 with pairwise (NumPy) or tree (XLA) sums by about
+# 2e-7 at any row length; a sequential float32 sum drifts like sqrt(n) * eps32,
+# 2.4e-5 measured over a 50,000-bin row. 1e-4 admits all of these. The check
+# guards against gross errors, such as unnormalized inputs; it is not a
+# precision guarantee. A row excess within it inflates the log evidence by up
+# to about 1e-4 nats per time bin on the stationary path and 2e-4 on the
+# covariate path, where the discrete-row and continuous-block tolerances
+# compound.
+PROBABILITY_SUM_TOLERANCE = 1e-4
+
 
 def ensure_probability_distribution(
-    arr: np.ndarray, name: str, tolerance: float = 1e-6
+    arr: ArrayLike, name: str, tolerance: float = 1e-6
 ) -> None:
     """Verify array is a valid probability distribution (sums to 1).
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array that should sum to 1.0
     name : str
         Name of the array for error messages
@@ -37,10 +51,11 @@ def ensure_probability_distribution(
     >>> ensure_probability_distribution(np.array([0.5, 0.5]), "probs")  # OK
     >>> ensure_probability_distribution(np.array([0.6, 0.6]), "probs")  # Raises
     """
-    arr_sum = np.sum(arr)
+    arr_sum = np.sum(np.asarray(arr))
     if not np.isclose(arr_sum, 1.0, atol=tolerance):
+        msg = f"{name} must be a valid probability distribution"
         raise ValidationError(
-            f"{name} must be a valid probability distribution",
+            msg,
             expected="sum = 1.0",
             got=f"sum = {arr_sum:.6f}",
             hint=f"Normalize the array: {name} = {name} / {name}.sum()",
@@ -49,7 +64,7 @@ def ensure_probability_distribution(
 
 
 def ensure_positive_scalar(
-    value: float, name: str, minimum: float = 0.0, strict: bool = True
+    value: float, name: str, minimum: float = 0.0, *, strict: bool = True
 ) -> None:
     """Verify value is positive (or non-negative).
 
@@ -84,8 +99,9 @@ def ensure_positive_scalar(
         expected_str = f"{name} >= {minimum}"
 
     if not condition:
+        msg = f"Invalid value for {name}"
         raise ValidationError(
-            f"Invalid value for {name}",
+            msg,
             expected=expected_str,
             got=f"{name} = {value}",
             hint=f"Use a {'positive' if strict else 'non-negative'} value",
@@ -93,12 +109,12 @@ def ensure_positive_scalar(
         )
 
 
-def ensure_array_1d(arr: np.ndarray, name: str) -> None:
+def ensure_array_1d(arr: ArrayLike, name: str) -> None:
     """Verify array is 1-dimensional.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -113,9 +129,11 @@ def ensure_array_1d(arr: np.ndarray, name: str) -> None:
     >>> ensure_array_1d(np.array([1, 2, 3]), "probs")  # OK
     >>> ensure_array_1d(np.array([[1, 2]]), "probs")  # Raises
     """
+    arr = np.asarray(arr)
     if arr.ndim != 1:
+        msg = f"{name} must be a 1-dimensional array"
         raise ValidationError(
-            f"{name} must be a 1-dimensional array",
+            msg,
             expected="array with shape (n,)",
             got=f"array with shape {arr.shape}",
             hint="Use array.flatten() or array.ravel() to convert to 1D",
@@ -123,12 +141,12 @@ def ensure_array_1d(arr: np.ndarray, name: str) -> None:
         )
 
 
-def ensure_all_finite(arr: np.ndarray, name: str) -> None:
+def ensure_all_finite(arr: ArrayLike, name: str) -> None:
     """Verify all array elements are finite (no NaN or Inf).
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -143,22 +161,24 @@ def ensure_all_finite(arr: np.ndarray, name: str) -> None:
     >>> ensure_all_finite(np.array([1.0, 2.0]), "data")  # OK
     >>> ensure_all_finite(np.array([1.0, np.nan]), "data")  # Raises
     """
+    arr = np.asarray(arr)
     if not np.all(np.isfinite(arr)):
         n_nan = np.sum(np.isnan(arr))
         n_inf = np.sum(np.isinf(arr))
+        msg = f"Found non-finite values in {name}"
         raise DataError(
-            f"Found non-finite values in {name}",
+            msg,
             data_name=name,
             hint=f"Array contains {n_nan} NaN value(s) and {n_inf} Inf value(s). Check your data for missing or invalid values.",
         )
 
 
-def ensure_all_non_negative(arr: np.ndarray, name: str) -> None:
+def ensure_all_non_negative(arr: ArrayLike, name: str) -> None:
     """Verify all array elements are non-negative.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -173,23 +193,25 @@ def ensure_all_non_negative(arr: np.ndarray, name: str) -> None:
     >>> ensure_all_non_negative(np.array([0.0, 1.0]), "probs")  # OK
     >>> ensure_all_non_negative(np.array([-0.1, 1.0]), "probs")  # Raises
     """
+    arr = np.asarray(arr)
     if np.any(arr < 0):
         n_negative = np.sum(arr < 0)
         min_val = np.min(arr)
+        msg = f"{name} must contain only non-negative values"
         raise ValidationError(
-            f"{name} must contain only non-negative values",
+            msg,
             expected="all values >= 0",
             got=f"{n_negative} negative value(s), minimum = {min_val:.6f}",
             hint="Check your data for errors or use np.abs() if negative values should be positive",
         )
 
 
-def ensure_in_range(arr: np.ndarray, name: str, low: float, high: float) -> None:
+def ensure_in_range(arr: ArrayLike, name: str, low: float, high: float) -> None:
     """Verify all array elements are within a range [low, high].
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -208,23 +230,25 @@ def ensure_in_range(arr: np.ndarray, name: str, low: float, high: float) -> None
     >>> ensure_in_range(np.array([0.5, 0.8]), "probs", 0.0, 1.0)  # OK
     >>> ensure_in_range(np.array([1.5]), "probs", 0.0, 1.0)  # Raises
     """
+    arr = np.asarray(arr)
     if np.any(arr < low) or np.any(arr > high):
         min_val = np.min(arr)
         max_val = np.max(arr)
+        msg = f"{name} values must be in range [{low}, {high}]"
         raise ValidationError(
-            f"{name} values must be in range [{low}, {high}]",
+            msg,
             expected=f"all values in [{low}, {high}]",
             got=f"values in [{min_val:.6f}, {max_val:.6f}]",
             hint=f"Use np.clip({name}, {low}, {high}) to clamp values to valid range",
         )
 
 
-def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
+def ensure_square_matrix(matrix: ArrayLike, name: str) -> None:
     """Verify matrix is square (n x n).
 
     Parameters
     ----------
-    matrix : np.ndarray
+    matrix : array_like
         Matrix to check
     name : str
         Name of the matrix for error messages
@@ -239,36 +263,50 @@ def ensure_square_matrix(matrix: np.ndarray, name: str) -> None:
     >>> ensure_square_matrix(np.eye(3), "transition_matrix")  # OK
     >>> ensure_square_matrix(np.zeros((3, 4)), "transition_matrix")  # Raises
     """
+    matrix = np.asarray(matrix)
     if matrix.ndim != 2:
+        msg = f"{name} must be a 2-dimensional matrix"
         raise ValidationError(
-            f"{name} must be a 2-dimensional matrix",
+            msg,
             expected="matrix with shape (n, n)",
             got=f"array with shape {matrix.shape}",
             hint="Transition matrices must be 2D and square",
         )
 
     if matrix.shape[0] != matrix.shape[1]:
+        msg = f"{name} must be square"
         raise ValidationError(
-            f"{name} must be square",
+            msg,
             expected=f"matrix with shape ({matrix.shape[0]}, {matrix.shape[0]})",
             got=f"matrix with shape {matrix.shape}",
             hint="Transition matrix needs one row and one column per state",
         )
 
 
+def _bad_rows_description(row_sums: np.ndarray, bad_rows: np.ndarray) -> str:
+    """Return the first ten rows whose sums are out of range, and their sums."""
+    bad_indices = np.flatnonzero(bad_rows)
+    return (
+        f"{len(bad_indices)} row(s) with invalid sums: rows "
+        f"{bad_indices[:10].tolist()}, sums {row_sums[bad_indices[:10]].tolist()}"
+        f"{' (first 10)' if len(bad_indices) > 10 else ''}"
+    )
+
+
 def ensure_stochastic_matrix(
-    matrix: np.ndarray, name: str, tolerance: float = 1e-6
+    matrix: ArrayLike, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
 ) -> None:
     """Verify matrix is row-stochastic (each row sums to 1).
 
     Parameters
     ----------
-    matrix : np.ndarray
+    matrix : array_like, shape (n_rows, n_columns)
         Matrix to check
     name : str
         Name of the matrix for error messages
     tolerance : float, optional
-        Tolerance for row sum check, by default 1e-6
+        Absolute tolerance for each row sum, by default
+        ``PROBABILITY_SUM_TOLERANCE``.
 
     Raises
     ------
@@ -281,18 +319,57 @@ def ensure_stochastic_matrix(
     >>> bad_matrix = np.array([[0.5, 0.5], [0.6, 0.3]])  # Row 2 sums to 0.9
     >>> ensure_stochastic_matrix(bad_matrix, "transition_matrix")  # Raises
     """
-    row_sums = np.sum(matrix, axis=1)
-    bad_rows = ~np.isclose(row_sums, 1.0, atol=tolerance)
+    row_sums = np.sum(np.asarray(matrix), axis=1)
+    bad_rows = np.abs(row_sums - 1.0) > tolerance
 
     if np.any(bad_rows):
-        bad_indices = np.where(bad_rows)[0]
-        bad_sums = row_sums[bad_rows]
+        msg = f"{name} must be row-stochastic (each row sums to 1)"
         raise ValidationError(
-            f"{name} must be row-stochastic (each row sums to 1)",
+            msg,
             expected="all row sums = 1.0",
-            got=f"{len(bad_indices)} row(s) with invalid sums: rows {bad_indices.tolist()}, sums {bad_sums.tolist()}",
+            got=_bad_rows_description(row_sums, bad_rows),
             hint=f"Normalize each row: {name} = {name} / {name}.sum(axis=1, keepdims=True)",
             example=f"    # Row 0 sums to {row_sums[0]:.6f}{'  ✓' if not bad_rows[0] else '  ✗'}",
+        )
+
+
+def ensure_substochastic_matrix(
+    matrix: ArrayLike, name: str, tolerance: float = PROBABILITY_SUM_TOLERANCE
+) -> None:
+    """Verify each row of a non-negative matrix sums to at most 1.
+
+    A row's sum is the probability of leaving that row's bin; it is below 1
+    when probability leaves the modeled bins (for example an
+    ``EmpiricalMovement`` power through a bin the animal never left) and 0
+    for a bin nothing can leave.
+
+    Parameters
+    ----------
+    matrix : array_like, shape (n_rows, n_columns)
+        Matrix to check; its entries are already known to be non-negative.
+    name : str
+        Name of the matrix for error messages
+    tolerance : float, optional
+        Absolute tolerance above 1 for each row sum, by default
+        ``PROBABILITY_SUM_TOLERANCE``.
+
+    Raises
+    ------
+    ValidationError
+        If any row sums to more than ``1 + tolerance``.
+    """
+    row_sums = np.sum(np.asarray(matrix), axis=1)
+    bad_rows = row_sums > 1.0 + tolerance
+    if np.any(bad_rows):
+        msg = f"{name} must have rows that sum to at most 1"
+        raise ValidationError(
+            msg,
+            expected="row sums in [0, 1]",
+            got=_bad_rows_description(row_sums, bad_rows),
+            hint=(
+                "Each row holds the probabilities of moving from one bin to "
+                "every bin, so its sum cannot exceed 1."
+            ),
         )
 
 
@@ -317,8 +394,9 @@ def ensure_ndarray(value: Any, name: str) -> None:
     >>> ensure_ndarray([1, 2], "position")  # Raises
     """
     if not isinstance(value, np.ndarray):
+        msg = f"{name} must be a numpy array"
         raise ValidationError(
-            f"{name} must be a numpy array",
+            msg,
             expected="np.ndarray",
             got=f"{type(value).__name__}",
             hint=f"Convert to numpy array: {name} = np.array({name})",
@@ -327,13 +405,13 @@ def ensure_ndarray(value: Any, name: str) -> None:
 
 
 def ensure_monotonic_increasing(
-    arr: np.ndarray, name: str, strict: bool = False
+    arr: ArrayLike, name: str, *, strict: bool = False
 ) -> None:
     """Verify array is monotonically increasing.
 
     Parameters
     ----------
-    arr : np.ndarray
+    arr : array_like
         Array to check
     name : str
         Name of the array for error messages
@@ -351,6 +429,7 @@ def ensure_monotonic_increasing(
     >>> ensure_monotonic_increasing(np.array([1, 2, 3]), "time")  # OK
     >>> ensure_monotonic_increasing(np.array([1, 3, 2]), "time")  # Raises
     """
+    arr = np.asarray(arr)
     diffs = np.diff(arr)
 
     if strict:
@@ -362,55 +441,16 @@ def ensure_monotonic_increasing(
 
     if not condition:
         # Find first violation
-        if strict:
-            bad_indices = np.where(diffs <= 0)[0]
-        else:
-            bad_indices = np.where(diffs < 0)[0]
+        bad_indices = np.where(diffs <= 0)[0] if strict else np.where(diffs < 0)[0]
 
         if len(bad_indices) > 0:
             idx = bad_indices[0]
+            msg = f"{name} must be {expected_str}"
             raise DataError(
-                f"{name} must be {expected_str}",
+                msg,
                 data_name=name,
                 hint=f"Found violation at index {idx}: {name}[{idx}] = {arr[idx]:.6f}, {name}[{idx + 1}] = {arr[idx + 1]:.6f}. Check for duplicate or out-of-order timestamps.",
             )
-
-
-def ensure_matching_lengths(arr1, arr2, name1: str, name2: str) -> None:
-    """Verify two arrays have matching lengths.
-
-    Parameters
-    ----------
-    arr1 : array-like
-        First array
-    arr2 : array-like
-        Second array
-    name1 : str
-        Name of first array for error messages
-    name2 : str
-        Name of second array for error messages
-
-    Raises
-    ------
-    ValidationError
-        If arrays have different lengths
-
-    Examples
-    --------
-    >>> ensure_matching_lengths(np.array([1, 2, 3]), np.array([4, 5, 6]), "pos", "time")  # OK
-    >>> ensure_matching_lengths(np.array([1, 2]), np.array([4, 5, 6]), "pos", "time")  # Raises
-    """
-    len1 = len(arr1)
-    len2 = len(arr2)
-
-    if len1 != len2:
-        raise ValidationError(
-            f"Length mismatch between {name1} and {name2}",
-            expected=f"{name2} with length {len1}",
-            got=f"{name2} with length {len2}",
-            hint=f"Ensure {name1} and {name2} have the same number of time points",
-            example=f"    # Both should have same length\n    len({name1}) = {len1}\n    len({name2}) = {len2}  # Mismatch!",
-        )
 
 
 def ensure_networkx_graph(value: Any, name: str) -> None:
@@ -437,14 +477,16 @@ def ensure_networkx_graph(value: Any, name: str) -> None:
     try:
         import networkx as nx
     except ImportError as err:
+        msg = "NetworkX is required but not installed"
         raise ValidationError(
-            "NetworkX is required but not installed",
+            msg,
             hint="Install NetworkX: pip install networkx",
         ) from err
 
     if not isinstance(value, nx.Graph):
+        msg = f"{name} must be a NetworkX Graph"
         raise ValidationError(
-            f"{name} must be a NetworkX Graph",
+            msg,
             expected="networkx.Graph",
             got=f"{type(value).__name__}",
             hint=f"Create a NetworkX graph: {name} = nx.Graph()",
@@ -480,8 +522,9 @@ def ensure_graph_has_nodes(graph: Any, name: str, min_nodes: int = 2) -> None:
     n_nodes = graph.number_of_nodes()
 
     if n_nodes < min_nodes:
+        msg = f"{name} has too few nodes"
         raise ValidationError(
-            f"{name} has too few nodes",
+            msg,
             expected=f"at least {min_nodes} node(s)",
             got=f"{n_nodes} node(s)",
             hint=f"Add more nodes to {name} using .add_node() or .add_edge()",
@@ -517,8 +560,9 @@ def ensure_graph_has_edges(graph: Any, name: str, min_edges: int = 1) -> None:
     n_edges = graph.number_of_edges()
 
     if n_edges < min_edges:
+        msg = f"{name} has too few edges"
         raise ValidationError(
-            f"{name} has too few edges",
+            msg,
             expected=f"at least {min_edges} edge(s)",
             got=f"{n_edges} edge(s)",
             hint=f"Add edges to {name} using .add_edge(node1, node2)",
@@ -575,8 +619,9 @@ def ensure_graph_nodes_have_attribute(
         if n_missing > 3:
             sample_str += f", ... ({n_missing - 3} more)"
 
+        msg = f"{name} nodes missing required attribute '{attribute}'"
         raise ValidationError(
-            f"{name} nodes missing required attribute '{attribute}'",
+            msg,
             expected=f"all {graph.number_of_nodes()} node(s) to have '{attribute}' attribute",
             got=f"{n_missing} node(s) missing '{attribute}': {sample_str}",
             hint=f"Add '{attribute}' to all nodes: {name}.nodes[node]['{attribute}'] = value",
@@ -585,9 +630,11 @@ def ensure_graph_nodes_have_attribute(
 
     if nodes_with_wrong_type:
         sample_node, sample_type = nodes_with_wrong_type[0]
+        assert sample_value_type is not None  # wrong-type entries need a type
 
+        msg = f"{name} node attribute '{attribute}' has wrong type"
         raise ValidationError(
-            f"{name} node attribute '{attribute}' has wrong type",
+            msg,
             expected=f"attribute type: {sample_value_type.__name__}",
             got=f"node {sample_node} has type {sample_type}",
             hint=f"Ensure all '{attribute}' values are {sample_value_type.__name__}",
@@ -643,8 +690,9 @@ def ensure_graph_edges_have_attribute(
         if n_missing > 3:
             sample_str += f", ... ({n_missing - 3} more)"
 
+        msg = f"{name} edges missing required attribute '{attribute}'"
         raise ValidationError(
-            f"{name} edges missing required attribute '{attribute}'",
+            msg,
             expected=f"all {graph.number_of_edges()} edge(s) to have '{attribute}' attribute",
             got=f"{n_missing} edge(s) missing '{attribute}': {sample_str}",
             hint=f"Add '{attribute}' to all edges: {name}.edges[edge]['{attribute}'] = value",
@@ -653,11 +701,54 @@ def ensure_graph_edges_have_attribute(
 
     if edges_with_wrong_type:
         sample_edge, sample_type = edges_with_wrong_type[0]
+        assert sample_value_type is not None  # wrong-type entries need a type
 
+        msg = f"{name} edge attribute '{attribute}' has wrong type"
         raise ValidationError(
-            f"{name} edge attribute '{attribute}' has wrong type",
+            msg,
             expected=f"attribute type: {sample_value_type.__name__}",
             got=f"edge {sample_edge} has type {sample_type}",
             hint=f"Ensure all '{attribute}' values are {sample_value_type.__name__}",
             example=f"    {name}.edges[{sample_edge}]['{attribute}'] = {sample_value_type.__name__}(...)",
         )
+
+
+def validate_weights(weights: ArrayLike, n_time: int) -> np.ndarray:
+    """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
+
+    Weights feed both the occupancy field and the spike counts, so an invalid
+    array corrupts the whole encoding silently; validate once at the fit entry.
+
+    Parameters
+    ----------
+    weights : np.ndarray, shape (n_time,)
+        Per-sample weights (e.g. posterior state probabilities during EM).
+    n_time : int
+        Expected number of samples (``position.shape[0]``).
+
+    Returns
+    -------
+    weights : np.ndarray, shape (n_time,)
+        The weights as a float array.
+
+    Raises
+    ------
+    ValidationError
+        If ``weights`` is not 1-D of length ``n_time``, or contains non-finite or
+        negative values.
+    """
+    weights = np.asarray(weights, dtype=float)
+
+    if weights.shape != (n_time,):
+        msg = f"weights must have shape ({n_time},), got {weights.shape}"
+        raise ValidationError(msg)
+
+    if not np.all(np.isfinite(weights)):
+        msg = "weights must contain only finite values"
+        raise ValidationError(msg)
+
+    if np.any(weights < 0):
+        msg = "weights must be non-negative"
+        raise ValidationError(msg)
+
+    return weights

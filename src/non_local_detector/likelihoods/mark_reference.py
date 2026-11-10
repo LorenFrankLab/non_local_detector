@@ -22,7 +22,9 @@ with ``fit_mark_references``.
 """
 
 from dataclasses import dataclass
+from typing import cast
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.special import gammaln
@@ -30,7 +32,7 @@ from scipy.special import gammaln
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
-    _SpikeTimeOrder,
+    SpikeTimeOrder,
     resolve_row_slice,
     select_decode_marks,
     select_spikes_in_rows,
@@ -73,22 +75,26 @@ class MarkReference:
         location = np.array(self.location, dtype=np.float64)
         scale = np.array(self.scale, dtype=np.float64)
         if location.ndim != 1 or scale.shape != location.shape:
+            msg = "A mark reference needs one scale per feature"
             raise ValidationError(
-                "A mark reference needs one scale per feature",
+                msg,
                 got=f"location shape {location.shape}, scale shape {scale.shape}",
             )
         if not np.all(np.isfinite(location)):
-            raise ValidationError("Mark reference locations must be finite")
+            msg = "Mark reference locations must be finite"
+            raise ValidationError(msg)
         if not np.all(np.isfinite(scale) & (scale > 0)):
+            msg = "Mark reference scales must be finite and positive"
             raise ValidationError(
-                "Mark reference scales must be finite and positive",
+                msg,
                 hint="The scale adds the mark bandwidth to the training spread; "
                 "check waveform_std or gmm_reg_covar.",
             )
         dof = float(self.degrees_of_freedom)
         if not (np.isfinite(dof) and dof > 0):
+            msg = "Mark reference degrees of freedom must be finite and positive"
             raise ValidationError(
-                "Mark reference degrees of freedom must be finite and positive",
+                msg,
                 got=repr(self.degrees_of_freedom),
             )
         location.setflags(write=False)
@@ -103,17 +109,20 @@ class MarkReference:
         Parameters
         ----------
         marks : np.ndarray, shape (n_spikes, n_features)
+            Spike waveform features (marks), in the units the reference was fitted in.
 
         Returns
         -------
         log_density : np.ndarray, shape (n_spikes,)
+            Log of the normalized reference density at each mark.
         """
         marks = np.asarray(marks, dtype=np.float64)
         if marks.ndim != 2 or marks.shape[1] != self.location.shape[0]:
-            raise ValidationError(
+            msg = (
                 f"Marks with {marks.shape[1:]} waveform features do not match a mark "
                 f"reference fitted with {self.location.shape[0]}"
             )
+            raise ValidationError(msg)
         # Standardize on the host in float64 so large waveform offsets do not
         # lose digits to float32 subtraction.
         z = (marks - self.location) / self.scale
@@ -121,10 +130,11 @@ class MarkReference:
         log_normalizer = (
             gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(nu * np.pi)
         )
-        return (
+        return cast(
+            np.ndarray,
             z.shape[1] * log_normalizer
             - np.sum(np.log(self.scale))
-            - 0.5 * (nu + 1.0) * np.sum(np.log1p(z * z / nu), axis=1)
+            - 0.5 * (nu + 1.0) * np.sum(np.log1p(z * z / nu), axis=1),
         )
 
 
@@ -166,24 +176,29 @@ def fit_mark_reference(
     marks = np.asarray(marks, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
     if marks.ndim != 2 or weights.shape != marks.shape[:1]:
-        raise ValidationError(
+        msg = (
             f"Training marks and weights of electrode {electrode} do not pair "
-            "one weight with each spike",
+            "one weight with each spike"
+        )
+        raise ValidationError(
+            msg,
             expected="marks (n_spikes, n_features) and weights (n_spikes,)",
             got=f"marks {marks.shape}, weights {weights.shape}",
             hint="Pass each electrode's weights at its own spike times.",
         )
     kernel_scale = np.asarray(kernel_scale, dtype=np.float64)
     if kernel_scale.shape not in ((), marks.shape[1:]):
+        msg = f"kernel_scale of electrode {electrode} does not match its features"
         raise ValidationError(
-            f"kernel_scale of electrode {electrode} does not match its features",
+            msg,
             expected=f"a scalar or shape {marks.shape[1:]}",
             got=f"shape {kernel_scale.shape}",
         )
     if not np.all(np.isfinite(weights) & (weights >= 0)):
-        raise ValidationError(
+        msg = (
             f"Training weights of electrode {electrode} must be finite and non-negative"
         )
+        raise ValidationError(msg)
     keep = weights > 0
     if not np.any(keep):
         return None
@@ -256,13 +271,17 @@ def background_log_intensity(
     Parameters
     ----------
     reference : MarkReference or None
+        Reference mark density of the electrode, or None when it has no
+        training marks.
     marks : np.ndarray, shape (n_spikes, n_features)
+        Waveform features (marks) of the spikes to score.
     log_rate : float
         Log background rate in the caller's intensity units.
 
     Returns
     -------
     log_background : np.ndarray, shape (n_spikes,)
+        Log background intensity of each spike.
     """
     if reference is None:
         return np.full(np.shape(marks)[0], log_rate)
@@ -270,7 +289,7 @@ def background_log_intensity(
 
 
 def background_rate(n_electrodes: int) -> float:
-    """Summed background rate of ``n_electrodes`` electrodes, in Hz.
+    """Return the summed background rate of ``n_electrodes`` electrodes, in Hz.
 
     Every electrode, including a zero-rate one, has background rate
     ``RATE_EPS_HZ``. Encoding fits store only the encoding model's ground
@@ -279,10 +298,12 @@ def background_rate(n_electrodes: int) -> float:
     Parameters
     ----------
     n_electrodes : int
+        Number of electrodes.
 
     Returns
     -------
     rate : float
+        Summed background rate, in Hz.
     """
     return n_electrodes * RATE_EPS_HZ
 
@@ -293,8 +314,8 @@ def mark_reference_log_likelihood(
     spike_waveform_features: list[np.ndarray],
     time_edges: np.ndarray,
     row_slice: slice | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
-) -> jnp.ndarray:
+    _spike_time_order: SpikeTimeOrder | None = None,
+) -> jax.Array:
     """Sum each decode bin's reference log densities over its spikes.
 
     Electrodes without a reference contribute nothing.
@@ -302,16 +323,23 @@ def mark_reference_log_likelihood(
     Parameters
     ----------
     references : list of MarkReference or None, length n_electrodes
+        Reference mark density of each electrode; None skips the electrode.
     spike_times : list of np.ndarray, each shape (n_spikes,)
+        Decoding spike times for each electrode, in seconds.
     spike_waveform_features : list of np.ndarray, each shape (n_spikes, n_features)
+        Decoding waveform features (marks) for each electrode.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Full decoding bin edges.
     row_slice : slice, optional
         Requested decode bins; all bins by default.
+    _spike_time_order : SpikeTimeOrder, optional
+        Internal ordering preparation shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, 1)
+        Sum of the reference log densities of the spikes in each requested bin.
     """
     validate_population_lengths(
         "electrode",

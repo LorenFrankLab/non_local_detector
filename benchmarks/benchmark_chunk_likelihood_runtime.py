@@ -33,7 +33,6 @@ import numpy as np
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
     common,
 )
@@ -41,7 +40,7 @@ from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import provenance  # noqa: E402
+from compare_prediction_modes import provenance
 
 BACKENDS = (
     "sorted_spikes_kde",
@@ -152,7 +151,7 @@ def main():
             registry = (
                 _CLUSTERLESS_ALGORITHMS if clusterless else _SORTED_SPIKES_ALGORITHMS
             )
-            fit, predict = registry[name]
+            fit, predict = registry[name].fit, registry[name].predict
             fit_kwargs = {
                 "position_time": position_time,
                 "position": position,
@@ -172,7 +171,7 @@ def main():
             if clusterless:
                 mark_reference = fit_mark_references(
                     encoding_features,
-                    _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_kwargs),
+                    registry[name].mark_reference_scale(**fit_kwargs),
                 )
         parameters = inspect.signature(predict).parameters
         for duration, (timeline, spikes, features, pt, pos) in recordings.items():
@@ -186,7 +185,7 @@ def main():
                 preparation_ms = (time.perf_counter() - start) * 1000
             if "_spike_time_order" in parameters:
                 start = time.perf_counter()
-                spike_order = common._SpikeTimeOrder()
+                spike_order = common.SpikeTimeOrder()
                 for unit_times in spikes:
                     spike_order.get(unit_times)
                 extra["_spike_time_order"] = spike_order

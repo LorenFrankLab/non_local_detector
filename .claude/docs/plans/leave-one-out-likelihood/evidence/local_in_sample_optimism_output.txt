@@ -1,0 +1,14 @@
+mark dims=4, mark noise SD=10.0, laps=10, 233 s, 21593 spikes, 20 cells, 3 sessions; excess = own model minus the other models, mean +/- SE over sessions
+  clusterless_kde              +0.19 +/- 0.11   nats/s    +0.0021 nats/spike   (469 s)
+  clusterless_diffusion        +0.20 +/- 0.10   nats/s    +0.0021 nats/spike   (14 s)
+  clusterless_gmm             +38.16 +/- 0.15   nats/s    +0.4123 nats/spike   (40 s)
+  clusterless_mark_glm         +2.62 +/- 0.33   nats/s    +0.0283 nats/spike   (65 s)
+  sorted_spikes_kde            +0.13 +/- 0.04   nats/s    +0.0014 nats/spike   (250 s)
+  sorted_spikes_diffusion      +0.13 +/- 0.04   nats/s    +0.0014 nats/spike   (7 s)
+  sorted_spikes_glm            +0.35 +/- 0.02   nats/s    +0.0037 nats/spike   (9 s)
+  sorted_spikes_mrf            +0.63 +/- 0.03   nats/s    +0.0068 nats/spike   (8 s)
+mark dims=16, mark noise SD=15.0, laps=10, 233 s, 21508 spikes, 20 cells, 3 sessions; excess = own model minus the other models, mean +/- SE over sessions
+  clusterless_kde             +18.96 +/- 0.24   nats/s    +0.2057 nats/spike   (352 s)
+  clusterless_diffusion       +19.67 +/- 0.24   nats/s    +0.2133 nats/spike   (25 s)
+  clusterless_gmm            +416.91 +/- 2.00   nats/s    +4.5228 nats/spike   (44 s)
+  clusterless_mark_glm       +120.02 +/- 4.45   nats/s    +1.3021 nats/spike   (46 s)

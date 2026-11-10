@@ -1,0 +1,157 @@
+site_name: non_local_detector
+site_description: Decode position and detect non-local activity, such as replay, from neural spiking data
+site_url: https://lorenfranklab.github.io/non_local_detector/
+repo_url: https://github.com/LorenFrankLab/non_local_detector
+repo_name: LorenFrankLab/non_local_detector
+edit_uri: edit/main/docs/
+
+# docs/ also holds development records (plans, validation logs, performance
+# artifacts, Spyglass patches); they are not part of the site.
+not_in_nav: ignore
+exclude_docs: |
+  plans/
+  tasks/
+  performance_artifacts/
+  spyglass_migration/
+  SAFE_DEVELOPMENT_GUIDE.md
+  performance_validation.md
+  time_grid_validation.md
+  *.patch
+  gen_ref_pages.py
+  internal_modules.txt
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            docstring_section_style: table
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_root_toc_entry: true
+            show_object_full_path: false
+            show_category_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            group_by_category: true
+            show_signature_annotations: true
+            separate_signature: true
+            line_length: 88
+            merge_init_into_class: true
+            show_if_no_docstring: false
+            inherited_members: false
+            filters:
+              - "!^_"
+  # Tutorials are jupytext percent-format scripts in docs/tutorials/, run on
+  # every build (the docs CI job is their test). NLD_DOCS_EXECUTE=false skips
+  # running them for a quick local preview.
+  - mkdocs-jupyter:
+      include: ["tutorials/*.py"]
+      # Skip probing every Markdown page with jupytext (pandoc warnings).
+      ignore: ["*.md"]
+      execute: !ENV [NLD_DOCS_EXECUTE, true]
+      allow_errors: false
+      include_source: true
+      ignore_h1_titles: true
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Core Concepts: getting-started/core-concepts.md
+  - Tutorials:
+      - tutorials/index.md
+      - Data format and environments: tutorials/01_data_and_environments.py
+      - Decoding a session with sorted spikes: tutorials/02_decoding_sorted_spikes.py
+      - Decoding with clusterless spikes: tutorials/03_decoding_clusterless.py
+      - Classifying replay dynamics: tutorials/04_classifying_replay_dynamics.py
+      - Detecting non-local events: tutorials/05_detecting_non_local_events.py
+      - Choosing and checking models: tutorials/06_choosing_and_checking_models.py
+  - Guides:
+      - Data contract: data_contract.md
+      - Time bins and rates: time_grid_migration.md
+      - Result layout: result_layout.md
+      - Saving and loading models: saving_models.md
+      - Checkpointed prediction: performance_prediction.md
+      - Settings for your hardware: hardware_settings.md
+      - Checking clusterless model fit: likelihood_mark_calibration.md
+      - Warnings and how to filter them: warnings.md
+  - Technical Notes:
+      - Likelihood input validation: likelihood_input_validation.md
+      - Clusterless log-KDE reduction: likelihood_kde_reductions.md
+      - KDE density ratios in finite tails: kde_tail_density_ratios.md
+      - Clusterless mark evidence: likelihood_mark_background.md
+      - Clusterless GMM process normalization: likelihood_process_normalization.md
+  - API Reference: api/
+  - Contributing: contributing.md
+  - Changelog: changelog.md

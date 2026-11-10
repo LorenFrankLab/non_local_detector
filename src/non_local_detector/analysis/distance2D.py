@@ -1,13 +1,29 @@
-import logging
+"""Distances, directions and speeds of decoded positions in 2D environments."""
 
-import networkx as nx  # type: ignore[import-untyped]
+import logging
+import warnings
+from collections.abc import Sequence
+from typing import cast
+
+import networkx as nx
 import numpy as np
-from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
 from non_local_detector.environment import (
     Environment,
     make_nD_track_graph_from_environment,
 )
+from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
+
+__all__ = [
+    "get_2D_distance",
+    "get_ahead_behind_distance2D",
+    "get_map_estimate_direction_from_track_graph",
+    "get_speed",
+    "get_velocity",
+    "head_direction_similarity",
+    "make_2D_track_graph_from_environment",
+]
+
 
 logger = logging.getLogger(__name__)
 
@@ -15,22 +31,29 @@ logger = logging.getLogger(__name__)
 def make_2D_track_graph_from_environment(
     environment: Environment,
 ) -> nx.Graph:
-    """Creates a graph of the position where on track nodes are
-    connected by edges.
+    """Create a graph of the environment's place bins.
+
+    Every place bin is a node (its id is the flat bin index), and the
+    ``is_track_interior`` node attribute marks the on-track bins. Edges connect
+    adjacent on-track bins, including diagonal neighbors.
 
     Parameters
     ----------
     environment : Environment
+        Fitted environment whose place bins define the graph.
 
     Returns
     -------
     track_graph : nx.Graph
+        Graph with all place bins as nodes (bin center in the ``pos``
+        attribute, on-track flag in ``is_track_interior``) and edges between
+        adjacent on-track bins carrying ``distance`` and ``edge_id``
+        attributes.
     """
-
     return make_nD_track_graph_from_environment(environment)
 
 
-def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:
+def get_bin_ind(sample: np.ndarray, edges: Sequence[np.ndarray]) -> np.ndarray:
     """Find the bin indices for multidimensional sample points.
 
     Determines which bin each sample point belongs to in a multidimensional
@@ -50,15 +73,14 @@ def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:
     bin_ind : np.ndarray, shape (n_time,)
         Flattened bin indices for each sample point. Uses row-major ordering
         to convert multidimensional bin coordinates to linear indices.
-
     """
     try:
         # Sample is an ND-array.
-        N, D = sample.shape
+        _N, D = sample.shape
     except (AttributeError, ValueError):
         # Sample is a sequence of 1D arrays.
         sample = np.atleast_2d(sample).T
-        N, D = sample.shape
+        _N, D = sample.shape
 
     nbin = np.empty(D, np.intp)
     for i in range(D):
@@ -90,18 +112,24 @@ def get_map_estimate_direction_from_track_graph(
     head_position: np.ndarray,
     map_estimate: np.ndarray,
     track_graph: nx.Graph,
-    edges: list,
+    edges: Sequence[np.ndarray],
+    *,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
-    """Get the direction of the MAP estimate of the decoded position from the
-    animal's head position.
+    """Get the direction of the MAP estimate from the animal's head position.
+
+    The direction is the heading, along the shortest path on the track graph,
+    from the head position toward the MAP decoded position.
 
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
+        Position of the animal's head.
     map_estimate : np.ndarray, shape (n_time, 2)
+        MAP decoded position.
     track_graph : nx.Graph
-    edges : list
+        Graph of the environment's place bins.
+    edges : list of np.ndarray
         Bin edges for each spatial dimension.
     precomputed_distance : bool, optional
         If True, use precomputed distance matrix for graph lookups,
@@ -110,7 +138,10 @@ def get_map_estimate_direction_from_track_graph(
     Returns
     -------
     map_estimate_direction : np.ndarray, shape (n_time,)
-
+        Direction in radians of the first step along the shortest path from the
+        head position to the MAP estimate. 0 where the head position and the MAP
+        estimate are in the same bin. NaN where the track graph has no path
+        between their bins (a warning is logged).
     """
     node_positions = nx.get_node_attributes(track_graph, "pos")
 
@@ -127,10 +158,16 @@ def get_map_estimate_direction_from_track_graph(
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
         # The all-pairs nx.shortest_path is a dict {source: {target: path}} in
         # networkx 3.0-3.4 but a generator of (source, {target: path}) pairs in
-        # >= 3.5 (the package pins networkx >= 3.0). Iterate the generator
+        # >= 3.5 (the package supports networkx >= 3.4). Iterate the generator
         # lazily when available — processing one source at a time avoids holding
         # all O(n_nodes^2) paths at once — and fall back to .items() for the dict.
-        all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
+        # networkx 3.4 warns of that change; both shapes are handled below. The
+        # warning text starts with blank lines, hence the leading \s*.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", r"\s*shortest_path will return an iterator", FutureWarning
+            )
+            all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
         if isinstance(all_pairs_paths, dict):
             all_pairs_paths = all_pairs_paths.items()
         for from_node_id, to_node_data in all_pairs_paths:
@@ -206,7 +243,8 @@ def get_2D_distance(
     position1: np.ndarray,
     position2: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list | None = None,
+    edges: Sequence[np.ndarray] | None = None,
+    *,
     precomputed_distance: bool = True,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
@@ -214,7 +252,9 @@ def get_2D_distance(
     Parameters
     ----------
     position1 : np.ndarray, shape (n_time, 2)
+        First set of positions.
     position2 : np.ndarray, shape (n_time, 2)
+        Second set of positions.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
         ``Environment.track_graphDD``). If None, distances are Euclidean.
@@ -223,11 +263,15 @@ def get_2D_distance(
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
+        If True, compute all-pairs graph distances once and look them up;
+        otherwise compute one shortest path per time point. By default True.
 
     Returns
     -------
     distance : np.ndarray, shape (n_time,)
-
+        Distance between the two positions at each time point. Euclidean if
+        `track_graph` is None, otherwise the shortest path length along the
+        graph (``inf`` if no path exists).
     """
     position1 = np.asarray(position1)
     position2 = np.asarray(position2)
@@ -241,7 +285,8 @@ def get_2D_distance(
         distance = np.linalg.norm(position1 - position2, axis=1)
     else:
         if edges is None:
-            raise ValueError("edges parameter is required when track_graph is provided")
+            msg = "edges parameter is required when track_graph is provided"
+            raise ValueError(msg)
         node_positions = nx.get_node_attributes(track_graph, "pos")
         node_ids = np.asarray(list(node_positions.keys()))
         node_positions = np.asarray(list(node_positions.values()))
@@ -278,27 +323,32 @@ def get_2D_distance(
                         "No path between %s and %s", node_ids1[i], node_ids2[i]
                     )
 
-    return distance
+    return cast("np.ndarray", distance)
 
 
-def head_direction_simliarity(
+def head_direction_similarity(
     head_position: np.ndarray,
     head_direction: np.ndarray,
     map_estimate: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list | None = None,
+    edges: Sequence[np.ndarray] | None = None,
+    *,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
-    """Cosine similarity of the head direction vector with the vector from the
-    animal's head to MAP estimate of the decoded position.
+    """Cosine similarity of the head direction with the direction to the MAP.
+
+    Compares the head direction with the vector from the animal's head to the
+    MAP estimate of the decoded position.
 
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
+        Position of the animal's head.
     head_direction : np.ndarray, shape (n_time,)
         Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
         heading vector ``v``), not a 2-D vector.
     map_estimate : np.ndarray, shape (n_time, 2)
+        MAP decoded position.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
         ``Environment.track_graphDD``). If None, distances are Euclidean.
@@ -307,11 +357,14 @@ def head_direction_simliarity(
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
+        If True, use a precomputed all-pairs shortest-path table for graph
+        lookups. Only used when `track_graph` is given. By default False.
 
     Returns
     -------
     cosine_similarity : np.ndarray, shape (n_time,)
-
+        Cosine of the angle between the head direction and the direction to the
+        MAP estimate; 1 means directly ahead, -1 directly behind.
     """
     head_position = np.asarray(head_position)
     head_direction = np.asarray(head_direction)
@@ -331,12 +384,17 @@ def head_direction_simliarity(
         )
     else:
         if edges is None:
-            raise ValueError("edges parameter is required when track_graph is provided")
+            msg = "edges parameter is required when track_graph is provided"
+            raise ValueError(msg)
         map_estimate_direction = get_map_estimate_direction_from_track_graph(
-            head_position, map_estimate, track_graph, edges, precomputed_distance
+            head_position,
+            map_estimate,
+            track_graph,
+            edges,
+            precomputed_distance=precomputed_distance,
         )
 
-    return np.cos(head_direction - map_estimate_direction)
+    return cast("np.ndarray", np.cos(head_direction - map_estimate_direction))
 
 
 def get_ahead_behind_distance2D(
@@ -344,20 +402,24 @@ def get_ahead_behind_distance2D(
     head_direction: np.ndarray,
     map_position: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list | None = None,
+    edges: Sequence[np.ndarray] | None = None,
+    *,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
-    """Distance of the MAP decoded position to the animal's head position where
-     the sign indicates if the decoded position is in front of the
-     head (positive) or behind (negative).
+    """Signed distance of the MAP decoded position from the animal's head.
+
+    The sign indicates if the decoded position is in front of the head
+    (positive) or behind (negative).
 
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
+        Position of the animal's head.
     head_direction : np.ndarray, shape (n_time,)
         Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
         heading vector ``v``), not a 2-D vector.
     map_position : np.ndarray, shape (n_time, 2)
+        MAP decoded position.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
         ``Environment.track_graphDD``). If None, distances are Euclidean.
@@ -366,72 +428,37 @@ def get_ahead_behind_distance2D(
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool, optional
+        If True, use a precomputed all-pairs shortest-path table for graph
+        lookups. Only used when `track_graph` is given. By default False.
 
     Returns
     -------
     ahead_behind_distance : np.ndarray, shape (n_time,)
-
+        Signed distance (positive ahead of the head, negative behind), in the
+        units of the position.
     """
-
     distance = get_2D_distance(
-        head_position, map_position, track_graph, edges, precomputed_distance
+        head_position,
+        map_position,
+        track_graph,
+        edges,
+        precomputed_distance=precomputed_distance,
     )
 
-    direction_similarity = head_direction_simliarity(
+    direction_similarity = head_direction_similarity(
         head_position,
         head_direction,
         map_position,
         track_graph,
         edges,
-        precomputed_distance,
+        precomputed_distance=precomputed_distance,
     )
     ahead_behind = np.sign(direction_similarity)
 
     # If there is no direction same point, arbitrarily set to positive
     ahead_behind[np.isclose(ahead_behind, 0.0)] = 1.0
 
-    ahead_behind_distance = ahead_behind * distance
-
-    return ahead_behind_distance
-
-
-def _gaussian_smooth(
-    data: np.ndarray,
-    sigma: float,
-    sampling_frequency: float,
-    axis: int = 0,
-    truncate: int = 8,
-) -> np.ndarray:
-    """Apply 1D Gaussian smoothing to data along specified axis.
-
-    The standard deviation of the gaussian is in the units of the sampling
-    frequency. The function is just a wrapper around scipy's
-    `gaussian_filter1d`. The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`.
-
-    Parameters
-    ----------
-    data : np.ndarray
-        Input data to be smoothed.
-    sigma : float
-        Standard deviation of the Gaussian kernel in units of sampling frequency.
-    sampling_frequency : float
-        Sampling rate of the data in Hz.
-    axis : int, optional
-        Axis along which to apply smoothing, by default 0.
-    truncate : int, optional
-        Truncate the Gaussian kernel at this many standard deviations,
-        by default 8.
-
-    Returns
-    -------
-    smoothed_data : np.ndarray
-        Smoothed data with same shape as input.
-
-    """
-    return gaussian_filter1d(
-        data, sigma * sampling_frequency, truncate=truncate, axis=axis, mode="constant"
-    )
+    return cast("np.ndarray", ahead_behind * distance)
 
 
 def get_velocity(
@@ -445,14 +472,21 @@ def get_velocity(
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
-        MAP decoded position
+        MAP decoded position.
     time : np.ndarray, shape (n_time,), optional
+        Time of each sample used to take the gradient. If None, sample indices
+        are used and the velocity is in position units per sample; otherwise it
+        is in position units per unit of ``time``. By default None.
     sigma : float, optional
+        Standard deviation of the Gaussian smoothing kernel in seconds,
+        by default 0.0025.
     sampling_frequency : float, optional
+        Sampling frequency of the data in Hz, by default 500.
 
     Returns
     -------
     decoded_velocity : np.ndarray, shape (n_time, n_position_dims)
+        Smoothed velocity of the decoded position.
     """
     if time is None:
         time = np.arange(position.shape[0])
@@ -472,9 +506,11 @@ def get_speed(velocity: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     velocity : np.ndarray, shape (n_time, n_position_dims)
+        Velocity of the decoded position.
 
     Returns
     -------
-    speed: np.ndarray, shape (n_time,)
+    speed : np.ndarray, shape (n_time,)
+        Euclidean norm of the velocity at each time point.
     """
-    return np.sqrt(np.sum(velocity**2, axis=1))
+    return cast("np.ndarray", np.sqrt(np.sum(velocity**2, axis=1)))

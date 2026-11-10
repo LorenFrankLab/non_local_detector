@@ -22,7 +22,6 @@ from non_local_detector.model_checking.clusterless import (
 encoding_model = detector.encoding_model_[("", 0)]
 u, v = ircm_transform(
     encoding_model,
-    detector.clusterless_algorithm,
     electrode,
     held_out_position_time,
     held_out_position,
@@ -30,7 +29,7 @@ u, v = ircm_transform(
     held_out_spike_waveform_features[electrode],
 )
 points = np.column_stack((u, v))
-ks_uniformity_test(points).p_value      # one p-value per coordinate
+ks_uniformity_test(points).p_value  # one p-value per coordinate
 pearson_chi_squared_test(points).p_value
 multivariate_ks_test(points, rng=0).p_value
 ```
@@ -60,6 +59,10 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   intensity `mean_rate * p_gpi(x) / p_occupancy(x)` is the mark integral of
   `mean_rate * p_joint(x, m) / p_occupancy(x)`. The transforms test that process.
   Refit models trained before this correction to use a consistent process.
+
+The transforms read which algorithm fitted the encoding model from its
+`algorithm` entry. `clusterless_mark_glm` is not supported: the transforms raise
+`ValueError` for it before reading the rest of the encoding model.
 
 All intensities and CDFs come from the stored encoding model, in float64
 NumPy and log space. Mixture weights stay in log space while the mixture is
@@ -219,7 +222,7 @@ for name, (ground_intensity, mark_cdf) in models.items():
     chi2 = pearson_chi_squared_test(points)
     print(
         f"{name}: KS p (u, v1, v2) {ks_uniformity_test(points).p_value}, "
-        f"chi-square p {chi2.p_value:.3g} ({chi2.n_bins_per_dim ** 3} cells), "
+        f"chi-square p {chi2.p_value:.3g} ({chi2.n_bins_per_dim**3} cells), "
         f"multivariate KS p {multivariate_ks_test(points, rng=0).p_value:.3f}"
     )
 ```

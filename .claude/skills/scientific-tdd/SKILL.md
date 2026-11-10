@@ -66,7 +66,7 @@ Before writing new tests, understand current state:
 pytest --collect-only -q | grep <relevant_term>
 
 # Run specific test file
-uv run pytest src/non_local_detector/tests/<test_file>.py -v
+uv run pytest tests/<test_file>.py -v
 ```
 
 ### Step 2: Write Failing Test (RED)
@@ -104,7 +104,7 @@ def test_descriptive_name_of_behavior():
 **CRITICAL:** Test MUST fail before implementing:
 
 ```bash
-uv run pytest src/non_local_detector/tests/<test_file>.py::test_name -v
+uv run pytest tests/<test_file>.py::test_name -v
 ```
 
 **Expected output:** Test fails with clear error (function not defined, wrong output, etc.)
@@ -129,7 +129,7 @@ Write simplest code that makes test pass:
 ### Step 5: Run Test - Confirm GREEN
 
 ```bash
-uv run pytest src/non_local_detector/tests/<test_file>.py::test_name -v
+uv run pytest tests/<test_file>.py::test_name -v
 ```
 
 **Expected output:** Test passes
@@ -200,7 +200,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ```
 1. Read: src/non_local_detector/continuous_state_transitions.py
-2. Read: src/non_local_detector/tests/transitions/test_continuous_transitions.py
+2. Read: tests/transitions/test_continuous_transitions.py
 3. Write test: test_random_walk_custom_variance()
 4. Run test: FAIL - "NotImplementedError: custom variance not supported"
 5. Implement: Add variance parameter to RandomWalk class

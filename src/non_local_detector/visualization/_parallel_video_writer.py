@@ -69,6 +69,7 @@ Notes
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import pickle
@@ -79,13 +80,18 @@ from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import matplotlib
+import matplotlib as mpl
 
 # Headless, deterministic rendering
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
+logger = logging.getLogger(__name__)
 
 # Constants
 MIN_DPI = 72  # Matplotlib requires minimum 72 DPI for readable output
@@ -135,8 +141,8 @@ def _validate_inputs(
     n_frames: int,
     output_path: str,
     frame_data: Any,
-    render_frame_func: Callable,
-    setup_figure_func: Callable,
+    render_frame_func: Callable[..., Any],
+    setup_figure_func: Callable[..., Any],
     config: VideoConfig,
 ) -> None:
     """Validate user inputs and provide clear error messages.
@@ -167,46 +173,49 @@ def _validate_inputs(
     """
     # Validate n_frames
     if n_frames <= 0:
-        raise ValueError(f"n_frames must be positive, got {n_frames}")
+        msg = f"n_frames must be positive, got {n_frames}"
+        raise ValueError(msg)
 
     # Validate config parameters
     if config.fps <= 0:
-        raise ValueError(f"fps must be positive, got {config.fps}")
+        msg = f"fps must be positive, got {config.fps}"
+        raise ValueError(msg)
 
     if config.dpi < MIN_DPI:
-        raise ValueError(
-            f"dpi must be at least {MIN_DPI} (matplotlib minimum), got {config.dpi}"
-        )
+        msg = f"dpi must be at least {MIN_DPI} (matplotlib minimum), got {config.dpi}"
+        raise ValueError(msg)
 
     if config.bitrate_kbps <= 0:
-        raise ValueError(f"bitrate_kbps must be positive, got {config.bitrate_kbps}")
+        msg = f"bitrate_kbps must be positive, got {config.bitrate_kbps}"
+        raise ValueError(msg)
 
     if config.max_workers is not None and config.max_workers < 1:
-        raise ValueError(
-            f"max_workers must be at least 1 or None, got {config.max_workers}"
-        )
+        msg = f"max_workers must be at least 1 or None, got {config.max_workers}"
+        raise ValueError(msg)
 
     # Validate output directory exists
     output_dir = Path(output_path).parent
-    if output_dir != Path(".") and not output_dir.exists():
-        raise FileNotFoundError(
+    if output_dir != Path() and not output_dir.exists():
+        msg = (
             f"Output directory does not exist: {output_dir}\n"
             f"Please create it first: mkdir -p {output_dir}"
         )
+        raise FileNotFoundError(msg)
 
     # Check if output file exists when overwrite=False
     if not config.overwrite and Path(output_path).exists():
-        raise FileExistsError(
+        msg = (
             f"Output file already exists: {output_path}\n"
             f"Set overwrite=True in VideoConfig to overwrite, or choose a different path."
         )
+        raise FileExistsError(msg)
 
     # Test pickle-ability of frame_data
     if frame_data is not None:
         try:
             pickle.dumps(frame_data)
         except Exception as e:
-            raise TypeError(
+            msg = (
                 f"frame_data must be pickle-able for multiprocessing, but got error: {e}\n\n"
                 f"Common causes:\n"
                 f"  - Lambda functions (use def instead)\n"
@@ -214,7 +223,8 @@ def _validate_inputs(
                 f"  - Open file handles (pass paths, not file objects)\n"
                 f"  - Custom classes without __reduce__ method\n\n"
                 f"Valid types: dict, list, numpy arrays, dataclasses, primitives"
-            ) from e
+            )
+            raise TypeError(msg) from e
 
     # Test that functions are pickleable (required for ProcessPoolExecutor)
     for func, func_name in [
@@ -224,7 +234,7 @@ def _validate_inputs(
         try:
             pickle.dumps(func)
         except Exception as e:
-            raise TypeError(
+            msg = (
                 f"{func_name} must be pickleable for multiprocessing, but got error: {e}\n\n"
                 f"Common causes:\n"
                 f"  - Lambda functions: lambda fig, ax, idx, data: ... (not pickleable)\n"
@@ -234,39 +244,43 @@ def _validate_inputs(
                 f"  def {func_name}(...):\n"
                 f"      ...\n\n"
                 f"See examples in parallel_video_writer_examples.py"
-            ) from e
+            )
+            raise TypeError(msg) from e
 
     # Test that setup_figure_func returns correct type
     try:
         result = setup_figure_func()
         if not isinstance(result, tuple) or len(result) != 2:
-            raise TypeError(
+            msg = (
                 f"setup_figure_func must return (Figure, dict), got {type(result)}\n"
                 f"Expected: return fig, {{'name': ax}}"
             )
+            raise TypeError(msg)
         fig, axes = result
         if not isinstance(axes, dict):
-            raise TypeError(
+            msg = (
                 f"setup_figure_func must return axes as dict, got {type(axes)}\n"
                 f"Expected: return fig, {{'main': ax}}"
             )
+            raise TypeError(msg)
         # Clean up test figure
         plt.close(fig)
     except Exception as e:
         if isinstance(e, TypeError) and "setup_figure_func must return" in str(e):
             raise  # Re-raise our own TypeError
-        raise RuntimeError(
+        msg = (
             f"setup_figure_func() failed during validation: {e}\n"
             f"This function will be called once per worker to create the figure."
-        ) from e
+        )
+        raise RuntimeError(msg) from e
 
 
 def create_parallel_video(
     *,
     n_frames: int,
     output_path: str,
-    render_frame_func: Callable[[plt.Figure, dict[str, Any], int, Any], None],
-    setup_figure_func: Callable[[], tuple[plt.Figure, dict[str, Any]]],
+    render_frame_func: Callable[[Figure, dict[str, Any], int, Any], None],
+    setup_figure_func: Callable[[], tuple[Figure, dict[str, Any]]],
     frame_data: Any = None,
     config: VideoConfig = VideoConfig(),
 ) -> str:
@@ -368,7 +382,7 @@ def create_parallel_video(
     if max_workers is None:
         max_workers = max(2, (os.cpu_count() or 4) // 2)
 
-    print(f"[parallel] Using {max_workers} workers for {n_frames} frames")
+    logger.info("Rendering %d frames with %d workers", n_frames, max_workers)
 
     # Partition frames evenly across workers
     chunk_size = math.ceil(n_frames / max_workers)
@@ -378,8 +392,8 @@ def create_parallel_video(
 
     # Use TemporaryDirectory context manager for automatic cleanup (even on SIGINT)
     with tempfile.TemporaryDirectory(prefix="parallel_video_frames_") as tmpdir:
-        pattern = os.path.join(tmpdir, "frame_%06d.png")
-        print(f"[parallel] Writing frames to {tmpdir}")
+        pattern = str(Path(tmpdir) / "frame_%06d.png")
+        logger.info("Writing frames to %s", tmpdir)
 
         # Render chunks in parallel
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
@@ -400,7 +414,7 @@ def create_parallel_video(
             # Wait for all chunks to complete
             for i, fut in enumerate(futures):
                 fut.result()
-                print(f"[parallel] Chunk {i + 1}/{len(futures)} complete")
+                logger.info("Rendered chunk %d of %d", i + 1, len(futures))
 
         # Stitch frames into video
         _ffmpeg_stitch(
@@ -413,7 +427,7 @@ def create_parallel_video(
         )
         # TemporaryDirectory context manager automatically cleans up tmpdir here
 
-    print(f"[parallel] Video saved to: {output_path}")
+    logger.info("Video saved to %s", output_path)
     return output_path
 
 
@@ -422,8 +436,8 @@ def _render_chunk(
     end_frame: int,
     pattern: str,
     dpi: int,
-    render_frame_func: Callable[[plt.Figure, dict[str, Any], int, Any], None],
-    setup_figure_func: Callable[[], tuple[plt.Figure, dict[str, Any]]],
+    render_frame_func: Callable[[Figure, dict[str, Any], int, Any], None],
+    setup_figure_func: Callable[[], tuple[Figure, dict[str, Any]]],
     frame_data: Any,
 ) -> None:
     """Render a chunk of frames in a worker process.
@@ -461,9 +475,9 @@ def _render_chunk(
     (frame_idx + 1) because ffmpeg's -i pattern expects consecutive files
     starting from 1.
     """
-    import matplotlib
+    import matplotlib as mpl
 
-    matplotlib.use("Agg")
+    mpl.use("Agg")
     import matplotlib.pyplot as plt
 
     try:
@@ -481,22 +495,24 @@ def _render_chunk(
                 fig.savefig(out_path, dpi=max(MIN_DPI, dpi))
 
             except Exception as e:
-                raise RuntimeError(
+                msg = (
                     f"Failed rendering frame {frame_idx} (range {start_frame}-{end_frame - 1}):\n"
                     f"Error: {e}\n"
                     f"Check your render_frame_func for errors."
-                ) from e
+                )
+                raise RuntimeError(msg) from e
 
         plt.close(fig)
 
     except Exception as e:
         if isinstance(e, RuntimeError) and "Failed rendering frame" in str(e):
             raise  # Re-raise frame-specific errors
-        raise RuntimeError(
+        msg = (
             f"Failed in chunk {start_frame}-{end_frame - 1} during setup:\n"
             f"Error: {e}\n"
             f"Check your setup_figure_func for errors."
-        ) from e
+        )
+        raise RuntimeError(msg) from e
 
 
 def _ffmpeg_stitch(
@@ -552,7 +568,7 @@ def _ffmpeg_stitch(
         str(max(1, threads)),
         output_path,
     ]
-    print(f"[ffmpeg] {' '.join(cmd)}")
+    logger.info("Running %s", " ".join(cmd))
 
     # Control ffmpeg output visibility
     stdout = None if verbose else subprocess.DEVNULL
@@ -565,7 +581,7 @@ def _ffmpeg_stitch(
             f"ffmpeg encoding failed:\n"
             f"Command: {' '.join(cmd)}\n"
             f"Return code: {e.returncode}\n"
-            f"Stderr: {e.stderr if e.stderr else '(not captured)'}"
+            f"Stderr: {e.stderr or '(not captured)'}"
         )
         raise RuntimeError(error_msg) from e
 
@@ -579,7 +595,8 @@ def _require_ffmpeg() -> None:
         If ffmpeg is not found.
     """
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError(
+        msg = (
             "ffmpeg not found in PATH. Please install ffmpeg "
             "(e.g., 'brew install ffmpeg' or 'apt-get install ffmpeg')."
         )
+        raise RuntimeError(msg)

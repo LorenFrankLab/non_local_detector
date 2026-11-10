@@ -1,0 +1,106 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+  # Every pull request, including ones stacked on another feature branch.
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its superseded build. Each push to
+# main gets a group of its own, so every merged commit is built: GitHub keeps
+# only one pending run per group and would cancel an older pending build when
+# a newer one queued. The deploy job orders the deployments.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request'
+    && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.13.5"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      - name: Install dependencies
+        run: uv sync --locked --group docs
+      # --strict fails on broken nav, broken relative links and docstring
+      # parameters that do not match the signature.
+      # Also runs every tutorial (mkdocs-jupyter); a failing cell fails the build.
+      - name: Build documentation
+        run: uv run --no-sync mkdocs build --strict
+      # A project site is served under /non_local_detector/, so map that path
+      # onto the built site for the link checker.
+      - name: Prepare link-check root
+        run: rm -rf _lc && mkdir -p _lc && ln -s ../site _lc/non_local_detector
+      # In-page anchors in the hand-written pages; --offline skips external
+      # URLs so the check never flakes. The generated API pages are not a
+      # crawl source, but links into them are checked.
+      - name: Check internal links and anchors
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --offline
+            --include-fragments
+            --index-files index.html
+            --root-dir _lc
+            --exclude-path site/api
+            './site/**/*.html'
+          fail: true
+      - name: Upload the site
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ./site
+
+  # Deployments run one at a time, and a newer one waiting replaces an older
+  # one waiting, so the site moves forward. Builds finish in any order, so a
+  # deploy also skips itself when main has moved past its commit: that
+  # commit's own run deploys the newer site.
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ${{ github.workflow }}-deploy
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check this is still the newest commit on main
+        id: newest
+        run: |
+          set -euo pipefail
+          head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" refs/heads/main | cut -f1)"
+          if [ -z "$head" ]; then
+            echo "::error::could not read the head of main"
+            exit 1
+          fi
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head; its run deploys instead of $GITHUB_SHA"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Deploy to GitHub Pages
+        if: steps.newest.outputs.deploy == 'true'
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

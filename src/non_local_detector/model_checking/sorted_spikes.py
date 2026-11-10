@@ -8,28 +8,42 @@ References
 .. [2] Wiener, M.C. (2003). An adjustment to the time-rescaling method for
        application to short-trial spike train data. Neural Computation 15,
        2565-2576.
-
 """
+
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import integrate  # type: ignore[import-untyped]
-from scipy.signal import correlate  # type: ignore[import-untyped]
-from scipy.stats import expon, norm  # type: ignore[import-untyped]
+from matplotlib.axes import Axes
+from scipy import integrate
+from scipy.signal import correlate
+from scipy.stats import expon, norm
+
+__all__ = [
+    "TimeRescaling",
+    "ks_statistic",
+    "plot_ks",
+    "plot_qq",
+    "plot_rescaled_ISI_autocorrelation",
+    "point_process_residuals",
+    "uniform_rescaled_ISIs",
+]
 
 
 class TimeRescaling:
-    """Evaluates the goodness of fit of a point process model by
-    transforming the fitted model into a unit rate Poisson process [1].
+    """Evaluate the goodness of fit of a point process model.
 
-    Attributes
+    The fitted model is transformed into a unit rate Poisson process using the
+    time-rescaling theorem [1]_.
+
+    Parameters
     ----------
-    conditional_intensity : ndarray, shape (n_time,)
+    conditional_intensity : np.ndarray, shape (n_time,)
         Expected counts per bin by default. With ``rate_units="Hz"``, rates
         in spikes per second at sample times or in bins defined by edges.
-    is_spike : bool ndarray, shape (n_time,)
+    is_spike : np.ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
-    trial_id : ndarray, shape (n_time,), optional
+    trial_id : np.ndarray, shape (n_time,), optional
         The label identifying time point with trial. If `trial_id` is set
         to None, then all time points are treated as part of the same
         trial. Otherwise, the data will be grouped by trial.
@@ -38,7 +52,19 @@ class TimeRescaling:
         the interspike intervals can be longer than the trial. In this
         situation, the interspike interval is censored. If
         `adjust_for_short_trials` is True, we take this censoring into
-        account using the adjustment in [2].
+        account using the adjustment in [2]_. By default False.
+    rate_units : {"expected_counts", "Hz"}, optional
+        Existing expected-count callers retain integration at unit index
+        spacing. Hz inputs require exactly one of `time` or `time_edges`.
+        By default "expected_counts".
+    time : np.ndarray, shape (n_time,), optional
+        Sample times in seconds. Rates are integrated with the trapezoid
+        rule; spikes occur at sample times, and each contiguous trial run
+        starts at its first sample (zero initial integrated intensity).
+    time_edges : np.ndarray, shape (n_time + 1,), optional
+        Bin edges in seconds. Rates are constant in each bin, and spikes
+        are approximated at the bin's closing edge. The first interval
+        includes exposure from the trial's opening edge.
 
     References
     ----------
@@ -48,7 +74,6 @@ class TimeRescaling:
     .. [2] Wiener, M.C. (2003). An adjustment to the time-rescaling method
            for application to short-trial spike train data. Neural
            Computation 15, 2565-2576.
-
     """
 
     def __init__(
@@ -56,32 +81,13 @@ class TimeRescaling:
         conditional_intensity: np.ndarray,
         is_spike: np.ndarray,
         trial_id: np.ndarray | None = None,
-        adjust_for_short_trials: bool = False,
         *,
+        adjust_for_short_trials: bool = False,
         rate_units: str = "expected_counts",
         time: np.ndarray | None = None,
         time_edges: np.ndarray | None = None,
     ):
-        """Initialize the TimeRescaling object.
-
-        Parameters
-        ----------
-        conditional_intensity : np.ndarray, shape (n_time,)
-        is_spike : np.ndarray, shape (n_time,)
-        trial_id : np.ndarray | None, shape (n_time,), optional
-        adjust_for_short_trials : bool, optional
-        rate_units : {"expected_counts", "Hz"}, optional
-            Existing expected-count callers retain integration at unit index
-            spacing. Hz inputs require exactly one physical grid below.
-        time : np.ndarray, shape (n_time,), optional
-            Sample times in seconds. Rates are integrated with the trapezoid
-            rule; spikes occur at sample times, and each contiguous trial run
-            starts at its first sample (zero initial integrated intensity).
-        time_edges : np.ndarray, shape (n_time + 1,), optional
-            Bin edges in seconds. Rates are constant in each bin, and spikes
-            are approximated at the bin's closing edge. The first interval
-            includes exposure from the trial's opening edge.
-        """
+        """Initialize the TimeRescaling object."""
         self.conditional_intensity = np.atleast_1d(
             np.asarray(conditional_intensity).squeeze()
         )
@@ -98,7 +104,7 @@ class TimeRescaling:
         # Validate physical inputs before splitting into trials. Existing
         # index-based construction does not need to allocate an integral.
         if (
-            not isinstance(rate_units, str)
+            not isinstance(rate_units, str)  # type: ignore[redundant-expr]  # defensive runtime check of a typed argument
             or rate_units != "expected_counts"
             or self.time is not None
             or self.time_edges is not None
@@ -110,25 +116,35 @@ class TimeRescaling:
                 time_edges=self.time_edges,
             )
         if self.trial_id.shape != self.conditional_intensity.shape:
-            raise ValueError("trial_id must match conditional_intensity rows")
+            msg = "trial_id must match conditional_intensity rows"
+            raise ValueError(msg)
         if self.is_spike.shape != self.conditional_intensity.shape:
-            raise ValueError("is_spike must match conditional_intensity rows")
+            msg = "is_spike must match conditional_intensity rows"
+            raise ValueError(msg)
 
     @property
     def n_spikes(self) -> int:
-        """Number of total spikes."""
+        """Total number of spikes.
+
+        Returns
+        -------
+        n_spikes : int
+            Number of time points with a spike.
+        """
         return np.nonzero(self.is_spike)[0].size
 
     def uniform_rescaled_ISIs(self) -> np.ndarray:
-        """Rescales the interspike intervals (ISIs) to unit rate Poisson,
-        adjusts for short time intervals, and transforms the ISIs to a
-        uniform distribution for easier analysis.
+        """Rescale the interspike intervals (ISIs) to a uniform distribution.
+
+        ISIs are rescaled to unit rate Poisson, adjusted for short time
+        intervals if requested, and transformed to a uniform distribution for
+        easier analysis.
 
         Returns
         -------
         uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
+            Rescaled ISIs, uniform on [0, 1] if the model fits well.
         """
-
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
         for trial in trial_IDs:
@@ -151,7 +167,7 @@ class TimeRescaling:
                     uniform_rescaled_ISIs(
                         self.conditional_intensity[run],
                         self.is_spike[run],
-                        self.adjust_for_short_trials,
+                        adjust_for_short_trials=self.adjust_for_short_trials,
                         rate_units=self.rate_units,
                         time=time,
                         time_edges=edges,
@@ -161,14 +177,15 @@ class TimeRescaling:
         return np.concatenate(uniform_rescaled_ISIs_by_trial)
 
     def ks_statistic(self) -> float:
-        """Measures the maximum distance of the rescaled ISIs from the unit
-        rate Poisson.
+        """Measure the maximum distance of the rescaled ISIs from unit rate Poisson.
 
         Smaller maximum distance means better fitting model.
 
         Returns
         -------
         ks_statistic : float
+            Kolmogorov-Smirnov statistic between the sorted rescaled ISIs and
+            the uniform CDF.
         """
         uniform_cdf_values = _uniform_cdf_values(self.n_spikes)
         return ks_statistic(np.sort(self.uniform_rescaled_ISIs()), uniform_cdf_values)
@@ -182,6 +199,8 @@ class TimeRescaling:
         Returns
         -------
         rescaled_ISI_autocorrelation : ndarray, shape (2 * n_spikes - 1,)
+            Autocorrelation of the rescaled ISIs (after mapping to a normal
+            distribution), normalized so the maximum is 1.
         """
         # Avoid -inf and inf when transforming to normal distribution.
         u = self.uniform_rescaled_ISIs()
@@ -191,30 +210,31 @@ class TimeRescaling:
         normal_rescaled_ISIs = norm.ppf(u)
 
         c = correlate(normal_rescaled_ISIs, normal_rescaled_ISIs)
-        return c / c.max()
+        return cast(np.ndarray, c / c.max())
 
     def plot_ks(
         self,
-        ax: plt.Axes | None = None,
-        scatter_kwargs: dict | None = None,
+        ax: Axes | None = None,
+        scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
-    ) -> plt.Axes:
-        """Plots the empirical CDF versus the expected CDF to examine how
-        close the rescaled ISIs are to the unit rate Poisson.
+    ) -> Axes:
+        """Plot the empirical CDF versus the expected CDF.
+
+        Shows how close the rescaled ISIs are to the unit rate Poisson.
 
         Parameters
         ----------
-        ax : matplotlib axis handle, optional
-            If None, plots on the current axis handle.
-        scatter_kwargs : None or dict
-            Plotting arguments for scatter plot
-        ci_color : str
-            Confidence interval color
+        ax : matplotlib.axes.Axes, optional
+            If None, plots on the current axes.
+        scatter_kwargs : dict, optional
+            Plotting arguments for scatter plot.
+        ci_color : str, optional
+            Confidence interval color, by default "red".
 
         Returns
         -------
-        ax : axis_handle
-
+        ax : matplotlib.axes.Axes
+            Axes containing the plot.
         """
         return plot_ks(
             self.uniform_rescaled_ISIs(),
@@ -225,26 +245,27 @@ class TimeRescaling:
 
     def plot_qq(
         self,
-        ax: plt.Axes | None = None,
-        scatter_kwargs: dict | None = None,
+        ax: Axes | None = None,
+        scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
-    ) -> plt.Axes:
-        """Plots the rescaled ISIs versus a uniform distribution to examine
-        how close the rescaled ISIs are to the unit rate Poisson.
+    ) -> Axes:
+        """Plot the rescaled ISIs versus a uniform distribution.
+
+        Shows how close the rescaled ISIs are to the unit rate Poisson.
 
         Parameters
         ----------
-        ax : matplotlib axis handle, optional
-            If None, plots on the current axis handle.
-        scatter_kwargs : None or dict
-            Plotting arguments for scatter plot
-        ci_color : str
-            Confidence interval color
+        ax : matplotlib.axes.Axes, optional
+            If None, plots on the current axes.
+        scatter_kwargs : dict, optional
+            Plotting arguments for scatter plot.
+        ci_color : str, optional
+            Confidence interval color, by default "red".
 
         Returns
         -------
-        ax : axis_handle
-
+        ax : matplotlib.axes.Axes
+            Axes containing the plot.
         """
         return plot_qq(
             self.uniform_rescaled_ISIs(),
@@ -255,12 +276,12 @@ class TimeRescaling:
 
     def plot_rescaled_ISI_autocorrelation(
         self,
-        ax: plt.Axes | None = None,
-        scatter_kwargs: dict | None = None,
+        ax: Axes | None = None,
+        scatter_kwargs: dict[str, Any] | None = None,
         ci_color: str = "red",
         sampling_frequency: float = 1.0,
         lag_max: float | None = None,
-    ) -> plt.Axes:
+    ) -> Axes:
         """Plot the rescaled ISI dependence.
 
         Should be independent if the transformation to unit rate Poisson
@@ -268,20 +289,21 @@ class TimeRescaling:
 
         Parameters
         ----------
-        ax : matplotlib axis handle, optional
-            If None, plots on the current axis handle.
-        scatter_kwargs : None or dict
-            Plotting arguments for scatter plot
-        ci_color : str
-            Confidence interval color
-        sampling_frequency : float
-            Sampling frequency of the data
+        ax : matplotlib.axes.Axes, optional
+            If None, plots on the current axes.
+        scatter_kwargs : dict, optional
+            Plotting arguments for scatter plot.
+        ci_color : str, optional
+            Confidence interval color, by default "red".
+        sampling_frequency : float, optional
+            Sampling frequency of the data in Hz, by default 1.0.
         lag_max : float, optional
-            Maximum lag to plot. If None, plots all lags.
+            Maximum lag to plot, in time units. If None, plots all lags.
 
         Returns
         -------
-        ax : axis_handle
+        ax : matplotlib.axes.Axes
+            Axes containing the plot.
         """
         return plot_rescaled_ISI_autocorrelation(
             self.rescaled_ISI_autocorrelation(),
@@ -294,8 +316,9 @@ class TimeRescaling:
 
 
 def _uniform_cdf_values(n_spikes: int) -> np.ndarray:
-    """Model based cumulative distribution function values. Used for
-    plotting the `uniform_rescaled_ISIs`.
+    """Return model based cumulative distribution function values.
+
+    Used for plotting the `uniform_rescaled_ISIs`.
 
     Parameters
     ----------
@@ -310,25 +333,25 @@ def _uniform_cdf_values(n_spikes: int) -> np.ndarray:
 
 
 def ks_statistic(empirical_cdf: np.ndarray, model_cdf: np.ndarray) -> float:
-    """Compares the empirical and model-based distribution using the
-    Kolmogorov-Smirnov statistic.
+    """Compare the empirical and model-based distributions.
+
+    Uses the Kolmogorov-Smirnov statistic.
 
     Parameters
     ----------
     empirical_cdf : np.ndarray, shape (n_spikes,)
+        Sorted empirical values (rescaled ISIs).
     model_cdf : np.ndarray, shape (n_spikes,)
+        Model-based CDF values at the same quantiles.
 
     Returns
     -------
     ks_statistic : float
-
-    Raises
-    ------
-    ValueError
-        If the arrays are not the same size.
+        Maximum absolute difference between the two; NaN if the arrays
+        cannot be broadcast together.
     """
     try:
-        return np.max(np.abs(empirical_cdf - model_cdf))
+        return cast(float, np.max(np.abs(empirical_cdf - model_cdf)))
     except ValueError:
         return np.nan
 
@@ -368,13 +391,17 @@ def _max_transformed_interval(
     is_spike : bool ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
     rescaled_ISIs : ndarray, shape (n_spikes,)
+        Time-rescaled inter-spike intervals.
 
     Returns
     -------
     max_transformed_interval : ndarray, shape (n_spikes,)
     """
     ici_at_spike = integrated_conditional_intensity[is_spike.nonzero()]
-    return integrated_conditional_intensity[-1] - ici_at_spike + rescaled_ISIs
+    return cast(
+        np.ndarray,
+        integrated_conditional_intensity[-1] - ici_at_spike + rescaled_ISIs,
+    )
 
 
 def _integrated_conditional_intensity(
@@ -386,8 +413,9 @@ def _integrated_conditional_intensity(
     legacy_residuals: bool = False,
 ) -> np.ndarray:
     """Integrate explicitly selected rate units without guessing a clock."""
-    if not isinstance(rate_units, str) or rate_units not in ("expected_counts", "Hz"):
-        raise ValueError("rate_units must be 'expected_counts' or 'Hz'")
+    if not isinstance(rate_units, str) or rate_units not in ("expected_counts", "Hz"):  # type: ignore[redundant-expr]  # defensive runtime check of a typed argument
+        msg = "rate_units must be 'expected_counts' or 'Hz'"
+        raise ValueError(msg)
     # Integrate Hz rates in float64 before any addition or multiplication.
     # Preserve the original arithmetic for explicit legacy expected counts.
     intensity = np.asarray(
@@ -395,30 +423,31 @@ def _integrated_conditional_intensity(
     )
     if rate_units == "expected_counts":
         if time is not None or time_edges is not None:
-            raise ValueError(
+            msg = (
                 "expected_counts uses the existing bin-index convention; "
                 "physical time or time_edges requires rate_units='Hz'"
             )
+            raise ValueError(msg)
         return (
             np.cumsum(intensity)
             if legacy_residuals
             else integrate.cumulative_trapezoid(intensity, initial=0.0)
         )
     if (time is None) == (time_edges is None):
-        raise ValueError(
-            "Hz inputs require exactly one of time or time_edges in seconds"
-        )
+        msg = "Hz inputs require exactly one of time or time_edges in seconds"
+        raise ValueError(msg)
     if intensity.ndim != 1 or not intensity.size:
-        raise ValueError(
-            "conditional_intensity must have nonempty one-dimensional rows"
-        )
+        msg = "conditional_intensity must have nonempty one-dimensional rows"
+        raise ValueError(msg)
     if not np.all(np.isfinite(intensity)) or np.any(intensity < 0):
-        raise ValueError("conditional_intensity must be finite and nonnegative")
+        msg = "conditional_intensity must be finite and nonnegative"
+        raise ValueError(msg)
     grid = np.asarray(time if time is not None else time_edges, dtype=float)
     expected_size = len(intensity) + (time_edges is not None)
     if grid.ndim != 1 or grid.size != expected_size:
         shape = "n_time" if time is not None else "n_time + 1"
-        raise ValueError(f"physical grid must have shape ({shape},)")
+        msg = f"physical grid must have shape ({shape},)"
+        raise ValueError(msg)
     with np.errstate(over="ignore", invalid="ignore"):
         durations = np.diff(grid)
     if (
@@ -426,24 +455,29 @@ def _integrated_conditional_intensity(
         or not np.all(np.isfinite(durations))
         or np.any(durations <= 0)
     ):
-        raise ValueError("physical time must be finite and strictly increasing")
+        msg = "physical time must be finite and strictly increasing"
+        raise ValueError(msg)
     if time_edges is not None:
         return np.cumsum(intensity * durations)
-    return integrate.cumulative_trapezoid(intensity, x=grid, initial=0.0)
+    return cast(
+        np.ndarray, integrate.cumulative_trapezoid(intensity, x=grid, initial=0.0)
+    )
 
 
 def uniform_rescaled_ISIs(
     conditional_intensity: np.ndarray,
     is_spike: np.ndarray,
-    adjust_for_short_trials: bool = True,
     *,
+    adjust_for_short_trials: bool = True,
     rate_units: str = "expected_counts",
     time: np.ndarray | None = None,
     time_edges: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Rescales the interspike intervals (ISIs) to unit rate Poisson,
-    adjusts for short time intervals, and transforms the ISIs to a
-    uniform distribution for easier analysis.
+    """Rescale the interspike intervals (ISIs) to a uniform distribution.
+
+    ISIs are rescaled to unit rate Poisson, adjusted for short time
+    intervals if requested, and transformed to a uniform distribution for
+    easier analysis.
 
     Parameters
     ----------
@@ -457,10 +491,11 @@ def uniform_rescaled_ISIs(
         the interspike intervals can be longer than the trial. In this
         situation, the interspike interval is censored. If
         `adjust_for_short_trials` is True, we take this censoring into
-        account using the adjustment in [1].
+        account using the adjustment in [1]_. By default True.
     rate_units : {"expected_counts", "Hz"}, optional
         ``expected_counts`` preserves the existing unit-index trapezoid.
         Hz requires exactly one of ``time`` or ``time_edges`` in seconds.
+        By default "expected_counts".
     time : np.ndarray, shape (n_time,), optional
         Sample timestamps. Integrate rates by trapezoids from the first sample;
         spike indicators refer to events at their corresponding sample times.
@@ -472,20 +507,21 @@ def uniform_rescaled_ISIs(
     Returns
     -------
     uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
+        Rescaled ISIs, uniform on [0, 1] if the model fits well.
 
     References
     ----------
     .. [1] Wiener, M.C. (2003). An adjustment to the time-rescaling method
            for application to short-trial spike train data. Neural
            Computation 15, 2565-2576.
-
     """
     integrated_conditional_intensity = _integrated_conditional_intensity(
         conditional_intensity, rate_units=rate_units, time=time, time_edges=time_edges
     )
     is_spike = np.asarray(is_spike)
     if is_spike.shape != integrated_conditional_intensity.shape:
-        raise ValueError("is_spike must match conditional_intensity rows")
+        msg = "is_spike must match conditional_intensity rows"
+        raise ValueError(msg)
     # Rescale the ISIs to unit rate Poisson: \Lambda(spike_k) - \Lambda(spike_{k-1})
     # These should be exponentially distributed with mean 1
     rescaled_ISIs = _rescaled_ISIs(integrated_conditional_intensity, is_spike)
@@ -500,7 +536,7 @@ def uniform_rescaled_ISIs(
         max_transformed_interval = 1
 
     # Transform the ISIs to a uniform distribution (1 - exp(-ISI))
-    return expon.cdf(rescaled_ISIs) / max_transformed_interval
+    return cast(np.ndarray, expon.cdf(rescaled_ISIs) / max_transformed_interval)
 
 
 def point_process_residuals(
@@ -544,32 +580,41 @@ def point_process_residuals(
     )
     is_spike = np.asarray(is_spike)
     if is_spike.shape != integrated.shape:
-        raise ValueError("is_spike must match conditional_intensity rows")
+        msg = "is_spike must match conditional_intensity rows"
+        raise ValueError(msg)
     if rate_units == "expected_counts":
         # Retain the original accumulation order for existing callers.
         return np.cumsum(is_spike - conditional_intensity)
-    return np.cumsum(is_spike) - integrated
+    return cast(np.ndarray, np.cumsum(is_spike) - integrated)
 
 
 def plot_ks(
     uniform_rescaled_ISIs: np.ndarray,
-    ax: plt.Axes | None = None,
-    scatter_kwargs: dict | None = None,
+    ax: Axes | None = None,
+    scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
-) -> plt.Axes:
-    """Plots the rescaled ISIs versus a uniform distribution to examine
-    how close the rescaled ISIs are to the unit rate Poisson.
+) -> Axes:
+    """Plot the empirical CDF versus the expected CDF of the rescaled ISIs.
+
+    Shows how close the rescaled ISIs are to the unit rate Poisson, with
+    95% Kolmogorov-Smirnov confidence bounds.
 
     Parameters
     ----------
     uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
-    ax : plt.Axes | None, optional
-    scatter_kwargs : dict | None, optional
+        Rescaled interspike intervals that should be uniformly distributed
+        if the model fits well.
+    ax : Axes, optional
+        Matplotlib axes object to plot on. If None, uses current axes.
+    scatter_kwargs : dict, optional
+        Additional keyword arguments passed to scatter plot.
     ci_color : str, optional
+        Color for confidence interval lines, by default "red".
 
     Returns
     -------
-    ax : plt.Axes
+    ax : Axes
+        Matplotlib axes object containing the plot.
     """
     n_spikes = uniform_rescaled_ISIs.size
     uniform_cdf_values = (np.arange(1, n_spikes + 1) - 0.5) / n_spikes
@@ -595,10 +640,10 @@ def plot_ks(
 
 def plot_qq(
     uniform_rescaled_ISIs: np.ndarray,
-    ax: plt.Axes | None = None,
-    scatter_kwargs: dict | None = None,
+    ax: Axes | None = None,
+    scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
-) -> plt.Axes:
+) -> Axes:
     """Create a Q-Q plot of rescaled ISIs against uniform distribution.
 
     Plots the quantiles of the rescaled interspike intervals against the
@@ -610,7 +655,7 @@ def plot_qq(
     uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
         Rescaled interspike intervals that should be uniformly distributed
         if the model fits well.
-    ax : plt.Axes, optional
+    ax : Axes, optional
         Matplotlib axes object to plot on. If None, uses current axes.
     scatter_kwargs : dict, optional
         Additional keyword arguments passed to scatter plot.
@@ -619,7 +664,7 @@ def plot_qq(
 
     Returns
     -------
-    ax : plt.Axes
+    ax : Axes
         Matplotlib axes object containing the plot.
 
     Notes
@@ -651,12 +696,12 @@ def plot_qq(
 
 def plot_rescaled_ISI_autocorrelation(
     rescaled_ISI_autocorrelation: np.ndarray,
-    ax: plt.Axes | None = None,
-    scatter_kwargs: dict | None = None,
+    ax: Axes | None = None,
+    scatter_kwargs: dict[str, Any] | None = None,
     ci_color: str = "red",
     sampling_frequency: float = 1.0,
     lag_max: float | None = None,
-) -> plt.Axes:
+) -> Axes:
     """Plot autocorrelation function of rescaled interspike intervals.
 
     Visualizes the temporal dependence in rescaled ISIs. For a well-fitting
@@ -667,7 +712,7 @@ def plot_rescaled_ISI_autocorrelation(
     ----------
     rescaled_ISI_autocorrelation : np.ndarray, shape (2*n_spikes-1,)
         Autocorrelation function of rescaled ISIs computed using correlation.
-    ax : plt.Axes, optional
+    ax : Axes, optional
         Matplotlib axes object to plot on. If None, uses current axes.
     scatter_kwargs : dict, optional
         Additional keyword arguments passed to scatter plot.
@@ -681,7 +726,7 @@ def plot_rescaled_ISI_autocorrelation(
 
     Returns
     -------
-    ax : plt.Axes
+    ax : Axes
         Matplotlib axes object containing the plot.
 
     Notes

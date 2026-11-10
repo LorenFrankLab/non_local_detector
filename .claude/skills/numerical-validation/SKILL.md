@@ -23,6 +23,7 @@ Verify that changes to mathematical/algorithmic code maintain numerical accuracy
 - `src/non_local_detector/likelihoods/` (likelihood models)
 - `src/non_local_detector/continuous_state_transitions.py`
 - `src/non_local_detector/discrete_state_transitions.py`
+- `src/non_local_detector/_transition_estimation.py`
 - `src/non_local_detector/initial_conditions.py`
 - Any code involving JAX transformations or numerical computations
 
@@ -59,16 +60,12 @@ Before making any changes:
 ```bash
 # Run tests and capture output
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py \
+  tests/test_golden_regression.py \
   -v > /tmp/baseline_output.txt 2>&1
 
 # Run property tests
 uv run pytest \
   -m property -v > /tmp/baseline_property.txt 2>&1
-
-# Run snapshot tests
-uv run pytest \
-  -m snapshot -v > /tmp/baseline_snapshot.txt 2>&1
 ```
 
 **Save output:** Keep baseline files for comparison
@@ -84,14 +81,11 @@ After making changes:
 ```bash
 # Run same tests
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py \
+  tests/test_golden_regression.py \
   -v > /tmp/new_output.txt 2>&1
 
 uv run pytest \
   -m property -v > /tmp/new_property.txt 2>&1
-
-uv run pytest \
-  -m snapshot -v > /tmp/new_snapshot.txt 2>&1
 ```
 
 ### Step 4: Compare Numerical Differences
@@ -174,7 +168,7 @@ uv run pytest -m property -v
 
 ```bash
 uv run pytest \
-  src/non_local_detector/tests/test_golden_regression.py -v
+  tests/test_golden_regression.py -v
 ```
 
 **Golden regression tests:**
@@ -193,7 +187,7 @@ Create a comprehensive report with:
 **1. Diff - What Changed:**
 
 ```
-Snapshot changes:
+Golden regression changes:
 - test_model_output: posterior probabilities differ by max 2.3e-11
 - test_transition_matrix: no changes
 
@@ -260,16 +254,12 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 
 ## Approval Process
 
-**For snapshot updates with numerical changes:**
+**For golden regression data changes:**
 
 1. Generate full analysis (all 4 sections above)
 2. Present to user
-3. Ask: "These changes are [expected/acceptable/significant]. Approve snapshot update?"
-4. If approved: User will set approval flag, then run:
-
-   ```bash
-   uv run pytest --snapshot-update
-   ```
+3. Ask: "These changes are [expected/acceptable/significant]. Approve regenerating the golden data?"
+4. Only after approval, regenerate the affected files in `tests/golden_data/`.
 
 ## Integration with Other Skills
 
@@ -325,7 +315,7 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 - Skip baseline capture
 - Ignore numerical differences > 1e-14
 - Assume "small" differences don't matter
-- Update snapshots without analysis
+- Regenerate golden data without analysis
 - Skip property or golden regression tests
 - Proceed with NaN/Inf in outputs
 
@@ -335,5 +325,5 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 - Investigate all unexpected differences
 - Verify mathematical invariants explicitly
 - Provide full analysis for any differences
-- Get approval before snapshot updates
+- Get approval before regenerating golden data
 - Document tolerance justifications

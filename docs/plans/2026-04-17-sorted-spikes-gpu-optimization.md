@@ -107,15 +107,15 @@ def _build_spike_event_arrays(
     time_bin_ids = np.concatenate(all_time_bin_ids)
 
     # Sort by time bin for segment_sum indices_are_sorted=True
-    sort_idx = np.argsort(time_bin_ids, kind='stable')
+    sort_idx = np.argsort(time_bin_ids, kind="stable")
     return neuron_ids[sort_idx], time_bin_ids[sort_idx]
 
 
 def _nonlocal_poisson_loglik_sparse(
-    neuron_ids: jnp.ndarray,          # (total_spikes,)
-    time_bin_ids: jnp.ndarray,        # (total_spikes,)
-    log_place_fields: jnp.ndarray,    # (n_neurons, n_bins)
-    no_spike_part: jnp.ndarray,       # (n_bins,)
+    neuron_ids: jnp.ndarray,  # (total_spikes,)
+    time_bin_ids: jnp.ndarray,  # (total_spikes,)
+    log_place_fields: jnp.ndarray,  # (n_neurons, n_bins)
+    no_spike_part: jnp.ndarray,  # (n_bins,)
     n_time: int,
 ) -> jnp.ndarray:
     """Sparse event-driven non-local Poisson log-likelihood.
@@ -125,8 +125,10 @@ def _nonlocal_poisson_loglik_sparse(
     """
     spike_contributions = log_place_fields[neuron_ids]  # (total_spikes, n_bins)
     log_likelihood = jax.ops.segment_sum(
-        spike_contributions, time_bin_ids,
-        num_segments=n_time, indices_are_sorted=True,
+        spike_contributions,
+        time_bin_ids,
+        num_segments=n_time,
+        indices_are_sorted=True,
     )
     return log_likelihood - no_spike_part
 
@@ -160,7 +162,10 @@ def _nonlocal_poisson_loglik_sparse_chunked(
         tids = jax.lax.dynamic_slice(time_bin_ids, (start,), (chunk_size,))
         contributions = log_place_fields[nids]  # (chunk_size, n_bins)
         return ll + jax.ops.segment_sum(
-            contributions, tids, num_segments=n_time, indices_are_sorted=True,
+            contributions,
+            tids,
+            num_segments=n_time,
+            indices_are_sorted=True,
         )
 
     ll = jnp.zeros((n_time, n_bins))
@@ -179,9 +184,9 @@ def get_spikecount_per_time_bin_batched(
 
 
 def _nonlocal_poisson_loglik_dense(
-    spike_counts: jnp.ndarray,       # (n_neurons, n_time)
-    log_place_fields: jnp.ndarray,   # (n_neurons, n_bins)
-    no_spike_part: jnp.ndarray,      # (n_bins,)
+    spike_counts: jnp.ndarray,  # (n_neurons, n_time)
+    log_place_fields: jnp.ndarray,  # (n_neurons, n_bins)
+    no_spike_part: jnp.ndarray,  # (n_bins,)
 ) -> jnp.ndarray:
     """Dense matmul path — one BLAS call, O(n_neurons * n_time) memory."""
     return spike_counts.T @ log_place_fields - no_spike_part
@@ -252,8 +257,7 @@ class TestSparseNonlocalLoglik:
         time_edges = np.linspace(0, 10, n_time + 1)
 
         spike_times_list = [
-            np.sort(rng.uniform(0, 10, rng.poisson(20)))
-            for _ in range(n_neurons)
+            np.sort(rng.uniform(0, 10, rng.poisson(20))) for _ in range(n_neurons)
         ]
         # Filter to window
         spike_times_filtered = [
@@ -261,7 +265,8 @@ class TestSparseNonlocalLoglik:
             for st in spike_times_list
         ]
         neuron_ids, time_bin_ids = _build_spike_event_arrays(
-            spike_times_filtered, time_edges,
+            spike_times_filtered,
+            time_edges,
         )
         return {
             "neuron_ids": jnp.asarray(neuron_ids),
@@ -289,8 +294,11 @@ class TestSparseNonlocalLoglik:
         ref -= d["no_spike_part"]
 
         result = _nonlocal_poisson_loglik_sparse(
-            d["neuron_ids"], d["time_bin_ids"],
-            d["log_pf"], d["no_spike_part"], d["n_time"],
+            d["neuron_ids"],
+            d["time_bin_ids"],
+            d["log_pf"],
+            d["no_spike_part"],
+            d["n_time"],
         )
         assert jnp.allclose(result, ref, atol=1e-5, rtol=1e-5), (
             f"Max diff: {float(jnp.max(jnp.abs(result - ref))):.2e}"
@@ -302,12 +310,18 @@ class TestSparseNonlocalLoglik:
         d = self._make_test_data(rng)
 
         full = _nonlocal_poisson_loglik_sparse(
-            d["neuron_ids"], d["time_bin_ids"],
-            d["log_pf"], d["no_spike_part"], d["n_time"],
+            d["neuron_ids"],
+            d["time_bin_ids"],
+            d["log_pf"],
+            d["no_spike_part"],
+            d["n_time"],
         )
         chunked = _nonlocal_poisson_loglik_sparse_chunked(
-            d["neuron_ids"], d["time_bin_ids"],
-            d["log_pf"], d["no_spike_part"], d["n_time"],
+            d["neuron_ids"],
+            d["time_bin_ids"],
+            d["log_pf"],
+            d["no_spike_part"],
+            d["n_time"],
             chunk_size=200,
         )
         assert jnp.allclose(full, chunked, atol=1e-10, rtol=1e-10)
@@ -318,18 +332,27 @@ class TestSparseNonlocalLoglik:
         d = self._make_test_data(rng)
 
         sparse_result = _nonlocal_poisson_loglik_sparse(
-            d["neuron_ids"], d["time_bin_ids"],
-            d["log_pf"], d["no_spike_part"], d["n_time"],
+            d["neuron_ids"],
+            d["time_bin_ids"],
+            d["log_pf"],
+            d["no_spike_part"],
+            d["n_time"],
         )
 
         from non_local_detector.likelihoods.common import (
             get_spikecount_per_time_bin_batched,
         )
-        counts = jnp.asarray(get_spikecount_per_time_bin_batched(
-            d["spike_times_filtered"], d["time_edges"],
-        ))
+
+        counts = jnp.asarray(
+            get_spikecount_per_time_bin_batched(
+                d["spike_times_filtered"],
+                d["time_edges"],
+            )
+        )
         dense_result = _nonlocal_poisson_loglik_dense(
-            counts, d["log_pf"], d["no_spike_part"],
+            counts,
+            d["log_pf"],
+            d["no_spike_part"],
         )
         assert jnp.allclose(sparse_result, dense_result, atol=1e-5, rtol=1e-5)
 
@@ -341,14 +364,23 @@ class TestSparseNonlocalLoglik:
         from non_local_detector.likelihoods.common import (
             get_spikecount_per_time_bin_batched,
         )
-        counts = jnp.asarray(get_spikecount_per_time_bin_batched(
-            d["spike_times_filtered"], d["time_edges"],
-        ))
+
+        counts = jnp.asarray(
+            get_spikecount_per_time_bin_batched(
+                d["spike_times_filtered"],
+                d["time_edges"],
+            )
+        )
         full = _nonlocal_poisson_loglik_dense(
-            counts, d["log_pf"], d["no_spike_part"],
+            counts,
+            d["log_pf"],
+            d["no_spike_part"],
         )
         chunked = _nonlocal_poisson_loglik_dense_chunked(
-            counts, d["log_pf"], d["no_spike_part"], chunk_size=200,
+            counts,
+            d["log_pf"],
+            d["no_spike_part"],
+            chunk_size=200,
         )
         assert jnp.allclose(full, chunked, atol=1e-10, rtol=1e-10)
 
@@ -361,7 +393,11 @@ class TestSparseNonlocalLoglik:
         tids = jnp.array([], dtype=jnp.int32)
 
         result = _nonlocal_poisson_loglik_sparse(
-            nids, tids, log_pf, no_spike_part, n_time,
+            nids,
+            tids,
+            log_pf,
+            no_spike_part,
+            n_time,
         )
         expected = jnp.broadcast_to(-no_spike_part, (n_time, n_bins))
         assert jnp.allclose(result, expected, atol=1e-12)
@@ -375,18 +411,26 @@ class TestEndToEndKDENonlocal:
         from non_local_detector.simulate.clusterless_simulation import (
             make_simulated_run_data,
         )
+
         sim = make_simulated_run_data(
             n_tetrodes=1,
             place_field_means=np.arange(0, 120, 10),
-            sampling_frequency=500, n_runs=2, seed=42,
+            sampling_frequency=500,
+            n_runs=2,
+            seed=42,
         )
         n_encode = int(0.7 * len(sim.position_time))
         enc_time = sim.position_time[:n_encode]
         enc_pos = sim.position[:n_encode]
         enc_spikes = [st[st <= enc_time[-1]] for st in sim.spike_times]
         encoding_model = fit_sorted_spikes_kde_encoding_model(
-            enc_time, enc_pos, enc_spikes, sim.environment,
-            position_std=6.0, block_size=100, disable_progress_bar=True,
+            enc_time,
+            enc_pos,
+            enc_spikes,
+            sim.environment,
+            position_std=6.0,
+            block_size=100,
+            disable_progress_bar=True,
         )
         test_edges = sim.edges[sim.edges >= enc_time[-1]]
         test_spikes = [st[st >= enc_time[-1]] for st in sim.spike_times]
@@ -407,10 +451,14 @@ class TestEndToEndKDENonlocal:
         """
         d = kde_data
         result = predict_sorted_spikes_kde_log_likelihood(
-            d["time"], d["position_time"], d["position"],
-            d["spike_times"], d["environment"],
+            d["time"],
+            d["position_time"],
+            d["position"],
+            d["spike_times"],
+            d["environment"],
             **d["encoding_model"],
-            is_local=False, disable_progress_bar=True,
+            is_local=False,
+            disable_progress_bar=True,
         )
         assert jnp.all(jnp.isfinite(result))
         assert result.ndim == 2
@@ -428,8 +476,7 @@ Replace the neuron loop in both KDE and GLM non-local paths:
 ```python
 # Filter spike times to decode window
 spike_times_filtered = [
-    st[np.logical_and(st >= time[0], st <= time[-1])]
-    for st in spike_times
+    st[np.logical_and(st >= time[0], st <= time[-1])] for st in spike_times
 ]
 
 # Precompute log place fields (cache this after fit for repeat calls)
@@ -440,18 +487,22 @@ n_interior_bins = int(is_track_interior.sum())
 
 # Auto-select sparse vs dense
 neuron_ids, time_bin_ids = _build_spike_event_arrays(
-    spike_times_filtered, time,
+    spike_times_filtered,
+    time,
 )
 total_spikes = len(neuron_ids)
 n_neurons = len(spike_times)
 dense_cost = n_neurons * n_time  # count matrix entries
-sparse_cost = total_spikes       # event entries (times n_bins for contributions)
+sparse_cost = total_spikes  # event entries (times n_bins for contributions)
 
 if sparse_cost * n_interior_bins < dense_cost * n_interior_bins:
     # Sparse path — O(total_spikes * n_bins)
     log_likelihood = _nonlocal_poisson_loglik_sparse_chunked(
-        jnp.asarray(neuron_ids), jnp.asarray(time_bin_ids),
-        log_interior_pf, no_spike_interior, n_time,
+        jnp.asarray(neuron_ids),
+        jnp.asarray(time_bin_ids),
+        log_interior_pf,
+        no_spike_interior,
+        n_time,
     )
 else:
     # Dense path — O(n_neurons * n_time * n_bins)
@@ -459,7 +510,9 @@ else:
         get_spikecount_per_time_bin_batched(spike_times_filtered, time)
     )
     log_likelihood = _nonlocal_poisson_loglik_dense(
-        spike_counts, log_interior_pf, no_spike_interior,
+        spike_counts,
+        log_interior_pf,
+        no_spike_interior,
     )
 ```
 
@@ -492,9 +545,7 @@ Both chunked for bounded memory. Caches log(place_fields) after fit."
 
 ```python
 # (n_time, n_basis) @ (n_basis, n_neurons) -> (n_time, n_neurons)
-all_local_rates = jnp.clip(
-    jnp.exp(emission_predict_matrix @ coefficients.T), min=EPS
-)
+all_local_rates = jnp.clip(jnp.exp(emission_predict_matrix @ coefficients.T), min=EPS)
 spike_counts = jnp.asarray(
     get_spikecount_per_time_bin_batched(spike_times_filtered, time)
 )  # (n_neurons, n_time)
@@ -515,16 +566,17 @@ The Python loop over `KDEModel.predict` is retained (each model has different `s
 
 ```python
 # Step 1: KDE predictions — Python loop (different samples per model)
-all_marginal_densities = jnp.stack([
-    jnp.where(jnp.isnan(d := model.predict(interpolated_position)), 0.0, d)
-    for model in marginal_models
-])  # (n_neurons, n_time)
+all_marginal_densities = jnp.stack(
+    [
+        jnp.where(jnp.isnan(d := model.predict(interpolated_position)), 0.0, d)
+        for model in marginal_models
+    ]
+)  # (n_neurons, n_time)
 
 # Step 2: Rate computation — vectorized
 all_local_rates = jnp.clip(
-    jnp.array(mean_rates)[:, None] * safe_divide(
-        all_marginal_densities, occupancy[None, :]
-    ),
+    jnp.array(mean_rates)[:, None]
+    * safe_divide(all_marginal_densities, occupancy[None, :]),
     min=EPS,
 )  # (n_neurons, n_time)
 
@@ -569,9 +621,7 @@ no_spike_log_likelihood = (
 Even simpler: since `xlogy(k, r) = k * log(r)` and `log(no_spike_rate)` is a scalar:
 
 ```python
-total_spike_counts = sum(
-    get_spikecount_per_time_bin(st, time) for st in spike_times
-)
+total_spike_counts = sum(get_spikecount_per_time_bin(st, time) for st in spike_times)
 log_rate = jnp.log(no_spike_rate)
 no_spike_log_likelihood = (
     total_spike_counts * log_rate - len(spike_times) * no_spike_rate
@@ -594,14 +644,16 @@ No neuron loop needed — just sum the per-neuron counts (numpy, cheap) then one
 
 ```python
 def get_spike_time_bin_ind_uniform(
-    spike_times: np.ndarray, time: np.ndarray,
+    spike_times: np.ndarray,
+    time: np.ndarray,
 ) -> np.ndarray:
     """Fast spike binning for uniformly spaced time bins."""
     dt = time[1] - time[0]
     t0 = time[0]
     return np.clip(
         ((spike_times - t0) / dt).astype(np.int32),
-        0, len(time) - 1,
+        0,
+        len(time) - 1,
     )
 ```
 

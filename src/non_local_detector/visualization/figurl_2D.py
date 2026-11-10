@@ -1,4 +1,14 @@
+"""Interactive figurl view for 2D decoding results (requires ``sortingview``)."""
+
 import numpy as np
+
+from non_local_detector.visualization._optional import sortingview_available
+
+__all__ = [
+    "create_2D_decode_view",
+    "create_interactive_2D_decoding_figurl",
+]
+
 
 _UINT16_MAX = int(np.iinfo(np.uint16).max)
 
@@ -32,7 +42,7 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
     n_position_bins = x_count * y_count
     max_linear_index = n_position_bins - 1
     if max_linear_index > _UINT16_MAX:
-        raise ValueError(
+        msg = (
             f"figurl_2D decoded-position rendering currently supports grids whose "
             f"largest linear bin index fits in uint16 (up to {_UINT16_MAX + 1} "
             f"bins); got {n_position_bins} bins "
@@ -41,18 +51,25 @@ def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
             f"DecodedPositionData schema receives 'locations' as uint16; verify "
             f"the schema before widening the dtype here."
         )
+        raise ValueError(msg)
     return n_position_bins
 
 
-try:
+if sortingview_available():
     from collections.abc import Callable
+    from typing import Any, cast
 
     import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
 
+    from non_local_detector.analysis.posterior import (
+        _state_probabilities,
+        get_position_posterior,
+    )
     from non_local_detector.environment import Environment, get_grid, get_track_interior
+    from non_local_detector.exceptions import ValidationError
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def create_static_track_animation(
@@ -64,18 +81,26 @@ try:
         positions: np.ndarray,
         compute_real_time_rate: bool = False,
         head_dir: np.ndarray | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Create a static track animation object.
 
         Parameters
         ----------
         track_rect_width : float
+            Width of each track bin rectangle.
         track_rect_height : float
+            Height of each track bin rectangle.
         ul_corners : np.ndarray, shape (2, n_corners)
+            x and y coordinates of the upper left corner of each track bin.
         timestamps : np.ndarray, shape (n_time,)
+            Position sample times; shifted in place when the first exceeds 5000.
         positions : np.ndarray, shape (2, n_time)
+            x and y position at each timestamp.
         compute_real_time_rate : bool, optional
+            If True, store the sampling frequency in Hz estimated from the
+            median timestamp difference.
         head_dir : np.ndarray, shape (n_time,), optional
+            Head direction at each timestamp.
 
         Returns
         -------
@@ -114,7 +139,10 @@ try:
 
         return data
 
-    def get_base_track_information(base_probabilities: xr.Dataset):
+    def get_base_track_information(
+        base_probabilities: xr.DataArray,
+    ) -> tuple[int, float, float, int, float, float]:
+        """Return the x/y bin counts, minima and widths of the base track."""
         x_count = len(base_probabilities.x_position)
         y_count = len(base_probabilities.y_position)
         x_min = np.min(base_probabilities.x_position).item()
@@ -144,12 +172,20 @@ try:
         Parameters
         ----------
         t : tuple[float, float, float]
+            Entry of the stacked index; the last two elements are the y and x
+            positions.
         location_lookup : dict[tuple[float, float], int]
+            Cache from ``(x, y)`` to linear index; updated in place.
         x_count : int
+            Number of x positions.
         x_min : float
+            Smallest x position.
         x_width : float
+            Spacing between x positions.
         y_min : float
+            Smallest y position.
         y_width : float
+            Spacing between y positions.
 
         Returns
         -------
@@ -169,23 +205,29 @@ try:
         x_width: float,
         y_min: float,
         y_width: float,
-    ) -> Callable[[tuple[float, float]], int]:
+    ) -> Callable[[tuple[float, float, float]], int]:
         """Generate a linearization function.
 
         Parameters
         ----------
         location_lookup : dict[tuple[float, float], int]
+            Cache from ``(x, y)`` to linear index; updated in place.
         x_count : int
+            Number of x positions.
         x_min : float
+            Smallest x position.
         x_width : float
+            Spacing between x positions.
         y_min : float
+            Smallest y position.
         y_width : float
+            Spacing between y positions.
 
         Returns
         -------
-        linearization_fn : Callable[[tuple[float, float]], int]
+        linearization_fn : Callable[[tuple[float, float, float]], int]
         """
-        args = {
+        args: dict[str, Any] = {
             "location_lookup": location_lookup,
             "x_count": x_count,
             "x_min": x_min,
@@ -194,7 +236,7 @@ try:
             "y_width": y_width,
         }
 
-        def inner(t: tuple[float, float, float]):
+        def inner(t: tuple[float, float, float]) -> int:
             return memo_linearize(t, **args)
 
         return inner
@@ -205,6 +247,8 @@ try:
         Parameters
         ----------
         base_slice : xr.DataArray
+            Probabilities with ``time``, ``y_position`` and ``x_position``
+            dimensions and values in [0, 1].
 
         Returns
         -------
@@ -213,17 +257,22 @@ try:
         i = np.multiply(base_slice, 255).astype(np.uint8)
         i_stack = i.stack(unified_index=["time", "y_position", "x_position"])  # type: ignore[union-attr]
 
-        return i_stack.where(i_stack > 0, drop=True).astype(np.uint8)
+        return cast(
+            "xr.DataArray", i_stack.where(i_stack > 0, drop=True).astype(np.uint8)
+        )
 
     def get_positions(
-        i_trim: xr.Dataset, linearization_fn: Callable[[tuple[float, float]], int]
+        i_trim: xr.DataArray,
+        linearization_fn: Callable[[tuple[float, float, float]], int],
     ) -> np.ndarray:
         """Get the positions.
 
         Parameters
         ----------
         i_trim : xr.Dataset
-        linearization_fn : Callable[[tuple[float, float]], int]
+            Discretized, trimmed probabilities with a stacked ``unified_index``.
+        linearization_fn : Callable[[tuple[float, float, float]], int]
+            Maps a ``unified_index`` entry to a linear position index.
 
         Returns
         -------
@@ -240,7 +289,10 @@ try:
         Parameters
         ----------
         i_trim : xr.DataArray
+            Discretized, trimmed probabilities with a ``time`` coordinate per
+            retained entry.
         base_slice : xr.DataArray
+            Full-resolution data whose ``time`` coordinate defines the frames.
 
         Returns
         -------
@@ -250,18 +302,21 @@ try:
         time_counts = xr.DataArray(time_counts_np, coords={"time": times})
         raw_times = base_slice.time
         (_, good_counts) = xr.align(raw_times, time_counts, join="left", fill_value=0)
-        observations_per_frame = good_counts.values.astype(np.uint8)
-        return observations_per_frame
+        return good_counts.values.astype(np.uint8)
 
     def extract_slice_data(
-        base_slice: xr.DataArray, location_fn: Callable[[tuple[float, float]], int]
+        base_slice: xr.DataArray,
+        location_fn: Callable[[tuple[float, float, float]], int],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract slice data.
 
         Parameters
         ----------
         base_slice : xr.DataArray
-        location_fn : Callable[[tuple[float, float]], int]
+            Probabilities with ``time``, ``y_position`` and ``x_position``
+            dimensions.
+        location_fn : Callable[[tuple[float, float, float]], int]
+            Maps a stacked index entry to a linear position index.
 
         Returns
         -------
@@ -275,19 +330,20 @@ try:
         observations_per_frame = get_observations_per_frame(i_trim, base_slice)
         return i_trim.values, positions, observations_per_frame
 
-    def process_decoded_data(posterior: xr.DataArray) -> dict[str, np.ndarray]:
+    def process_decoded_data(posterior: xr.DataArray) -> dict[str, Any]:
         """Process decoded data.
 
         Parameters
         ----------
         posterior : xr.DataArray
+            Posterior over ``time``, ``y_position`` and ``x_position``.
 
         Returns
         -------
-        vis_data : dict[str, np.ndarray]
+        vis_data : dict[str, Any]
         """
         frame_step_size = 100_000
-        location_lookup = {}
+        location_lookup: dict[tuple[float, float], int] = {}
 
         (
             x_count,
@@ -351,8 +407,9 @@ try:
         }
 
     def create_track_animation_object(
-        *, static_track_animation: any
+        *, static_track_animation: Any
     ) -> vvf.TrackPositionAnimationV1:
+        """Build the track animation object from a static track animation."""
         if "decodedData" in static_track_animation:
             decoded_data = static_track_animation["decodedData"]
             decoded_data_obj = vvf.DecodedPositionData(
@@ -369,16 +426,8 @@ try:
         else:
             decoded_data_obj = None
 
-        timestamp_start = (
-            static_track_animation["timestampStart"]
-            if "timestampStart" in static_track_animation
-            else None
-        )
-        head_direction = (
-            static_track_animation["headDirection"]
-            if "headDirection" in static_track_animation
-            else None
-        )
+        timestamp_start = static_track_animation.get("timestampStart", None)
+        head_direction = static_track_animation.get("headDirection", None)
         return vvf.TrackPositionAnimationV1(
             track_bin_width=static_track_animation["trackBinWidth"],
             track_bin_height=static_track_animation["trackBinHeight"],
@@ -404,8 +453,11 @@ try:
         Parameters
         ----------
         width : float
+            Bin width.
         height : float
+            Bin height.
         centers : np.ndarray, shape (n_centers, 2)
+            x and y coordinates of the bin centers.
 
         Returns
         -------
@@ -414,7 +466,7 @@ try:
         ul = np.subtract(centers, (width / 2, -height / 2))
 
         # Reshape so we have an x array and a y array
-        return ul.T
+        return cast("np.ndarray", ul.T)
 
     def make_track(
         position: np.ndarray, bin_size: float = 1.0
@@ -424,7 +476,9 @@ try:
         Parameters
         ----------
         position : np.ndarray, shape (n_time, 2)
+            x and y position samples used to build the grid.
         bin_size : float, optional
+            Side length of a grid bin.
 
         Returns
         -------
@@ -451,32 +505,48 @@ try:
         position_time: np.ndarray,
         position: np.ndarray,
         interior_place_bin_centers: np.ndarray,
-        place_bin_size: np.ndarray,
+        place_bin_size: np.ndarray | tuple[float, float],
         posterior: xr.DataArray,
         head_dir: np.ndarray | None = None,
     ) -> vvf.TrackPositionAnimationV1:
-        """Creates a 2D decoding movie view
+        """Create a 2D decoding movie view.
 
         Parameters
         ----------
         position_time : np.ndarray, shape (n_time,)
+            Position sample times.
         position : np.ndarray, shape (n_time, 2)
-        interior_place_bin_centers: np.ndarray, shape (n_track_bins, 2)
+            x and y position at each time.
+        interior_place_bin_centers : np.ndarray, shape (n_track_bins, 2)
+            Centers of the bins in the track interior.
         place_bin_size : np.ndarray, shape (2, 1)
+            Bin width and height.
         posterior : xr.DataArray, shape (n_time, n_position_bins)
+            Posterior over the position bins at each time.
         head_dir : np.ndarray, optional
+            Head direction at each time.
 
         Returns
         -------
         view : vvf.TrackPositionAnimationV1
 
         """
-        assert position_time.shape[0] == position.shape[0], (
-            "position_time and position must have the same length"
-        )
-        assert posterior.shape[0] == position.shape[0], (
-            "posterior and position must have the same length"
-        )
+        if position_time.shape[0] != position.shape[0]:
+            msg = "position_time and position must have the same length"
+            raise ValidationError(
+                msg,
+                expected=f"position_time with {position.shape[0]} samples",
+                got=f"position_time with {position_time.shape[0]} samples",
+                hint="Pass position and its timestamps from the same recording.",
+            )
+        if posterior.shape[0] != position.shape[0]:
+            msg = "posterior and position must have the same length"
+            raise ValidationError(
+                msg,
+                expected=f"posterior with {position.shape[0]} time bins",
+                got=f"posterior with {posterior.shape[0]} time bins",
+                hint="Pass position sampled at the decoding time bins.",
+            )
 
         position_time = np.squeeze(np.asarray(position_time)).copy()
         position = np.asarray(position)
@@ -519,9 +589,15 @@ try:
         position_time : np.ndarray, shape (n_time_position,)
             Sample times for the position data.
         position : np.ndarray, shape (n_time_position, 2)
+            x and y position at each position sample time.
         env : Environment
+            Environment whose track interior defines the displayed bins.
         results : xr.Dataset
+            Decoding results; provides the time axis, state probabilities and,
+            by default, the posterior.
         posterior : xr.DataArray, optional
+            Defaults to the posterior over position summed over the states that
+            have a position (Local and No-Spike excluded).
         spike_times : list[np.ndarray], optional
             Spike times for each neuron.
         head_dir : np.ndarray, shape (n_time_position,), optional
@@ -535,14 +611,11 @@ try:
         -------
         url : str
         """
-        if env.is_track_interior_ is not None:
-            interior_place_bin_centers = env.place_bin_centers_[
-                env.is_track_interior_.ravel()
-            ]
-        else:
-            interior_place_bin_centers = env.place_bin_centers_
+        interior_place_bin_centers = env.place_bin_centers_[
+            env.is_track_interior_.ravel()
+        ]
         if posterior is None:
-            posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+            posterior = get_position_posterior(results.acausal_posterior)
         place_bin_size = (
             posterior.x_position.values[1] - posterior.x_position.values[0],
             posterior.y_position.values[1] - posterior.y_position.values[0],
@@ -569,14 +642,13 @@ try:
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.states.values, COLOR_CYCLE, strict=False):
+        for (state, probability), color in zip(
+            _state_probabilities(results).items(), COLOR_CYCLE, strict=False
+        ):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),
-                y=np.asarray(
-                    results.sel(states=state).acausal_state_probabilities,
-                    dtype=np.float32,
-                ),
+                y=np.asarray(probability, dtype=np.float32),
                 color=color,
                 width=1,
             )
@@ -590,9 +662,8 @@ try:
         )
 
         if spike_times is None:
-            raise ValueError(
-                "spike_times is required for multiunit firing rate visualization"
-            )
+            msg = "spike_times is required for multiunit firing rate visualization"
+            raise ValueError(msg)
         multiunit_firing_rate = get_multiunit_firing_rate(
             spike_times, results.time.values
         )
@@ -637,7 +708,4 @@ try:
             ],
         )
 
-        return view.url(label="2D Decoding")
-
-except ImportError:
-    pass
+        return cast("str", view.url(label="2D Decoding"))

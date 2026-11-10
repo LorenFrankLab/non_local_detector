@@ -75,7 +75,9 @@ import psutil
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import (  # noqa: E402
+import itertools
+
+from compare_prediction_modes import (
     provenance,
     set_population_defaults,
     workload,
@@ -111,7 +113,7 @@ def load_recording(path, start, duration, sampling_frequency):
     offsets = data["spike_offsets"]
     flat_times = data["spike_times_flat"]
     spike_times, features = [], []
-    for begin, end in zip(offsets[:-1], offsets[1:], strict=True):
+    for begin, end in itertools.pairwise(offsets):
         times = flat_times[begin:end]
         in_window = (times >= t0) & (times < t1)
         spike_times.append(times[in_window])
@@ -323,17 +325,20 @@ def instrumented(profiler, detector_class):
     targets = [
         (detector_class, "estimate_parameters", "estimate_parameters"),
         (detector_class, "fit", "fit"),
-        (detector_class, "initialize_environments", "environments"),
+        (detector_class, "_fit_environments", "environments"),
+        (detector_class, "initialize_environments", "environments"),  # older checkouts
         (environment_module.Environment, "fit_place_grid", "fit_place_grid"),
-        (detector_class, "initialize_state_index", "state_index"),
+        (base, "state_layout", "state_index"),
+        (detector_class, "_initialize_state_index", "state_index"),  # older checkouts
         (
             detector_class,
-            "initialize_discrete_state_transition",
+            "_initialize_discrete_state_transition",
             "discrete_transition",
         ),
-        (
+        (base, "continuous_state_transitions", "continuous_transition"),
+        (  # older checkouts
             detector_class,
-            "initialize_continuous_state_transition",
+            "_initialize_continuous_state_transition",
             "continuous_transition",
         ),
         (detector_class, "fit_encoding_model", "encoding_fit"),
@@ -676,9 +681,11 @@ def main():
             options = jax.profiler.ProfileOptions()
             options.python_tracer_level = args.xprof_python_tracer_level
             profiler = StageProfiler(jax, False, None)
-            with instrumented(profiler, detector_class):
-                with jax.profiler.trace(str(args.xprof_dir), profiler_options=options):
-                    run_em(max_iter=1)
+            with (
+                instrumented(profiler, detector_class),
+                jax.profiler.trace(str(args.xprof_dir), profiler_options=options),
+            ):
+                run_em(max_iter=1)
             report["xprof"] = str(args.xprof_dir)
             write_report()
         if args.cprofile:

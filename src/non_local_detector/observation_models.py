@@ -8,14 +8,22 @@ be used for particular data segments.
 
 from dataclasses import dataclass
 
+from non_local_detector.exceptions import ConfigurationError
 
-@dataclass(order=True, unsafe_hash=True)
+__all__ = [
+    "ObservationModel",
+]
+
+
+@dataclass(frozen=True, order=True)
 class ObservationModel:
     """Determines which environment and data points data correspond to.
 
     This class encapsulates the metadata needed to associate neural data
     with specific experimental environments, encoding groups, and decoding
-    contexts (local vs. non-local, spike vs. no-spike conditions).
+    contexts (local vs. non-local, spike vs. no-spike conditions). It is
+    immutable, so it can be hashed and sorted; use ``dataclasses.replace``
+    for a changed copy.
 
     Attributes
     ----------
@@ -27,6 +35,11 @@ class ObservationModel:
         Whether this represents local (current position) decoding.
     is_no_spike : bool, default=False
         Whether this represents no-spike baseline conditions.
+
+    Raises
+    ------
+    ConfigurationError
+        If both ``is_local`` and ``is_no_spike`` are True.
 
     Examples
     --------
@@ -50,3 +63,16 @@ class ObservationModel:
     encoding_group: str | int = 0
     is_local: bool = False
     is_no_spike: bool = False
+
+    def __post_init__(self) -> None:
+        """Reject a model that is both Local and No-Spike."""
+        if self.is_local and self.is_no_spike:
+            msg = "An observation model cannot set both is_local and is_no_spike"
+            raise ConfigurationError(
+                msg,
+                expected="at most one of is_local=True and is_no_spike=True",
+                got="is_local=True, is_no_spike=True",
+                hint="A Local state is decoded at the animal's position from the "
+                "spikes; a No-Spike state has no position and explains the "
+                "absence of spikes. Use one state of each.",
+            )

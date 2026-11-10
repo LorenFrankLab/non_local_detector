@@ -2,6 +2,7 @@
 """Inspect JAXpr (JAX intermediate representation) for understanding compilation."""
 
 import sys
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -41,9 +42,9 @@ def create_simple_test_data():
 
 
 def main():
-    print("="*70)
+    print("=" * 70)
     print("JAXpr INSPECTION FOR CLUSTERLESS KDE")
-    print("="*70)
+    print("=" * 70)
 
     data = create_simple_test_data()
 
@@ -54,9 +55,9 @@ def main():
     print(f"  Occupancy: {data['occupancy'].shape}")
 
     # Linear version (use_gemm=False)
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("LINEAR VERSION (use_gemm=False)")
-    print("="*70)
+    print("=" * 70)
 
     jitted_linear = jax.jit(
         lambda: estimate_log_joint_mark_intensity(
@@ -78,7 +79,7 @@ def main():
     print("\n... (truncated)")
 
     # Compile and get HLO
-    print("\n" + "-"*70)
+    print("\n" + "-" * 70)
     print("HLO Operations Count:")
     compiled_linear = lowered_linear.compile()
     hlo_linear = compiled_linear.as_text()
@@ -97,9 +98,9 @@ def main():
         print(f"  {op}: {count}")
 
     # GEMM version (use_gemm=True)
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("GEMM VERSION (use_gemm=True)")
-    print("="*70)
+    print("=" * 70)
 
     jitted_gemm = jax.jit(
         lambda: estimate_log_joint_mark_intensity(
@@ -119,7 +120,7 @@ def main():
     print(str(lowered_gemm.as_text())[:2000])
     print("\n... (truncated)")
 
-    print("\n" + "-"*70)
+    print("\n" + "-" * 70)
     print("HLO Operations Count:")
     compiled_gemm = lowered_gemm.compile()
     hlo_gemm = compiled_gemm.as_text()
@@ -139,9 +140,9 @@ def main():
         print(f"  {op}: {count}")
 
     # Comparison
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("COMPARISON")
-    print("="*70)
+    print("=" * 70)
 
     print("\nLinear version:")
     print(f"  Total operations: {sum(operations.values())}")
@@ -157,9 +158,9 @@ def main():
     print(f"  Scans/loops: {operations_gemm['while'] + operations_gemm['scan']}")
 
     # Performance analysis
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("PERFORMANCE ANALYSIS")
-    print("="*70)
+    print("=" * 70)
 
     print("""
 Key Observations:
@@ -189,17 +190,17 @@ When GEMM wins:
 
     # Save full HLO for inspection
     print("\nSaving full HLO representations to files...")
-    with open("/tmp/hlo_linear.txt", "w") as f:
+    with Path("/tmp/hlo_linear.txt").open("w") as f:
         f.write(hlo_linear)
     print("  Linear HLO saved to: /tmp/hlo_linear.txt")
 
-    with open("/tmp/hlo_gemm.txt", "w") as f:
+    with Path("/tmp/hlo_gemm.txt").open("w") as f:
         f.write(hlo_gemm)
     print("  GEMM HLO saved to: /tmp/hlo_gemm.txt")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("RECOMMENDATIONS")
-    print("="*70)
+    print("=" * 70)
     print("""
 Based on JAXpr analysis:
 
@@ -221,7 +222,7 @@ Based on JAXpr analysis:
    → Benchmark with realistic data
     """)
 
-    print("="*70 + "\n")
+    print("=" * 70 + "\n")
 
 
 if __name__ == "__main__":

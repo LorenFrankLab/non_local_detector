@@ -8,35 +8,46 @@ infinite distance, including isolated exterior nodes (whose self-distance is
 zero), exactly as in the legacy NetworkX shortest-path matrix.
 """
 
+from __future__ import annotations
+
 from collections import OrderedDict
+from typing import Any, cast
 
 import networkx as nx
 import numpy as np
+from numpy.typing import ArrayLike, DTypeLike, NDArray
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
+
+from non_local_detector.exceptions import NonLocalDetectorError
 
 DEFAULT_MAX_DENSE_DISTANCE_BYTES = 256 * 1024**2
 DEFAULT_DISTANCE_WORKSPACE_BYTES = 8 * 1024**2
 DEFAULT_DISTANCE_CACHE_BYTES = 64 * 1024**2
 
 
-class GraphDistanceBudgetError(MemoryError):
+class GraphDistanceBudgetError(NonLocalDetectorError, MemoryError):
     """A requested exact graph-distance allocation exceeds its byte budget."""
 
 
-def _budget(nbytes, maximum, description):
+def _budget(nbytes: int, maximum: Any, description: str) -> None:
     if (
         not isinstance(maximum, (int, np.integer))
         or isinstance(maximum, bool)
         or maximum < 0
     ):
-        raise ValueError("Graph distance byte budgets must be nonnegative integers")
+        msg = "Graph distance byte budgets must be nonnegative integers"
+        raise ValueError(msg)
     if nbytes > maximum:
-        raise GraphDistanceBudgetError(
+        msg = (
             f"{description} requires {nbytes:,} bytes, exceeding the {maximum:,}-byte "
-            "graph distance budget. Request fewer source/destination rows or explicitly "
-            "choose a feasible budget."
+            "graph distance budget. A detector sets this budget from "
+            "max_dense_transition_bytes: raise it, or use "
+            'transition_representation="dense", which computes all-pairs '
+            "distances when the environment is fitted. Otherwise request fewer "
+            "source/destination rows."
         )
+        raise GraphDistanceBudgetError(msg)
 
 
 class LazyGraphDistances:
@@ -53,48 +64,99 @@ class LazyGraphDistances:
     Pickling retains the sparse graph, ``directed`` and budgets, never the
     cache. The cache makes queries stateful: share an
     instance across threads only with external locking.
+
+    Parameters
+    ----------
+    graph : scipy.sparse matrix or array_like, shape (n_nodes, n_nodes)
+        Weighted adjacency matrix with finite, nonnegative edge distances.
+    directed : bool, optional
+        Whether to follow edge directions when finding shortest paths, by
+        default False.
+    max_dense_bytes : int, optional
+        Byte limit for converting to a dense matrix, by default 256 MiB.
+    max_workspace_bytes : int, optional
+        Byte limit for each temporary batch of Dijkstra rows, by default 8 MiB.
+    max_cache_bytes : int, optional
+        Byte limit for the cache of full source rows, by default 64 MiB.
+
+    Attributes
+    ----------
+    graph : scipy.sparse.csr_matrix
+        Float64 CSR adjacency matrix of edge distances.
+    directed : bool
+        Whether shortest paths follow edge directions.
+    max_dense_bytes, max_workspace_bytes, max_cache_bytes : int
+        The byte budgets above.
+
+    Raises
+    ------
+    ValueError
+        If the adjacency is not square, has negative or non-finite edge
+        distances, or a budget is not a nonnegative integer.
     """
 
     def __init__(
         self,
-        graph,
+        graph: Any,
         *,
-        directed=False,
-        max_dense_bytes=DEFAULT_MAX_DENSE_DISTANCE_BYTES,
-        max_workspace_bytes=DEFAULT_DISTANCE_WORKSPACE_BYTES,
-        max_cache_bytes=DEFAULT_DISTANCE_CACHE_BYTES,
-    ):
+        directed: bool = False,
+        max_dense_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
+        max_workspace_bytes: int = DEFAULT_DISTANCE_WORKSPACE_BYTES,
+        max_cache_bytes: int = DEFAULT_DISTANCE_CACHE_BYTES,
+    ) -> None:
         _budget(0, max_dense_bytes, "Dense graph distances")
         _budget(0, max_workspace_bytes, "Graph distance workspace")
         _budget(0, max_cache_bytes, "Graph distance row cache")
         graph = csr_matrix(graph, dtype=np.float64, copy=True)
         if graph.shape[0] != graph.shape[1]:
-            raise ValueError("Graph adjacency must be square")
+            msg = "Graph adjacency must be square"
+            raise ValueError(msg)
         if not np.all(np.isfinite(graph.data)) or np.any(graph.data < 0):
-            raise ValueError("Graph edge distances must be finite and nonnegative")
+            msg = "Graph edge distances must be finite and nonnegative"
+            raise ValueError(msg)
         self.graph = graph
         self.directed = bool(directed)
         self.max_dense_bytes = int(max_dense_bytes)
         self.max_workspace_bytes = int(max_workspace_bytes)
         self.max_cache_bytes = int(max_cache_bytes)
-        self._row_cache = OrderedDict()
+        self._row_cache: OrderedDict[int, NDArray[np.float64]] = OrderedDict()
 
-    def __getstate__(self):
+    def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state["_row_cache"] = OrderedDict()
         return state
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: dict[str, Any]) -> None:
         state.setdefault("max_cache_bytes", DEFAULT_DISTANCE_CACHE_BYTES)
         state.setdefault("_row_cache", OrderedDict())
         self.__dict__.update(state)
 
     @classmethod
-    def from_graph(cls, graph, **kwargs):
+    def from_graph(cls, graph: nx.Graph, **kwargs: Any) -> LazyGraphDistances:
+        """Build lazy distances from a NetworkX graph.
+
+        Parameters
+        ----------
+        graph : networkx.Graph
+            Graph whose nodes are the integers ``0`` through ``N - 1`` and
+            whose edges have a ``distance`` attribute.
+        **kwargs
+            Byte budgets passed to the constructor (``max_dense_bytes``,
+            ``max_workspace_bytes``, ``max_cache_bytes``).
+
+        Returns
+        -------
+        distances : LazyGraphDistances
+            Lazy shortest-path distances between the graph's nodes.
+
+        Raises
+        ------
+        ValueError
+            If the nodes are not indexed from zero through ``N - 1``.
+        """
         if set(graph.nodes) != set(range(len(graph))):
-            raise ValueError(
-                "Graph distance nodes must be indexed from zero through N-1"
-            )
+            msg = "Graph distance nodes must be indexed from zero through N-1"
+            raise ValueError(msg)
         sparse = nx.to_scipy_sparse_array(
             graph,
             nodelist=range(len(graph)),
@@ -110,26 +172,37 @@ class LazyGraphDistances:
         return cls(sparse, directed=graph.is_directed(), **kwargs)
 
     @property
-    def shape(self):
-        return self.graph.shape
+    def shape(self) -> tuple[int, int]:
+        """Shape ``(n_nodes, n_nodes)`` of the distance matrix."""
+        return cast("tuple[int, int]", self.graph.shape)
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype[np.float64]:
+        """Data type of the distances, always float64."""
         return np.dtype(np.float64)
 
     @property
-    def ndim(self):
+    def ndim(self) -> int:
+        """Number of dimensions, always 2."""
         return 2
 
     @property
-    def storage_nbytes(self):
-        return (
+    def storage_nbytes(self) -> int:
+        """Memory used by the stored sparse graph in bytes, excluding the row cache."""
+        return cast(
+            "int",
             self.graph.data.nbytes
             + self.graph.indices.nbytes
-            + self.graph.indptr.nbytes
+            + self.graph.indptr.nbytes,
         )
 
-    def _entries(self, rows, columns, *, max_bytes=None):
+    def _entries(
+        self,
+        rows: ArrayLike,
+        columns: ArrayLike,
+        *,
+        max_bytes: int | None = None,
+    ) -> NDArray[np.float64]:
         rows, columns = np.broadcast_arrays(rows, columns)
         _budget(
             rows.size * 8,
@@ -159,7 +232,7 @@ class LazyGraphDistances:
             del distances
         return result
 
-    def _rows_for(self, sources):
+    def _rows_for(self, sources: NDArray[np.integer]) -> NDArray[np.float64]:
         """Full float64 rows for unique ``sources``, computing only uncached rows.
 
         Callers bound ``len(sources)`` by the workspace budget.
@@ -185,7 +258,9 @@ class LazyGraphDistances:
                     self._row_cache.popitem(last=False)
         return result
 
-    def cross_distances(self, rows, columns):
+    def cross_distances(
+        self, rows: ArrayLike, columns: ArrayLike
+    ) -> NDArray[np.float64]:
         """Exact ``(len(rows), len(columns))`` distances; the output is caller-owned.
 
         Parameters
@@ -204,7 +279,8 @@ class LazyGraphDistances:
         rows, columns = np.asarray(rows), np.asarray(columns)
         for name, index in (("rows", rows), ("columns", columns)):
             if index.ndim != 1 or (index.size and index.dtype.kind not in "iu"):
-                raise IndexError(f"{name} must be a one-dimensional integer array")
+                msg = f"{name} must be a one-dimensional integer array"
+                raise IndexError(msg)
         # Same normalization as ``__getitem__``: negative indices wrap and
         # out-of-range indices raise.
         rows = np.arange(self.shape[0])[rows.astype(np.intp)]
@@ -227,7 +303,7 @@ class LazyGraphDistances:
             out[select] = block[inverse[select] - start]
         return out
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
         if not isinstance(key, tuple):
             if np.ndim(key) > 1 and np.asarray(key).dtype == bool:
                 # A full-shape mask selects elements, not rows.
@@ -249,11 +325,36 @@ class LazyGraphDistances:
         result = self._entries(rows, columns)
         return result[()] if result.ndim == 0 else result
 
-    def __array__(self, dtype=None, copy=None):
+    def __array__(
+        self,
+        dtype: DTypeLike | None = None,
+        copy: bool | None = None,  # noqa: FBT001 -- NumPy __array__ protocol
+    ) -> NDArray[Any]:
         return self.to_dense(dtype=dtype)
 
-    def to_dense(self, *, max_bytes=None, dtype=None):
-        """Explicit budgeted dense conversion, with optional caller budget."""
+    def to_dense(
+        self, *, max_bytes: int | None = None, dtype: DTypeLike | None = None
+    ) -> NDArray[Any]:
+        """Convert to a dense matrix within a byte budget.
+
+        Parameters
+        ----------
+        max_bytes : int, optional
+            Byte limit for the dense result, by default ``max_dense_bytes``.
+        dtype : dtype, optional
+            Data type of the result, by default float64.
+
+        Returns
+        -------
+        distances : np.ndarray, shape (n_nodes, n_nodes)
+            Shortest-path distances between every pair of nodes.
+
+        Raises
+        ------
+        GraphDistanceBudgetError
+            If the dense matrix exceeds ``max_bytes`` or one source row
+            exceeds ``max_workspace_bytes``.
+        """
         target = np.dtype(float if dtype is None else dtype)
         maximum = self.max_dense_bytes if max_bytes is None else max_bytes
         _budget(
@@ -282,8 +383,9 @@ class LazyGraphDistances:
             del distances
         return result
 
-    def __setitem__(self, key, value):
-        raise TypeError("Lazy graph distances are read-only")
+    def __setitem__(self, key: Any, value: Any) -> None:
+        msg = "Lazy graph distances are read-only"
+        raise TypeError(msg)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.shape[0]

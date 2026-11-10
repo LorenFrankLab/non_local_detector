@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import bisect
 import json
-import os
 import re
 import shutil
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import xarray as xr
+from numpy.typing import ArrayLike, NDArray
 from xarray.backends import BackendArray
 from xarray.core import indexing
 
@@ -36,9 +38,30 @@ class IncrementalResultWriter:
     constructor cleans up after itself. Outside a ``with`` block, call
     ``abort`` after a failed ``write``.
     Existing destinations are refused and never overwritten.
+
+    Parameters
+    ----------
+    path : str or Path
+        Destination directory of the completed result. Must not exist.
+    variables : mapping of str to tuple
+        Result variables, ``name -> (dimensions, shape, dtype)``. The leading
+        dimension is time and ``shape[0]`` is the total number of rows to be
+        written.
+    coordinates : mapping of str to tuple
+        Result coordinates, ``name -> (dimensions, values)``.
+
+    Raises
+    ------
+    FileExistsError
+        If ``path`` already exists.
     """
 
-    def __init__(self, path, variables, coordinates):
+    def __init__(
+        self,
+        path: str | Path,
+        variables: Mapping[str, tuple[Sequence[str], Sequence[int], Any]],
+        coordinates: Mapping[str, tuple[Sequence[str], ArrayLike]],
+    ) -> None:
         self.path = Path(path)
         if self.path.exists():
             raise FileExistsError(self.path)
@@ -47,9 +70,9 @@ class IncrementalResultWriter:
             tempfile.mkdtemp(prefix=f".{self.path.name}-", dir=self.path.parent)
         )
         self._published = False
-        self._variables = {}
-        self._intervals = {}
-        self._coordinates = {}
+        self._variables: dict[str, dict[str, Any]] = {}
+        self._intervals: dict[str, list[tuple[int, int]]] = {}
+        self._coordinates: dict[str, dict[str, Any]] = {}
         try:
             for name, (dims, shape, dtype) in variables.items():
                 self._check_name(name)
@@ -60,9 +83,8 @@ class IncrementalResultWriter:
                     or len(dims) != len(shape)
                     or any(s < 0 for s in shape)
                 ):
-                    raise ValueError(
-                        "Variables require time-leading dimensions and nonnegative shapes"
-                    )
+                    msg = "Variables require time-leading dimensions and nonnegative shapes"
+                    raise ValueError(msg)
                 self._variables[name] = {
                     "dims": dims,
                     "shape": shape,
@@ -75,9 +97,8 @@ class IncrementalResultWriter:
                 values = np.asarray(values)
                 if values.dtype.kind == "O":
                     if not all(isinstance(x, str) for x in values.flat):
-                        raise ValueError(
-                            "Object coordinates must contain strings; encode MultiIndex levels separately"
-                        )
+                        msg = "Object coordinates must contain strings; encode MultiIndex levels separately"
+                        raise ValueError(msg)
                     values = values.astype(str)
                 filename = f"coordinate-{name}.npy"
                 np.save(self._temporary / filename, values, allow_pickle=False)
@@ -87,14 +108,35 @@ class IncrementalResultWriter:
             raise
 
     @staticmethod
-    def _check_name(name):
+    def _check_name(name: object) -> None:
         if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_]+", name) is None:
-            raise ValueError("Store names must use letters, numbers, and underscores")
+            msg = "Store names must use letters, numbers, and underscores"
+            raise ValueError(msg)
 
-    def write(self, name, start, values):
-        """Write one bounded chunk at its result-row offset, in any chunk order."""
+    def write(self, name: str, start: int, values: ArrayLike) -> None:
+        """Write one bounded chunk at its result-row offset, in any chunk order.
+
+        Parameters
+        ----------
+        name : str
+            Name of a variable declared at construction.
+        start : int
+            Index of the first result row the chunk covers.
+        values : array_like, shape (n_rows, ...)
+            Chunk values, cast to the variable's dtype. Trailing dimensions
+            must match the declared shape.
+
+        Raises
+        ------
+        ValueError
+            If the chunk shape or row range does not match the variable, or
+            overlaps a previously written chunk.
+        RuntimeError
+            If the result was already completed.
+        """
         if self._published:
-            raise RuntimeError("Result already completed")
+            msg = "Result already completed"
+            raise RuntimeError(msg)
         spec = self._variables[name]
         values = np.asarray(values, dtype=np.dtype(spec["dtype"]))
         stop = start + len(values)
@@ -102,9 +144,8 @@ class IncrementalResultWriter:
             values.shape[1:] != tuple(spec["shape"][1:])
             or not 0 <= start <= stop <= spec["shape"][0]
         ):
-            raise ValueError(
-                "Output chunk shape or row range does not match the variable"
-            )
+            msg = "Output chunk shape or row range does not match the variable"
+            raise ValueError(msg)
         if start == stop:
             return
         # Sorted written (start, stop) intervals: only neighbours can overlap.
@@ -115,7 +156,8 @@ class IncrementalResultWriter:
         if (before is not None and before[1] > start) or (
             after is not None and after[0] < stop
         ):
-            raise ValueError("Output chunks overlap")
+            msg = "Output chunks overlap"
+            raise ValueError(msg)
         filename = f"{name}-{start}-{stop}.npy"
         np.save(self._temporary / filename, values, allow_pickle=False)
         spec["chunks"].append(
@@ -123,19 +165,43 @@ class IncrementalResultWriter:
         )
         bisect.insort(intervals, (int(start), int(stop)))
 
-    def complete(self, attrs=None):
-        """Validate coverage and atomically expose a completed immutable result."""
+    def complete(self, attrs: Mapping[str, Any] | None = None) -> Path:
+        """Validate coverage and atomically expose a completed immutable result.
+
+        Parameters
+        ----------
+        attrs : mapping of str to Any, optional
+            JSON-serializable attributes stored with the result, by default
+            None (no attributes).
+
+        Returns
+        -------
+        path : Path
+            The published result directory.
+
+        Raises
+        ------
+        ValueError
+            If any variable's rows are not fully covered.
+        RuntimeError
+            If the result was already completed.
+        FileExistsError
+            If the destination appeared since construction.
+        """
         if self._published:
-            raise RuntimeError("Result already completed")
+            msg = "Result already completed"
+            raise RuntimeError(msg)
         for spec in self._variables.values():
             spec["chunks"].sort(key=lambda chunk: chunk["start"])
             previous = 0
             for chunk in spec["chunks"]:
                 if chunk["start"] != previous:
-                    raise ValueError("Incomplete output row coverage")
+                    msg = "Incomplete output row coverage"
+                    raise ValueError(msg)
                 previous = chunk["stop"]
             if previous != spec["shape"][0]:
-                raise ValueError("Incomplete output row coverage")
+                msg = "Incomplete output row coverage"
+                raise ValueError(msg)
         manifest = {
             "format_version": 1,
             "complete": True,
@@ -150,32 +216,33 @@ class IncrementalResultWriter:
             raise FileExistsError(self.path)
         # Rename within one parent filesystem: readers see either no result or
         # every data/coordinate file plus a complete manifest, never partial data.
-        os.rename(self._temporary, self.path)
+        self._temporary.rename(self.path)
         self._published = True
         return self.path
 
-    def abort(self):
+    def abort(self) -> None:
         """Discard this writer's unpublished files without touching a destination."""
         if not self._published:
             shutil.rmtree(self._temporary, ignore_errors=True)
 
-    def __enter__(self):
+    def __enter__(self) -> IncrementalResultWriter:
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> None:
         self.abort()
 
 
-def _json_value(value):
+def _json_value(value: object) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, np.ndarray):
         return value.tolist()
-    raise TypeError(f"Unsupported result attribute: {type(value).__name__}")
+    msg = f"Unsupported result attribute: {type(value).__name__}"
+    raise TypeError(msg)
 
 
 class _ChunkedArray(BackendArray):
-    def __init__(self, path, spec, max_read_bytes):
+    def __init__(self, path: Path, spec: dict[str, Any], max_read_bytes: int) -> None:
         self.path, self.spec = path, spec
         self.shape, self.dtype = tuple(spec["shape"]), np.dtype(spec["dtype"])
         self.max_read_bytes = max_read_bytes
@@ -184,12 +251,12 @@ class _ChunkedArray(BackendArray):
             [chunk["start"] for chunk in spec["chunks"]], dtype=np.int64
         )
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: indexing.ExplicitIndexer) -> Any:
         return indexing.explicit_indexing_adapter(
             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
         )
 
-    def _getitem(self, key):
+    def _getitem(self, key: tuple[Any, ...]) -> NDArray[Any]:
         indices = [
             _index_values(size, item)
             for size, item in zip(self.shape, key, strict=True)
@@ -197,9 +264,8 @@ class _ChunkedArray(BackendArray):
         read_shape = tuple(len(index) for index in indices)
         size = int(np.prod(read_shape, dtype=np.int64)) * self.dtype.itemsize
         if size > self.max_read_bytes:
-            raise MemoryError(
-                f"Explicit read needs {size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
-            )
+            msg = f"Explicit read needs {size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
+            raise MemoryError(msg)
         out = np.empty(read_shape, dtype=self.dtype)
         # Group requested rows by owning chunk without scanning every chunk.
         owner = np.searchsorted(self._starts, indices[0], side="right") - 1
@@ -214,12 +280,11 @@ class _ChunkedArray(BackendArray):
             )
             try:
                 if (
-                    array.shape != (chunk["stop"] - chunk["start"],) + self.shape[1:]
+                    array.shape != (chunk["stop"] - chunk["start"], *self.shape[1:])
                     or array.dtype != self.dtype
                 ):
-                    raise ValueError(
-                        "Result chunk shape/dtype does not match its manifest"
-                    )
+                    msg = "Result chunk shape/dtype does not match its manifest"
+                    raise ValueError(msg)
                 source = [indices[0][selected] - chunk["start"], *indices[1:]]
                 destination = [
                     selected,
@@ -238,18 +303,27 @@ class _ChunkedArray(BackendArray):
         return np.squeeze(out, axis=scalar_axes) if scalar_axes else out
 
 
-def _validate_read_budget(max_read_bytes):
+def _validate_read_budget(max_read_bytes: object) -> int:
     """Normalize an explicit byte limit without accepting booleans or truncation."""
     if (
         isinstance(max_read_bytes, (bool, np.bool_))
         or not isinstance(max_read_bytes, (int, np.integer))
         or max_read_bytes <= 0
     ):
-        raise ValueError("max_read_bytes must be a positive integer byte limit")
+        msg = "max_read_bytes must be a positive integer byte limit"
+        raise ValueError(msg)
     return int(max_read_bytes)
 
 
-def _validate_variable_chunks(path, spec):
+def _member(path: Path, name: object) -> Path:
+    """Return the store file ``name`` names, which must be a plain file name."""
+    if not isinstance(name, str) or name in {"", ".", ".."} or Path(name).name != name:
+        msg = f"Result manifest names {name!r}, not a file name in its directory"
+        raise ValueError(msg)
+    return path / name
+
+
+def _validate_variable_chunks(path: Path, spec: dict[str, Any]) -> None:
     """Check complete row coverage and mapped file headers without reading data."""
     shape, dims = tuple(spec["shape"]), tuple(spec["dims"])
     if (
@@ -258,7 +332,8 @@ def _validate_variable_chunks(path, spec):
         or dims[0] != "time"
         or any(type(size) is not int or size < 0 for size in shape)
     ):
-        raise ValueError("Invalid variable shape/dimensions in result manifest")
+        msg = "Invalid variable shape/dimensions in result manifest"
+        raise ValueError(msg)
     dtype = np.dtype(spec["dtype"])
     previous = 0
     for chunk in spec["chunks"]:
@@ -269,22 +344,29 @@ def _validate_variable_chunks(path, spec):
             or start != previous
             or not start < stop <= shape[0]
         ):
-            raise ValueError("Incomplete or overlapping result chunk row coverage")
+            msg = "Incomplete or overlapping result chunk row coverage"
+            raise ValueError(msg)
+        member = _member(path, chunk["file"])
         try:
-            array = np.load(path / chunk["file"], mmap_mode="r", allow_pickle=False)
+            array = np.load(member, mmap_mode="r", allow_pickle=False)
         except (OSError, ValueError) as exc:
-            raise ValueError("Result chunk file is missing or invalid") from exc
+            msg = "Result chunk file is missing or invalid"
+            raise ValueError(msg) from exc
         try:
-            if array.shape != (stop - start,) + shape[1:] or array.dtype != dtype:
-                raise ValueError("Result chunk shape/dtype does not match its manifest")
+            if array.shape != (stop - start, *shape[1:]) or array.dtype != dtype:
+                msg = "Result chunk shape/dtype does not match its manifest"
+                raise ValueError(msg)
         finally:
             array._mmap.close()
         previous = stop
     if previous != shape[0]:
-        raise ValueError("Incomplete result chunk row coverage")
+        msg = "Incomplete result chunk row coverage"
+        raise ValueError(msg)
 
 
-def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
+def open_result_store(
+    path: str | Path, *, max_read_bytes: int = DEFAULT_MAX_READ_BYTES
+) -> xr.Dataset:
     """Open a completed chunk store without materializing spatial data.
 
     Coordinates are recording-sized metadata and loaded eagerly; each spatial
@@ -293,12 +375,34 @@ def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
     The explicit read budget bounds the
     materialized returned array, not user arrays, filesystem cache, or copies
     made by downstream libraries. This loader does not enable global gradients.
+
+    Parameters
+    ----------
+    path : str or Path
+        Directory of a completed result written by
+        :class:`IncrementalResultWriter`.
+    max_read_bytes : int, optional
+        Largest single explicit read from the lazily loaded variables, in
+        bytes, by default 512 MiB.
+
+    Returns
+    -------
+    result : xarray.Dataset
+        Dataset whose spatial variables are lazy and whose coordinates and
+        attributes are loaded from the manifest.
+
+    Raises
+    ------
+    ValueError
+        If the store is incomplete, uses an unsupported format version, or
+        its manifest names a file outside its directory.
     """
     max_read_bytes = _validate_read_budget(max_read_bytes)
     path = Path(path)
     manifest = json.loads((path / "manifest.json").read_text())
     if manifest.get("format_version") != 1 or manifest.get("complete") is not True:
-        raise ValueError("Result is incomplete or uses an unsupported store version")
+        msg = "Result is incomplete or uses an unsupported store version"
+        raise ValueError(msg)
     for spec in manifest["variables"].values():
         _validate_variable_chunks(path, spec)
     variables = {
@@ -309,20 +413,23 @@ def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
         for name, spec in manifest["variables"].items()
     }
     coordinates = {
-        name: (tuple(spec["dims"]), np.load(path / spec["file"], allow_pickle=False))
+        name: (
+            tuple(spec["dims"]),
+            np.load(_member(path, spec["file"]), allow_pickle=False),
+        )
         for name, spec in manifest["coordinates"].items()
     }
     return xr.Dataset(variables, coords=coordinates, attrs=manifest["attrs"])
 
 
-def _index_values(size, item):
+def _index_values(size: int, item: Any) -> NDArray[np.intp]:
     if isinstance(item, slice):
         return np.arange(*item.indices(size))
     values = np.atleast_1d(np.asarray(item, dtype=np.intp))
     return np.where(values < 0, values + size, values)
 
 
-def _contiguous(index):
+def _contiguous(index: NDArray[np.intp]) -> slice | NDArray[np.intp]:
     """``index`` as a slice when it is an ascending run, else unchanged.
 
     Slices copy blocks of the memory map; integer arrays gather element-wise.
@@ -338,9 +445,31 @@ class PaddedBackendArray(BackendArray):
     Unsupported columns contain NaN. No eager global posterior or full-file
     mapping is introduced. ``source`` is a two-dimensional xarray variable or
     DataArray whose backend remains lazy until selected rows/bins are read.
+
+    Parameters
+    ----------
+    source : xarray.DataArray or xarray.Variable
+        Two-dimensional ``(n_time, n_interior_bins)`` floating-point variable.
+    interior_mask : array_like of bool, shape (n_bins,)
+        True for the original bins that ``source`` columns map to, in order;
+        its sum must equal ``source.shape[1]``.
+    max_read_bytes : int, optional
+        Largest single explicit read, in bytes, by default 512 MiB.
+
+    Raises
+    ------
+    ValueError
+        If the mask does not match the source columns or the source is not
+        floating point.
     """
 
-    def __init__(self, source, interior_mask, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
+    def __init__(
+        self,
+        source: xr.DataArray | xr.Variable,
+        interior_mask: ArrayLike,
+        *,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+    ) -> None:
         self.source = source.variable if isinstance(source, xr.DataArray) else source
         self.mask = np.asarray(interior_mask, dtype=bool)
         if (
@@ -348,30 +477,31 @@ class PaddedBackendArray(BackendArray):
             or self.mask.ndim != 1
             or self.mask.sum() != self.source.shape[1]
         ):
-            raise ValueError("Interior mask must match the source spatial columns")
+            msg = "Interior mask must match the source spatial columns"
+            raise ValueError(msg)
         if np.dtype(self.source.dtype).kind != "f":
-            raise ValueError("NaN-padded spatial variables require floating-point data")
+            msg = "NaN-padded spatial variables require floating-point data"
+            raise ValueError(msg)
         max_read_bytes = _validate_read_budget(max_read_bytes)
         self.shape = (self.source.shape[0], len(self.mask))
         self.dtype = np.dtype(self.source.dtype)
         self.max_read_bytes = max_read_bytes
         self.mapping = np.cumsum(self.mask) - 1
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: indexing.ExplicitIndexer) -> Any:
         return indexing.explicit_indexing_adapter(
             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
         )
 
-    def _getitem(self, key):
+    def _getitem(self, key: tuple[Any, ...]) -> NDArray[Any]:
         rows, columns = [
             _index_values(size, item)
             for size, item in zip(self.shape, key, strict=True)
         ]
         read_size = len(rows) * len(columns) * self.dtype.itemsize
         if read_size > self.max_read_bytes:
-            raise MemoryError(
-                f"Explicit padded read needs {read_size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
-            )
+            msg = f"Explicit padded read needs {read_size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
+            raise MemoryError(msg)
         output = np.full((len(rows), len(columns)), np.nan, dtype=self.dtype)
         inside = self.mask[columns]
         if inside.any() and len(rows):
@@ -388,8 +518,28 @@ class PaddedBackendArray(BackendArray):
         return np.squeeze(output, axis=scalar_axes) if scalar_axes else output
 
 
-def pad_state_bins(variable, interior_mask, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
-    """Return a lazy padded variable; caller supplies original bin coordinates."""
+def pad_state_bins(
+    variable: xr.DataArray | xr.Variable,
+    interior_mask: ArrayLike,
+    *,
+    max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
+) -> xr.Variable:
+    """Return a lazy padded variable; caller supplies original bin coordinates.
+
+    Parameters
+    ----------
+    variable : xarray.DataArray or xarray.Variable
+        Two-dimensional ``(n_time, n_interior_bins)`` floating-point variable.
+    interior_mask : array_like of bool, shape (n_bins,)
+        True for the original bins that ``variable`` columns map to.
+    max_read_bytes : int, optional
+        Largest single explicit read, in bytes, by default 512 MiB.
+
+    Returns
+    -------
+    padded : xarray.Variable
+        Lazy ``(n_time, n_bins)`` variable with NaN in the non-interior bins.
+    """
     source = variable.variable if isinstance(variable, xr.DataArray) else variable
     backend = PaddedBackendArray(source, interior_mask, max_read_bytes=max_read_bytes)
     return xr.Variable(

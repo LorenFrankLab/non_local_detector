@@ -27,18 +27,18 @@ sys.path.insert(0, "src")
 from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
+    fit_clusterless_kde_encoding_model as fit_log,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_reference,
+)
+from non_local_detector.likelihoods.clusterless_kde import mark_reference_scale
+from non_local_detector.likelihoods.clusterless_kde import (
+    predict_clusterless_kde_log_likelihood as predict_log,
 )
 from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as predict_reference,
 )
-from non_local_detector.likelihoods.clusterless_kde import (
-    fit_clusterless_kde_encoding_model as fit_log,
-)
-from non_local_detector.likelihoods.clusterless_kde import (
-    predict_clusterless_kde_log_likelihood as predict_log,
-)
-from non_local_detector.likelihoods.clusterless_kde import mark_reference_scale
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 
 try:
@@ -137,7 +137,7 @@ def profile_reference_implementation():
         mark_reference_scale(waveform_std=encoding["waveform_std"]),
     )
 
-    log_likelihood = predict_reference(
+    return predict_reference(
         time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
@@ -158,8 +158,6 @@ def profile_reference_implementation():
         block_size=100,
         disable_progress_bar=True,
     )
-
-    return log_likelihood
 
 
 @memory_profile
@@ -189,7 +187,7 @@ def profile_log_implementation():
         mark_reference_scale(waveform_std=encoding["waveform_std"]),
     )
 
-    log_likelihood = predict_log(
+    return predict_log(
         time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
@@ -210,8 +208,6 @@ def profile_log_implementation():
         block_size=100,
         disable_progress_bar=True,
     )
-
-    return log_likelihood
 
 
 def estimate_memory_requirements(

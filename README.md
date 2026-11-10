@@ -1,6 +1,7 @@
 # Non-Local Detector
 
 [![Tests](https://github.com/LorenFrankLab/non_local_detector/actions/workflows/test_package_build.yml/badge.svg)](https://github.com/LorenFrankLab/non_local_detector/actions/workflows/test_package_build.yml)
+[![codecov](https://codecov.io/gh/LorenFrankLab/non_local_detector/branch/main/graph/badge.svg)](https://codecov.io/gh/LorenFrankLab/non_local_detector)
 [![PyPI version](https://badge.fury.io/py/non-local-detector.svg)](https://badge.fury.io/py/non-local-detector)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -19,7 +20,7 @@ The `non_local_detector` package provides state-of-the-art algorithms for:
 
 ### Key Features
 
-- 🔬 **Multiple Likelihood Models**: GLM, KDE, and GMM-based approaches for both sorted and clusterless spike data
+- 🔬 **Multiple Likelihood Models**: GLM, KDE, GMM, diffusion/MRF and mark-mixture GLM approaches for both sorted and clusterless spike data
 - ⚡ **JAX-Powered**: GPU-accelerated computations for large-scale analyses
 - 🎯 **Scikit-learn Compatible**: Familiar fit/predict interface for easy integration
 - 📊 **Rich Visualizations**: Built-in plotting functions for results analysis
@@ -29,16 +30,23 @@ The `non_local_detector` package provides state-of-the-art algorithms for:
 
 ### Quick Install (CPU)
 
+The documentation and the examples below follow the `main` branch. The latest
+PyPI release, 0.6.9, predates the explicit time-bin API they use, so install
+from GitHub:
+
 ```bash
-pip install non_local_detector
+pip install "non_local_detector @ git+https://github.com/LorenFrankLab/non_local_detector"
 ```
+
+(`pip install non_local_detector` installs the older 0.6.9 release; use its
+matching documentation.)
 
 ### GPU Installation (Recommended for Large Datasets)
 
 For CUDA-enabled GPU acceleration:
 
 ```bash
-pip install non_local_detector[gpu]
+pip install "non_local_detector[gpu]"
 ```
 
 Or using conda/mamba:
@@ -50,15 +58,16 @@ mamba install non_local_detector -c edeno
 
 ### Development Installation
 
-For development and contributing:
+For development and contributing (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 
 ```bash
 git clone https://github.com/LorenFrankLab/non_local_detector.git
 cd non_local_detector
-mamba env create -f environment.yml  # or environment_gpu.yml for GPU
-conda activate non_local_detector
-pip install -e .[dev]
+uv sync
+uv run pytest tests/test_public_api.py
 ```
+
+A conda environment is also available (`environment.yml`, or `environment_gpu.yml` for GPU).
 
 ## 📖 Quick Start
 
@@ -77,7 +86,7 @@ from non_local_detector import NonLocalClusterlessDetector
 # Initialize detector
 detector = NonLocalClusterlessDetector(
     environments=[environment],  # Your spatial environment
-    clusterless_algorithm="clusterless_kde"
+    clusterless_algorithm="clusterless_kde",
 )
 
 # Fit the model
@@ -90,9 +99,7 @@ detector.fit(
 
 # Detect replay events in uniform 2 ms bins (n_bins + 1 edges); trim=True
 # drops a partial final bin instead of requiring a whole number of bins
-time_edges = detector.calculate_time_edges(
-    np.array([test_start, test_stop]), trim=True
-)
+time_edges = detector.calculate_time_edges(np.array([test_start, test_stop]), trim=True)
 results = detector.predict(
     spike_times=test_spike_times,
     spike_waveform_features=test_waveform_features,
@@ -103,8 +110,12 @@ results = detector.predict(
 
 # Analyze results
 state_probability = results.acausal_state_probabilities
-# Spatial posterior coordinates are available by unstacking state_bins.
-spatial_posterior = results.acausal_posterior.unstack("state_bins")
+# Spatial posterior coordinates, one grid per state that has a position.
+# Do not call results.acausal_posterior.unstack("state_bins") directly: it puts
+# the probability of position-less states (Local, No-Spike) on the last bin.
+from non_local_detector.analysis import get_spatial_posterior
+
+spatial_posterior = get_spatial_posterior(results.acausal_posterior)
 ```
 
 ### Working with Sorted Spikes
@@ -114,8 +125,7 @@ from non_local_detector import NonLocalSortedSpikesDetector
 
 # For traditional spike-sorted data
 detector = NonLocalSortedSpikesDetector(
-    environments=[environment],
-    sorted_spikes_algorithm="sorted_spikes_kde"
+    environments=[environment], sorted_spikes_algorithm="sorted_spikes_kde"
 )
 
 detector.fit(
@@ -143,7 +153,10 @@ Unix times) is rejected.
   (`time=position_time`) migrates to
   `time_edges=time_edges_from_centers(position_time)`, which keeps the same
   row count and nominal coordinates; a spike between samples now belongs to the nearest
-  sample's bin rather than the preceding one.
+  sample's bin rather than the preceding one. Construct the detector with the
+  samples' rate (`sampling_frequency=`, 500 Hz by default) as well.
+- Detector bins must be `1 / sampling_frequency` wide (within the uniformity
+  tolerance); edges at another width raise `ValidationError`.
 - After `estimate_parameters`, the learned transitions are tied to that bin
   width (`transition_time_bin_width_`); decoding at a different width raises.
 - Movement transitions remain per step: `RandomWalk.movement_var` is the
@@ -152,105 +165,63 @@ Unix times) is rejected.
   Changing decode width does not automatically rescale those transitions.
 
 Fitted firing rates and ground-process intensities are in **Hz**. Encoding uses
-sample exposure in seconds, independently of decode frequency. Irregular
-tracking needs explicit `valid_position_intervals`; saved models with unknown
-units require refitting. Results save exact bin bounds and effective missingness.
-See the [migration guide](docs/time_grid_migration.md) for support, masks,
-covariates, independent intervals, and downstream pipeline changes.
+sample exposure in seconds, independently of decode frequency. Fitting irregular
+tracking needs explicit `valid_position_intervals`; pass them when decoding too,
+or a gap is interpolated across and warned about. Saved models with unknown units
+require refitting. Results save exact
+bin bounds and effective missingness. The [data contract](docs/data_contract.md)
+lists what the arrays must hold; see the
+[migration guide](docs/time_grid_migration.md) for covariates, independent
+intervals, and downstream pipeline changes.
 
 ## 🏗️ Architecture
 
 ### Core Components
 
-1. **Likelihood Models** (`non_local_detector.likelihoods`)
-   - `sorted_spikes_glm`: GLM-based likelihood for sorted spike data
-   - `sorted_spikes_kde`: KDE-based likelihood for sorted spike data
-   - `clusterless_kde`: KDE-based likelihood for clusterless data
-   - `clusterless_gmm`: GMM-based likelihood for clusterless data
-   - `clusterless_mark_glm`: a mark mixture (variational Bayes Gaussian mixture over each electrode's marks) with a Poisson GLM rate map per component, for clusterless data
+1. **Likelihood Models** (`non_local_detector.likelihoods`), selected with `sorted_spikes_algorithm` or `clusterless_algorithm`
+   - Sorted spikes: `sorted_spikes_glm`, `sorted_spikes_kde`, `sorted_spikes_diffusion`, `sorted_spikes_mrf`
+   - Clusterless: `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion`, `clusterless_mark_glm` (a mark mixture with a Poisson GLM rate map per component)
 
 2. **State Transition Models**
-   - **Continuous**: `RandomWalk`, `EmpiricalMovement`, `Identity`, `Uniform`
+   - **Continuous**: `RandomWalk`, `RandomWalkDirection1`, `RandomWalkDirection2`, `EmpiricalMovement`, `Identity`, `Uniform`, `Discrete`
    - **Discrete**: Stationary/non-stationary diagonal and custom transitions
 
-3. **Decoder Models** (`non_local_detector.models`)
-   - `NonLocalDetector`: Main replay detection models
-   - `ContFragClassifier`: Fragmented decoding for interrupted sequences
-   - `ClusterlessDecoder`/`SortedSpikesDecoder`: Basic position decoding
-   - `MultiEnvironmentClassifier`: Multi-environment decoding
+3. **Decoder Models** (exported from `non_local_detector`)
+   - Detectors: `NonLocalSortedSpikesDetector`, `NonLocalClusterlessDetector`
+   - Classifiers: `ContFragSortedSpikesClassifier`, `ContFragClusterlessClassifier`, and the `NoSpikeContFrag*Classifier` variants that add a No-Spike state
+   - Multi-environment classifiers: `MultiEnvironmentSortedSpikesClassifier`, `MultiEnvironmentClusterlessClassifier`
+   - Position decoders: `SortedSpikesDecoder`, `ClusterlessDecoder`
+
+See the [Core Concepts](https://lorenfranklab.github.io/non_local_detector/getting-started/core-concepts/)
+page for how the states, transitions and likelihoods fit together.
 
 ## 🛠️ Development
 
-### Quality Standards
+Setup, tests, code style and the pull request process are described in [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 
-This project maintains high code quality standards:
-
-- **Linting**: `ruff check src/` (zero issues required)
-- **Formatting**: `ruff format src/` and `black src/`
-- **Type Checking**: `mypy src/non_local_detector/` (gradual adoption)
-- **Testing**: `pytest` with coverage reporting
-
-### Development Workflow
-
-1. **Setup Development Environment**
-
-   ```bash
-   mamba env create -f environment.yml
-   conda activate non_local_detector
-   pip install -e .[dev]
-   ```
-
-2. **Run Quality Checks**
-
-   ```bash
-   # Full quality check (required before committing)
-   ruff check src/ && ruff format --check src/ && pytest
-
-   # Auto-fix linting issues
-   ruff check --fix src/
-   ruff format src/
-   ```
-
-3. **Testing**
-
-   ```bash
-   # Run all tests
-   pytest
-
-   # With coverage
-   pytest --cov=non_local_detector --cov-report=html
-
-   # Single test file
-   pytest src/non_local_detector/tests/test_version_import.py
-   ```
-
-4. **Building**
-
-   ```bash
-   # Build package
-   python -m build
-
-   # Check distribution
-   twine check dist/*
-   ```
+```bash
+uv sync
+uv run pre-commit install
+uv run pre-commit run --all-files  # ruff, strict mypy, codespell, and other checks
+uv run pytest                      # or a targeted selection, see CONTRIBUTING.md
+```
 
 ### CI/CD Pipeline
 
 GitHub Actions (`.github/workflows/test_package_build.yml`) runs on every pull request, every push to `main`, and weekly:
 
 - **Quality gate**: `ruff check` and `ruff format --check` with the ruff version pinned in `uv.lock` (the same version as the pre-commit hook).
-- **Locked tests**: the full suite on Python 3.10–3.13 (Linux), installed from `uv.lock`. On Python 3.10 the lock resolves JAX 0.6.2, the minimum supported release.
+- **Locked tests**: the full suite on Python 3.10–3.14 (Linux) and 3.13 (macOS), installed from `uv.lock`. On Python 3.10 the lock resolves JAX 0.6.2, the minimum supported release.
 - **Dependency range**: the full suite again at the lowest versions `pyproject.toml` allows (`uv pip install --resolution lowest-direct`) and at the newest releases, ignoring the lock.
 - **Packaging**: the wheel, sdist and git archive are built, installed without the source tree, and smoke-tested with the golden regression tests, which need the packaged data files.
 - **Coverage**: uploaded to Codecov from the Python 3.12 Linux job.
 
-To reproduce the locked test job locally: `uv sync --locked --extra test && uv run pytest`.
+To reproduce the locked test job locally: `uv sync --locked && uv run pytest`.
 
 ## 📚 Documentation
 
-- **API Reference**: [Coming Soon]
-- **Tutorials**: See `notebooks/` directory for example analyses
-- **Contributing Guide**: See development section above
+- **Documentation site**: <https://lorenfranklab.github.io/non_local_detector/>
+- **Contributing Guide**: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Issue Tracker**: [GitHub Issues](https://github.com/LorenFrankLab/non_local_detector/issues)
 
 ## 🤝 Contributing
@@ -259,7 +230,7 @@ We welcome contributions! Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Run quality checks locally (see Development Workflow)
+3. Run quality checks locally (see [CONTRIBUTING.md](CONTRIBUTING.md))
 4. Commit your changes (`git commit -m 'Add amazing feature'`)
 5. Push to the branch (`git push origin feature/amazing-feature`)
 6. Open a Pull Request
@@ -268,10 +239,21 @@ We welcome contributions! Please:
 
 All contributions must:
 
-- Pass all quality checks (`ruff`, `black`, `mypy`)
+- Pass all quality checks (`uv run pre-commit run --all-files`: ruff lint and format, strict mypy)
 - Include tests for new functionality
 - Follow the existing code style and patterns
 - Update documentation as needed
+
+## 📝 Citation
+
+If you use `non_local_detector` in your research, please cite it. Citation
+metadata is in [CITATION.cff](CITATION.cff); on GitHub, use "Cite this
+repository" in the sidebar to get APA or BibTeX. The method is described in:
+
+> Denovellis, E. L., Gillespie, A. K., Coulter, M. E., Sosa, M., Chung, J. E.,
+> Eden, U. T., & Frank, L. M. (2021). Hippocampal replay of experience at
+> real-world speeds. *eLife*, 10, e64505.
+> [doi:10.7554/eLife.64505](https://doi.org/10.7554/eLife.64505)
 
 ## 📄 License
 
@@ -281,12 +263,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Author**: Eric Denovellis
 - **Institution**: Loren Frank Lab, UCSF
-- **Funding**: [Add funding sources if applicable]
 
 ## 📞 Support
 
 - **Issues**: [GitHub Issues](https://github.com/LorenFrankLab/non_local_detector/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/LorenFrankLab/non_local_detector/discussions)
 
 ## 🔗 Related Projects
 

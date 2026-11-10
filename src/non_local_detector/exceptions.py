@@ -12,13 +12,6 @@ Choose the appropriate exception type based on when and why the error occurs:
   initialization or before model fitting). Use when user-provided values are
   invalid, have wrong shapes, or violate constraints.
 
-- **FittingError**: Problems occur during model training/fitting. Use when the
-  fitting process encounters errors, but the inputs were valid.
-
-- **ConvergenceError**: Iterative algorithms fail to converge (specialized
-  FittingError). Use when EM algorithm, gradient descent, or other iterative
-  methods don't reach convergence criteria.
-
 - **ConfigurationError**: Incompatible parameter combinations or missing
   required configuration. Use when parameters are individually valid but
   incompatible with each other.
@@ -26,8 +19,22 @@ Choose the appropriate exception type based on when and why the error occurs:
 - **DataError**: Data quality issues like NaN, Inf, or wrong structure. Use
   when the data values (not just shapes) are problematic.
 
+- **NotFittedError**: A fitted attribute was read before the fit that sets
+  it, or after the configuration it was fitted with changed. A
+  ConfigurationError and an ``AttributeError``, so ``hasattr`` is False and
+  ``getattr(obj, name, default)`` returns the default.
+
 All exceptions inherit from **NonLocalDetectorError**, allowing users to catch
-any package-specific error with a single except clause.
+any package-specific error with a single except clause. ValidationError,
+ConfigurationError and DataError also inherit from ``ValueError``, so
+``except ValueError`` catches them too. The same holds for the transition
+errors: ``transition_operators.UnsupportedTransitionError`` (a
+``ValueError``), ``transition_operators.DenseTransitionBudgetError`` and
+``graph_distances.GraphDistanceBudgetError`` (both ``MemoryError``).
+
+The constructors take the optional message parts as keywords:
+``expected``, ``got`` and ``hint`` on all three, ``example`` on
+ValidationError and ``data_name`` on DataError.
 
 Examples
 --------
@@ -54,6 +61,19 @@ Examples
 ...     print(f"Package error: {e}")
 """
 
+__all__ = [
+    "CompatibilityWarning",
+    "ConfigurationError",
+    "DataError",
+    "DataQualityWarning",
+    "NonLocalDetectorError",
+    "NonLocalDetectorWarning",
+    "NotFittedError",
+    "NumericalWarning",
+    "ParameterWarning",
+    "ValidationError",
+]
+
 
 class NonLocalDetectorError(Exception):
     """Base exception for all non_local_detector errors.
@@ -71,10 +91,29 @@ class NonLocalDetectorError(Exception):
     ...     pass
     """
 
-    pass
+
+def _structured_message(
+    message: str,
+    *,
+    expected: str | None = None,
+    got: str | None = None,
+    hint: str | None = None,
+    example: str | None = None,
+) -> str:
+    """Join a message with its optional expected/got/hint/example parts."""
+    parts = [message]
+    if expected is not None:
+        parts.append(f"\nExpected: {expected}")
+    if got is not None:
+        parts.append(f"Got: {got}")
+    if hint is not None:
+        parts.append(f"\nHint: {hint}")
+    if example is not None:
+        parts.append(f"\nExample:\n{example}")
+    return "\n".join(parts)
 
 
-class ValidationError(NonLocalDetectorError):
+class ValidationError(NonLocalDetectorError, ValueError):
     """Raised when input validation fails.
 
     This exception indicates that user-provided data doesn't meet the
@@ -84,15 +123,15 @@ class ValidationError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of what went wrong
+        Description of what went wrong.
     expected : str, optional
-        What was expected (for structured error messages)
+        What was expected (for structured error messages).
     got : str, optional
-        What was actually received
+        What was actually received.
     hint : str, optional
-        Actionable suggestion for fixing the error
+        Actionable suggestion for fixing the error.
     example : str, optional
-        Code snippet showing correct usage
+        Code snippet showing correct usage.
 
     Examples
     --------
@@ -107,67 +146,21 @@ class ValidationError(NonLocalDetectorError):
     def __init__(
         self,
         message: str,
+        *,
         expected: str | None = None,
         got: str | None = None,
         hint: str | None = None,
         example: str | None = None,
-    ):
+    ) -> None:
         """Initialize ValidationError with structured message components."""
-        parts = [message]
-
-        if expected is not None:
-            parts.append(f"\nExpected: {expected}")
-
-        if got is not None:
-            parts.append(f"Got: {got}")
-
-        if hint is not None:
-            parts.append(f"\nHint: {hint}")
-
-        if example is not None:
-            parts.append(f"\nExample:\n{example}")
-
-        super().__init__("\n".join(parts))
+        super().__init__(
+            _structured_message(
+                message, expected=expected, got=got, hint=hint, example=example
+            )
+        )
 
 
-class FittingError(NonLocalDetectorError):
-    """Raised when model fitting fails.
-
-    This exception indicates that the model fitting process encountered
-    an error, such as convergence failure, invalid training data, or
-    numerical instability.
-
-    Parameters
-    ----------
-    message : str
-        Description of what went wrong during fitting
-    hint : str, optional
-        Actionable suggestion for fixing the error
-
-    Examples
-    --------
-    >>> raise FittingError(
-    ...     "Model failed to converge after 1000 iterations",
-    ...     hint="Try increasing discrete_transition_concentration or check for NaN values in data"
-    ... )
-    """
-
-    def __init__(self, message: str, hint: str | None = None) -> None:
-        """Initialize FittingError with optional hint.
-
-        Parameters
-        ----------
-        message : str
-            Description of what went wrong during fitting
-        hint : str, optional
-            Actionable suggestion for fixing the error
-        """
-        if hint is not None:
-            message = f"{message}\n\nHint: {hint}"
-        super().__init__(message)
-
-
-class ConfigurationError(NonLocalDetectorError):
+class ConfigurationError(NonLocalDetectorError, ValueError):
     """Raised when configuration is invalid or inconsistent.
 
     This exception indicates that model parameters are incompatible
@@ -176,9 +169,13 @@ class ConfigurationError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of the configuration problem
+        Description of the configuration problem.
+    expected : str, optional
+        The configuration that was expected.
+    got : str, optional
+        The configuration that was received.
     hint : str, optional
-        Actionable suggestion for fixing the configuration
+        Actionable suggestion for fixing the configuration.
 
     Examples
     --------
@@ -188,77 +185,21 @@ class ConfigurationError(NonLocalDetectorError):
     ... )
     """
 
-    def __init__(self, message: str, hint: str | None = None) -> None:
-        """Initialize ConfigurationError with optional hint.
-
-        Parameters
-        ----------
-        message : str
-            Description of the configuration problem
-        hint : str, optional
-            Actionable suggestion for fixing the configuration
-        """
-        if hint is not None:
-            message = f"{message}\n\nHint: {hint}"
-        super().__init__(message)
-
-
-class ConvergenceError(FittingError):
-    """Raised when an iterative algorithm fails to converge.
-
-    This is a specialized fitting error for convergence failures,
-    providing specific guidance about iteration limits and tolerances.
-
-    Parameters
-    ----------
-    message : str
-        Description of the convergence failure
-    iterations : int, optional
-        Number of iterations attempted
-    tolerance : float, optional
-        Convergence tolerance that wasn't met
-    hint : str, optional
-        Actionable suggestion for fixing convergence issues
-
-    Examples
-    --------
-    >>> raise ConvergenceError(
-    ...     "EM algorithm did not converge",
-    ...     iterations=1000,
-    ...     tolerance=1e-4,
-    ...     hint="Try increasing max_iterations or relaxing convergence tolerance"
-    ... )
-    """
-
     def __init__(
         self,
         message: str,
-        iterations: int | None = None,
-        tolerance: float | None = None,
+        *,
+        expected: str | None = None,
+        got: str | None = None,
         hint: str | None = None,
     ) -> None:
-        """Initialize ConvergenceError with iteration details.
-
-        Parameters
-        ----------
-        message : str
-            Description of the convergence failure
-        iterations : int, optional
-            Number of iterations attempted
-        tolerance : float, optional
-            Convergence tolerance that wasn't met
-        hint : str, optional
-            Actionable suggestion for fixing convergence issues
-        """
-        if iterations is not None:
-            message = f"{message} (iterations: {iterations})"
-        if tolerance is not None:
-            message = f"{message} (tolerance: {tolerance})"
-
-        super().__init__(message, hint=hint)
+        """Initialize ConfigurationError with structured message components."""
+        super().__init__(
+            _structured_message(message, expected=expected, got=got, hint=hint)
+        )
 
 
-class DataError(NonLocalDetectorError):
+class DataError(NonLocalDetectorError, ValueError):
     """Raised when input data has problems (NaN, Inf, wrong structure).
 
     This exception indicates issues with the actual data values rather
@@ -267,11 +208,15 @@ class DataError(NonLocalDetectorError):
     Parameters
     ----------
     message : str
-        Description of the data problem
+        Description of the data problem.
     data_name : str, optional
-        Name of the problematic data variable
+        Name of the problematic data variable.
+    expected : str, optional
+        What the data was expected to contain.
+    got : str, optional
+        What the data contains.
     hint : str, optional
-        Actionable suggestion for fixing the data issue
+        Actionable suggestion for fixing the data issue.
 
     Examples
     --------
@@ -283,21 +228,97 @@ class DataError(NonLocalDetectorError):
     """
 
     def __init__(
-        self, message: str, data_name: str | None = None, hint: str | None = None
+        self,
+        message: str,
+        *,
+        data_name: str | None = None,
+        expected: str | None = None,
+        got: str | None = None,
+        hint: str | None = None,
     ) -> None:
-        """Initialize DataError with optional data name and hint.
-
-        Parameters
-        ----------
-        message : str
-            Description of the data problem
-        data_name : str, optional
-            Name of the problematic data variable
-        hint : str, optional
-            Actionable suggestion for fixing the data issue
-        """
+        """Initialize DataError with structured message components."""
         if data_name is not None:
             message = f"{message} (data: {data_name})"
-        if hint is not None:
-            message = f"{message}\n\nHint: {hint}"
-        super().__init__(message)
+        super().__init__(
+            _structured_message(message, expected=expected, got=got, hint=hint)
+        )
+
+
+class NotFittedError(ConfigurationError, AttributeError):
+    """Raised when a fitted attribute is read without a matching fit.
+
+    For example ``Environment.place_bin_centers_`` before
+    ``fit_place_grid``, or after a configuration field the grid depends on
+    (such as ``place_bin_size``) changed. Inherits from ConfigurationError (so
+    ``ValueError``) and from ``AttributeError``, so ``hasattr`` reports the
+    attribute as missing, as scikit-learn's fitted attributes are before fit.
+
+    Parameters
+    ----------
+    message : str
+        Description of what is missing.
+    expected : str, optional
+        The fit that was expected.
+    got : str, optional
+        What was found instead.
+    hint : str, optional
+        How to fit.
+    """
+
+
+class NonLocalDetectorWarning(Warning):
+    """Base class of every warning the package raises itself.
+
+    Filter on it to silence or escalate all of the package's warnings at once,
+    or on one of its subclasses to pick a kind. It is not itself a
+    ``UserWarning``: each subclass also derives from the builtin category that
+    fits it (``UserWarning``, or ``DeprecationWarning`` for
+    ``CompatibilityWarning``), so a ``UserWarning`` filter does not catch
+    deprecations. Warnings raised by third-party code (JAX, scikit-learn, ...)
+    are not instances of it.
+
+    Examples
+    --------
+    >>> import warnings
+    >>> from non_local_detector.exceptions import DataQualityWarning
+    >>> with warnings.catch_warnings():
+    ...     warnings.simplefilter("error", DataQualityWarning)
+    """
+
+
+class DataQualityWarning(NonLocalDetectorWarning, UserWarning):
+    """The data are sparse, missing or off the track.
+
+    For example tracking that moves farther between samples than
+    ``position_std``, positions snapped to the nearest bin, decode bins
+    outside the tracked period, and encoding groups or electrodes with zero
+    exposure or no encoding spikes. Also a ``UserWarning``.
+    """
+
+
+class NumericalWarning(NonLocalDetectorWarning, UserWarning):
+    """A fit did not converge or hit a degenerate numerical case.
+
+    For example EM that did not converge or lowered its objective, a Poisson
+    regression with a singular system, a Gaussian mixture with discarded
+    restarts, and a NaN kernel density. Also a ``UserWarning``.
+    """
+
+
+class ParameterWarning(NonLocalDetectorWarning, UserWarning):
+    """A setting is adjusted or likely to give a poor or costly fit.
+
+    For example ``position_std`` below the bin spacing, a basis rank or number
+    of mixture components reduced to fit the data, and dense EM that may not fit
+    in memory. Also a ``UserWarning``.
+    """
+
+
+class CompatibilityWarning(NonLocalDetectorWarning, DeprecationWarning):
+    """A deprecated argument or a legacy saved form was used.
+
+    Also a ``DeprecationWarning`` and not a ``UserWarning``, so Python's
+    default filters (which hide deprecations raised outside ``__main__``) and
+    filters on ``DeprecationWarning`` apply to it, and filters on
+    ``UserWarning`` do not.
+    """

@@ -6,7 +6,7 @@ model and parameter estimation (EM). How the decoding modes work is described in
 [performance_prediction.md](performance_prediction.md).
 
 Decoding numbers come from the benchmark workloads in
-[performance_validation.md](performance_validation.md): a simulated 180 × 180 cm
+[performance_validation.md](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_validation.md): a simulated 180 × 180 cm
 arena, 2 ms bins, 10 s of encoding, 64 sorted units at 5 Hz or 8 clusterless
 electrodes at 20 Hz with four waveform features, using the default likelihoods
 (sorted and clusterless KDE), float32 and JAX 0.9.0; memory for the other
@@ -174,7 +174,7 @@ that cost, both set before starting Python:
   instead of 5.0 GB, with the same time per later call on this workload. It
   also makes repeated GPU runs bitwise reproducible (see GPU setup).
 
-Source: [real-track EM records](performance_artifacts/em/real-track/README.md).
+Source: [real-track EM records](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_artifacts/em/real-track/README.md).
 
 ### Simulated open field (before the EM speedups)
 
@@ -203,14 +203,20 @@ distances would also take roughly 50 minutes (extrapolated).
 
 ## Precision
 
-The package computes in float32 by default, and every number on this page used
-float32. Enabling float64 (`jax_enable_x64`) doubles array memory, and most GPUs
-other than data-center cards like the A100 run float64 arithmetic many times
-slower than float32.
+The detectors filter and smooth in float32 whether or not JAX's 64-bit mode
+(`jax_enable_x64`) is on, and every number on this page used float32. Turning
+the mode on does not switch inference to float64: the posteriors and state
+probabilities stay float32, and only some likelihood intermediates are computed
+in float64 before they are rounded to float32, so results can change in the
+last float32 digit (about 1e-7 relative). The discrete-transition M-step runs in
+float64 either way. To run the HMM passes themselves in float64, call the
+drivers in `non_local_detector.core` with `dtype=np.float64`, which needs 64-bit
+mode, doubles each (time bins × state bins) array, and runs many times slower on
+most GPUs other than data-center cards like the A100.
 
 ## Where the numbers come from
 
-- Decoding and scaling: [performance_validation.md](performance_validation.md)
+- Decoding and scaling: [performance_validation.md](https://github.com/LorenFrankLab/non_local_detector/blob/main/docs/performance_validation.md)
   and `docs/performance_artifacts/` (the `bottlenecks/` and `scaling/` records,
   including `scaling/cpu-chunk-size-runs.json` for CPU chunk sizes).
 - EM, allocator pools and graph-distance timing: `docs/performance_artifacts/em/`.

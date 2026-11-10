@@ -100,7 +100,7 @@ recording, `b` lies about 19 nats below the old `LOG_EPS` floor (median −53.2 
 Diffusion therefore uses one fixed spatial kernel `H` (`_kernel_columns`): column
 `s` is the heat kernel applied to a unit mass at bin `s`, clipped to be
 non-negative, zero outside `s`'s connected component, cut below
-`_FIELD_RESOLUTION · max(column)` (where `_FIELD_RESOLUTION = max(float32 eps,
+`FIELD_RESOLUTION · max(column)` (where `FIELD_RESOLUTION = max(float32 eps,
 heat-kernel rank tolerance) = 1e-6`) and normalized to unit mass. Occupancy, the
 ground process and every spike's marked field are this one linear map of their
 sources:

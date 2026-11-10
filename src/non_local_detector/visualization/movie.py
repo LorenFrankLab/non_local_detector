@@ -1,33 +1,53 @@
+"""Create movies of 2D decoding results."""
+
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+import xarray as xr
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar  # type: ignore[import-untyped]  # mpl_toolkits ships no stubs
 
+from non_local_detector.analysis.posterior import (
+    get_position_posterior,
+    maximum_a_posteriori_estimate,
+)
 from non_local_detector.visualization._parallel_video_writer import (
     VideoConfig,
     create_parallel_video,
 )
 from non_local_detector.visualization.static import get_multiunit_firing_rate
 
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
+    from non_local_detector.models.base import _DetectorBase
+
+__all__ = [
+    "make_single_environment_movie",
+]
+
+
 logger = logging.getLogger(__name__)
 
 
 def make_single_environment_movie(
-    time_slice,
-    classifier,
-    results,
-    position_info,
-    spike_times,
-    movie_name="video_name.mp4",
-    sampling_frequency=500,
-    video_slowdown=8,
-    position_name=None,
-    direction_name="head_orientation",
-    vmax=0.07,
-):
+    time_slice: slice,
+    classifier: _DetectorBase,
+    results: xr.Dataset,
+    position_info: pd.DataFrame,
+    spike_times: list[np.ndarray],
+    movie_name: str = "video_name.mp4",
+    sampling_frequency: float = 500,
+    video_slowdown: float = 8,
+    position_name: list[str] | None = None,
+    direction_name: str = "head_orientation",
+    vmax: float = 0.07,
+) -> str:
     """Generate a movie of the decoding results for a single environment.
 
     Parameters
@@ -61,7 +81,6 @@ def make_single_environment_movie(
     str
         Path to the output movie file.
     """
-
     position_name = (
         ["head_position_x", "head_position_y"]
         if position_name is None
@@ -77,21 +96,10 @@ def make_single_environment_movie(
     )
 
     # Prepare data
-    is_track_interior = classifier.environments[0].is_track_interior_
-    posterior = (
-        results.acausal_posterior.isel(time=time_slice)
-        .unstack("state_bins")
-        .sum("state")
-        .where(is_track_interior)
-    )
-    map_position_ind = posterior.argmax(["x_position", "y_position"])
-    map_position = np.stack(
-        (
-            posterior.x_position[map_position_ind["x_position"]].values,
-            posterior.y_position[map_position_ind["y_position"]].values,
-        ),
-        axis=1,
-    )
+    is_track_interior = classifier.environments_[0].is_track_interior_
+    posterior = _spatial_posterior_for_movie(results, time_slice, is_track_interior)
+    # NaN (no dot) for frames with no mass on a position bin.
+    map_position = maximum_a_posteriori_estimate(posterior)
 
     position = np.asarray(position_info.iloc[time_slice][position_name])
     direction = np.asarray(position_info.iloc[time_slice][direction_name])
@@ -146,8 +154,25 @@ def make_single_environment_movie(
 
 
 # Define these at MODULE LEVEL (required for pickle-ability)
-def _setup_single_env_figure():
-    """Setup figure for single environment movie."""
+def _spatial_posterior_for_movie(
+    results: xr.Dataset, time_slice: slice, is_track_interior: np.ndarray | None
+) -> xr.DataArray:
+    """Posterior over position, summed over the states that have a position.
+
+    Position-less states (Local, No-Spike) are excluded, so the frames show the
+    spatial states' probability only.
+
+    Returns
+    -------
+    xr.DataArray, shape (n_time, n_x_bins, n_y_bins)
+    """
+    return get_position_posterior(
+        results.acausal_posterior.isel(time=time_slice)
+    ).where(is_track_interior)
+
+
+def _setup_single_env_figure() -> tuple[Figure, dict[str, Any]]:
+    """Set up figure for single environment movie."""
     with plt.style.context("dark_background"):
         fig, axes_array = plt.subplots(
             2,
@@ -211,9 +236,13 @@ def _setup_single_env_figure():
     return fig, axes
 
 
-def _render_single_env_frame(fig, axes, frame_idx, data):
+def _render_single_env_frame(
+    fig: Figure,  # noqa: ARG001 -- frame-renderer signature
+    axes: dict[str, Any],
+    frame_idx: int,
+    data: dict[str, Any],
+) -> None:
     """Render a single frame for single environment movie."""
-
     # Update position
     axes["position_dot"].set_offsets(data["position"][frame_idx])
 

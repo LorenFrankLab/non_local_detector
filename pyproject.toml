@@ -1,5 +1,6 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+# 1.27 added PEP 639 license metadata (license expression, license-files).
+requires = ["hatchling>=1.27", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +8,8 @@ name = "non_local_detector"
 description = "A python package to decode non-local activity from neural data"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["neuroscience", "bayesian-inference", "hmm", "neural-decoding", "replay-detection"]
 authors = [{ name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu" }]
 maintainers = [{ name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu" }]
@@ -20,23 +22,24 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "numpy >=1.25",
-    "scipy >=1.10",
+    "numpy >=2.2",
+    "scipy >=1.15",
     "jax >=0.6.2",
-    "pandas >=2.0",
-    "networkx >=3.0",
-    "xarray >=2024.5",
-    "scikit-learn >=1.3",
+    "pandas >=2.3",
+    # 3.5 (the SPEC 0 floor) needs Python 3.11; 3.4 is the last for 3.10.
+    "networkx >=3.4",
+    "xarray >=2024.11",
+    "scikit-learn >=1.6",
     "threadpoolctl >=3.0",
-    "patsy >=0.5.2",
+    # 0.5.6 is the first release without pandas is_categorical_dtype warnings.
+    "patsy >=0.5.6",
     "tqdm >=4.60",
     "track_linearization >=2.4.0",
-    "matplotlib >=3.7",
-    "seaborn >=0.12",
+    "matplotlib >=3.10",
 ]
 dynamic = ["version"]
 
@@ -47,22 +50,13 @@ dynamic = ["version"]
 "Changelog" = "https://github.com/LorenFrankLab/non_local_detector/releases"
 
 [project.optional-dependencies]
-test = [
-    "pytest",
-    "pytest-cov",
-    "pytest-timeout",
-    "hypothesis",
-    # Benchmark scripts record memory with psutil; their smoke test runs in CI.
-    "psutil",
+# JAX recommends its CUDA 13 wheels (NVIDIA driver >= 580 on Linux), first
+# offered by JAX 0.7, which needs Python 3.11. On Python 3.10 the newest JAX
+# (0.6.2) ships only CUDA 12 wheels (driver >= 525).
+gpu = [
+    "jax[cuda13]>=0.7; python_version >= '3.11'",
+    "jax[cuda12]; python_version < '3.11'",
 ]
-dev = [
-    "non_local_detector[test]",
-    "ruff",
-    "mypy",
-    "ipython",
-    "pre-commit",
-]
-gpu = ["jax[cuda]"]
 viz = ["sortingview"]
 
 [tool.hatch.version]
@@ -72,10 +66,15 @@ source = "vcs"
 version-file = "src/non_local_detector/_version.py"
 
 [tool.hatch.build.targets.sdist]
-exclude = [
-    ".git_archival.txt",
-    "/docs/performance_artifacts/**",
-    "/.claude/docs/gmm-background-diagnosis/**",
+# Explicit list: hatch otherwise ships every file .gitignore does not exclude,
+# so untracked local directories and the 9.5 MB notebooks/ would leak in.
+only-include = [
+    "src",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -83,45 +82,103 @@ packages = ["src/non_local_detector"]
 
 # Ruff configuration
 [tool.ruff]
-src = ["src"]
 line-length = 88
+# Exploratory notebooks are not run in CI and carry stale cells; .claude holds
+# planning notes and throwaway evidence scripts.
+extend-exclude = ["notebooks", ".claude"]
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-    "FA",  # flake8-future-annotations
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "D",    # pydocstyle (numpy convention)
+    "D417", # numpy convention disables it; every parameter must be documented
+    "UP",   # pyupgrade
+    "FA",   # flake8-future-annotations
+    "NPY",  # numpy-specific rules
+    "PD",   # pandas-vet
+    "RUF",  # ruff-specific rules
+    "ARG",  # unused arguments
+    "EM",   # exception messages assigned before the raise
+    "EXE",  # shebangs
+    "FBT",  # boolean traps
+    "FURB", # refurb modernizations
+    "G",    # logging format
+    "ICN",  # import conventions
+    "ISC",  # implicit string concatenation
+    "PERF", # performance anti-patterns
+    "PGH",  # pygrep hooks (blanket noqa, type: ignore without code)
+    "PIE",  # misc lints
+    "PT",   # pytest style
+    "PTH",  # pathlib over os.path
+    "RET",  # return statements
+    "SIM",  # simplifications
+    "T20",  # print statements
+    "YTT",  # sys.version misuse
 ]
 ignore = [
-    "E501",  # line too long, handled by ruff format
-    "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex
+    "E501",    # line too long, handled by ruff format
+    "ISC001",  # conflicts with the formatter
+    "B008",    # do not perform function calls in argument defaults
+    "PERF203", # try in a loop: zero-cost from Python 3.11; per-item handling needs it
+    # pandas-vet cannot tell pandas from xarray (.values, .unstack) or JAX (.at).
+    "PD008",
+    "PD010",
+    "PD011",
+    # Dunder methods (__repr__, __eq__, ...) have standard meanings; NumPy and
+    # SciPy leave them undocumented. Private modules/functions/classes are not
+    # "public" to pydocstyle, so D1xx does not apply to them either.
+    "D105",
 ]
+# Math notation in docstrings, comments and messages.
+allowed-confusables = ["×", "σ", "α", "γ", "∪"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/**/*" = ["B011"]
+"**/tests/**" = [
+    "ARG",   # pytest fixtures are used by name, not by value
+    "B011",
+    "D",     # test docstrings are not API documentation
+    "FBT",   # test helpers and parametrized flags
+]
+"{scripts,benchmarks}/**" = ["T201"]  # scripts report to stdout
+# Tutorials print, and a bare expression in a cell displays its value.
+"docs/tutorials/**" = ["T201", "B018"]
+# Compares path strings as frames report them; Path.resolve would follow links.
+"src/non_local_detector/_warnings.py" = ["PTH"]
 
 # MyPy configuration
 [tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false  # Start lenient, can tighten later
-disallow_incomplete_defs = false
-check_untyped_defs = true
-disallow_untyped_decorators = false
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
+files = ["src/non_local_detector"]
+mypy_path = "src"
+# Target 3.12 so mypy can parse NumPy's stubs, which use PEP 695 `type`
+# statements (only valid for python_version >= 3.12). Runtime 3.10 support is
+# verified by the test matrix.
+python_version = "3.12"
+strict = true
 warn_unreachable = true
-strict_equality = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+# Libraries without stubs we install.
+[[tool.mypy.overrides]]
+module = [
+    "networkx.*",
+    "pandas.*",
+    "patsy.*",
+    "psutil.*",
+    "scipy.*",
+    "sortingview.*",
+    "threadpoolctl.*",
+    "tqdm.*",
+]
+ignore_missing_imports = true
 
 # Coverage configuration
 [tool.coverage.run]
@@ -140,31 +197,91 @@ exclude_lines = [
 
 # Pytest configuration
 [tool.pytest.ini_options]
-testpaths = ["src/non_local_detector/tests"]
+minversion = "8.4"
+testpaths = ["tests"]
+# The repository root, so test modules import shared helpers as tests.*
+# however few of them a run collects.
+pythonpath = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "-v",
     "--tb=short",
+    "--strict-config",
     "--strict-markers",
     "--durations=10",
     "-ra",
 ]
-# Per-test limit from pytest-timeout (in the test extra), locally and in CI.
+xfail_strict = true
+log_level = "INFO"
+# Every warning fails its test unless the test expects it (pytest.warns) or
+# marks it as incidental (pytest.mark.filterwarnings, with the reason).
+filterwarnings = [
+    "error",
+    # JAX on CPU cannot reuse donated buffers and says so; nothing is wrong.
+    "ignore:Some donated buffers were not usable:UserWarning",
+    # The tests' persistent JAX compilation cache (tests/conftest.py) is an
+    # optimization: a cache entry JAX cannot read or write is shown, not fatal.
+    "default:Error (reading|writing) persistent compilation cache entry:UserWarning",
+    # The netCDF4 1.7.4 wheel for Python 3.10 on Linux was built against an
+    # older NumPy, so importing it warns that numpy.ndarray changed size;
+    # NumPy documents this warning as harmless. Python 3.11+ gets a newer wheel.
+    "ignore:numpy.ndarray size changed, may indicate binary incompatibility:RuntimeWarning",
+    # matplotlib 3.10.0 (the floor) calls camelCase pyparsing names that
+    # pyparsing 3.3 deprecates ("'oneOf' deprecated - use 'one_of'"). The
+    # category is named by its base class: older pyparsing releases have
+    # no pyparsing.warnings module to import.
+    "ignore:'\\w+' deprecated - use '\\w+':DeprecationWarning",
+]
+# Per-test limit from pytest-timeout (in the test dependency group), locally and in CI.
 timeout = 900
 
 # Test markers for selective running
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "gpu: marks tests that require GPU",
     "integration: marks integration tests",
     "unit: marks unit tests",
-    "property: marks property-based tests",
-    "snapshot: marks snapshot regression tests (update with --snapshot-update)",
 ]
 
+[tool.codespell]
+skip = "uv.lock,*.ipynb,*.pkl,*.npz,*.png,*.svg"
+# Patsy's te() tensor-product term, n-dimensional (einsum "nd"), S-hat (Shat),
+# and the "*afe*" glob in a plan's shell example.
+ignore-words-list = "afe,nd,shat,te"
+
+# PEP 735 groups: development tools that are not part of the published
+# package. `uv sync` installs `dev` (and so `test`) by default.
 [dependency-groups]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-timeout",
+    # Benchmark scripts record memory with psutil; their smoke test runs in CI.
+    "psutil",
+    # Reads the netCDF4 results Spyglass saves (tests/compat_data); without it
+    # xarray writes and reads only netCDF3.
+    "netCDF4",
+]
 dev = [
+    { include-group = "test" },
+    "ruff",
+    "mypy",
+    "ipython",
+    "pre-commit",
     "ipykernel>=7.2.0",
+]
+# The documentation site: `uv sync --group docs && uv run mkdocs serve`.
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.26.0",
+    "mkdocs-gen-files>=0.5.0",
+    "mkdocs-literate-nav>=0.6.0",
+    "mkdocs-section-index>=0.3.0",
+    "mkdocs-jupyter>=0.25.0",
+    "jupytext>=1.16.0",
+    # Tutorials render the package's tqdm progress bars as notebook widgets;
+    # without ipywidgets tqdm prints an "IProgress not found" warning instead.
+    "ipywidgets>=8.0",
 ]

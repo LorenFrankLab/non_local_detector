@@ -6,45 +6,70 @@ Gaussian factors retain every grid-to-grid term, including tails and holes.
 The host builder is outside JAX tracing; runtime products are pure JAX.
 """
 
-from copy import copy
+import itertools
+from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, replace
+from typing import Any, Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike, DTypeLike
 from scipy.spatial import cKDTree
 from scipy.stats import multivariate_normal, norm
 
+from non_local_detector._jax_typing import finfo
 from non_local_detector.continuous_state_transitions import (
-    Discrete,
-    EmpiricalMovement,
-    Identity,
+    ContinuousTransition,
     RandomWalk,
-    RandomWalkDirection1,
-    RandomWalkDirection2,
-    Uniform,
+    TransitionContext,
+    _check_block_environments,
+    _check_block_shape,
+    _check_continuous_transition,
+    _make_transition_block,
+    _multi_bin_local_transition,
+    _scalar_to_spatial_destination,
 )
+from non_local_detector.core import TransitionOperator
+from non_local_detector.environment import Environment
+from non_local_detector.exceptions import NonLocalDetectorError, ValidationError
 from non_local_detector.graph_distances import LazyGraphDistances
+from non_local_detector.observation_models import ObservationModel
 
 DEFAULT_MAX_DENSE_BYTES = 256 * 1024**2
 
+_T = TypeVar("_T")
 
-def _register_operator(cls):
+# Host or device array.
+_Array: TypeAlias = np.ndarray | jax.Array
+
+# Any one conditional spatial block of a ``BlockTransitionOperator``.
+Block: TypeAlias = (
+    "UniformBlock | IdentityBlock | GaussianGridBlock | DenseBlock | RestrictedBlock"
+)
+
+
+def _register_operator(cls: type[_T]) -> type[_T]:
     """Register explicit fields on JAX versions without inferred dataclasses."""
+    dataclass_cls = cast(Any, cls)
     data = tuple(
-        item.name for item in fields(cls) if not item.metadata.get("static", False)
+        item.name
+        for item in fields(dataclass_cls)
+        if not item.metadata.get("static", False)
     )
     static = tuple(
-        item.name for item in fields(cls) if item.metadata.get("static", False)
+        item.name
+        for item in fields(dataclass_cls)
+        if item.metadata.get("static", False)
     )
 
-    def flatten(value):
+    def flatten(value: Any) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
         return (
             tuple(getattr(value, name) for name in data),
             tuple(getattr(value, name) for name in static),
         )
 
-    def unflatten(metadata, children):
+    def unflatten(metadata: tuple[Any, ...], children: Sequence[Any]) -> _T:
         return cls(
             **dict(zip(data, children, strict=True)),
             **dict(zip(static, metadata, strict=True)),
@@ -54,36 +79,52 @@ def _register_operator(cls):
     return cls
 
 
-class UnsupportedTransitionError(ValueError):
+# Appended to messages that refuse a structured block.
+_DENSE_BLOCK_HINT = (
+    'use transition_representation="auto" (dense block within '
+    'max_dense_transition_bytes) or "dense"'
+)
+
+
+class UnsupportedTransitionError(NonLocalDetectorError, ValueError):
     """A configuration has no proven exact structured implementation."""
 
 
-class DenseTransitionBudgetError(MemoryError):
+class DenseTransitionBudgetError(NonLocalDetectorError, MemoryError):
     """A requested dense allocation exceeds its explicit byte budget."""
 
 
-def _budget(nbytes, maximum, description):
+def _budget(nbytes: int, maximum: Any, description: str) -> None:
     if (
         not isinstance(maximum, (int, np.integer))
         or isinstance(maximum, bool)
         or maximum < 0
     ):
-        raise ValueError("Dense transition byte budget must be a nonnegative integer")
+        msg = "Dense transition byte budget must be a nonnegative integer"
+        raise ValueError(msg)
     if nbytes > maximum:
-        raise DenseTransitionBudgetError(
+        msg = (
             f"{description} requires {nbytes:,} bytes, exceeding the "
-            f"{maximum:,}-byte dense transition budget. Use supported structured "
-            "products, request a smaller dense selection, or explicitly choose "
-            "a feasible dense budget. EM/Viterbi/plotting may require dense data."
+            f"{maximum:,}-byte dense transition budget. Raise "
+            "max_dense_transition_bytes, use transition_representation="
+            '"dense", or request a smaller dense selection. EM, Viterbi and '
+            "plotting may need the dense transition."
         )
+        raise DenseTransitionBudgetError(msg)
 
 
-def _nan_result(result, source):
+def _nan_result(result: jax.Array, source: jax.Array) -> jax.Array:
     # Dense products propagate any NaN through even zero matrix entries.
     return jnp.where(jnp.any(jnp.isnan(source)), jnp.full_like(result, jnp.nan), result)
 
 
-def _axes_product(values, factors, *, backward=False, numpy=False):
+def _axes_product(
+    values: Any,
+    factors: Sequence[_Array],
+    *,
+    backward: bool = False,
+    numpy: bool = False,
+) -> Any:
     xp = np if numpy else jnp
     for axis, factor in enumerate(factors):
         factor = xp.asarray(factor, dtype=values.dtype)
@@ -96,7 +137,7 @@ def _axes_product(values, factors, *, backward=False, numpy=False):
     return values
 
 
-def _ratio(numerator, denominator):
+def _ratio(numerator: np.ndarray, denominator: ArrayLike) -> np.ndarray:
     denominator = np.asarray(denominator)
     return np.where(
         denominator > 0, numerator / np.where(denominator > 0, denominator, 1), 0
@@ -106,73 +147,202 @@ def _ratio(numerator, denominator):
 @_register_operator
 @dataclass(frozen=True)
 class UniformBlock:
-    """A masked rank-one block, including legacy scalar/spatial overrides."""
+    """A masked rank-one block, including legacy scalar/spatial overrides.
 
-    source_mask: object
-    destination_mask: object
-    normalization: object
+    Attributes
+    ----------
+    source_mask : np.ndarray or jax.Array, shape (n_source_bins,)
+        Weight of each source bin (1 where the bin can be left, else 0).
+    destination_mask : np.ndarray or jax.Array, shape (n_destination_bins,)
+        Weight of each destination bin (1 where the bin can be entered, else 0).
+    normalization : np.ndarray or jax.Array
+        Scalar multiplying ``source_mask[i] * destination_mask[j]``; typically
+        the reciprocal of the number of enabled destination bins, so each
+        enabled row sums to one.
+    """
+
+    source_mask: _Array
+    destination_mask: _Array
+    normalization: _Array
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, int]:
+        """Shape ``(n_source_bins, n_destination_bins)`` of the block."""
         return (len(self.source_mask), len(self.destination_mask))
 
-    def forward(self, values):
+    def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_source_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_destination_bins,)
+            ``values @ T``, over the destination bins.
+        """
         source = jnp.asarray(self.source_mask, dtype=values.dtype)
         destination = jnp.asarray(self.destination_mask, dtype=values.dtype)
         divisor = jnp.asarray(self.normalization, dtype=values.dtype)
         result = jnp.sum(values * source * divisor) * destination
         return _nan_result(result, values)
 
-    def backward(self, values):
+    def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_destination_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_source_bins,)
+            ``T @ values``, over the source bins.
+        """
         source = jnp.asarray(self.source_mask, dtype=values.dtype)
         destination = jnp.asarray(self.destination_mask, dtype=values.dtype)
         divisor = jnp.asarray(self.normalization, dtype=values.dtype)
         return _nan_result(source * jnp.sum(values * destination * divisor), values)
 
-    def entries(self, rows, columns):
-        return (
-            np.asarray(self.source_mask)[rows]
-            * np.asarray(self.destination_mask)[columns]
-        ) * np.asarray(self.normalization)
+    def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
+        return cast(
+            np.ndarray,
+            (
+                np.asarray(self.source_mask)[rows]
+                * np.asarray(self.destination_mask)[columns]
+            )
+            * np.asarray(self.normalization),
+        )
 
 
 @_register_operator
 @dataclass(frozen=True)
 class IdentityBlock:
-    mask: object
+    """A masked identity block: probability stays in the same bin.
+
+    Attributes
+    ----------
+    mask : np.ndarray or jax.Array, shape (n_bins,)
+        Weight of each bin (1 where the bin is on the track, else 0), applied on
+        the diagonal.
+    """
+
+    mask: _Array
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, int]:
+        """Shape ``(n_bins, n_bins)`` of the block."""
         return (len(self.mask), len(self.mask))
 
-    def forward(self, values):
+    def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``values @ T``, over the destination bins.
+        """
         return _nan_result(values * jnp.asarray(self.mask, dtype=values.dtype), values)
 
-    def backward(self, values):
+    def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``T @ values``, over the source bins.
+        """
         return self.forward(values)
 
-    def entries(self, rows, columns):
-        return np.asarray(self.mask)[rows] * (rows == columns)
+    def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
+        return cast(np.ndarray, np.asarray(self.mask)[rows] * (rows == columns))
 
 
 @_register_operator
 @dataclass(frozen=True)
 class GaussianGridBlock:
-    """Masked, row-normalized tensor product of untruncated Gaussian axes."""
+    """Masked, row-normalized tensor product of untruncated Gaussian axes.
 
-    factors: tuple
-    mask: object
-    row_normalization: object
+    Attributes
+    ----------
+    factors : tuple of np.ndarray or jax.Array
+        One square matrix per grid axis, shape ``(n_axis_bins, n_axis_bins)``,
+        holding the Gaussian transition density between that axis's bins.
+    mask : np.ndarray or jax.Array, shape (n_bins,)
+        Weight of each flattened grid bin (1 where on the track, else 0).
+    row_normalization : np.ndarray or jax.Array, shape (n_bins,)
+        Sum over destination bins of each masked row of the unnormalized
+        product, used to normalize the rows.
+    """
+
+    factors: tuple[_Array, ...]
+    mask: _Array
+    row_normalization: _Array
 
     @property
-    def grid_shape(self):
+    def grid_shape(self) -> tuple[int, ...]:
+        """Number of bins along each grid axis."""
         return tuple(factor.shape[0] for factor in self.factors)
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the block, with ``n_bins`` the grid size."""
         return (int(np.prod(self.grid_shape)),) * 2
 
-    def forward(self, values):
+    def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``values @ T``, over the destination bins.
+        """
         mask = jnp.asarray(self.mask, dtype=values.dtype)
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
@@ -180,7 +350,10 @@ class GaussianGridBlock:
         # Keep the original arithmetic for ordinary values. Cap finite scales
         # so a compiler-hoisted reciprocal remains normal instead of flushing
         # to zero; row-normalized products still undo exactly this scale.
-        limit = jnp.asarray(1 / jnp.finfo(values.dtype).tiny, dtype=values.dtype)
+        limit = jnp.asarray(
+            1 / finfo(values.dtype).tiny,
+            dtype=values.dtype,
+        )
         scale = jnp.where(jnp.isfinite(scale), jnp.minimum(scale, limit), scale)
         weighted = jnp.where(normalizer > 0, (values / scale) * mask / safe, 0)
         result = (
@@ -189,13 +362,25 @@ class GaussianGridBlock:
         )
         return _nan_result(result * scale, values)
 
-    def backward(self, values):
+    def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            ``T @ values``, over the source bins.
+        """
         mask = jnp.asarray(self.mask, dtype=values.dtype)
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
         maximum = jnp.max(jnp.abs(values))
         scale = jnp.where(maximum > 0, maximum, 1)
-        limits = jnp.finfo(values.dtype)
+        limits = finfo(values.dtype)
         scale = jnp.where(
             jnp.isfinite(scale),
             jnp.clip(
@@ -213,7 +398,21 @@ class GaussianGridBlock:
         result = jnp.where(normalizer > 0, result * mask / safe, 0)
         return _nan_result(result * scale, values)
 
-    def entries(self, rows, columns):
+    def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         rows, columns = np.broadcast_arrays(rows, columns)
         coordinates_from = np.unravel_index(rows, self.grid_shape)
         coordinates_to = np.unravel_index(columns, self.grid_shape)
@@ -229,46 +428,114 @@ class GaussianGridBlock:
 @_register_operator
 @dataclass(frozen=True)
 class DenseBlock:
-    """Explicit fallback; its retained matrix counts against the dense budget."""
+    """Explicit fallback; its retained matrix counts against the dense budget.
 
-    matrix: object
+    Attributes
+    ----------
+    matrix : np.ndarray or jax.Array, shape (n_source_bins, n_destination_bins)
+        Dense transition probabilities.
+    """
+
+    matrix: _Array
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_source_bins, n_destination_bins)`` of the block."""
         return self.matrix.shape
 
-    def forward(self, values):
+    def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_source_bins,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_destination_bins,)
+            ``values @ T``, over the destination bins.
+        """
         return jnp.matmul(
             values,
             jnp.asarray(self.matrix, dtype=values.dtype),
             precision=jax.lax.Precision.HIGHEST,
         )
 
-    def backward(self, values):
+    def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_destination_bins,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_source_bins,)
+            ``T @ values``, over the source bins.
+        """
         return jnp.matmul(
             jnp.asarray(self.matrix, dtype=values.dtype),
             values,
             precision=jax.lax.Precision.HIGHEST,
         )
 
-    def entries(self, rows, columns):
-        return np.asarray(self.matrix)[rows, columns]
+    def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
+        return cast(np.ndarray, np.asarray(self.matrix)[rows, columns])
 
 
 @_register_operator
 @dataclass(frozen=True)
 class RestrictedBlock:
-    """An exact indexed submatrix; selection never renormalizes its rows."""
+    """An exact indexed submatrix; selection never renormalizes its rows.
 
-    original: object
-    rows: object
-    columns: object
+    Attributes
+    ----------
+    original : Block
+        The block being restricted.
+    rows : np.ndarray or jax.Array, shape (n_rows,)
+        Indices of the original block's source bins that are kept.
+    columns : np.ndarray or jax.Array, shape (n_columns,)
+        Indices of the original block's destination bins that are kept.
+    """
+
+    original: "Block"
+    rows: _Array
+    columns: _Array
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, int]:
+        """Shape ``(n_rows, n_columns)`` of the restricted block."""
         return (len(self.rows), len(self.columns))
 
-    def forward(self, values):
+    def forward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the left, ``values @ T``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_rows,)
+            Probabilities (or other weights) over the source bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_columns,)
+            ``values @ T``, over the destination bins.
+        """
         if not len(self.rows) or not len(self.columns):
             return jnp.zeros(len(self.columns), dtype=values.dtype)
         full = (
@@ -278,7 +545,19 @@ class RestrictedBlock:
         )
         return self.original.forward(full)[jnp.asarray(self.columns)]
 
-    def backward(self, values):
+    def backward(self, values: jax.Array) -> jax.Array:
+        """Apply the block to a vector from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : jax.Array, shape (n_columns,)
+            Values over the destination bins.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_rows,)
+            ``T @ values``, over the source bins.
+        """
         if not len(self.rows) or not len(self.columns):
             return jnp.zeros(len(self.rows), dtype=values.dtype)
         full = (
@@ -288,7 +567,21 @@ class RestrictedBlock:
         )
         return self.original.backward(full)[jnp.asarray(self.rows)]
 
-    def entries(self, rows, columns):
+    def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the block.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Indices into the kept source bins, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Indices into the kept destination bins, broadcast against ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``.
+        """
         return self.original.entries(
             np.asarray(self.rows)[rows], np.asarray(self.columns)[columns]
         )
@@ -296,37 +589,54 @@ class RestrictedBlock:
 
 @_register_operator
 @dataclass(frozen=True)
-class BlockTransitionOperator:
+class BlockTransitionOperator(TransitionOperator):
     """Conditional spatial blocks with separate stationary or per-step weights.
 
     ``bind_discrete`` sets stationary defaults. A driver supplies a single S-by-S
     matrix to each forward/backward call for covariate transitions. All floating
     runtime factors cast to the input vector dtype; host dense views remain float64.
+
+    Attributes
+    ----------
+    blocks : tuple of tuple of Block
+        ``blocks[i][j]`` is the conditional spatial transition from the bins of
+        discrete state ``i`` to the bins of discrete state ``j``.
+    state_sizes : tuple of int
+        Number of spatial bins of each discrete state.
+    discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+        Stationary discrete transition probabilities multiplying each block, by
+        default None (all ones).
     """
 
-    blocks: tuple
-    state_sizes: tuple = field(metadata={"static": True})
-    discrete_weights: object = None
+    blocks: tuple[tuple[Block, ...], ...]
+    state_sizes: tuple[int, ...] = field(metadata={"static": True})
+    discrete_weights: _Array | None = None
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the combined transition matrix."""
         return (sum(self.state_sizes),) * 2
 
     @property
-    def n_bins(self):
+    def n_bins(self) -> int:
+        """Total number of bins over all discrete states."""
         return self.shape[0]
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype[np.float64]:
+        """Data type of dense views of the operator, always float64."""
         return np.dtype(np.float64)
 
     @property
-    def storage_nbytes(self):
+    def storage_nbytes(self) -> int:
+        """Memory held by the operator's array leaves, in bytes."""
         return sum(np.asarray(leaf).nbytes for leaf in jax.tree_util.tree_leaves(self))
 
     @property
-    def dense_fallback_nbytes(self):
-        def size(block):
+    def dense_fallback_nbytes(self) -> int:
+        """Memory held by the dense matrices of its ``DenseBlock`` blocks, in bytes."""
+
+        def size(block: Block) -> int:
             if isinstance(block, RestrictedBlock):
                 return size(block.original)
             return (
@@ -335,21 +645,57 @@ class BlockTransitionOperator:
 
         return sum(size(block) for row in self.blocks for block in row)
 
-    def bind_discrete(self, weights):
+    def bind_discrete(self, weights: _Array) -> "BlockTransitionOperator":
+        """Return a copy with stationary discrete transition weights.
+
+        Parameters
+        ----------
+        weights : np.ndarray or jax.Array, shape (n_states, n_states)
+            Discrete state transition probabilities multiplying each block.
+
+        Returns
+        -------
+        operator : BlockTransitionOperator
+            Copy of this operator with ``discrete_weights`` set.
+
+        Raises
+        ------
+        ValueError
+            If ``weights`` is not ``(n_states, n_states)``.
+        """
         if np.shape(weights) != (len(self.state_sizes),) * 2:
-            raise ValueError("discrete_weights must have shape (n_states, n_states)")
+            msg = "discrete_weights must have shape (n_states, n_states)"
+            raise ValueError(msg)
         return replace(self, discrete_weights=weights)
 
-    def restricted(self, mask):
+    def restricted(self, mask: ArrayLike) -> "BlockTransitionOperator":
+        """Return the operator restricted to a subset of the combined bins.
+
+        Rows are not renormalized after the restriction.
+
+        Parameters
+        ----------
+        mask : array_like of bool, shape (n_bins,)
+            True for the bins to keep, over the combined bins of all states.
+
+        Returns
+        -------
+        operator : BlockTransitionOperator
+            Operator over the kept bins, with ``state_sizes`` updated.
+
+        Raises
+        ------
+        ValueError
+            If ``mask`` does not have one entry per combined bin.
+        """
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != (self.n_bins,):
-            raise ValueError(
-                "Restriction mask must have one entry per combined state bin"
-            )
+            msg = "Restriction mask must have one entry per combined state bin"
+            raise ValueError(msg)
         boundaries = np.cumsum((0, *self.state_sizes))
         indices = tuple(
             np.flatnonzero(mask[start:stop])
-            for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
+            for start, stop in itertools.pairwise(boundaries)
         )
         blocks = tuple(
             tuple(
@@ -362,15 +708,34 @@ class BlockTransitionOperator:
             blocks, tuple(len(index) for index in indices), self.discrete_weights
         )
 
-    def _weights(self, values, override):
+    def _weights(self, values: jax.Array, override: _Array | None) -> jax.Array:
         weights = self.discrete_weights if override is None else override
         if weights is None:
             return jnp.ones((len(self.state_sizes),) * 2, dtype=values.dtype)
         if weights.shape != (len(self.state_sizes),) * 2:
-            raise ValueError("Pass one S-by-S discrete transition matrix per step")
+            msg = "Pass one S-by-S discrete transition matrix per step"
+            raise ValueError(msg)
         return jnp.asarray(weights, dtype=values.dtype)
 
-    def forward(self, probabilities, discrete_weights=None):
+    def forward(
+        self, probabilities: ArrayLike, discrete_weights: _Array | None = None
+    ) -> jax.Array:
+        """Apply the transition from the left, ``probabilities @ T``.
+
+        Parameters
+        ----------
+        probabilities : array_like, shape (n_bins,)
+            Probability over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None, which uses the bound weights (or
+            ones if none were bound).
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The one-step-ahead prediction ``probabilities @ T``.
+        """
         probabilities = jnp.asarray(probabilities)
         weights = self._weights(probabilities, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -383,7 +748,25 @@ class BlockTransitionOperator:
             output.append(result)
         return jnp.concatenate(output)
 
-    def backward(self, values, discrete_weights=None):
+    def backward(
+        self, values: ArrayLike, discrete_weights: _Array | None = None
+    ) -> jax.Array:
+        """Apply the transition from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : array_like, shape (n_bins,)
+            Values over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None, which uses the bound weights (or
+            ones if none were bound).
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The product ``T @ values``.
+        """
         values = jnp.asarray(values)
         weights = self._weights(values, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -399,7 +782,12 @@ class BlockTransitionOperator:
             output.append(result)
         return jnp.concatenate(output)
 
-    def pair_products(self, filtered, ratio, discrete_weights=None):
+    def pair_products(
+        self,
+        filtered: ArrayLike,
+        ratio: ArrayLike,
+        discrete_weights: _Array | None = None,
+    ) -> jax.Array:
         """Per-state-pair terms of ``filtered @ T * ratio``, before summing pairs.
 
         ``result[i, j] = w[i, j] * filtered[bins of i] . (C_ij @ ratio[bins of
@@ -410,13 +798,17 @@ class BlockTransitionOperator:
         Parameters
         ----------
         filtered : jax.Array, shape (n_bins,)
+            Filtered state probabilities at time ``t``.
         ratio : jax.Array, shape (n_bins,)
+            Elementwise ratio of smoothed to predicted probabilities at time
+            ``t + 1``.
         discrete_weights : jax.Array, shape (n_states, n_states), optional
             Overrides the bound stationary weights.
 
         Returns
         -------
         pairs : jax.Array, shape (n_states, n_states)
+            Expected transition mass between each pair of discrete states.
         """
         filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
         weights = self._weights(filtered, discrete_weights)
@@ -440,7 +832,9 @@ class BlockTransitionOperator:
         )
         return weights * pairs
 
-    def fused(self, max_dense_bytes=DEFAULT_MAX_DENSE_BYTES):
+    def fused(
+        self, max_dense_bytes: int = DEFAULT_MAX_DENSE_BYTES
+    ) -> "FusedBlockTransition":
         """Return a product-only operator with rank-one blocks folded together.
 
         See ``FusedBlockTransition``. Gaussian blocks whose float32 dense form
@@ -449,11 +843,24 @@ class BlockTransitionOperator:
         host) fit ``max_dense_bytes``; the rest keep separable products.
         Products agree with this operator to rounding; ``entries`` and dense
         views stay on this operator.
+
+        Parameters
+        ----------
+        max_dense_bytes : int, optional
+            Budget in bytes for all retained dense matrices, by default 256 MiB.
+
+        Returns
+        -------
+        operator : FusedBlockTransition
+            Operator with the same forward and backward products.
         """
         boundaries = np.cumsum((0, *self.state_sizes))
         n_states = len(self.state_sizes)
-        sources, destinations, weight_index = [], [], []
-        blocks, positions = [], []
+        sources: list[np.ndarray] = []
+        destinations: list[np.ndarray] = []
+        weight_index: list[int] = []
+        blocks: list[Block] = []
+        positions: list[tuple[int, int]] = []
         dense_budget = int(max_dense_bytes) - self.dense_fallback_nbytes
         for source, row in enumerate(self.blocks):
             for target, block in enumerate(row):
@@ -484,7 +891,23 @@ class BlockTransitionOperator:
             self.discrete_weights,
         )
 
-    def entries(self, rows, columns):
+    def entries(self, rows: np.ndarray, columns: np.ndarray) -> np.ndarray:
+        """Return selected entries of the combined transition matrix.
+
+        Parameters
+        ----------
+        rows : np.ndarray of int
+            Source-bin indices over the combined bins, broadcast against ``columns``.
+        columns : np.ndarray of int
+            Destination-bin indices over the combined bins, broadcast against
+            ``rows``.
+
+        Returns
+        -------
+        entries : np.ndarray, shape of the broadcast ``rows`` and ``columns``
+            Transition probabilities ``T[rows, columns]``, including the bound
+            discrete weights.
+        """
         rows, columns = np.broadcast_arrays(rows, columns)
         shape = rows.shape
         rows, columns = rows.ravel(), columns.ravel()
@@ -510,7 +933,31 @@ class BlockTransitionOperator:
                     )
         return output.reshape(shape)
 
-    def to_dense(self, *, max_bytes=DEFAULT_MAX_DENSE_BYTES, dtype=None):
+    def to_dense(
+        self,
+        *,
+        max_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+        dtype: DTypeLike | None = None,
+    ) -> np.ndarray:
+        """Convert to a dense matrix within a byte budget.
+
+        Parameters
+        ----------
+        max_bytes : int, optional
+            Largest allowed size of the dense matrix in bytes, by default 256 MiB.
+        dtype : dtype, optional
+            Data type of the result, by default float64.
+
+        Returns
+        -------
+        matrix : np.ndarray, shape (n_bins, n_bins)
+            The combined transition matrix.
+
+        Raises
+        ------
+        DenseTransitionBudgetError
+            If the dense matrix would exceed ``max_bytes``.
+        """
         dtype = np.dtype(self.dtype if dtype is None else dtype)
         _budget(self.n_bins**2 * dtype.itemsize, max_bytes, "Dense combined transition")
         result = np.empty(self.shape, dtype=dtype)
@@ -521,7 +968,8 @@ class BlockTransitionOperator:
         return result
 
 
-_EMPTY_BLOCK = object()
+# Sentinel: annotated ``Any`` so ``is`` checks against it narrow the factor tuple.
+_EMPTY_BLOCK: Any = object()
 
 # Gaussian blocks up to this many bytes of float32 dense matrix are stored
 # dense in the fused operator. A separable product costs several small
@@ -533,10 +981,13 @@ _EMPTY_BLOCK = object()
 _DENSE_GAUSSIAN_BLOCK_BYTES = 16 * 2**20
 
 
-def _small_gaussian_as_dense(block, dense_budget):
-    """A Gaussian (or restricted Gaussian) block as a ``DenseBlock`` when its
-    float32 matrix fits ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host
-    matrix fits ``dense_budget`` bytes; any other block as is."""
+def _small_gaussian_as_dense(block: Block, dense_budget: int) -> Block:
+    """Return a Gaussian (or restricted Gaussian) block as a ``DenseBlock`` if small.
+
+    The block is converted when its float32 matrix fits
+    ``_DENSE_GAUSSIAN_BLOCK_BYTES`` and its float64 host matrix fits
+    ``dense_budget`` bytes; any other block is returned as is.
+    """
     original = block.original if isinstance(block, RestrictedBlock) else block
     n_rows, n_columns = block.shape
     if (
@@ -550,7 +1001,7 @@ def _small_gaussian_as_dense(block, dense_budget):
     )
 
 
-def _rank_one_factors(block):
+def _rank_one_factors(block: Block) -> tuple[np.ndarray, np.ndarray] | None:
     """Host ``(source, destination)`` vectors of a rank-one block, else None.
 
     A uniform block adds ``(source * normalization) . p`` times its destination
@@ -560,11 +1011,14 @@ def _rank_one_factors(block):
     """
     if isinstance(block, RestrictedBlock):
         if not len(block.rows) or not len(block.columns):
-            return _EMPTY_BLOCK
+            return _EMPTY_BLOCK  # type: ignore[no-any-return]  # sentinel, not a factor pair
         factors = _rank_one_factors(block.original)
         if factors is None or factors is _EMPTY_BLOCK:
             return None
-        return factors[0][np.asarray(block.rows)], factors[1][np.asarray(block.columns)]
+        return cast(
+            tuple[np.ndarray, np.ndarray],
+            (factors[0][np.asarray(block.rows)], factors[1][np.asarray(block.columns)]),
+        )
     if isinstance(block, UniformBlock):
         normalization = np.asarray(block.normalization, dtype=float)
         # A non-finite normalization (no valid destination) keeps its own product.
@@ -581,7 +1035,7 @@ def _rank_one_factors(block):
 
 @_register_operator
 @dataclass(frozen=True)
-class FusedBlockTransition:
+class FusedBlockTransition(TransitionOperator):
     """Block-operator products with every rank-one block in two matrices.
 
     Uniform and scalar identity blocks are rank one. Their source vectors,
@@ -598,33 +1052,71 @@ class FusedBlockTransition:
 
     Built by ``BlockTransitionOperator.fused``. Forward products are ``p @ T``
     and backward products ``T @ v``.
+
+    Attributes
+    ----------
+    sources : np.ndarray or jax.Array, shape (n_bins, n_rank_one)
+        Source vectors of the rank-one blocks, scaled by their normalizations.
+    destinations : np.ndarray or jax.Array, shape (n_rank_one, n_bins)
+        Destination masks of the rank-one blocks.
+    weight_index : np.ndarray or jax.Array, shape (n_rank_one,)
+        Flat index into the ``(n_states, n_states)`` discrete weights for each
+        rank-one block.
+    blocks : tuple of Block
+        Blocks that keep their own products.
+    block_positions : tuple of tuple of int
+        ``(source_state, target_state)`` of each entry of ``blocks``.
+    state_sizes : tuple of int
+        Number of spatial bins of each discrete state.
+    discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+        Stationary discrete transition probabilities, by default None (all ones).
     """
 
-    sources: object  # (n_bins, n_rank_one)
-    destinations: object  # (n_rank_one, n_bins)
-    weight_index: object  # (n_rank_one,) flat index into the S-by-S weights
-    blocks: tuple
-    block_positions: tuple = field(metadata={"static": True})
-    state_sizes: tuple = field(metadata={"static": True})
-    discrete_weights: object = None
+    sources: _Array  # (n_bins, n_rank_one)
+    destinations: _Array  # (n_rank_one, n_bins)
+    weight_index: _Array  # (n_rank_one,) flat index into the S-by-S weights
+    blocks: tuple[Block, ...]
+    block_positions: tuple[tuple[int, int], ...] = field(metadata={"static": True})
+    state_sizes: tuple[int, ...] = field(metadata={"static": True})
+    discrete_weights: _Array | None = None
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the combined transition matrix."""
         return (sum(self.state_sizes),) * 2
 
     @property
-    def n_bins(self):
+    def n_bins(self) -> int:
+        """Total number of bins over all discrete states."""
         return self.shape[0]
 
-    def _flat_weights(self, values, override):
+    def _flat_weights(self, values: jax.Array, override: _Array | None) -> jax.Array:
         weights = self.discrete_weights if override is None else override
         if weights is None:
             return jnp.ones(len(self.state_sizes) ** 2, dtype=values.dtype)
         if weights.shape != (len(self.state_sizes),) * 2:
-            raise ValueError("Pass one S-by-S discrete transition matrix per step")
+            msg = "Pass one S-by-S discrete transition matrix per step"
+            raise ValueError(msg)
         return jnp.asarray(weights, dtype=values.dtype).ravel()
 
-    def forward(self, probabilities, discrete_weights=None):
+    def forward(
+        self, probabilities: ArrayLike, discrete_weights: _Array | None = None
+    ) -> jax.Array:
+        """Apply the transition from the left, ``probabilities @ T``.
+
+        Parameters
+        ----------
+        probabilities : array_like, shape (n_bins,)
+            Probability over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The one-step-ahead prediction ``probabilities @ T``.
+        """
         probabilities = jnp.asarray(probabilities)
         weights = self._flat_weights(probabilities, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -648,7 +1140,24 @@ class FusedBlockTransition:
             )
         return _nan_result(result, probabilities)
 
-    def backward(self, values, discrete_weights=None):
+    def backward(
+        self, values: ArrayLike, discrete_weights: _Array | None = None
+    ) -> jax.Array:
+        """Apply the transition from the right, ``T @ values``.
+
+        Parameters
+        ----------
+        values : array_like, shape (n_bins,)
+            Values over the combined bins of all states.
+        discrete_weights : np.ndarray or jax.Array, shape (n_states, n_states), optional
+            Discrete state transition matrix for this step, overriding the bound
+            stationary weights. By default None.
+
+        Returns
+        -------
+        result : jax.Array, shape (n_bins,)
+            The product ``T @ values``.
+        """
         values = jnp.asarray(values)
         weights = self._flat_weights(values, discrete_weights)
         boundaries = tuple(np.cumsum((0, *self.state_sizes)))
@@ -672,11 +1181,31 @@ class FusedBlockTransition:
             )
         return _nan_result(result, values)
 
-    def pair_products(self, filtered, ratio, discrete_weights=None):
+    def pair_products(
+        self,
+        filtered: ArrayLike,
+        ratio: ArrayLike,
+        discrete_weights: _Array | None = None,
+    ) -> jax.Array:
         """Per-state-pair terms; see ``BlockTransitionOperator.pair_products``.
 
         A rank-one block contributes ``(filtered . source) * (destination .
         ratio)``, so all of them cost one product with each factor matrix.
+
+        Parameters
+        ----------
+        filtered : jax.Array, shape (n_bins,)
+            Filtered state probabilities at time ``t``.
+        ratio : jax.Array, shape (n_bins,)
+            Elementwise ratio of smoothed to predicted probabilities at time
+            ``t + 1``.
+        discrete_weights : jax.Array, shape (n_states, n_states), optional
+            Overrides the bound stationary weights.
+
+        Returns
+        -------
+        pairs : jax.Array, shape (n_states, n_states)
+            Expected transition mass between each pair of discrete states.
         """
         filtered, ratio = jnp.asarray(filtered), jnp.asarray(ratio)
         weights = self._flat_weights(filtered, discrete_weights)
@@ -709,8 +1238,13 @@ class FusedBlockTransition:
             )
         return (weights * pairs).reshape(n_states, n_states)
 
-    def backward_and_pairs(self, values, filtered, discrete_weights=None):
-        """``backward(values)`` and ``pair_products(filtered, values)`` together.
+    def backward_and_pairs(
+        self,
+        values: ArrayLike,
+        filtered: ArrayLike,
+        discrete_weights: _Array | None = None,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Compute ``backward(values)`` and ``pair_products(filtered, values)`` together.
 
         Each block's backward product, and the rank-one destination sums, are
         computed once and serve both, so the smoother's transition statistics
@@ -719,13 +1253,19 @@ class FusedBlockTransition:
         Parameters
         ----------
         values : jax.Array, shape (n_bins,)
+            Values over the combined bins, used both as the vector to multiply
+            and as the ratio in the pair products.
         filtered : jax.Array, shape (n_bins,)
+            Filtered state probabilities for the pair products.
         discrete_weights : jax.Array, shape (n_states, n_states), optional
+            Overrides the bound stationary weights.
 
         Returns
         -------
         backward : jax.Array, shape (n_bins,)
+            The product ``T @ values``.
         pairs : jax.Array, shape (n_states, n_states)
+            Per-state-pair terms of ``pair_products(filtered, values)``.
         """
         values, filtered = jnp.asarray(values), jnp.asarray(filtered)
         weights = self._flat_weights(values, discrete_weights)
@@ -774,33 +1314,53 @@ class LazyDenseTransition:
     Basic and orthogonal/paired integer indexing materialize only the requested
     entries. Other NumPy indexing falls back to a budgeted full dense view.
     Dense results are not cached and cannot mutate the structured operator.
+
+    Parameters
+    ----------
+    operator : BlockTransitionOperator
+        The structured transition operator to view as a dense matrix.
+    max_bytes : int, optional
+        Largest allowed size of any materialized selection in bytes, by default
+        256 MiB.
     """
 
-    def __init__(self, operator, max_bytes=DEFAULT_MAX_DENSE_BYTES):
+    def __init__(
+        self,
+        operator: BlockTransitionOperator,
+        max_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+    ) -> None:
         _budget(0, max_bytes, "Dense transition budget")
         self.operator = operator
         self.max_bytes = int(max_bytes)
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
+        """Shape ``(n_bins, n_bins)`` of the transition matrix."""
         return self.operator.shape
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype[np.float64]:
+        """Data type of the transition matrix, float64."""
         return self.operator.dtype
 
     @property
-    def ndim(self):
+    def ndim(self) -> int:
+        """Number of dimensions, always 2."""
         return 2
 
     @property
-    def size(self):
+    def size(self) -> int:
+        """Total number of entries in the transition matrix."""
         return int(np.prod(self.shape))
 
-    def __array__(self, dtype=None, copy=None):
+    def __array__(
+        self,
+        dtype: DTypeLike | None = None,
+        copy: bool | None = None,  # noqa: FBT001 -- NumPy __array__ protocol
+    ) -> np.ndarray:
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Any) -> Any:
         if key is Ellipsis:
             key = (slice(None), slice(None))
         if not isinstance(key, tuple):
@@ -818,7 +1378,8 @@ class LazyDenseTransition:
                 basic.append(True)
             elif isinstance(item, (int, np.integer)):
                 if not -size <= item < size:
-                    raise IndexError("Transition index out of range")
+                    msg = "Transition index out of range"
+                    raise IndexError(msg)
                 indices.append(np.asarray(item % size))
                 basic.append(True)
             else:
@@ -828,13 +1389,16 @@ class LazyDenseTransition:
                 elif not np.issubdtype(index.dtype, np.integer):
                     return np.asarray(self)[key]
                 if np.any((index < -size) | (index >= size)):
-                    raise IndexError("Transition index out of range")
+                    msg = "Transition index out of range"
+                    raise IndexError(msg)
                 indices.append(np.where(index < 0, index + size, index))
                 basic.append(False)
         rows, columns = indices
         if rows.ndim and columns.ndim and any(basic):
+            # A slice with another index forms their outer product, with the
+            # row axes first, as in NumPy.
             rows, columns = (
-                rows[..., None],
+                rows.reshape(rows.shape + (1,) * columns.ndim),
                 columns.reshape((1,) * rows.ndim + columns.shape),
             )
         requested_shape = np.broadcast_shapes(rows.shape, columns.shape)
@@ -857,59 +1421,70 @@ class LazyDenseTransition:
             )
         return result
 
-    def __setitem__(self, key, value):
-        raise TypeError(
-            "Structured transitions are read-only; choose the dense representation to edit a matrix"
-        )
+    def __setitem__(self, key: Any, value: Any) -> None:
+        msg = "Structured transitions are read-only; choose the dense representation to edit a matrix"
+        raise TypeError(msg)
 
-    def astype(self, dtype, **kwargs):
+    def astype(self, dtype: DTypeLike, **kwargs: Any) -> np.ndarray:  # noqa: ARG002 -- ndarray.astype signature
+        """Convert to a dense array within the byte budget.
+
+        Parameters
+        ----------
+        dtype : dtype
+            Data type of the result.
+        **kwargs
+            Ignored; accepted for compatibility with ``np.ndarray.astype``.
+
+        Returns
+        -------
+        matrix : np.ndarray, shape (n_bins, n_bins)
+            The dense transition matrix.
+        """
         return self.operator.to_dense(max_bytes=self.max_bytes, dtype=dtype)
 
 
-def _find_environment(environments, name):
-    for environment in environments:
-        if environment.environment_name == name:
-            return environment
-    raise ValueError(f"Environment {name!r} not found")
+def _mask(environment: Environment) -> np.ndarray:
+    return environment.is_track_interior_flat_
 
 
-def _mask(environment):
-    count = len(environment.place_bin_centers_)
-    return (
-        np.ones(count, dtype=bool)
-        if environment.is_track_interior_ is None
-        else np.asarray(environment.is_track_interior_, dtype=bool).ravel()
-    )
-
-
-def _gaussian_block(transition, environment):
+def _gaussian_block(
+    transition: RandomWalk, environment: Environment
+) -> GaussianGridBlock:
     if (
         environment.track_graph is not None
         or transition.use_manifold_distance
         or transition.direction is not None
     ):
-        raise UnsupportedTransitionError(
-            "Graph, manifold-distance and directional RandomWalk require dense fallback"
+        msg = (
+            "Graph, manifold-distance and directional RandomWalk have no "
+            f"structured operator; {_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     centers = np.asarray(environment.place_bin_centers_, dtype=float)
     axes = tuple(np.unique(centers[:, axis]) for axis in range(centers.shape[1]))
     shape = tuple(len(axis) for axis in axes)
     if int(np.prod(shape)) != len(centers):
-        raise UnsupportedTransitionError(
-            "RandomWalk needs a complete Cartesian grid before interior masking"
+        msg = (
+            "Structured RandomWalk needs a complete Cartesian grid before "
+            f"interior masking; {_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     expected = np.stack(
         [grid.ravel() for grid in np.meshgrid(*axes, indexing="ij")], axis=1
     )
     if not np.array_equal(centers, expected):
-        raise UnsupportedTransitionError(
-            "RandomWalk grid must retain canonical Cartesian ordering"
+        msg = (
+            "Structured RandomWalk needs canonical Cartesian bin ordering; "
+            f"{_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     mean = np.asarray(transition.movement_mean)
     if mean.ndim != 0 or not np.isfinite(mean):
-        raise UnsupportedTransitionError(
-            "Structured RandomWalk supports only a finite scalar mean shift"
+        msg = (
+            "Structured RandomWalk supports only a finite scalar mean shift; "
+            f"{_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     covariance = np.asarray(transition.movement_var, dtype=float)
     dimensions = centers.shape[1]
     if covariance.ndim == 0:
@@ -921,13 +1496,17 @@ def _gaussian_block(transition, environment):
     ):
         variance = np.diag(covariance)
     else:
-        raise UnsupportedTransitionError(
-            "Nonseparable covariance requires dense RandomWalk fallback"
+        msg = (
+            "Structured RandomWalk needs a separable (diagonal) covariance; "
+            f"{_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     if not np.all(np.isfinite(variance)) or np.any(variance <= 0):
-        raise UnsupportedTransitionError(
-            "Structured Gaussian variance must be finite and positive"
+        msg = (
+            "Structured RandomWalk needs a finite, positive variance; "
+            f"{_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     mask = _mask(environment)
     raw_factors = tuple(
         norm.pdf(axis[None, :], loc=axis[:, None] + float(mean), scale=np.sqrt(var))
@@ -945,9 +1524,8 @@ def _gaussian_block(transition, environment):
     if not np.all(np.isfinite(scaled_destinations)) or not np.all(
         np.isfinite(scaled_sources)
     ):
-        raise UnsupportedTransitionError(
-            "Gaussian coordinate scaling needs dense fallback"
-        )
+        msg = f"Structured RandomWalk coordinate scaling overflows; {_DENSE_BLOCK_HINT}"
+        raise UnsupportedTransitionError(msg)
     _, closest = cKDTree(scaled_destinations).query(scaled_sources)
     distribution = multivariate_normal(mean=np.zeros(dimensions), cov=variance)
     deviations = valid[closest] - (valid + float(mean))
@@ -958,15 +1536,17 @@ def _gaussian_block(transition, environment):
     ambiguous_zero = (largest_pdf == 0) & (largest_log_pdf + uncertainty >= zero_cutoff)
     subnormal = (largest_pdf > 0) & (largest_pdf < np.finfo(float).tiny)
     if not np.all(np.isfinite(largest_pdf)) or np.any(ambiguous_zero | subnormal):
-        raise UnsupportedTransitionError(
-            "Subnormal/overflowed original Gaussian PDF normalization requires dense fallback"
+        msg = (
+            "Subnormal/overflowed original Gaussian PDF normalization has no "
+            f"structured operator; {_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
 
     # Multiplying each axis row by a positive constant cancels EXACTLY in the
     # final row normalization. Scale before casting to float32 so a normal
     # float64 density does not disappear before that normalization.
     mask_grid = mask.reshape(shape)
-    factors = []
+    factors: list[np.ndarray] | tuple[np.ndarray, ...] = []
     source_coordinates = np.unravel_index(np.flatnonzero(mask), shape)
     log_row_scale = np.zeros(len(valid))
     for axis, factor in enumerate(raw_factors):
@@ -975,11 +1555,16 @@ def _gaussian_block(transition, environment):
         maximum = np.max(factor[:, eligible], axis=1, keepdims=True)
         with np.errstate(divide="ignore"):
             log_row_scale += np.log(maximum[source_coordinates[axis], 0])
-        scaled = np.where(maximum > 0, factor / np.where(maximum > 0, maximum, 1), 0)
+        # Only columns outside `eligible` can exceed the row maximum and
+        # overflow; they are zeroed next.
+        with np.errstate(over="ignore"):
+            scaled = np.where(
+                maximum > 0, factor / np.where(maximum > 0, maximum, 1), 0
+            )
         # Columns absent from every valid destination contribute exact zero.
         # Remove them before a tiny eligible maximum can produce inf * 0.
         scaled[:, ~eligible] = 0
-        factors.append(scaled)
+        cast(list[np.ndarray], factors).append(scaled)
     # A normal SUM is insufficient when each contributing float32 product is
     # subnormal: accelerator contractions may flush every term before summing.
     largest_scaled_log_pdf = largest_log_pdf - log_row_scale
@@ -987,9 +1572,11 @@ def _gaussian_block(transition, environment):
         (largest_pdf > 0)
         & (largest_scaled_log_pdf <= np.log(np.finfo(np.float32).tiny))
     ):
-        raise UnsupportedTransitionError(
-            "Largest valid scaled Gaussian term is not safely normal in float32; use dense fallback"
+        msg = (
+            "Largest valid scaled Gaussian term is not safely normal in "
+            f"float32; {_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     factors = tuple(factors)
     normalizer = _axes_product(
         mask.astype(float).reshape(shape), factors, backward=True, numpy=True
@@ -998,28 +1585,115 @@ def _gaussian_block(transition, environment):
     original_positive[mask] = largest_pdf > 0
     normalizer = np.where(original_positive, normalizer, 0)
     if np.any(original_positive & (normalizer < np.finfo(np.float32).tiny)):
-        raise UnsupportedTransitionError(
-            "Masked Gaussian normalization cannot be represented safely in float32; use dense fallback"
+        msg = (
+            "Masked Gaussian normalization cannot be represented safely in "
+            f"float32; {_DENSE_BLOCK_HINT}"
         )
+        raise UnsupportedTransitionError(msg)
     return GaussianGridBlock(factors, mask, normalizer)
 
 
-def _structured_block(transition, environments, source_size, target_size):
-    if isinstance(transition, EmpiricalMovement):
-        raise UnsupportedTransitionError(
-            "EmpiricalMovement requires its original fit-context dense fallback"
-        )
+@runtime_checkable
+class SupportsStructuredBlock(Protocol):
+    """A continuous transition the operator builder can plan structurally.
+
+    The builder plans it without calling ``make_state_transition``.
+
+    A transition opts into structured operators by implementing these
+    methods alongside its ``make_state_transition``, as the package's
+    transitions do. Only a class that defines ``structured_block`` itself is
+    planned this way: a subclass that inherits it, or an object whose
+    ``make_state_transition`` is assigned on the instance, is treated as a
+    transition without these methods. Transitions without them fall back to
+    their dense block with ``transition_representation="auto"``.
+    """
+
+    def structured_block(self, environments: Sequence[Environment]) -> Block:
+        """Return the exact block between two spatial (or two one-bin) states.
+
+        Parameters
+        ----------
+        environments : sequence of Environment
+            The model's fitted environments.
+
+        Returns
+        -------
+        block : Block
+            Equal to ``make_state_transition(environments)``.
+
+        Raises
+        ------
+        UnsupportedTransitionError
+            If this configuration has no exact structured block; its dense
+            block is then planned from ``dense_block_shape`` and
+            ``graph_distance_environment``.
+        """
+        ...
+
+    def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:
+        """Shape of ``make_state_transition``'s block, without building it."""
+        ...
+
+    def graph_distance_environment(
+        self, environments: Sequence[Environment]
+    ) -> Environment | None:
+        """Return the environment whose graph distances ``make_state_transition`` reads.
+
+        None if there is none. Deferred distances are densified for it within
+        the dense budget.
+        """
+        ...
+
+
+def _planned(transition: object) -> SupportsStructuredBlock | None:
+    """Return the transition if its class plans its own blocks, else None.
+
+    Only a class that defines ``structured_block`` itself is trusted: a
+    subclass inheriting it may change ``make_state_transition`` or any helper
+    it calls, so it is planned like a custom transition. So is an object
+    whose ``make_state_transition`` was assigned on the instance.
+    """
+    if not isinstance(transition, SupportsStructuredBlock):
+        return None
+    if "structured_block" not in vars(type(transition)):
+        return None
+    if "make_state_transition" in getattr(transition, "__dict__", {}):
+        return None
+    return transition
+
+
+def _one_bin_block(
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    source_size: int,
+    target_size: int,
+) -> UniformBlock | None:
+    """Return the block between a one-bin state and a spatial state, or None.
+
+    From a one-bin state (No-Spike, or Local without ``local_position_std``)
+    the block is uniform over the interior bins of the transition's
+    declared destination environment (``environment2_name`` when set, else
+    ``environment_name``), which ``_check_block_environments`` checks is the
+    destination state's; into one, every bin moves there with probability
+    1. Both the dense and the structured transition use this block, without
+    calling ``make_state_transition``.
+
+    Parameters
+    ----------
+    transition : ContinuousTransition
+        Continuous transition declared for the block.
+    environments : sequence of Environment
+        Environments in which the declared destination is looked up.
+    source_size, target_size : int
+        Bins of the source and destination states.
+
+    Returns
+    -------
+    block : UniformBlock or None
+        None unless exactly one of the two states has one bin.
+    """
     if source_size == 1 and target_size > 1:
-        if not hasattr(transition, "environment_name"):
-            # A configuration error, as in the dense constructor: no fallback
-            # may broadcast a scalar block across the destination bins.
-            raise ValueError(
-                "Transition must have an environment_name attribute for discrete "
-                "to continuous transitions"
-            )
-        destination = _mask(
-            _find_environment(environments, transition.environment_name)
-        )
+        destination = _scalar_to_spatial_destination(transition, environments)
         normalization = np.array(
             1.0 / destination.sum() if destination.any() else np.nan
         )
@@ -1028,115 +1702,112 @@ def _structured_block(transition, environments, source_size, target_size):
         return UniformBlock(
             np.ones(source_size, dtype=bool), np.ones(1, dtype=bool), np.array(1.0)
         )
-    if type(transition) is Discrete and source_size == target_size == 1:
-        return IdentityBlock(np.ones(1, dtype=bool))
-    if type(transition) is Uniform:
-        source = _mask(_find_environment(environments, transition.environment_name))
-        destination = (
-            source.copy()
-            if transition.environment2_name is None
-            else _mask(_find_environment(environments, transition.environment2_name))
-        )
-        return UniformBlock(
-            source,
-            destination,
-            np.array(1.0 / destination.sum() if destination.any() else 0.0),
-        )
-    if type(transition) is Identity:
-        return IdentityBlock(
-            _mask(_find_environment(environments, transition.environment_name))
-        )
-    if type(transition) is RandomWalk:
-        return _gaussian_block(
-            transition, _find_environment(environments, transition.environment_name)
-        )
-    raise UnsupportedTransitionError(
-        f"No proven exact structured operator for {type(transition).__name__}"
-    )
+    return None
 
 
-# Package transitions whose dense constructors the fallback planner understands.
-_KNOWN_TRANSITIONS = (
-    Discrete,
-    Uniform,
-    Identity,
-    RandomWalk,
-    RandomWalkDirection1,
-    RandomWalkDirection2,
-    EmpiricalMovement,
+def _structured_block(
+    transition: ContinuousTransition,
+    environments: Sequence[Environment],
+    source_size: int,
+    target_size: int,
+) -> Block:
+    block = _one_bin_block(transition, environments, source_size, target_size)
+    if block is not None:
+        return block
+    planned = _planned(transition)
+    if planned is None:
+        msg = (
+            f"No proven exact structured operator for {type(transition).__name__}; "
+            f"{_DENSE_BLOCK_HINT}"
+        )
+        raise UnsupportedTransitionError(msg)
+    # Annotated to return a Block, but a custom class can return anything.
+    structured: object = planned.structured_block(environments)
+    if not isinstance(structured, _BLOCK_TYPES):
+        msg = (
+            f"{type(transition).__name__}.structured_block returned a "
+            f"{type(structured).__name__}"
+        )
+        raise ValidationError(
+            msg,
+            expected=" or ".join(block.__name__ for block in _BLOCK_TYPES),
+            hint="The transition operator applies only these block classes. "
+            "Return one of them, or raise UnsupportedTransitionError for a dense "
+            "block.",
+        )
+    return structured
+
+
+# Every block type, to tell planned blocks from transitions awaiting a dense
+# constructor.
+_BLOCK_TYPES = (
+    UniformBlock,
+    IdentityBlock,
+    GaussianGridBlock,
+    DenseBlock,
+    RestrictedBlock,
 )
-# Blocks built without a dense constructor.
-_STRUCTURED_BLOCKS = (UniformBlock, IdentityBlock, GaussianGridBlock)
 
 
-def _check_known_fallback_shape(transition, environments, expected):
-    """Fail invalid primitive shapes before their dense constructor allocates."""
-    if type(transition) is Discrete:
-        shape = (1, 1)
-    elif type(transition) in _KNOWN_TRANSITIONS:
-        env = _find_environment(environments, transition.environment_name)
-        count = len(env.place_bin_centers_)
-        other = count
-        if type(transition) is Uniform and transition.environment2_name is not None:
-            other = len(
-                _find_environment(
-                    environments, transition.environment2_name
-                ).place_bin_centers_
-            )
-        shape = (count, other)
-    else:
+def _check_fallback_shape(
+    transition: object, environments: Sequence[Environment], expected: tuple[int, int]
+) -> None:
+    """Fail an invalid planned shape before its dense constructor allocates."""
+    planned = _planned(transition)
+    if planned is None:
         return
-    if np.broadcast_shapes(shape, expected) != expected:
-        raise ValueError(
-            f"Dense transition block shape {shape} does not match state bins {expected}"
-        )
+    _check_block_shape(transition, planned.dense_block_shape(environments), expected)
 
 
 def build_transition_operator(
-    transition_types,
-    environments,
-    state_sizes,
-    observation_models=None,
-    local_position_std=None,
+    transition_types: Sequence[Sequence[ContinuousTransition]],
+    environments: Sequence[Environment],
+    state_sizes: Sequence[int],
+    observation_models: Sequence[ObservationModel] | None = None,
+    local_position_std: float | None = None,
     *,
-    allow_dense_fallback=False,
-    max_dense_bytes=DEFAULT_MAX_DENSE_BYTES,
-    position=None,
-    is_training=None,
-    encoding_group_labels=None,
-    environment_labels=None,
-):
+    allow_dense_fallback: bool = False,
+    max_dense_bytes: int = DEFAULT_MAX_DENSE_BYTES,
+    context: TransitionContext | None = None,
+) -> BlockTransitionOperator:
     """Build exact padded conditional blocks and preflight dense fallback.
 
-    Uniform, Identity, scalar ``Discrete``, scalar-to-spatial and
-    spatial-to-scalar blocks, and Euclidean, nondirectional RandomWalks with
-    a scalar mean and separable covariance on complete Cartesian grids are
+    Scalar-to-spatial and spatial-to-scalar blocks, and the blocks of
+    transitions implementing ``SupportsStructuredBlock`` (Uniform, Identity,
+    scalar ``Discrete``, and Euclidean, nondirectional RandomWalks with a
+    scalar mean and separable covariance on complete Cartesian grids) are
     built without dense matrices.
     Scalar/spatial blocks and the multi-bin Local ``Discrete`` upgrade match
     the dense detector constructor. Any other block raises
     ``UnsupportedTransitionError`` unless ``allow_dense_fallback=True``; the
     retained dense blocks plus the temporary dense graph distances that
-    manifold RandomWalk fallbacks need must then fit ``max_dense_bytes``.
+    ``graph_distance_environment`` names must then fit ``max_dense_bytes``.
+    Dense blocks are checked like the dense constructor's (shape, finite,
+    non-negative, rows summing to at most 1).
 
     Parameters
     ----------
-    transition_types : sequence of sequence
+    transition_types : sequence of sequence of ContinuousTransition
         ``(n_states, n_states)`` grid of continuous transition models.
     environments : list of Environment
         Fitted environments.
     state_sizes : sequence of int
         Padded bins per discrete state.
     observation_models : sequence of ObservationModel, optional
-        With ``local_position_std``, turns Local ``Discrete`` blocks into
-        Uniform blocks over the Local environment.
+        Name each state's environment, which the environments each
+        transition declares must match (without them, the declared names are
+        only checked to exist). With ``local_position_std``, they also turn
+        Local ``Discrete`` blocks into Uniform blocks over the Local
+        environment.
     local_position_std : float, optional
         Multi-bin Local width; None keeps a single-bin Local state.
     allow_dense_fallback : bool, optional
         Build unsupported blocks with their dense constructor.
     max_dense_bytes : int, optional
         Dense fallback budget, by default 256 MiB.
-    position, is_training, encoding_group_labels, environment_labels : optional
-        Fit context for ``EmpiricalMovement`` fallback blocks.
+    context : TransitionContext, optional
+        Fit data passed to every dense fallback constructor; required by
+        ``EmpiricalMovement`` fallback blocks.
 
     Returns
     -------
@@ -1145,50 +1816,52 @@ def build_transition_operator(
     """
     sizes = tuple(int(size) for size in state_sizes)
     if not sizes or any(size <= 0 for size in sizes):
-        raise ValueError("state_sizes must contain positive padded bin counts")
+        msg = "state_sizes must contain positive padded bin counts"
+        raise ValueError(msg)
     count = len(sizes)
     if len(transition_types) != count or any(
         len(row) != count for row in transition_types
     ):
-        raise ValueError("transition_types must be an n_states by n_states grid")
+        msg = "transition_types must be an n_states by n_states grid"
+        raise ValueError(msg)
     _budget(0, max_dense_bytes, "Dense fallback budget")
-    plan = []
+    plan: list[list[Any]] = []
     fallback_bytes = 0
     for source, row in enumerate(transition_types):
-        planned_row = []
+        planned_row: list[Any] = []
         for target, transition in enumerate(row):
-            if (
-                isinstance(transition, Discrete)
-                and local_position_std is not None
-                and observation_models is not None
-            ):
-                from_obs, to_obs = (
+            _check_continuous_transition(transition)
+            if observation_models is not None:
+                transition = _multi_bin_local_transition(
+                    transition,
                     observation_models[source],
                     observation_models[target],
+                    local_position_std,
                 )
-                if from_obs.is_local or to_obs.is_local:
-                    if from_obs.environment_name != to_obs.environment_name:
-                        raise ValueError(
-                            "Cross-environment Discrete with multi-bin Local is unsupported; use explicit Uniform"
-                        )
-                    transition = Uniform(
-                        environment_name=(
-                            from_obs if from_obs.is_local else to_obs
-                        ).environment_name
-                    )
+            _check_block_environments(
+                transition,
+                environments,
+                None
+                if observation_models is None
+                else observation_models[source].environment_name,
+                None
+                if observation_models is None
+                else observation_models[target].environment_name,
+                sizes[source],
+                sizes[target],
+            )
             try:
                 block = _structured_block(
                     transition, environments, sizes[source], sizes[target]
                 )
-                if block.shape != (sizes[source], sizes[target]):
-                    raise ValueError(
-                        f"Transition block shape {block.shape} does not match state bins {(sizes[source], sizes[target])}"
-                    )
+                _check_block_shape(
+                    transition, block.shape, (sizes[source], sizes[target])
+                )
                 planned_row.append(block)
             except UnsupportedTransitionError:
                 if not allow_dense_fallback:
                     raise
-                _check_known_fallback_shape(
+                _check_fallback_shape(
                     transition, environments, (sizes[source], sizes[target])
                 )
                 fallback_bytes += (
@@ -1204,21 +1877,30 @@ def build_transition_operator(
     distance_environments = {}
     for row in plan:
         for block in row:
-            if isinstance(block, _STRUCTURED_BLOCKS):
+            if isinstance(block, _BLOCK_TYPES):
                 continue
-            if type(block) not in _KNOWN_TRANSITIONS and any(
+            planned = _planned(block)
+            if planned is None and any(
                 isinstance(env.distance_between_nodes_, LazyGraphDistances)
                 for env in environments
             ):
-                raise UnsupportedTransitionError(
-                    "Opaque custom dense fallback with deferred graph distances has no verified exact distance contract; use the legacy dense representation"
+                msg = (
+                    "Opaque custom dense fallback with deferred graph "
+                    "distances has no verified exact distance contract; use "
+                    'transition_representation="dense"'
                 )
-            if type(block) is RandomWalk and block.use_manifold_distance:
-                env = _find_environment(environments, block.environment_name)
-                if isinstance(env.distance_between_nodes_, LazyGraphDistances):
-                    distance_environments[id(env)] = env
+                raise UnsupportedTransitionError(msg)
+            env = (
+                None
+                if planned is None
+                else planned.graph_distance_environment(environments)
+            )
+            if env is not None and isinstance(
+                env.distance_between_nodes_, LazyGraphDistances
+            ):
+                distance_environments[id(env)] = env
     distance_bytes = sum(
-        env.distance_between_nodes_.shape[0] ** 2 * 8
+        cast(LazyGraphDistances, env.distance_between_nodes_).shape[0] ** 2 * 8
         for env in distance_environments.values()
     )
     _budget(
@@ -1227,59 +1909,26 @@ def build_transition_operator(
         "Retained dense fallback blocks plus temporary graph distances",
     )
     fallback_environments = []
-    originals_by_view = {}
     for env in environments:
         if id(env) in distance_environments:
-            view = copy(env)
-            view.distance_between_nodes_ = env.distance_between_nodes_.to_dense(
+            dense = cast(LazyGraphDistances, env.distance_between_nodes_).to_dense(
                 max_bytes=max_dense_bytes - fallback_bytes
             )
-            fallback_environments.append(view)
-            originals_by_view[id(view)] = env
+            fallback_environments.append(
+                env._replace_place_grid(distance_between_nodes=dense)
+            )
         else:
             fallback_environments.append(env)
-    blocks = []
+    blocks: list[tuple[Block, ...]] = []
     for source, row in enumerate(plan):
-        result = []
+        result: list[Block] = []
         for target, block in enumerate(row):
-            if isinstance(block, _STRUCTURED_BLOCKS):
+            if isinstance(block, _BLOCK_TYPES):
                 result.append(block)
                 continue
-            if isinstance(block, EmpiricalMovement):
-                if position is None:
-                    raise UnsupportedTransitionError(
-                        "EmpiricalMovement dense fallback requires position fit context"
-                    )
-                training = (
-                    np.ones(len(position), dtype=bool)
-                    if is_training is None
-                    else np.asarray(is_training).squeeze()
-                )
-                labels = (
-                    np.zeros(len(position), dtype=np.int32)
-                    if encoding_group_labels is None
-                    else encoding_group_labels
-                )
-                matrix = block.make_state_transition(
-                    fallback_environments,
-                    position,
-                    training,
-                    labels,
-                    environment_labels,
-                )
-            else:
-                matrix = block.make_state_transition(fallback_environments)
-            # Primitive descriptors retain their environment. Restore the
-            # original sparse views so pickling never retains temporary N²
-            # distance matrices after the fitted dense block is constructed.
-            for name, value in getattr(block, "__dict__", {}).items():
-                if id(value) in originals_by_view:
-                    setattr(block, name, originals_by_view[id(value)])
-            matrix = np.array(
-                np.broadcast_to(matrix, (sizes[source], sizes[target])),
-                dtype=float,
-                copy=True,
+            matrix = _make_transition_block(
+                block, fallback_environments, context, (sizes[source], sizes[target])
             )
-            result.append(DenseBlock(matrix))
+            result.append(DenseBlock(np.array(matrix, dtype=float, copy=True)))
         blocks.append(tuple(result))
     return BlockTransitionOperator(tuple(blocks), sizes)

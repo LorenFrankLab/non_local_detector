@@ -39,9 +39,9 @@ def test_kde_distance_equivalence():
         print(f"  {n_features}D: max_diff={max_diff:.2e}, mean_diff={mean_diff:.2e}")
 
         # Check equivalence (float32 precision)
-        assert jnp.allclose(
-            result_original, result_vectorized, rtol=1e-5, atol=1e-8
-        ), f"Vectorized KDE not equivalent for {n_features}D"
+        assert jnp.allclose(result_original, result_vectorized, rtol=1e-5, atol=1e-8), (
+            f"Vectorized KDE not equivalent for {n_features}D"
+        )
 
     print("  ✓ All tests passed\n")
 
@@ -69,9 +69,9 @@ def test_log_kde_distance_equivalence():
         print(f"  {n_features}D: max_diff={max_diff:.2e}, mean_diff={mean_diff:.2e}")
 
         # Check equivalence (float32 precision)
-        assert jnp.allclose(
-            log_original, result_log, rtol=1e-5, atol=1e-8
-        ), f"Log KDE not equivalent for {n_features}D"
+        assert jnp.allclose(log_original, result_log, rtol=1e-5, atol=1e-8), (
+            f"Log KDE not equivalent for {n_features}D"
+        )
 
     print("  ✓ All tests passed\n")
 
@@ -130,16 +130,21 @@ def test_estimate_functions_equivalence():
         )
 
         # Check with more appropriate tolerance for numerical differences
-        is_close = jnp.allclose(result_original, result_vectorized, rtol=1e-5, atol=1e-6)
+        is_close = jnp.allclose(
+            result_original, result_vectorized, rtol=1e-5, atol=1e-6
+        )
         if not is_close:
             print("    WARNING: Differences exceed tolerance")
             print(f"    Max absolute diff: {max_diff_vec}")
             print(f"    Max relative diff: {rel_diff_vec}")
             # Check if it's just due to float precision
             if max_diff_vec < 1e-5 and rel_diff_vec < 1e-4:
-                print("    Differences are within acceptable float32 precision, continuing...")
+                print(
+                    "    Differences are within acceptable float32 precision, continuing..."
+                )
             else:
-                raise AssertionError(f"Vectorized version not equivalent for {n_features}D")
+                msg = f"Vectorized version not equivalent for {n_features}D"
+                raise AssertionError(msg)
 
         # Compare logspace vs original
         diff_log = jnp.abs(result_original - result_logspace)
@@ -159,9 +164,12 @@ def test_estimate_functions_equivalence():
             print(f"    Max relative diff: {rel_diff_log}")
             # Check if it's just due to float precision
             if max_diff_log < 1e-5 and rel_diff_log < 1e-4:
-                print("    Differences are within acceptable float32 precision, continuing...")
+                print(
+                    "    Differences are within acceptable float32 precision, continuing..."
+                )
             else:
-                raise AssertionError(f"Log-space version not equivalent for {n_features}D")
+                msg = f"Log-space version not equivalent for {n_features}D"
+                raise AssertionError(msg)
 
     print("  ✓ All tests passed\n")
 
@@ -195,17 +203,17 @@ def test_edge_cases():
         )
 
         # Check for -inf in zero occupancy positions (expected)
-        assert jnp.all(
-            jnp.isneginf(result[:, 0])
-        ), f"{func_name}: Expected -inf for zero occupancy"
+        assert jnp.all(jnp.isneginf(result[:, 0])), (
+            f"{func_name}: Expected -inf for zero occupancy"
+        )
 
         # Check no NaN
         assert not jnp.any(jnp.isnan(result)), f"{func_name}: Found NaN values"
 
         # Check finite values for non-zero occupancy
-        assert jnp.all(
-            jnp.isfinite(result[:, 1:])
-        ), f"{func_name}: Found non-finite values for non-zero occupancy"
+        assert jnp.all(jnp.isfinite(result[:, 1:])), (
+            f"{func_name}: Found non-finite values for non-zero occupancy"
+        )
 
         print(f"  {func_name}: ✓ Handles edge cases correctly")
 

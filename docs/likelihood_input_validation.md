@@ -30,7 +30,7 @@ fitting, instead of raising.
 
 ## Spline design matrices
 
-When a varying spatial axis is shorter than the knot spacing, no interior knot
+When a varying spatial axis is at most twice the knot spacing, no interior knot
 falls inside the data and Patsy raised an error (for example, a 0-10
 environment at the default spacing). Such an axis now gets one natural-cubic
 knot at the midpoint of its observed positions. Each axis keeps its own knot
@@ -45,8 +45,6 @@ knots, and constant axes, are unchanged.
   a zero rate keeps its exposure gradient of -1 in empty bins (it was NaN).
 - Sorted KDE and GLM fits with no neurons return place fields of shape
   `(0, n_bins)` and a zero summed rate instead of failing to stack.
-- Sorted diffusion and MRF prediction rebuilds `interior_log_place_fields` from
-  `place_fields` when it is omitted, as its signature documents.
 - Clusterless GMM fits keep their all-interior fallback for grids without an
   interior mask; an unconditional `is_track_interior_.ravel()` overwrote it.
 

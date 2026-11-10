@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from non_local_detector.likelihoods import gmm
-from non_local_detector.likelihoods.gmm import _estimate_log_gaussian_prob
+from non_local_detector.likelihoods.gmm import estimate_log_gaussian_prob
 
 N_WARMUP_RUNS = 3
 N_TIMED_RUNS = 15
@@ -113,7 +113,7 @@ def check_em_iterations(
     iterations = int(final_i)
     lower_bound = float(final_lb)
     if iterations != expected_iterations or not np.isfinite(lower_bound):
-        raise RuntimeError(
+        msg = (
             f"EM ({covariance_type}) ran {iterations} of the requested "
             f"{expected_iterations} iterations with a final lower bound of "
             f"{lower_bound!r}. With tol=0.0 the loop stops as soon as the "
@@ -121,6 +121,7 @@ def check_em_iterations(
             "degenerate (identical or collinear samples) or produced a "
             "non-finite lower bound; the timings would compare unequal work."
         )
+        raise RuntimeError(msg)
 
 
 def main() -> None:
@@ -156,7 +157,7 @@ def main() -> None:
             (args.components, args.dimensions) if kind == "diag" else (args.components,)
         )
         precision = jnp.asarray(rng.uniform(0.5, 1.5, shape), dtype=jnp.float32)
-        executable = _estimate_log_gaussian_prob.lower(
+        executable = estimate_log_gaussian_prob.lower(
             X, means, precision, kind
         ).compile()
         result, stats = measure(executable, (X, means, precision))

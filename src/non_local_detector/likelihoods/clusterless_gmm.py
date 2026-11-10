@@ -1,5 +1,5 @@
 """
-Clusterless decoding using Gaussian Mixture Models (GMM)
+Clusterless decoding using Gaussian Mixture Models (GMM).
 
 Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
 p_occ(pos)`` and the ground process is ``rate * p_joint(pos) / p_occ(pos)``,
@@ -12,28 +12,39 @@ electrode's expected count gains ``RATE_EPS_HZ``.
 
 from __future__ import annotations
 
-import inspect
 import warnings
+from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from numpy.typing import ArrayLike
+from tqdm.autonotebook import tqdm
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
+    EncodingSupport,
     prepare_encoding_support,
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
+from non_local_detector.likelihoods.clusterless_spikes import (
+    ElectrodeSpikes,
+    add_background_only,
+    add_electrode_spike_terms,
+)
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
-    _pad_rows,
-    _padded_spike_count,
-    _SpikeTimeOrder,
-    decode_bin_centers,
+    SpikeTimeOrder,
+    as_arrays,
     deterministic_row_add,
     deterministic_row_sum,
     environment_grid_fingerprint,
@@ -41,7 +52,10 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
     log_nonnegative,
-    resolve_row_slice,
+    pad_rows,
+    padded_spike_count,
+    prepare_decode_rows,
+    require_position,
     select_decode_marks,
     select_spike_rows,
     select_spikes_in_rows,
@@ -50,16 +64,18 @@ from non_local_detector.likelihoods.common import (
     sum_spikes_into_rows,
     validate_encoding_contract,
     validate_population_lengths,
+    validate_positive_int,
     validate_spike_feature_pair,
-    validate_weights,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.gmm import (
+    CovType,
     GaussianMixtureModel,
-    _as_floating,
-    _compute_precision_cholesky,
-    _effective_sample_count,
-    _estimate_log_prob_resp,
+    as_floating,
+    compute_precision_cholesky,
+    effective_sample_count,
+    estimate_log_prob_resp,
 )
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -68,9 +84,16 @@ from non_local_detector.likelihoods.mark_reference import (
 )
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
-    _resolve_time_grid,
+    decode_bin_centers,
     requires_time_edges,
 )
+
+__all__ = [
+    "ClusterlessGMMEncodingModel",
+    "fit_clusterless_gmm_encoding_model",
+    "predict_clusterless_gmm_log_likelihood",
+]
+
 
 # Default covariance regularization, in squared feature units.
 DEFAULT_GMM_REG_COVAR = 1.0
@@ -80,7 +103,7 @@ DEFAULT_GMM_REG_COVAR = 1.0
 # ---------------------------------------------------------------------
 
 
-def _as_jnp(x) -> jnp.ndarray:
+def _as_jnp(x: Any) -> jax.Array:
     """Input as a JAX array, with integer or boolean features as floats.
 
     Parameters
@@ -90,58 +113,40 @@ def _as_jnp(x) -> jnp.ndarray:
 
     Returns
     -------
-    jnp.ndarray
+    jax.Array
         JAX array version of input, in a floating dtype for integer input.
     """
-    return _as_floating(x)
+    return as_floating(x)
 
 
-def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
+def _gmm_logp(gmm: GaussianMixtureModel, X: jax.Array | np.ndarray) -> jax.Array:
     """Log density under a fitted GMM.
 
     Parameters
     ----------
     gmm : GaussianMixtureModel
         Fitted Gaussian mixture model.
-    X : jnp.ndarray, shape (n_samples, n_features)
+    X : jax.Array, shape (n_samples, n_features)
         Input samples to evaluate.
 
     Returns
     -------
-    log_density : jnp.ndarray, shape (n_samples,)
+    log_density : jax.Array, shape (n_samples,)
         Log probability density for each sample.
     """
-    return gmm.score_samples(X)
-
-
-def _gmm_density(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
-    """Density under a fitted GMM.
-
-    Parameters
-    ----------
-    gmm : GaussianMixtureModel
-        Fitted Gaussian mixture model.
-    X : jnp.ndarray, shape (n_samples, n_features)
-        Input samples to evaluate.
-
-    Returns
-    -------
-    density : jnp.ndarray, shape (n_samples,)
-        Probability density for each sample.
-    """
-    return jnp.exp(gmm.score_samples(X))
+    return gmm.score_samples(cast(jax.Array, X))
 
 
 @partial(jax.jit, donate_argnums=(0,))
 def _accumulate_log_likelihood_block(
-    log_likelihood: jnp.ndarray,
-    joint_logp: jnp.ndarray,
-    segment_ids: jnp.ndarray,
-    bin_ids: jnp.ndarray,
-    log_rate: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
-    log_background: jnp.ndarray,
-) -> jnp.ndarray:
+    log_likelihood: jax.Array,
+    joint_logp: jax.Array,
+    segment_ids: jax.Array,
+    bin_ids: jax.Array,
+    log_rate: jax.Array,
+    log_occupancy: jax.Array,
+    log_background: jax.Array,
+) -> jax.Array:
     """Scatter one spike block into its observed time rows and spatial columns.
 
     The density difference is formed first: adding ``log_rate`` to a huge log
@@ -165,20 +170,23 @@ def _accumulate_log_likelihood_block(
 _LOCAL_SPIKE_BLOCK = 1000
 
 
-def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
+def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jax.Array, ...]:
     """Fitted means, Cholesky precisions and weights, for compiled scoring."""
     gmm._check_fitted()
-    return gmm.means_, gmm.precisions_chol_, gmm.weights_
+    return cast(tuple[jax.Array, ...], (gmm.means_, gmm.precisions_chol_, gmm.weights_))
 
 
 def _gmm_score(
-    points: jnp.ndarray, parameters: tuple[jnp.ndarray, ...], covariance_type: str
-) -> jnp.ndarray:
+    points: jax.Array, parameters: tuple[jax.Array, ...], covariance_type: CovType
+) -> jax.Array:
     """Traceable ``GaussianMixtureModel.score_samples`` on fitted parameters."""
     means, precisions_chol, weights = parameters
-    return _estimate_log_prob_resp(
-        points, means, precisions_chol, covariance_type, weights
-    )[0]
+    return cast(
+        jax.Array,
+        estimate_log_prob_resp(
+            points, means, precisions_chol, covariance_type, weights
+        )[0],
+    )
 
 
 @partial(
@@ -187,45 +195,54 @@ def _gmm_score(
     donate_argnums=0,
 )
 def _add_electrode_gmm_intensities(
-    log_likelihood: jnp.ndarray,
-    features: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    bin_centers: jnp.ndarray,
-    parameters: tuple[jnp.ndarray, ...],
-    log_rate: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
-    log_background: jnp.ndarray,
+    log_likelihood: jax.Array,
+    features: jax.Array,
+    row_ids: jax.Array,
+    bin_centers: jax.Array,
+    parameters: tuple[jax.Array, ...],
+    log_rate: jax.Array,
+    log_occupancy: jax.Array,
+    log_background: jax.Array,
     *,
-    covariance_type: str,
+    covariance_type: CovType,
     block_size: int,
     indices_are_sorted: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's non-local log intensities to their rows.
 
     Parameters
     ----------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
         Running sum over electrodes; donated.
-    features : jnp.ndarray, shape (n_padded_spikes, n_features)
+    features : jax.Array, shape (n_padded_spikes, n_features)
         A multiple of ``block_size`` rows; padding rows are zero.
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    bin_centers : jnp.ndarray, shape (n_bins, n_position_dims)
-    parameters : tuple of jnp.ndarray
+    bin_centers : jax.Array, shape (n_bins, n_position_dims)
+        Place bin centers.
+    parameters : tuple of jax.Array
         The joint GMM's fitted means, Cholesky precisions and weights.
-    log_rate : jnp.ndarray, scalar
-    log_occupancy : jnp.ndarray, shape (n_bins,)
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    log_rate : jax.Array, scalar
+        Log of the electrode's mean rate.
+    log_occupancy : jax.Array, shape (n_bins,)
+        Log occupancy density at each bin.
+    log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    covariance_type : {"full", "tied", "diag", "spherical"}
+        Covariance structure of the joint GMM.
+    block_size : int
+        Decoding spikes per block.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+    log_likelihood : jax.Array, shape (n_rows, n_bins)
     """
     n_bins = bin_centers.shape[0]
     tiled_bins = jnp.tile(bin_centers, (block_size, 1))
 
-    def add_block(number, log_likelihood):
+    def add_block(number: jax.Array, log_likelihood: jax.Array) -> jax.Array:
         first = number * block_size
         block = jax.lax.dynamic_slice_in_dim(features, first, block_size)
         rows = jax.lax.dynamic_slice_in_dim(row_ids, first, block_size)
@@ -246,8 +263,11 @@ def _add_electrode_gmm_intensities(
             indices_are_sorted=indices_are_sorted,
         )
 
-    return jax.lax.fori_loop(
-        0, features.shape[0] // block_size, add_block, log_likelihood
+    return cast(
+        jax.Array,
+        jax.lax.fori_loop(
+            0, features.shape[0] // block_size, add_block, log_likelihood
+        ),
     )
 
 
@@ -257,39 +277,47 @@ def _add_electrode_gmm_intensities(
     donate_argnums=0,
 )
 def _add_electrode_gmm_spike_terms(
-    log_likelihood: jnp.ndarray,
-    spike_positions: jnp.ndarray,
-    features: jnp.ndarray,
-    row_ids: jnp.ndarray,
-    joint: tuple[jnp.ndarray, ...],
-    occupancy: tuple[jnp.ndarray, ...],
-    mean_rate: jnp.ndarray,
-    log_background: jnp.ndarray,
+    log_likelihood: jax.Array,
+    spike_positions: jax.Array,
+    features: jax.Array,
+    row_ids: jax.Array,
+    joint: tuple[jax.Array, ...],
+    occupancy: tuple[jax.Array, ...],
+    mean_rate: jax.Array,
+    log_background: jax.Array,
     *,
-    joint_type: str,
-    occupancy_type: str,
+    joint_type: CovType,
+    occupancy_type: CovType,
     indices_are_sorted: bool,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Add one electrode's local spike terms to their rows.
 
     Parameters
     ----------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
-    spike_positions : jnp.ndarray, shape (n_padded_spikes, n_position_dims)
+    spike_positions : jax.Array, shape (n_padded_spikes, n_position_dims)
         Position at each decoding spike; padding rows are zero.
-    features : jnp.ndarray, shape (n_padded_spikes, n_features)
-    row_ids : jnp.ndarray, shape (n_padded_spikes,)
+    features : jax.Array, shape (n_padded_spikes, n_features)
+        Waveform features of each decoding spike.
+    row_ids : jax.Array, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    joint, occupancy : tuple of jnp.ndarray
+    joint, occupancy : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of each GMM.
-    mean_rate : jnp.ndarray, scalar
-    log_background : jnp.ndarray, shape (n_padded_spikes,)
+    mean_rate : jax.Array, scalar
+        Electrode's mean rate.
+    log_background : jax.Array, shape (n_padded_spikes,)
         Log background intensity of each spike, in Hz.
+    joint_type : {"full", "tied", "diag", "spherical"}
+        Covariance structure of the joint GMM.
+    occupancy_type : {"full", "tied", "diag", "spherical"}
+        Covariance structure of the occupancy GMM.
+    indices_are_sorted : bool
+        Whether ``row_ids`` are sorted in nondecreasing order.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
     """
     joint_logp = _gmm_score(
         jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
@@ -310,14 +338,14 @@ def _add_electrode_gmm_spike_terms(
 
 @partial(jax.jit, static_argnames=("gpi_type",), donate_argnums=0)
 def _add_gmm_expected_counts(
-    expected_counts: jnp.ndarray,
-    gpi: tuple[jnp.ndarray, ...],
-    positions: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
-    mean_rate: jnp.ndarray,
+    expected_counts: jax.Array,
+    gpi: tuple[jax.Array, ...],
+    positions: jax.Array,
+    log_occupancy: jax.Array,
+    mean_rate: jax.Array,
     *,
-    gpi_type: str,
-) -> jnp.ndarray:
+    gpi_type: CovType,
+) -> jax.Array:
     """Add one electrode's expected count rate at the animal's position.
 
     Electrodes with and without spikes in a chunk use this same compiled
@@ -325,19 +353,22 @@ def _add_gmm_expected_counts(
 
     Parameters
     ----------
-    expected_counts : jnp.ndarray, shape (n_rows,)
+    expected_counts : jax.Array, shape (n_rows,)
         Running sum over electrodes; donated.
-    gpi : tuple of jnp.ndarray
+    gpi : tuple of jax.Array
         Fitted means, Cholesky precisions and weights of the electrode's GPI GMM.
-    positions : jnp.ndarray, shape (n_rows, n_position_dims)
+    positions : jax.Array, shape (n_rows, n_position_dims)
         Animal position at each row.
-    log_occupancy : jnp.ndarray, shape (n_rows,)
+    log_occupancy : jax.Array, shape (n_rows,)
         Log occupancy density at ``positions``.
-    mean_rate : jnp.ndarray, scalar
+    mean_rate : jax.Array, scalar
+        Electrode's mean rate.
+    gpi_type : {"full", "tied", "diag", "spherical"}
+        Covariance structure of the ground-process-intensity GMM.
 
     Returns
     -------
-    expected_counts : jnp.ndarray, shape (n_rows,)
+    expected_counts : jax.Array, shape (n_rows,)
     """
     return expected_counts + _ground_process_intensity(
         mean_rate, _gmm_score(positions, gpi, gpi_type), log_occupancy
@@ -345,22 +376,22 @@ def _add_gmm_expected_counts(
 
 
 def _ground_process_intensity(
-    mean_rate: jnp.ndarray, gpi_logp: jnp.ndarray, log_occupancy: jnp.ndarray
-) -> jnp.ndarray:
-    """Expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
+    mean_rate: jax.Array, gpi_logp: jax.Array, log_occupancy: jax.Array
+) -> jax.Array:
+    """Return expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
 
     Parameters
     ----------
-    mean_rate : jnp.ndarray, scalar
+    mean_rate : jax.Array, scalar
         Fitted mean firing rate of the electrode (positive).
-    gpi_logp : jnp.ndarray, shape (n_points,)
+    gpi_logp : jax.Array, shape (n_points,)
         Log density of the electrode's spike positions at the evaluation points.
-    log_occupancy : jnp.ndarray, shape (n_points,)
+    log_occupancy : jax.Array, shape (n_points,)
         Log occupancy density at the same points.
 
     Returns
     -------
-    intensity : jnp.ndarray, shape (n_points,)
+    intensity : jax.Array, shape (n_points,)
         ``exp(log(rate) + gpi_logp - log_occupancy)``. Keeping every factor in
         the exponent preserves a finite ratio of two densities that each
         underflow (``exp(-800) / exp(-790)`` is ``0 / 0`` in float32; the
@@ -377,11 +408,11 @@ def _ground_process_intensity(
 
 
 def _fit_gmm_density(
-    X: jnp.ndarray,
-    weights: jnp.ndarray | None,
+    X: jax.Array,
+    weights: jax.Array | np.ndarray | None,
     n_components: int,
     random_state: int | None,
-    covariance_type: str = "full",
+    covariance_type: CovType = "full",
     reg_covar: float = 1e-6,
     max_iter: int = 200,
     tol: float = 1e-3,
@@ -390,9 +421,9 @@ def _fit_gmm_density(
 
     Parameters
     ----------
-    X : jnp.ndarray, shape (n_samples, n_features)
+    X : jax.Array, shape (n_samples, n_features)
         Input samples for fitting.
-    weights : jnp.ndarray, shape (n_samples,), optional
+    weights : jax.Array, shape (n_samples,), optional
         Sample weights, by default None (uniform weights). ``fit`` validates
         them and drops the zero-weight samples itself, so they influence
         neither the KMeans initialization nor EM and the fit equals a hard
@@ -401,7 +432,7 @@ def _fit_gmm_density(
         Number of Gaussian components in the mixture.
     random_state : int, optional
         Random seed for reproducible initialization, by default None.
-    covariance_type : str, optional
+    covariance_type : {"full", "tied", "diag", "spherical"}, optional
         Covariance parameterization {'full', 'tied', 'diag', 'spherical'},
         by default "full".
     reg_covar : float, optional
@@ -455,7 +486,8 @@ def _position_marginal(
         metadata describe the source joint fit; no marginal EM fit is performed
         and ``lower_bound_`` is None.
     """
-    assert joint.means_ is not None and joint.covariances_ is not None
+    assert joint.means_ is not None
+    assert joint.covariances_ is not None
     covariance = joint.covariances_
     if joint.covariance_type == "full":
         covariance = covariance[:, :n_position_dims, :n_position_dims]
@@ -467,7 +499,7 @@ def _position_marginal(
     marginal.weights_ = joint.weights_
     marginal.means_ = joint.means_[:, :n_position_dims]
     marginal.covariances_ = covariance
-    marginal.precisions_chol_ = _compute_precision_cholesky(
+    marginal.precisions_chol_ = compute_precision_cholesky(
         covariance, joint.covariance_type
     )
     marginal.converged_ = joint.converged_
@@ -480,7 +512,9 @@ def _position_marginal(
 # ---------------------------------------------------------------------
 
 
-def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
+def _gmm_sample_weight(
+    weights: np.ndarray, *, weights_was_none: bool
+) -> np.ndarray | None:
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
     Returns None when the caller passed no weights (keeps a direct unweighted
@@ -498,6 +532,12 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     if weights_was_none or float(np.sum(weights)) == 0.0:
         return None
     return weights
+
+
+def _validate_execution_settings(spike_block_size: Any, bin_tile_size: Any) -> None:
+    """Reject block and tile settings the fit and the prediction cannot use."""
+    validate_positive_int("spike_block_size", spike_block_size)
+    validate_positive_int("bin_tile_size", bin_tile_size, allow_none=True)
 
 
 def mark_reference_scale(
@@ -521,18 +561,39 @@ def mark_reference_scale(
     return float(np.sqrt(gmm_reg_covar))
 
 
+class ClusterlessGMMEncodingModel(ClusterlessEncodingModel):
+    """The encoding model ``fit_clusterless_gmm_encoding_model`` returns.
+
+    Its keys are the encoding-model parameters of
+    ``predict_clusterless_gmm_log_likelihood``, documented there. The
+    component counts (``gmm_requested_components``,
+    ``gmm_effective_components``) are fit diagnostics that predict ignores.
+    """
+
+    occupancy_model: GaussianMixtureModel
+    interior_place_bin_centers: np.ndarray
+    log_occupancy: jax.Array
+    gpi_models: list[GaussianMixtureModel | None]
+    joint_models: list[GaussianMixtureModel | None]
+    summed_ground_process_intensity: np.ndarray
+    spike_block_size: int
+    bin_tile_size: int | None
+    gmm_requested_components: dict[str, int]
+    gmm_effective_components: dict[str, int | list[int]]
+
+
 def fit_clusterless_gmm_encoding_model(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    position_time: ArrayLike,
+    position: ArrayLike,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
     environment: Environment,
-    weights: jnp.ndarray | None = None,
+    weights: ArrayLike | None = None,
     *,
     gmm_components_occupancy: int = 32,
     gmm_components_joint: int = 64,
-    gmm_covariance_type_occupancy: str = "full",
-    gmm_covariance_type_joint: str = "full",
+    gmm_covariance_type_occupancy: CovType = "full",
+    gmm_covariance_type_joint: CovType = "full",
     gmm_random_state: int | None = 0,
     gmm_reg_covar: float = DEFAULT_GMM_REG_COVAR,
     gmm_max_iter: int = 200,
@@ -540,27 +601,26 @@ def fit_clusterless_gmm_encoding_model(
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
-    encoding_time_range=None,
-    valid_position_intervals=None,
-    waveform_std: object = None,
-    position_std: object = None,
-    block_size: object = None,
-    _encoding_support=None,
-    **kwargs,
-) -> dict:
+    encoding_time_range: ArrayLike | None = None,
+    valid_position_intervals: ArrayLike | None = None,
+    _encoding_support: EncodingSupport | None = None,
+) -> ClusterlessGMMEncodingModel:
     """
     Fit the clusterless encoding model using GMMs.
 
     Parameters
     ----------
-    position_time : jnp.ndarray, shape (n_time_position,)
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
-    spike_times : list[jnp.ndarray]
+    position_time : array_like, shape (n_time_position,)
+        Time of each position sample, in seconds.
+    position : array_like, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Encoding spike times per electrode.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Encoding spike waveform features per electrode.
     environment : Environment
-    weights : jnp.ndarray | None, shape (n_time_position,), default=None
+        The spatial environment (must be fitted).
+    weights : array_like, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM). None means
         uniform. Weights the occupancy and joint (position+mark) GMMs (via
         ``sample_weight``), and the mean firing rate. GPI is the joint marginal.
@@ -568,9 +628,9 @@ def fit_clusterless_gmm_encoding_model(
         Number of mixture components for occupancy GMM.
     gmm_components_joint : int, default=64
         Number of mixture components for joint (position+mark) GMM.
-    gmm_covariance_type_occupancy : str, default="full"
+    gmm_covariance_type_occupancy : {"full", "tied", "diag", "spherical"}, default="full"
         Covariance type for occupancy GMM. Options: "full", "tied", "diag", "spherical".
-    gmm_covariance_type_joint : str, default="full"
+    gmm_covariance_type_joint : {"full", "tied", "diag", "spherical"}, default="full"
         Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
     gmm_random_state : int | None, default=0
         Random state for reproducibility.
@@ -597,27 +657,25 @@ def fit_clusterless_gmm_encoding_model(
         If True, disable progress bar.
 
     encoding_time_range : array_like, shape (2,), optional
-        Acquisition start/stop in seconds. Clips encoding support using the
-        original interpolation basis. Uniform samples otherwise include endpoint
-        half-cells; a singleton requires explicit bounds or a tracking interval.
+        Acquisition start/stop in seconds, replacing the outer bounds of the
+        encoding support. A range inside the samples clips it, using the
+        original interpolation basis; a range past them extends it, holding
+        position at the first or last sample. Uniform samples otherwise include
+        endpoint half-cells; a singleton requires explicit bounds or a tracking
+        interval.
     valid_position_intervals : array_like, shape (n_intervals, 2), optional
         Ordered, non-overlapping continuous tracking intervals in seconds.
         Required for irregular timestamps; each interval needs a finite sample.
         Positions are held at segment endpoints and NaN rows split support.
-        Encoding support does not automatically mark decode bins missing.
-    waveform_std, position_std, block_size : optional
-        Ignored. A detector's default ``clusterless_algorithm_params`` hold
-        these KDE and diffusion parameters and are passed to every clusterless
-        algorithm; the GMM has no kernel bandwidths, and its predict blocks
-        spikes by ``spike_block_size``.
-    **kwargs
-        Any other name raises a ``ValidationError`` that lists the valid
-        parameters.
+    _encoding_support : EncodingSupport, optional
+        Internal: the detector's precomputed encoding support. Direct callers
+        omit it and the support is built from the other arguments.
 
     Returns
     -------
-    encoding_model : dict
+    encoding_model : ClusterlessGMMEncodingModel
         Dictionary containing the fitted encoding model with keys:
+        - algorithm ("clusterless_gmm")
         - environment
         - occupancy_model
         - interior_place_bin_centers
@@ -635,28 +693,9 @@ def fit_clusterless_gmm_encoding_model(
         - rate_units ("Hz")
         - encoding_exposure_seconds (weighted encoding occupancy time, seconds)
     """
-    for parameter in ("gmm_components_gpi", "gmm_covariance_type_gpi"):
-        if parameter in kwargs:
-            raise TypeError(
-                f"{parameter} has been removed; configure the joint GMM with "
-                "gmm_components_joint and gmm_covariance_type_joint instead."
-            )
-    if kwargs:
-        valid = [
-            name
-            for name, parameter in inspect.signature(
-                fit_clusterless_gmm_encoding_model
-            ).parameters.items()
-            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-            and not name.startswith("_")
-        ]
-        raise ValidationError(
-            f"unknown clusterless_gmm fit parameter(s): {', '.join(sorted(kwargs))}",
-            expected=f"parameters among: {', '.join(valid)}",
-            got=", ".join(f"{name}={value!r}" for name, value in kwargs.items()),
-            hint="Check the spelling. A detector passes its "
-            "clusterless_algorithm_params to this fit.",
-        )
+    _validate_execution_settings(spike_block_size, bin_tile_size)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     weights_was_none = weights is None
     support, weights, exposure_weights, position = prepare_encoding_support(
         position_time,
@@ -671,45 +710,33 @@ def fit_clusterless_gmm_encoding_model(
         spike_times=spike_times,
         spike_waveform_features=spike_waveform_features,
     )
-    position = _as_jnp(position if position.ndim > 1 else position[:, None])
+    position = _as_jnp(position)
     # NOTE: Do NOT convert position_time to JAX! It causes float64→float32 precision loss
     # with large timestamp values (e.g., Unix timestamps), creating apparent duplicates.
     # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
     position_time = np.asarray(position_time)
 
-    if weights is None:
-        weights = np.ones((position.shape[0],))
-    weights = validate_weights(np.asarray(weights), position.shape[0])
     # Weighted occupancy time in seconds: per-sample weight times the tracking
     # time each sample covers (its integrated interpolation exposure).
     weight_sum = float(exposure_weights.sum())
     warn_if_no_encoding_exposure(exposure_weights, "Clusterless GMM", clusterless=True)
-    occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
+    occupancy_sample_weight = _gmm_sample_weight(
+        exposure_weights, weights_was_none=False
+    )
 
-    # Interior bins (cached)
-    if environment.is_track_interior_ is not None:
-        is_track_interior = environment.is_track_interior_.ravel()
-    else:
-        if environment.place_bin_centers_ is None:
-            raise ValueError(
-                "place_bin_centers_ is required when is_track_interior_ is None"
-            )
-        is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
+    is_track_interior = environment.is_track_interior_flat_
 
-    # If environment has a graph and positions are 2D+, linearize to 1D for occupancy/GPI
-    if environment.track_graph is not None and position.shape[1] > 1:
-        position1D = environment._linear_position(np.asarray(position))[:, None]
-        pos_for_occ = _as_jnp(position1D)
-    else:
-        pos_for_occ = position
+    # Occupancy/GPI position: linear position on a track graph.
+    pos_for_occ = _as_jnp(environment.decoding_position(position))
 
     # Count the rows the GMM will actually fit on, using the array it fits: its
     # zero-weight cutoff depends on that array's dtype, so counting every
     # positive weight here could reserve more components than there are rows.
-    occupancy_n_samples = _effective_sample_count(pos_for_occ, occupancy_sample_weight)
+    occupancy_n_samples = effective_sample_count(pos_for_occ, occupancy_sample_weight)
     if occupancy_n_samples < 1:
+        msg = "clusterless GMM has no position samples to fit the occupancy density"
         raise ValidationError(
-            "clusterless GMM has no position samples to fit the occupancy density",
+            msg,
             expected="at least one position sample in the encoding period",
             got=f"{occupancy_n_samples} effective position samples",
             hint="Provide position data covering the encoding period.",
@@ -721,8 +748,8 @@ def fit_clusterless_gmm_encoding_model(
             f"{gmm_components_occupancy} to {effective_occupancy_components} "
             f"because only {occupancy_n_samples} effective position samples are "
             "available.",
-            UserWarning,
-            stacklevel=2,
+            ParameterWarning,
+            stacklevel=user_stacklevel(),
         )
 
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
@@ -742,7 +769,7 @@ def fit_clusterless_gmm_encoding_model(
 
     gpi_models: list[GaussianMixtureModel | None] = []
     joint_models: list[GaussianMixtureModel | None] = []
-    mean_rates: list[float] = []
+    mean_rates: list[float | jax.Array] = []
     effective_gpi_components: list[int] = []
     effective_joint_components: list[int] = []
     mark_dimensions: list[int] = []
@@ -788,8 +815,8 @@ def fit_clusterless_gmm_encoding_model(
                 "spikes (empty or zero total weight); it is treated as "
                 "zero-rate -- its observed decode spikes are explained by the background rate "
                 "rather than fit on the de-weighted spikes.",
-                UserWarning,
-                stacklevel=2,
+                DataQualityWarning,
+                stacklevel=user_stacklevel(),
             )
             mean_rates.append(0.0)
             gpi_models.append(None)
@@ -809,7 +836,7 @@ def fit_clusterless_gmm_encoding_model(
 
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         elect_sample_weight = None if weights_was_none else elect_weights
-        n_joint_spikes = _effective_sample_count(joint_samples, elect_sample_weight)
+        n_joint_spikes = effective_sample_count(joint_samples, elect_sample_weight)
         n_joint_components = min(gmm_components_joint, n_joint_spikes)
         effective_gpi_components.append(n_joint_components)
         effective_joint_components.append(n_joint_components)
@@ -818,8 +845,8 @@ def fit_clusterless_gmm_encoding_model(
                 f"Clusterless GMM: electrode {electrode} has {n_joint_spikes} "
                 "effective encoding spikes; reduced "
                 f"joint components {gmm_components_joint}->{n_joint_components}.",
-                UserWarning,
-                stacklevel=2,
+                ParameterWarning,
+                stacklevel=user_stacklevel(),
             )
 
         # Joint GMM over [position, waveform]
@@ -845,6 +872,7 @@ def fit_clusterless_gmm_encoding_model(
         )
 
     return {
+        "algorithm": "clusterless_gmm",
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy_model": occupancy_model,
@@ -852,8 +880,8 @@ def fit_clusterless_gmm_encoding_model(
         "log_occupancy": log_occupancy,
         "gpi_models": gpi_models,
         "joint_models": joint_models,
-        "mean_rates": jnp.asarray(mean_rates),
-        "summed_ground_process_intensity": summed_ground_process_intensity,
+        "mean_rates": np.asarray(jnp.asarray(mean_rates)),
+        "summed_ground_process_intensity": np.asarray(summed_ground_process_intensity),
         "disable_progress_bar": disable_progress_bar,
         "spike_block_size": spike_block_size,
         "bin_tile_size": bin_tile_size,
@@ -880,50 +908,52 @@ def fit_clusterless_gmm_encoding_model(
 
 @requires_time_edges
 def predict_clusterless_gmm_log_likelihood(
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    position_time: ArrayLike | None,
+    position: ArrayLike | None,
+    spike_times: Sequence[ArrayLike],
+    spike_waveform_features: Sequence[ArrayLike],
+    *,
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
-    interior_place_bin_centers: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
+    interior_place_bin_centers: jax.Array,
+    log_occupancy: jax.Array,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: jnp.ndarray,
-    summed_ground_process_intensity: jnp.ndarray,
+    mean_rates: np.ndarray,
+    summed_ground_process_intensity: np.ndarray,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
-    *,
     time_edges: np.ndarray,
+    algorithm: str | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
     rate_units: str = "Hz",
-    encoding_exposure_seconds: float | None = None,
+    encoding_exposure_seconds: float | None = None,  # noqa: ARG001 -- shared likelihood-algorithm signature
+    gmm_requested_components: dict[str, Any] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
+    gmm_effective_components: dict[str, Any] | None = None,  # noqa: ARG001 -- fit diagnostic, unused
     mark_dimensions: list[int],
     mark_reference: list[MarkReference | None],
-    environment_grid: dict | None = None,
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    environment_grid: dict[str, Any] | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-    **kwargs,
-) -> jnp.ndarray:
+) -> jax.Array:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
 
     Parameters
     ----------
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Decoding bin edges.
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : array_like or None, shape (n_time_position,)
         Time of each position sample for the decoding period (used only by the
         local path; accepted for signature parity when ``is_local`` is False).
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        May be None when ``is_local`` is False.
+    position : array_like or None, shape (n_time_position, n_position_dims)
         Position samples during the decoding period (used only by the local
         path; accepted for signature parity when ``is_local`` is False).
-    spike_times : list[jnp.ndarray]
+        May be None when ``is_local`` is False.
+    spike_times : sequence of array_like, each shape (n_spikes,)
         Decoding spike times per electrode.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : sequence of array_like, each shape (n_spikes, n_features)
         Decoding spike waveform features per electrode.
     environment : Environment
         Fitted environment. Its grid must be the one the model was fit on
@@ -933,18 +963,18 @@ def predict_clusterless_gmm_log_likelihood(
     occupancy_model : GaussianMixtureModel
         Occupancy density over position (1-D linearized position when the
         environment has a track graph and position is multi-dimensional).
-    interior_place_bin_centers : jnp.ndarray, shape (n_interior_bins, n_position_dims)
+    interior_place_bin_centers : jax.Array, shape (n_interior_bins, n_position_dims)
         Centers of the environment's interior place bins.
-    log_occupancy : jnp.ndarray, shape (n_interior_bins,)
+    log_occupancy : jax.Array, shape (n_interior_bins,)
         Log occupancy density at ``interior_place_bin_centers``.
     gpi_models : list of GaussianMixtureModel or None, length n_electrodes
         Position marginal of each electrode's joint GMM; None for a zero-rate
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : jnp.ndarray, shape (n_electrodes,)
+    mean_rates : np.ndarray, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
-    summed_ground_process_intensity : jnp.ndarray, shape (n_interior_bins,)
+    summed_ground_process_intensity : np.ndarray, shape (n_interior_bins,)
         Sum over electrodes of ``rate * p_gpi(x) / p_occ(x)`` at the interior
         bins, in Hz (without the background rate).
     is_local : bool, default=False
@@ -960,12 +990,27 @@ def predict_clusterless_gmm_log_likelihood(
         Reduces memory from O(spike_block_size × n_bins) to O(spike_block_size × bin_tile_size).
         Useful for very large position grids (> 2000 bins).
     disable_progress_bar : bool, default=False
+        Turn off the progress bar.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
         ``time_edges`` always stay the FULL decoding edges: spikes are binned
         against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
+    algorithm : str, optional
+        The algorithm the fit recorded. Accepted so the encoding dictionary
+        can be passed as keywords; unused.
+    rate_units : str, default="Hz", keyword-only
+        Rate units recorded by the encoding fit; anything other than ``"Hz"``
+        raises ``ValidationError`` (refit legacy encoding models).
+    encoding_exposure_seconds : float, optional, keyword-only
+        Weighted encoding occupancy time in seconds, recorded by the fit.
+        Accepted so the encoding dictionary can be passed as keywords; unused.
+    gmm_requested_components, gmm_effective_components : dict, optional
+        The fit's requested and fitted component counts, kept in the encoding
+        model as diagnostics; unused.
     mark_dimensions : list[int], keyword-only
         Fitted waveform-feature count per electrode, taken from the encoding
         model. Predict rejects decode spikes whose feature dimension differs, so
@@ -977,34 +1022,31 @@ def predict_clusterless_gmm_log_likelihood(
         electrode's expected count ``RATE_EPS_HZ``, so likelihood ratios between
         states do not depend on the waveform units. None for an electrode means
         no training marks; its background is the bare rate.
-    rate_units : str, default="Hz", keyword-only
-        Rate units recorded by the encoding fit; anything other than ``"Hz"``
-        raises ``ValidationError`` (refit legacy encoding models).
-    encoding_exposure_seconds : float, optional, keyword-only
-        Weighted encoding occupancy time in seconds, recorded by the fit.
-        Accepted so the encoding dictionary can be passed as keywords; unused.
     environment_grid : dict | None, optional
         The fit's record of the environment's grid (see
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
     log_likelihood :
-        If non-local: jnp.ndarray, shape (n_rows, n_interior_bins)
-        If local    : jnp.ndarray, shape (n_rows, 1)
+        If non-local: jax.Array, shape (n_rows, n_interior_bins)
+        If local    : jax.Array, shape (n_rows, 1)
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
+    _validate_execution_settings(spike_block_size, bin_tile_size)
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    spike_times = as_arrays(spike_times)
+    spike_waveform_features = as_arrays(spike_waveform_features)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1021,8 +1063,9 @@ def predict_clusterless_gmm_log_likelihood(
     ):
         validate_spike_feature_pair(elect_times, elect_feats, electrode)
         if np.shape(elect_feats)[1] != expected_mark_dims:
+            msg = f"waveform feature dimension changed for electrode {electrode}"
             raise ValidationError(
-                f"waveform feature dimension changed for electrode {electrode}",
+                msg,
                 expected=f"{expected_mark_dims} features per spike",
                 got=f"{np.shape(elect_feats)[1]} features",
                 hint="Use the same waveform feature representation at fit and predict.",
@@ -1033,8 +1076,11 @@ def predict_clusterless_gmm_log_likelihood(
     # the FULL-recording position on every call -- once per chunk under chunked
     # prediction -- for a non-local likelihood that never reads it.
     if is_local:
+        position_time, position = require_position(
+            position_time, position, "local clusterless GMM likelihood"
+        )
         local = compute_local_log_likelihood(
-            time_edges=time_edges,
+            time_edges=rows.time_edges,
             position_time=position_time,
             position=position,
             spike_times=spike_times,
@@ -1047,110 +1093,73 @@ def predict_clusterless_gmm_log_likelihood(
             mark_reference=mark_reference,
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
-            _spike_time_order=_spike_time_order,
-            _time_grid=_time_grid,
+            _spike_time_order=rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )
 
         return (
             local
             + log_bin_duration_evidence(
                 spike_times,
-                time_edges,
+                rows.time_edges,
                 row_slice,
-                _spike_time_order,
-                _time_grid=_time_grid,
+                rows.spike_time_order,
+                _time_grid=rows.time_grid,
             )[:, None]
         )
 
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = interior_place_bin_centers.shape[0]
 
-    # Start with the expected-counts (ground process) term, broadcast over time
-    log_likelihood = -jnp.asarray(_time_grid.durations(row_start, row_stop))[
-        :, None
-    ] * (summed_ground_process_intensity + background_rate(len(spike_times)))
-
-    # Per-electrode contributions in log-space
-    for electrode, (
-        elect_feats,
-        elect_times,
-        joint_gmm,
-        mean_rate,
-        reference,
-    ) in enumerate(
-        tqdm(
-            zip(
-                spike_waveform_features,
-                spike_times,
-                joint_models,
-                mean_rates,
-                mark_reference,
-                strict=True,
-            ),
-            desc="Non-Local Likelihood (GMM, log-space)",
-            unit="electrode",
-            disable=disable_progress_bar,
-        )
-    ):
+    def add_electrode(
+        log_likelihood: jax.Array,
+        spikes: ElectrodeSpikes,
+        model: tuple[GaussianMixtureModel | None, Any],
+    ) -> jax.Array:
+        joint_gmm, mean_rate = model
         # A None model marks a zero-rate electrode: it has no effective encoding
         # spikes, so no density was fit and each observed spike is explained by
         # the background alone, uniformly across position bins. This is *not*
         # the same as skipping the electrode: skipping would drop the negative
         # evidence an observed spike carries (e.g. against a state whose
         # encoding de-weighted this electrode).
-        selection = select_spikes_in_rows(
-            elect_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
-        )
-        n_spikes = selection.bin_ind.shape[0]
-        if n_spikes == 0:
-            continue
-        selected_feats = select_decode_marks(elect_feats, selection, electrode)
-        log_background = background_log_intensity(
-            reference, selected_feats, LOG_RATE_EPS_HZ
-        )
         if joint_gmm is None:
-            log_likelihood = (
-                log_likelihood
-                + sum_spikes_into_rows(log_background, selection)[:, None]
-            )
-            continue
+            return add_background_only(log_likelihood, spikes)
 
         log_mean_rate = log_nonnegative(mean_rate)
+        n_spikes = spikes.n_spikes
 
         if bin_tile_size is None or bin_tile_size >= n_bins:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
             # Each spike is scored at every bin, so pad finely.
-            n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
-            log_likelihood = _add_electrode_gmm_intensities(
-                log_likelihood,
-                jnp.asarray(_pad_rows(selected_feats, n_padded)),
-                jnp.asarray(spike_row_ids(selection, n_padded)),
-                interior_place_bin_centers,
-                _gmm_parameters(joint_gmm),
-                log_mean_rate,
-                log_occupancy,
-                jnp.asarray(_pad_rows(log_background, n_padded)),
-                covariance_type=joint_gmm.covariance_type,
-                block_size=min(spike_block_size, n_padded),
-                indices_are_sorted=selection.indices_are_sorted,
+            n_padded = padded_spike_count(n_spikes, spike_block_size, fine=True)
+            return cast(
+                jax.Array,
+                _add_electrode_gmm_intensities(
+                    log_likelihood,
+                    jnp.asarray(pad_rows(spikes.marks, n_padded)),
+                    jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
+                    interior_place_bin_centers,
+                    _gmm_parameters(joint_gmm),
+                    log_mean_rate,
+                    log_occupancy,
+                    jnp.asarray(pad_rows(spikes.log_background, n_padded)),
+                    covariance_type=joint_gmm.covariance_type,
+                    block_size=min(spike_block_size, n_padded),
+                    indices_are_sorted=spikes.selection.indices_are_sorted,
+                ),
             )
-            continue
 
         # Bin tiling: accumulate per spike block and position tile directly.
         # Memory: O(spike_block_size × tile_size), with no full block×bins array.
         # Select FIRST, then convert: converting the whole array would
         # device-copy every decoding spike in the recording on every chunk call.
-        elect_feats = jnp.asarray(selected_feats)
-        log_background = jnp.asarray(log_background)
+        elect_feats = jnp.asarray(spikes.marks)
+        log_background = jnp.asarray(spikes.log_background)
         for spike_start in range(0, n_spikes, spike_block_size):
             spike_end = min(spike_start + spike_block_size, n_spikes)
             block_feats = elect_feats[spike_start:spike_end]
-            block_seg_ids = selection.bin_ind[spike_start:spike_end]
+            block_seg_ids = spikes.selection.bin_ind[spike_start:spike_end]
             block_size = block_feats.shape[0]
             for bin_start in range(0, n_bins, bin_tile_size):
                 bin_end = min(bin_start + bin_tile_size, n_bins)
@@ -1182,33 +1191,54 @@ def predict_clusterless_gmm_log_likelihood(
                     log_occupancy[bin_start:bin_end],
                     log_background[spike_start:spike_end],
                 )
+        return log_likelihood
+
+    # Start with the expected-counts (ground process) term, broadcast over
+    # time, then add each electrode's spikes in log space.
+    log_likelihood = add_electrode_spike_terms(
+        -jnp.asarray(rows.durations())[:, None]
+        * (summed_ground_process_intensity + background_rate(len(spike_times))),
+        spike_times,
+        spike_waveform_features,
+        mark_reference,
+        list(zip(joint_models, mean_rates, strict=True)),
+        add_electrode,
+        rows=rows,
+        log_background_floor=LOG_RATE_EPS_HZ,
+        desc="Position-Bin Likelihood (GMM, log-space)",
+        disable_progress_bar=disable_progress_bar,
+    )
 
     return (
         log_likelihood
         + log_bin_duration_evidence(
-            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+            spike_times,
+            rows.time_edges,
+            row_slice,
+            rows.spike_time_order,
+            _time_grid=rows.time_grid,
         )[:, None]
     )
 
 
 def compute_local_log_likelihood(
     time_edges: np.ndarray,
-    position_time: jnp.ndarray,
-    position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
-    spike_waveform_features: list[jnp.ndarray],
+    position_time: jax.Array | np.ndarray,
+    position: jax.Array | np.ndarray,
+    spike_times: Sequence[np.ndarray | jax.Array],
+    spike_waveform_features: Sequence[np.ndarray | jax.Array],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
     gpi_models: list[GaussianMixtureModel | None],
     joint_models: list[GaussianMixtureModel | None],
-    mean_rates: jnp.ndarray,
+    mean_rates: np.ndarray,
+    *,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
-    *,
     mark_reference: list[MarkReference | None],
-    _spike_time_order: _SpikeTimeOrder | None = None,
+    _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """Local log-likelihood at the animal's interpolated position.
 
     Computes the likelihood of observing spikes at the animal's true position
@@ -1218,13 +1248,13 @@ def compute_local_log_likelihood(
     ----------
     time_edges : np.ndarray, shape (n_bins + 1,)
         Decoding bin edges.
-    position_time : jnp.ndarray, shape (n_time_position,)
+    position_time : np.ndarray or jax.Array, shape (n_time_position,)
         Timestamps for position samples.
-    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    position : np.ndarray or jax.Array, shape (n_time_position, n_position_dims)
         Position samples during decoding period.
-    spike_times : list[jnp.ndarray]
+    spike_times : sequence of np.ndarray or jax.Array
         Spike times per electrode during decoding.
-    spike_waveform_features : list[jnp.ndarray]
+    spike_waveform_features : sequence of np.ndarray or jax.Array
         Spike waveform features per electrode during decoding.
     environment : Environment
         Fitted environment; its track graph, if any, linearizes the position.
@@ -1235,7 +1265,7 @@ def compute_local_log_likelihood(
         electrode.
     joint_models : list of GaussianMixtureModel or None, length n_electrodes
         Joint (position, mark) GMM per electrode; None for a zero-rate electrode.
-    mean_rates : jnp.ndarray, shape (n_electrodes,)
+    mean_rates : np.ndarray, shape (n_electrodes,)
         Weighted mean firing rate per electrode, in Hz.
     disable_progress_bar : bool, optional
         Turn off progress bar display, by default False.
@@ -1246,14 +1276,17 @@ def compute_local_log_likelihood(
     mark_reference : list of MarkReference or None
         Reference mark density per electrode for the background intensity (see
         ``predict_clusterless_gmm_log_likelihood``).
-    _spike_time_order : _SpikeTimeOrder | None, optional
+    _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
         ordering is then verified on this call.
+    _time_grid : _DecodeTimeGrid, optional
+        Internal prepared decode grid shared across a detector's states and
+        chunks; direct callers omit it.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, 1)
+    log_likelihood : jax.Array, shape (n_rows, 1)
         Log likelihood at the animal's position for each requested time bin.
     """
     # NOTE: Keep position_time and position as numpy to avoid float64→float32
@@ -1268,12 +1301,8 @@ def compute_local_log_likelihood(
     position = position if position.ndim > 1 else position[:, None]
     working_dtype = _as_jnp(position[:0]).dtype
 
-    _time_grid = _resolve_time_grid(time_edges, _time_grid)
-    time_edges = _time_grid.edges
-    if _spike_time_order is None:
-        _spike_time_order = _SpikeTimeOrder()
-    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
+    rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
+    n_rows = rows.stop - rows.start
 
     # Interpolate position at the requested rows' bin times (use bin centers)
 
@@ -1281,7 +1310,7 @@ def compute_local_log_likelihood(
         get_position_at_time(
             position_time,
             position,
-            decode_bin_centers(time_edges, row_start, row_stop),
+            decode_bin_centers(rows.time_edges, rows.start, rows.stop),
             environment,
         ),
         environment,
@@ -1321,10 +1350,10 @@ def compute_local_log_likelihood(
         # observed spike is negative evidence, not "no data".
         selection = select_spikes_in_rows(
             elect_times,
-            row_start,
-            row_stop,
-            time_edges=time_edges,
-            _spike_time_order=_spike_time_order,
+            rows.start,
+            rows.stop,
+            time_edges=rows.time_edges,
+            _spike_time_order=rows.spike_time_order,
         )
         n_spikes = selection.bin_ind.shape[0]
         if n_spikes:
@@ -1342,7 +1371,7 @@ def compute_local_log_likelihood(
         if n_spikes:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
-            n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
+            n_padded = padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
             spike_positions = snap_off_track_positions(
                 get_position_at_time(
                     position_time,
@@ -1354,13 +1383,13 @@ def compute_local_log_likelihood(
             )
             log_likelihood = _add_electrode_gmm_spike_terms(
                 log_likelihood,
-                jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
-                jnp.asarray(_pad_rows(selected_feats, n_padded)),
+                jnp.asarray(pad_rows(spike_positions, n_padded), dtype=working_dtype),
+                jnp.asarray(pad_rows(selected_feats, n_padded)),
                 jnp.asarray(spike_row_ids(selection, n_padded)),
                 _gmm_parameters(joint_gmm),
                 _gmm_parameters(occupancy_model),
                 mean_rate,
-                jnp.asarray(_pad_rows(log_background, n_padded), dtype=working_dtype),
+                jnp.asarray(pad_rows(log_background, n_padded), dtype=working_dtype),
                 joint_type=joint_gmm.covariance_type,
                 occupancy_type=occupancy_model.covariance_type,
                 indices_are_sorted=selection.indices_are_sorted,
@@ -1374,8 +1403,8 @@ def compute_local_log_likelihood(
             gpi_type=gpi_gmm.covariance_type,
         )
 
-    log_likelihood = log_likelihood - jnp.asarray(
-        _time_grid.durations(row_start, row_stop)
-    ) * (summed_expected_counts + background_rate(len(spike_times)))
+    log_likelihood = log_likelihood - jnp.asarray(rows.durations()) * (
+        summed_expected_counts + background_rate(len(spike_times))
+    )
 
     return log_likelihood[:, None]

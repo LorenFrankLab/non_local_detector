@@ -94,9 +94,9 @@ def main():
     linear_results = []
 
     for n_dims in dimensions:
-        np.random.seed(42)
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        rng = np.random.default_rng(42)
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         # Time original (manual loop)
@@ -129,9 +129,15 @@ def main():
         )
 
         print(f"{n_dims}D features:")
-        print(f"  Original (loop):     {time_orig*1000:.2f}ms ± {std_orig*1000:.2f}ms")
-        print(f"  Vectorized:          {time_vec*1000:.2f}ms ± {std_vec*1000:.2f}ms  ({speedup_vec:.2f}x)")
-        print(f"  JIT-compiled:        {time_jit*1000:.2f}ms ± {std_jit*1000:.2f}ms  ({speedup_jit:.2f}x)")
+        print(
+            f"  Original (loop):     {time_orig * 1000:.2f}ms ± {std_orig * 1000:.2f}ms"
+        )
+        print(
+            f"  Vectorized:          {time_vec * 1000:.2f}ms ± {std_vec * 1000:.2f}ms  ({speedup_vec:.2f}x)"
+        )
+        print(
+            f"  JIT-compiled:        {time_jit * 1000:.2f}ms ± {std_jit * 1000:.2f}ms  ({speedup_jit:.2f}x)"
+        )
         print()
 
     # Log-space KDE profiling
@@ -143,9 +149,9 @@ def main():
     log_results = []
 
     for n_dims in dimensions:
-        np.random.seed(42)
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        rng = np.random.default_rng(42)
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         # Time original (manual loop)
@@ -178,9 +184,15 @@ def main():
         )
 
         print(f"{n_dims}D features:")
-        print(f"  Original (loop):     {time_orig*1000:.2f}ms ± {std_orig*1000:.2f}ms")
-        print(f"  Vectorized:          {time_vec*1000:.2f}ms ± {std_vec*1000:.2f}ms  ({speedup_vec:.2f}x)")
-        print(f"  JIT-compiled:        {time_jit*1000:.2f}ms ± {std_jit*1000:.2f}ms  ({speedup_jit:.2f}x)")
+        print(
+            f"  Original (loop):     {time_orig * 1000:.2f}ms ± {std_orig * 1000:.2f}ms"
+        )
+        print(
+            f"  Vectorized:          {time_vec * 1000:.2f}ms ± {std_vec * 1000:.2f}ms  ({speedup_vec:.2f}x)"
+        )
+        print(
+            f"  JIT-compiled:        {time_jit * 1000:.2f}ms ± {std_jit * 1000:.2f}ms  ({speedup_jit:.2f}x)"
+        )
         print()
 
     # Summary table
@@ -224,9 +236,9 @@ def main():
     print()
 
     for n_dims in [2, 10]:
-        np.random.seed(42)
-        eval_points = jnp.array(np.random.randn(50, n_dims))
-        samples = jnp.array(np.random.randn(100, n_dims))
+        rng = np.random.default_rng(42)
+        eval_points = jnp.array(rng.standard_normal((50, n_dims)))
+        samples = jnp.array(rng.standard_normal((100, n_dims)))
         std = jnp.ones(n_dims)
 
         # Linear-space

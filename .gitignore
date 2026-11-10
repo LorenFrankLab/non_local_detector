@@ -156,15 +156,26 @@ _version.py
 *.npz
 *.pkl
 # Exception: commit golden regression data for version control
-!src/non_local_detector/tests/golden_data/*.pkl
+!tests/golden_data/*.pkl
+# Exception: artifacts written by earlier versions, for compatibility tests
+!tests/compat_data/*.pkl
+!tests/compat_data/*/*.pkl
+!tests/compat_data/*/*.npz
 *.png
 
 # Git worktrees
 .worktrees/
 *.parquet
 *.nc
+!tests/compat_data/*/*.nc
 /viewer_bundles
 
 # Local profiling evidence and diagnostic reports
 /docs/performance_artifacts/
 /.claude/docs/gmm-background-diagnosis/
+
+# MkDocs build output
+site/
+
+# mkdocs-jupyter execution cache
+.cache/

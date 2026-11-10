@@ -14,6 +14,7 @@ creating an import cycle.
 from __future__ import annotations
 
 import re
+from typing import cast
 
 import xarray as xr
 
@@ -47,7 +48,8 @@ def get_position_dim_names(n_position_dims: int) -> list[str]:
         If ``n_position_dims < 1``.
     """
     if n_position_dims < 1:
-        raise ValueError(f"n_position_dims must be >= 1; got {n_position_dims}.")
+        msg = f"n_position_dims must be >= 1; got {n_position_dims}."
+        raise ValueError(msg)
     if n_position_dims == 1:
         return ["position"]
     if n_position_dims <= len(_DIM_LABELS):
@@ -56,11 +58,11 @@ def get_position_dim_names(n_position_dims: int) -> list[str]:
 
 
 def _is_position_dim(name: object) -> bool:
-    """Whether ``name`` is one of the canonical position-dim names.
+    r"""Whether ``name`` is one of the canonical position-dim names.
 
     Matches *exactly* the closed vocabulary produced by
     :func:`get_position_dim_names` — ``position``, the labelled
-    ``x``/``y``/``z``/``w``/``v``/``u``\\ ``_position`` names, or the numbered
+    ``x``/``y``/``z``/``w``/``v``/``u``\ ``_position`` names, or the numbered
     ``dim{i}_position`` fallback — so a stray ``_position``-suffixed dim such as
     ``head_position`` or ``linear_position`` is not mistaken for a decoder
     position axis.
@@ -95,4 +97,4 @@ def get_position_dims(data: xr.DataArray) -> list[str]:
     list of str
         The matching dimension names, in the order they appear on ``data``.
     """
-    return [d for d in data.dims if _is_position_dim(d)]
+    return cast("list[str]", [d for d in data.dims if _is_position_dim(d)])

@@ -1,48 +1,24 @@
-import copy
+"""Static matplotlib plots of non-local decoding results."""
 
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 import xarray as xr
-from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
+from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.models.base import SortedSpikesDetector
 
-
-def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
-    """1D convolution of the data with a Gaussian.
-
-    The standard deviation of the gaussian is in the units of the sampling
-    frequency. The function is just a wrapper around scipy's
-    `gaussian_filter1d`, The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`
-
-    Parameters
-    ----------
-    data : array_like
-    sigma : float
-    sampling_frequency : int
-    axis : int, optional
-    truncate : int, optional
-
-    Returns
-    -------
-    smoothed_data : array_like
-
-    """
-    return gaussian_filter1d(
-        data,
-        sigma * sampling_frequency,
-        truncate=truncate,
-        axis=axis,
-        mode="constant",
-    )
+__all__ = [
+    "get_multiunit_firing_rate",
+    "plot_non_local_model",
+]
 
 
 def get_multiunit_firing_rate(
@@ -61,11 +37,14 @@ def get_multiunit_firing_rate(
         end. Rates use each row's duration. Gaussian smoothing uses the median
         sample interval, which approximates smoothing in time for irregular rows.
     smoothing_sigma : float, optional
-        Standard deviation of the Gaussian smoothing, by default 0.015
+        Standard deviation of the Gaussian smoothing in seconds (the units of
+        ``time``), by default 0.015.
 
     Returns
     -------
     multiunit_firing_rate : pd.DataFrame
+        Multiunit firing rate in Hz, with ``time`` as the index and a single
+        ``"firing_rate"`` column.
 
     Raises
     ------
@@ -75,8 +54,9 @@ def get_multiunit_firing_rate(
     """
     time = np.asarray(time)
     if time.ndim != 1 or time.shape[0] < 2:
+        msg = "get_multiunit_firing_rate needs at least two timestamps"
         raise ValidationError(
-            "get_multiunit_firing_rate needs at least two timestamps",
+            msg,
             expected="array with shape (n_time,), n_time >= 2",
             got=f"array with shape {time.shape}",
             hint="A single timestamp does not determine a row duration. Pass "
@@ -114,6 +94,45 @@ def get_multiunit_firing_rate(
     )
 
 
+def _unit_order(
+    detector: NonLocalClusterlessDetector | NonLocalSortedSpikesDetector,
+    n_units: int,
+) -> tuple[np.ndarray, str]:
+    """Order the units for the raster and label them.
+
+    Sorted-spikes detectors order neurons by the position of their place-field
+    peak, in the environment the place fields were fit in. Otherwise (clusterless
+    detectors, or a sorted detector with only No-Spike observation models) the
+    electrode groups keep their given order.
+
+    Parameters
+    ----------
+    detector : NonLocalClusterlessDetector | NonLocalSortedSpikesDetector
+        Fitted detector.
+    n_units : int
+        Number of neurons or electrode groups.
+
+    Returns
+    -------
+    order : np.ndarray, shape (n_units,)
+        Indices that sort the units for display.
+    label : str
+        Axis label for the units.
+    """
+    observation_models = detector.state_space_.observation_models
+    obs = next((o for o in observation_models if not o.is_no_spike), None)
+    if not isinstance(detector, SortedSpikesDetector) or obs is None:
+        return np.arange(n_units), "Electrode\nGroup"
+    place_fields = detector.encoding_model_[(obs.environment_name, obs.encoding_group)][
+        "place_fields"
+    ]
+    bin_centers = detector._get_environment_by_name(
+        obs.environment_name
+    ).place_bin_centers_
+    peak_position = bin_centers[np.nanargmax(place_fields, axis=1)].squeeze()
+    return np.argsort(peak_position), "Neuron"
+
+
 def plot_non_local_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -129,31 +148,35 @@ def plot_non_local_model(
 
     Parameters
     ----------
-    position_time : np.ndarray
-    position : np.ndarray
+    position_time : np.ndarray, shape (n_position_time,)
+        Timestamps of the position samples, in seconds.
+    position : np.ndarray, shape (n_position_time,)
+        Position of the animal at each position timestamp, in cm.
     spike_times : list[np.ndarray]
-    speed : np.ndarray
+        Spike times in seconds for each neuron (sorted spikes) or electrode
+        group (clusterless).
+    speed : np.ndarray, shape (n_position_time,)
+        Speed of the animal at each position timestamp, in cm / s.
     detector : NonLocalClusterlessDetector | NonLocalSortedSpikesDetector
+        Fitted detector that produced ``results``.
     results : xr.Dataset
+        Decoding results from the detector, with a ``time`` coordinate and
+        ``acausal_state_probabilities``.
     figsize : tuple[int, int], optional
+        Figure size in inches, by default (20, 10).
     time_slice : slice | None, optional
+        Start and stop time (in the units of ``results.time``) to plot. By
+        default None, which plots the full time range of ``results``.
     posterior_max : float, optional
+        Upper color limit of the posterior heatmap, by default 0.25.
     """
     if time_slice is None:
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
-    env = detector.environments[0]
-    try:
-        place_fields = detector.encoding_model_[("", 0)]["place_fields"]
-        neuron_sort_ind = np.argsort(
-            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
-        )
-        cell_label = "Neuron"
-    except KeyError:
-        neuron_sort_ind = np.arange(len(spike_times))
-        cell_label = "Electrode\nGroup"
+    env = detector.environments_[0]
+    neuron_sort_ind, cell_label = _unit_order(detector, len(spike_times))
 
-    state_names = detector.state_names
+    state_names = detector.state_space_.state_names
     acausal_state_probabilities = results.sel(
         time=time_slice
     ).acausal_state_probabilities.values
@@ -194,8 +217,7 @@ def plot_non_local_model(
     axes[1].set_ylabel("Probability")
     axes[1].set_ylim((0.0, 1.05))
 
-    cmap = copy.copy(matplotlib.colormaps["bone_r"])
-    cmap.set_bad(color="lightgrey")
+    cmap = mpl.colormaps["bone_r"].with_extremes(bad="lightgrey")
 
     axes[2].pcolormesh(
         t,
@@ -224,4 +246,4 @@ def plot_non_local_model(
     )
     axes[3].set_ylabel("Speed\n[cm / s]")
     plt.xlim((time_slice.start, time_slice.stop))
-    plt.xlabel("Time [ms]")
+    plt.xlabel("Time [s]")

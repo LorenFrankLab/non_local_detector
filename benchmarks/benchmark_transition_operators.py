@@ -15,16 +15,16 @@ import statistics
 import tempfile
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import psutil
 
+from non_local_detector.continuous_state_transitions import TransitionContext
 from non_local_detector.environment import Environment
 from non_local_detector.models._defaults import _ModelDefaults
-from non_local_detector.models.base import _DetectorBase
+from non_local_detector.models._state_space import continuous_state_transitions
 from non_local_detector.transition_operators import (
     LazyDenseTransition,
     build_transition_operator,
@@ -84,19 +84,16 @@ def main():
     errors = None
     # Combined matrix, temporary conditional matrix and runtime cast coexist.
     if 3 * dense_bytes <= args.dense_budget_bytes:
-        namespace = SimpleNamespace(
-            continuous_transition_types=descriptors,
-            environments=[env],
-            observation_models=observations,
-            local_position_std=None,
-            state_ind_=state_ind,
-            _get_environment_by_name=lambda name: env,
+        continuous, _ = continuous_state_transitions(
+            descriptors,
+            [env],
+            observations,
+            None,
+            state_ind,
+            np.asarray(sizes),
+            context=TransitionContext(),
         )
-        _DetectorBase.initialize_continuous_state_transition(namespace, descriptors)
-        dense = (
-            namespace.continuous_state_transitions_
-            * weights[np.ix_(state_ind, state_ind)]
-        )
+        dense = continuous * weights[np.ix_(state_ind, state_ind)]
         matrix = jnp.asarray(dense, dtype=dtype)
         dense_function = jax.jit(
             lambda values: (

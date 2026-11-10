@@ -29,6 +29,7 @@ Example::
 """
 
 import argparse
+import functools
 import hashlib
 import inspect
 import json
@@ -70,30 +71,11 @@ def output_dtypes(result: Any) -> dict[str, str]:
 
 def _prepare_reference_likelihood(model: Any, predict: dict) -> Callable:
     """Bind the same global-edge preparation used by native prediction."""
-    from non_local_detector.models.base import _prepare_likelihood_callback
-    from non_local_detector.time_edges import _DecodeTimeGrid
-
     edges = predict["time_edges"]
     args = (predict["position_time"], predict["position"], predict["spike_times"])
     if "spike_waveform_features" in predict:
         args += (predict["spike_waveform_features"],)
-    prepared = _prepare_likelihood_callback(
-        model.compute_log_likelihood,
-        edges,
-        has_no_spike=any(obs.is_no_spike for obs in model.observation_models),
-        log_likelihood_args=args,
-        _time_grid=_DecodeTimeGrid.from_validated_edges(
-            edges, uniform_width=(edges[-1] - edges[0]) / (len(edges) - 1)
-        ),
-    )
-    centers = (edges[:-1] + edges[1:]) / 2
-
-    def likelihood(
-        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
-    ) -> Any:
-        return prepared(centers, *args, row_slice=row_slice, is_missing=is_missing)
-
-    return likelihood
+    return functools.partial(model._decode_likelihood_callback(edges, args), *args)
 
 
 def reference64_prediction(
@@ -112,12 +94,14 @@ def reference64_prediction(
     import jax
 
     from non_local_detector.checkpointed_inference import checkpointed_forward_backward
-    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.core import row_slice_aware
+    from non_local_detector.models._input_validation import _missing_bins
 
     if not jax.config.x64_enabled:
-        raise ValueError("reference64 requires JAX_ENABLE_X64=1")
+        msg = "reference64 requires JAX_ENABLE_X64=1"
+        raise ValueError(msg)
     interior = model.is_track_interior_state_bins_
-    operator = model._continuous_transition_operator_.restricted(interior)
+    operator = model.state_space_.transition_operator.restricted(interior)
     operator = operator.bind_discrete(model.discrete_state_transitions_).fused()
     initial = np.asarray(model.initial_conditions_[interior], dtype=np.float64)
 
@@ -134,21 +118,26 @@ def reference64_prediction(
         }
     )
     if transition_dtypes != ["float64"]:
-        raise ValueError("reference64 transition inputs must actually be float64")
+        msg = "reference64 transition inputs must actually be float64"
+        raise ValueError(msg)
     prepared = _prepare_reference_likelihood(model, predict)
     observed_dtypes: set[str] = set()
     inference_dtypes: set[str] = set()
 
+    @row_slice_aware
     def likelihood(
-        full_edges: np.ndarray, *, row_slice: slice, is_missing: np.ndarray
+        *, time_edges: np.ndarray, row_slice: slice, is_missing: np.ndarray
     ) -> Any:
         with float32_computation():
-            values = prepared(full_edges, row_slice=row_slice, is_missing=is_missing)
+            values = prepared(
+                time_edges=time_edges, row_slice=row_slice, is_missing=is_missing
+            )
         observed_dtypes.add(str(values.dtype))
         promoted = values.astype(np.float64)
         inference_dtypes.add(str(promoted.dtype))
         if promoted.dtype != np.float64:
-            raise ValueError("reference64 likelihood input must actually be float64")
+            msg = "reference64 likelihood input must actually be float64"
+            raise ValueError(msg)
         return promoted
 
     result = checkpointed_forward_backward(
@@ -169,7 +158,8 @@ def reference64_prediction(
         dtype=np.float64,
     ).dataset
     if set(output_dtypes(result).values()) != {"float64"}:
-        raise ValueError("reference64 posterior must actually be float64")
+        msg = "reference64 posterior must actually be float64"
+        raise ValueError(msg)
     return result, {
         "likelihood_compute_dtypes": sorted(observed_dtypes),
         "likelihood_inference_dtypes": sorted(inference_dtypes),
@@ -227,8 +217,7 @@ def workload(args):
         "spike_times": decode_spikes,
         "position_time": decode_time,
         "position": decode_position,
-        "time_edges": np.arange(int(round(args.duration * SAMPLE_RATE)) + 1)
-        / SAMPLE_RATE,
+        "time_edges": np.arange(round(args.duration * SAMPLE_RATE) + 1) / SAMPLE_RATE,
     }
     if args.family == "clusterless":
         fit["spike_waveform_features"] = [

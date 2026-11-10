@@ -1,0 +1,607 @@
+"""The grammar a covariate-transition formula read from a saved model must use.
+
+patsy evaluates every term of a formula as Python, so a formula such as
+``"__import__('os').system(...)"`` would run code when a design matrix is
+built. A formula the user writes in their own session is their own code and is
+not checked; one read from a saved model file may be someone else's, so
+``load_model`` checks it against a small grammar before patsy evaluates it
+(unless told the file is trusted).
+
+The check uses patsy's own parser (``ModelDesc.from_formula``), which splits a
+formula at its patsy operators (``+ - * / : ** ~`` and parentheses) without
+evaluating anything, into the Python expressions patsy later evaluates: the
+``code`` of each term's factors. Each of these is parsed with :mod:`ast` and
+accepted only if every node is one of
+
+- a covariate name: an identifier that is not called and does not start with
+  ``__``;
+- a number, ``True``, ``False`` or ``None``;
+- the operators ``+ - * /`` and unary ``+`` and ``-``, and ``**`` with an
+  exponent that is a number of magnitude at most ``_MAX_EXPONENT`` and a base
+  without another ``**`` (so evaluation time stays bounded);
+- integers computed from literals alone (which Python evaluates exactly)
+  within int64, at most ``_MAX_LENGTH`` characters and expressions nested at
+  most ``_MAX_DEPTH`` deep;
+- spline sizes ``df`` and ``n_knots`` integers from 1 to ``_MAX_SIZE``,
+  ``degree`` from 0 to ``_MAX_DEGREE``, ``knots=`` and ``levels=`` lists of at
+  most ``_MAX_SIZE`` entries, and at most ``_MAX_CALLS`` calls in a formula
+  (limits on a design's arguments, not on its size: interactions can still
+  make it very large);
+- a list or tuple of numbers (e.g. ``knots=[1.0, 4.0]``);
+- ``np.pi``;
+- a call of one of the documented transforms (``_FUNCTIONS``) or elementwise
+  numpy functions (``_NUMPY_FUNCTIONS``), with arguments, and keyword
+  arguments, that are themselves allowed;
+- ``C(data, contrast, levels)``, whose contrast (which patsy calls) must be a
+  call of one of patsy's contrasts (``_CONTRASTS``) with literal arguments,
+  e.g. ``C(arm, Treatment('b'))``, and whose levels are a list or tuple of
+  literals, e.g. ``levels=['a', 'b']``. These are the only places a string
+  literal may appear.
+
+Everything else is refused: other attribute access, subscripts, strings
+elsewhere, lambdas, comprehensions, conditionals, comparisons, bitwise
+operators, line breaks and backslashes, and calls of anything else. Validating
+the factor code patsy itself extracted means the check sees exactly the Python
+that patsy would evaluate, so a string cannot be split one way for the check
+and another way for evaluation.
+
+patsy looks up a name it does not find in the covariates in the caller's
+namespace and Python's builtins (``breakpoint``, ``exit``, ...). Wherever the
+covariates are known, every covariate name of the formula must therefore be
+one of them (``covariate_names``).
+
+A formula read from a file is held as one of two types, so that copies,
+pickles and ``sklearn.clone`` of the loaded model carry its origin:
+
+- ``LoadedFormula``, a ``str`` within the grammar, checked again with the
+  covariate names whenever a design is built from it;
+- ``UntrustedFormula``, an inert object holding the text of a formula outside
+  the grammar. It is not a string, so patsy cannot evaluate it, and building a
+  design from it raises (``refuse_untrusted``).
+
+Setting a transition's formula to a plain string, the user's own code, clears
+either. These classes are pickled by reference to this module.
+"""
+
+import ast
+from collections.abc import Collection
+from dataclasses import dataclass
+from typing import NoReturn
+
+from patsy import ModelDesc, PatsyError
+
+from non_local_detector.exceptions import ValidationError
+
+# The package's spline and transform functions: patsy's built-in ``bs``,
+# ``cr``, ``cc``, ``te``, ``center``, ``standardize``, ``C`` and ``I``, and
+# the package's ``quantile_bs`` and ``cyclic_bs``.
+_FUNCTIONS = frozenset(
+    {
+        "C",
+        "I",
+        "bs",
+        "cc",
+        "center",
+        "cr",
+        "cyclic_bs",
+        "quantile_bs",
+        "standardize",
+        "te",
+    }
+)
+# Called as ``np.<name>(...)``: elementwise functions of their arguments.
+_NUMPY_FUNCTIONS = frozenset(
+    {
+        "abs",
+        "arccos",
+        "arcsin",
+        "arctan",
+        "arctan2",
+        "ceil",
+        "cos",
+        "exp",
+        "expm1",
+        "floor",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "maximum",
+        "minimum",
+        "sign",
+        "sin",
+        "sqrt",
+        "square",
+        "tan",
+    }
+)
+# patsy's contrasts, called with literal arguments as the contrast of C().
+_CONTRASTS = frozenset({"Diff", "Helmert", "Poly", "Sum", "Treatment"})
+# The parameters of patsy's C, in order.
+_C_PARAMETERS = ("data", "contrast", "levels")
+# Read as ``np.<name>``, e.g. ``upper=2 * np.pi``.
+_NUMPY_CONSTANTS = frozenset({"pi"})
+_BINARY_OPERATORS: tuple[type[ast.operator], ...] = (
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.Pow,
+)
+_UNARY_OPERATORS: tuple[type[ast.unaryop], ...] = (ast.UAdd, ast.USub)
+# Largest magnitude of a ``**`` exponent.
+_MAX_EXPONENT = 10
+# Python ints are unbounded, and numpy keeps one beyond int64 as an object, so
+# every integer patsy would compute from literals must be within int64; with
+# the length and nesting limits this bounds evaluation time.
+_INT_LIMIT = 2**63
+_MAX_LENGTH = 2000
+_MAX_DEPTH = 32
+# The design's size follows from these, so they are capped: spline sizes
+# (df, n_knots) and list lengths (knots, levels) at _MAX_SIZE, degree at
+# _MAX_DEGREE, and the calls of a formula at _MAX_CALLS.
+_MAX_SIZE = 1000
+_MAX_DEGREE = 10
+_MAX_CALLS = 32
+# Parameters of the spline transforms, in order, to read positional arguments.
+_SPLINE_PARAMETERS = {
+    "bs": (
+        "x",
+        "df",
+        "knots",
+        "degree",
+        "include_intercept",
+        "lower_bound",
+        "upper_bound",
+    ),
+    "cr": ("x", "df", "knots", "lower_bound", "upper_bound", "constraints"),
+    "cc": ("x", "df", "knots", "lower_bound", "upper_bound", "constraints"),
+    "quantile_bs": ("x", "n_knots", "degree", "lower_quantile", "upper_quantile"),
+    "cyclic_bs": ("x", "lower", "upper", "n_knots", "degree"),
+}
+# (smallest, largest) integer of each count-like spline argument.
+_COUNT_RANGES = {
+    "df": (1, _MAX_SIZE),
+    "n_knots": (1, _MAX_SIZE),
+    "degree": (0, _MAX_DEGREE),
+}
+
+_ALLOWED = (
+    "covariate names (keys of the covariate data), numbers, True, False and "
+    "None, the operators + - * / : and parentheses, ** with a number of "
+    f"magnitude at most {_MAX_EXPONENT} as exponent, lists or tuples of "
+    "numbers, np.pi, and calls of "
+    + ", ".join(sorted(_FUNCTIONS, key=str.lower))
+    + ", "
+    + ", ".join(f"np.{name}" for name in sorted(_NUMPY_FUNCTIONS))
+    + " (C takes its data, levels= as a list of literals, and as contrast a "
+    "call of "
+    + ", ".join(sorted(_CONTRASTS))
+    + " with literal arguments, e.g. C(arm, Treatment('b')); string literals "
+    "are allowed only there)"
+)
+TRUST_HINT = (
+    "If you trust the file, load it with load_model(path, trust_formulas=True)."
+)
+
+
+_HINT = (
+    "patsy evaluates a formula as Python, so a formula read from a saved "
+    f"model file is limited to this grammar. {TRUST_HINT}"
+)
+
+
+class LoadedFormula(str):
+    """A transition formula read from a saved model file, within the grammar.
+
+    A ``str``, which patsy evaluates as any formula; building a design from it
+    checks it again, with the names of the covariates it is evaluated on.
+    """
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class UntrustedFormula:
+    """A transition formula read from a saved model file and not evaluated.
+
+    It is outside the grammar and the file was not trusted. Not a string (and
+    without patsy's ``__patsy_get_model_desc__``), so patsy refuses it;
+    building a design from it raises ``ValidationError``.
+
+    Attributes
+    ----------
+    text : object
+        The formula as stored in the file, usually a str.
+    """
+
+    text: object
+
+
+def refuse_untrusted(formula: UntrustedFormula, action: str) -> NoReturn:
+    """Raise that ``action`` would evaluate the untrusted ``formula``.
+
+    Raises
+    ------
+    ValidationError
+        Always, naming the formula and ``trust_formulas``.
+    """
+    msg = (
+        f"Cannot {action}: the transition formula {formula.text!r} was read "
+        "from a saved model file, is outside the formula grammar and was not "
+        "trusted, so it is not evaluated (patsy evaluates formulas as Python). "
+        "The model can only be inspected."
+    )
+    raise ValidationError(
+        msg,
+        hint=f"{TRUST_HINT} Or give the transition a formula of your own, e.g. "
+        "detector.discrete_transition_type.formula = '1 + quantile_bs(speed)'.",
+    )
+
+
+def check_formula(
+    formula: object, covariate_names: Collection[str] | None = None
+) -> None:
+    """Check that a transition formula only uses the allowed grammar.
+
+    Parameters
+    ----------
+    formula : str
+        Right-hand-side patsy formula, e.g. ``"1 + quantile_bs(speed)"``.
+        Typed ``object`` because a stored or user-set formula may be of any
+        type, and anything but a string is refused.
+    covariate_names : collection of str, optional
+        Keys of the covariate data the formula will be evaluated on. When
+        given, every covariate name of the formula must be one of them.
+
+    Raises
+    ------
+    ValidationError
+        If ``formula`` is not a string, cannot be parsed, has a response
+        (left of ``~``), uses syntax outside the grammar, or names a
+        covariate missing from ``covariate_names``; the message names the
+        offending element and the allowed set.
+    """
+    if not isinstance(formula, str):
+        msg = "A transition formula must be a string."
+        raise ValidationError(
+            msg,
+            expected='a patsy formula, e.g. "1 + quantile_bs(speed)"',
+            got=type(formula).__name__,
+        )
+    # patsy's tokenizer fails with a bare AssertionError on some line
+    # continuations, and no formula needs one.
+    if "\\" in formula or not formula.replace("\t", " ").isprintable():
+        _refuse(formula, "a line break or backslash or another control character")
+    if len(formula) > _MAX_LENGTH:
+        _refuse(formula, f"more than {_MAX_LENGTH} characters")
+    try:
+        description = ModelDesc.from_formula(formula)
+    except PatsyError as error:
+        msg = f"Transition formula {formula!r} could not be parsed: {error}"
+        raise ValidationError(
+            msg,
+            expected=f"a patsy formula using {_ALLOWED}",
+            got=repr(formula),
+            hint=_HINT,
+        ) from None
+    if description.lhs_termlist:
+        _refuse(formula, "a response (left of '~')")
+    # Terms share factors (speed:phase and speed), each evaluated once.
+    codes = sorted(
+        {factor.name() for term in description.rhs_termlist for factor in term.factors}
+    )
+    n_calls = sum(_check_expression(code, formula, covariate_names) for code in codes)
+    if n_calls > _MAX_CALLS:
+        _refuse(formula, f"{n_calls} calls, more than {_MAX_CALLS}")
+
+
+def _check_expression(
+    code: str, formula: str, covariate_names: Collection[str] | None
+) -> int:
+    """Refuse a Python expression of ``formula`` outside the grammar.
+
+    Also refuse one naming a covariate missing from ``covariate_names``.
+    Return the expression's number of calls.
+    """
+    try:
+        expression = ast.parse(code, mode="eval").body
+    except SyntaxError:
+        _refuse(formula, f"the invalid Python expression {code!r}")
+    if _depth(expression) > _MAX_DEPTH:
+        _refuse(formula, f"expressions nested more than {_MAX_DEPTH} deep")
+    offending = _offending(expression) or _large_integer(expression)
+    if offending is not None:
+        _refuse(formula, offending)
+    n_calls = sum(isinstance(node, ast.Call) for node in ast.walk(expression))
+    if covariate_names is None:
+        return n_calls
+    available = set(covariate_names)
+    for name in sorted(_names(expression)):
+        if name not in available:
+            _refuse(
+                formula,
+                f"the name {name}, which is not a covariate (the covariates "
+                f"are {sorted(map(str, available))})",
+            )
+    return n_calls
+
+
+def _offending(node: ast.AST) -> str | None:
+    """Describe the first node of ``node`` outside the grammar, or return None."""
+    if isinstance(node, ast.Name):
+        if node.id.startswith("__"):
+            return f"the name {node.id}"
+        if node.id == "np":
+            return "the bare name np"
+        return None
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if value is None or isinstance(value, bool | int | float):
+            return None
+        return f"the literal {ast.unparse(node)}"
+    if isinstance(node, ast.Attribute):
+        if _numpy_member(node) in _NUMPY_CONSTANTS:
+            return None
+        return f"the attribute access {ast.unparse(node)}"
+    if isinstance(node, ast.BinOp):
+        if not isinstance(node.op, _BINARY_OPERATORS):
+            return f"the operator in {ast.unparse(node)}"
+        if isinstance(node.op, ast.Pow):
+            exponent = _number(node.right)
+            if exponent is None or abs(exponent) > _MAX_EXPONENT:
+                return (
+                    f"the power {ast.unparse(node)}, whose exponent is not a "
+                    f"number of magnitude at most {_MAX_EXPONENT}"
+                )
+            if any(
+                isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Pow)
+                for inner in ast.walk(node.left)
+            ):
+                return f"the nested power {ast.unparse(node)}"
+        return _offending(node.left) or _offending(node.right)
+    if isinstance(node, ast.UnaryOp):
+        if not isinstance(node.op, _UNARY_OPERATORS):
+            return f"the operator in {ast.unparse(node)}"
+        return _offending(node.operand)
+    if isinstance(node, ast.List | ast.Tuple):
+        for element in node.elts:
+            if _number(element) is None:
+                return f"the list {ast.unparse(node)}, which holds more than numbers"
+        return None
+    if isinstance(node, ast.Call):
+        return _offending_call(node)
+    return f"the {type(node).__name__} expression {ast.unparse(node)}"
+
+
+def _offending_call(call: ast.Call) -> str | None:
+    """Describe what a call does outside the grammar, or return None."""
+    function = call.func
+    if isinstance(function, ast.Name):
+        allowed = function.id in _FUNCTIONS
+    else:
+        allowed = (
+            isinstance(function, ast.Attribute)
+            and _numpy_member(function) in _NUMPY_FUNCTIONS
+        )
+    if not allowed:
+        return f"the call of {ast.unparse(function)} in {ast.unparse(call)}"
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            return f"the ** argument in {ast.unparse(call)}"
+    if isinstance(function, ast.Name) and function.id == "C":
+        return _offending_c(call)
+    if isinstance(function, ast.Name) and function.id in _SPLINE_PARAMETERS:
+        offending = _offending_spline(call, _SPLINE_PARAMETERS[function.id])
+        if offending is not None:
+            return offending
+    for node in _arguments(call):
+        offending = _offending(node)
+        if offending is not None:
+            return offending
+    return None
+
+
+def _offending_c(call: ast.Call) -> str | None:
+    """Describe what a call of patsy's ``C`` does outside the grammar, or return None.
+
+    patsy calls the contrast, so it must be a call of one of ``_CONTRASTS``
+    with literal arguments; the levels must be a list or tuple of literals.
+    """
+    if len(call.args) > len(_C_PARAMETERS):
+        return f"the arguments of {ast.unparse(call)}"
+    arguments = dict(zip(_C_PARAMETERS, call.args, strict=False))
+    for keyword in call.keywords:
+        if keyword.arg not in _C_PARAMETERS or keyword.arg in arguments:
+            return f"the argument {keyword.arg}= in {ast.unparse(call)}"
+        arguments[keyword.arg] = keyword.value
+    contrast = arguments.get("contrast")
+    if contrast is not None and not _is_contrast(contrast):
+        return (
+            f"the contrast {ast.unparse(contrast)} in {ast.unparse(call)}, which "
+            "is not a call of " + ", ".join(sorted(_CONTRASTS)) + " with literal "
+            "arguments"
+        )
+    levels = arguments.get("levels")
+    if levels is not None and not (
+        isinstance(levels, ast.List | ast.Tuple)
+        and len(levels.elts) <= _MAX_SIZE
+        and all(_is_scalar_literal(element) for element in levels.elts)
+    ):
+        return (
+            f"the levels {ast.unparse(levels)} in {ast.unparse(call)}, which "
+            f"are not a list of at most {_MAX_SIZE} literals"
+        )
+    data = arguments.get("data")
+    return None if data is None else _offending(data)
+
+
+def _offending_spline(call: ast.Call, parameters: tuple[str, ...]) -> str | None:
+    """Describe a spline call's size outside its caps, or return None.
+
+    ``df``, ``n_knots`` and ``degree`` must be integer literals in
+    ``_COUNT_RANGES`` (or None), and ``knots`` a list or tuple of at most
+    ``_MAX_SIZE`` entries (or None); the entries themselves are checked as
+    any argument.
+    """
+    if len(call.args) > len(parameters):
+        return f"the arguments of {ast.unparse(call)}"
+    arguments = dict(zip(parameters, call.args, strict=False))
+    for keyword in call.keywords:
+        if keyword.arg not in parameters or keyword.arg in arguments:
+            return f"the argument {keyword.arg}= in {ast.unparse(call)}"
+        arguments[keyword.arg] = keyword.value
+    for name, (lowest, highest) in _COUNT_RANGES.items():
+        node = arguments.get(name)
+        if node is None or (isinstance(node, ast.Constant) and node.value is None):
+            continue
+        value = node.value if isinstance(node, ast.Constant) else None
+        if not (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and lowest <= value <= highest
+        ):
+            return (
+                f"the {name} {ast.unparse(node)} in {ast.unparse(call)}, which "
+                f"is not an integer from {lowest} to {highest}"
+            )
+    knots = arguments.get("knots")
+    if knots is None or (isinstance(knots, ast.Constant) and knots.value is None):
+        return None
+    if not (isinstance(knots, ast.List | ast.Tuple) and len(knots.elts) <= _MAX_SIZE):
+        return (
+            f"the knots {ast.unparse(knots)} in {ast.unparse(call)}, which are "
+            f"not a list of at most {_MAX_SIZE} numbers"
+        )
+    return None
+
+
+def _is_contrast(node: ast.expr) -> bool:
+    """Check whether ``node`` is a call of one of patsy's contrasts.
+
+    Its arguments must be literals (or lists or tuples of literals).
+    """
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _CONTRASTS
+        and all(keyword.arg is not None for keyword in node.keywords)
+        and all(_is_literal(argument) for argument in _arguments(node))
+    )
+
+
+def _is_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is a scalar literal or a list or tuple of them."""
+    if isinstance(node, ast.List | ast.Tuple):
+        return all(_is_scalar_literal(element) for element in node.elts)
+    return _is_scalar_literal(node)
+
+
+def _is_scalar_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is a (signed) number, a string, True, False or None."""
+    if _number(node) is not None:
+        return True
+    return isinstance(node, ast.Constant) and (
+        node.value is None or isinstance(node.value, bool | str)
+    )
+
+
+def _depth(node: ast.AST) -> int:
+    """Nesting depth of an expression's syntax tree."""
+    return 1 + max((_depth(child) for child in ast.iter_child_nodes(node)), default=0)
+
+
+def _large_integer(expression: ast.expr) -> str | None:
+    """Describe the first integer computed from literals that may reach int64.
+
+    Return a description of the first integer in ``expression`` computed from
+    literals alone whose magnitude may reach int64's limit, or None.
+    """
+    for node in ast.walk(expression):
+        bound = _integer_bound(node)
+        if bound is not None and bound >= _INT_LIMIT:
+            return f"the integer {ast.unparse(node)}, whose magnitude may exceed int64"
+    return None
+
+
+def _integer_bound(node: ast.AST) -> int | None:
+    """Return an upper bound of the magnitude of an integer ``node``.
+
+    The bound is capped at ``_INT_LIMIT``, if ``node`` is an integer computed
+    from literals alone (which Python evaluates exactly, however large), else
+    None.
+
+    Run on expressions within the grammar, whose ``**`` exponents are at most
+    ``_MAX_EXPONENT``, so the capped arithmetic stays small.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int):  # bool included
+            return min(abs(node.value), _INT_LIMIT)
+        return None
+    if isinstance(node, ast.UnaryOp):
+        return _integer_bound(node.operand)
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, ast.Add | ast.Sub | ast.Mult | ast.Pow
+    ):
+        left, right = _integer_bound(node.left), _integer_bound(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add | ast.Sub):
+            bound = left + right
+        elif isinstance(node.op, ast.Mult):
+            bound = left * right
+        else:
+            bound = left**right
+        return min(bound, _INT_LIMIT)
+    return None
+
+
+def _number(node: ast.expr) -> float | None:
+    """Return the value of a (signed) int or float literal, or None otherwise."""
+    sign = 1
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, _UNARY_OPERATORS):
+        if isinstance(node.op, ast.USub):
+            sign = -sign
+        node = node.operand
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int | float)
+        and not isinstance(node.value, bool)
+    ):
+        return sign * float(node.value)
+    return None
+
+
+def _names(node: ast.AST) -> set[str]:
+    """Return the covariate names of a grammar-checked expression.
+
+    These are its names, other than the functions it calls and ``np``.
+    """
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.Attribute):
+        return set()
+    children: list[ast.AST] = (
+        list(_arguments(node))
+        if isinstance(node, ast.Call)
+        else list(ast.iter_child_nodes(node))
+    )
+    return set().union(*(_names(child) for child in children))
+
+
+def _arguments(call: ast.Call) -> list[ast.expr]:
+    """Positional and keyword argument values of a call."""
+    return [*call.args, *(keyword.value for keyword in call.keywords)]
+
+
+def _numpy_member(node: ast.Attribute) -> str | None:
+    """``name`` of ``np.<name>``, or None for any other attribute access."""
+    if isinstance(node.value, ast.Name) and node.value.id == "np":
+        return node.attr
+    return None
+
+
+def _refuse(formula: str, offending: str) -> NoReturn:
+    """Raise the error that ``formula`` uses ``offending``."""
+    msg = f"Transition formula {formula!r} uses {offending}, which is not allowed."
+    raise ValidationError(msg, expected=_ALLOWED, got=offending, hint=_HINT)

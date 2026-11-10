@@ -1,7 +1,7 @@
 """Measure first-call and warm KDE kernel runtime without a wall-clock test gate.
 
-The default workload matches the former 100 x 200 x 4 test probes. Each kernel
-is checked against a NumPy Gaussian reference before reporting its timings.
+The default workload matches the former 100 x 200 x 4 test probes. The log
+kernel is checked against a NumPy Gaussian reference before reporting its timings.
 """
 
 import argparse
@@ -13,10 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from compare_prediction_modes import provenance
 
-from non_local_detector.likelihoods.clusterless_kde import (
-    kde_distance,
-    log_kde_distance,
-)
+from non_local_detector.likelihoods.clusterless_kde import log_kde_distance
 
 
 def measure(predict, repeats):
@@ -66,17 +63,12 @@ def main():
         **provenance(__file__),
         "jax": jax.__version__,
         "workload": vars(args),
-        "kernels": {},
     }
-    for name, kernel, expected in (
-        ("linear", kde_distance, np.exp(expected_log)),
-        ("log", log_kde_distance, expected_log),
-    ):
-        result, timing = measure(lambda _kernel=kernel: _kernel(*inputs), args.repeats)
-        result = np.asarray(result)
-        assert np.all(np.isfinite(result))
-        np.testing.assert_allclose(result, expected, rtol=2e-5, atol=1e-7)
-        report["kernels"][name] = {**timing, "dtype": str(result.dtype)}
+    result, timing = measure(lambda: log_kde_distance(*inputs), args.repeats)
+    result = np.asarray(result)
+    assert np.all(np.isfinite(result))
+    np.testing.assert_allclose(result, expected_log, rtol=2e-5, atol=1e-7)
+    report["kernels"] = {"log": {**timing, "dtype": str(result.dtype)}}
     print(json.dumps(report, indent=2))
 
 

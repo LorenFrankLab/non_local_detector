@@ -1,0 +1,12 @@
+# Modules and packages that are implementation, not API (one dotted name per
+# line, relative to non_local_detector; a package covers its submodules).
+# docs/gen_ref_pages.py skips them from the API reference unless they define
+# a non-empty __all__, and tests/test_public_api.py does not require them to
+# define __all__. Every other public module must define __all__.
+core
+checkpointed_inference
+encoding_time
+graph_distances
+result_store
+transition_operators
+likelihoods

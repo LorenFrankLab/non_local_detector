@@ -214,7 +214,7 @@ print(compiled.as_text())
 import jax
 
 # Configure for GPU
-jax.config.update('jax_platform_name', 'gpu')
+jax.config.update("jax_platform_name", "gpu")
 
 # Check devices
 print(jax.devices())  # Should show GPU

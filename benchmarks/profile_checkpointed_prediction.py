@@ -31,6 +31,7 @@ import pstats
 import sys
 import time
 from collections import defaultdict
+from dataclasses import replace
 from functools import wraps
 from pathlib import Path
 
@@ -40,7 +41,7 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import (  # noqa: E402
+from compare_prediction_modes import (
     provenance,
     set_population_defaults,
     workload,
@@ -160,9 +161,9 @@ def main():
         else _CLUSTERLESS_ALGORITHMS
     )
     originals = dict(registry)
-    for name, (fit_function, predict_function) in originals.items():
+    for name, record in originals.items():
 
-        def split(predict_function=predict_function):
+        def split(predict_function=record.predict):
             local = timed("likelihood_local", predict_function)
             nonlocal_ = timed("likelihood_nonlocal", predict_function)
 
@@ -173,7 +174,7 @@ def main():
 
             return dispatch
 
-        registry[name] = (fit_function, split())
+        registry[name] = replace(record, predict=split())
     no_spike_original = no_spike.predict_no_spike_log_likelihood
     patched = {
         "no_spike": (no_spike, "predict_no_spike_log_likelihood", no_spike_original),

@@ -1,9 +1,23 @@
-try:
+"""Interactive figurl view for 1D decoding results (requires ``sortingview``)."""
+
+from non_local_detector.visualization._optional import sortingview_available
+
+__all__ = [
+    "create_1D_decode_view",
+    "create_interactive_1D_decoding_figurl",
+]
+
+
+if sortingview_available():
+    from typing import cast
+
     import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
 
+    from non_local_detector.analysis.posterior import _state_probabilities
+    from non_local_detector.models._state_space import fitted_states
     from non_local_detector.models.base import _DetectorBase
     from non_local_detector.models.non_local_model import (
         _get_conditional_non_local_posterior,
@@ -16,24 +30,32 @@ try:
         Parameters
         ----------
         series : xr.DataArray
+            Series with ``time`` and ``position`` dimensions and values in
+            [0, 1], such as a posterior.
 
         Returns
         -------
         xr.DataArray
         """
-        discretized = np.multiply(series, 255).astype(np.uint8)  # type: ignore
+        discretized = np.multiply(series, 255).astype(np.uint8)
         stacked = discretized.stack(unified_index=["time", "position"])  # type: ignore[union-attr]
-        return stacked.where(stacked > 0, drop=True).astype(np.uint8)
+        return cast(
+            "xr.DataArray", stacked.where(stacked > 0, drop=True).astype(np.uint8)
+        )
 
     def get_observations_per_time(
-        trimmed_posterior: xr.DataArray, base_data: xr.Dataset
+        trimmed_posterior: xr.DataArray, base_data: xr.DataArray
     ) -> np.ndarray:
         """Get the number of observations per time.
 
         Parameters
         ----------
         trimmed_posterior : xr.DataArray
-        base_data : xr.Dataset
+            Discretized posterior stacked over (time, position), with a ``time``
+            coordinate per retained entry.
+        base_data : xr.DataArray
+            Full-resolution data whose ``time`` coordinate defines the output
+            length.
 
         Returns
         -------
@@ -43,7 +65,7 @@ try:
         indexed_counts = xr.DataArray(counts, coords={"time": times})
         _, good_counts = xr.align(
             base_data.time, indexed_counts, join="left", fill_value=0
-        )  # type: ignore
+        )
 
         return good_counts.values.astype(np.uint8)
 
@@ -52,7 +74,8 @@ try:
 
         Parameters
         ----------
-        times : np.ndarray
+        times : np.ndarray, shape (n_time,)
+            Sample times in seconds.
 
         Returns
         -------
@@ -60,7 +83,7 @@ try:
         """
         round_times = np.floor(1000 * times)
         median_delta_t_ms = np.median(np.diff(round_times)).item()
-        return 1000 / median_delta_t_ms  # from time-delta to Hz
+        return cast("float", 1000 / median_delta_t_ms)  # from time-delta to Hz
 
     def get_trimmed_bin_center_index(
         place_bin_centers: np.ndarray, trimmed_place_bin_centers: np.ndarray
@@ -70,7 +93,9 @@ try:
         Parameters
         ----------
         place_bin_centers : np.ndarray, shape (n_position_bins, )
+            Sorted centers of all position bins.
         trimmed_place_bin_centers : np.ndarray, shape (n_trimmed_position_bins, )
+            Bin centers retained after trimming.
 
         Returns
         -------
@@ -85,12 +110,14 @@ try:
         linear_position: np.ndarray | None = None,
         ref_time_sec: float | None = None,
     ) -> vvf.DecodedLinearPositionData:
-        """Creates a view of an interactive heatmap of position vs. time.
+        """Create a view of an interactive heatmap of position vs. time.
 
         Parameters
         ----------
         posterior : xr.DataArray, shape (n_time, n_position_bins)
+            Posterior probability with ``time`` and ``position`` coordinates.
         linear_position : np.ndarray, shape (n_time, ), optional
+            Observed linear position at each time, shown alongside the posterior.
         ref_time_sec : np.float64, optional
             Reference time for the purpose of offsetting the start time
 
@@ -159,7 +186,7 @@ try:
         # Decode the states that are neither Local nor No-Spike, found from
         # the detector's observation models rather than the state names.
         posterior = _get_conditional_non_local_posterior(
-            results, detector.state_names, detector.observation_models
+            results, *fitted_states(detector)
         )
         decode_view = create_1D_decode_view(
             posterior=posterior,
@@ -179,14 +206,13 @@ try:
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.states.values, COLOR_CYCLE, strict=False):
+        for (state, probability), color in zip(
+            _state_probabilities(results).items(), COLOR_CYCLE, strict=False
+        ):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),
-                y=np.asarray(
-                    results.sel(states=state).acausal_state_probabilities,
-                    dtype=np.float32,
-                ),
+                y=np.asarray(probability, dtype=np.float32),
                 color=color,
                 width=1,
             )
@@ -230,7 +256,4 @@ try:
             ],
         )
 
-        return view.url(label="1D Decoding")
-
-except ImportError:
-    pass
+        return cast("str", view.url(label="1D Decoding"))

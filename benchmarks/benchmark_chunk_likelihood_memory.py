@@ -105,7 +105,6 @@ import psutil  # noqa: E402
 from non_local_detector.environment import Environment  # noqa: E402
 from non_local_detector.likelihoods import (  # noqa: E402
     _CLUSTERLESS_ALGORITHMS,
-    _CLUSTERLESS_MARK_REFERENCE_SCALES,
     _SORTED_SPIKES_ALGORITHMS,
 )
 from non_local_detector.likelihoods.common import (  # noqa: E402
@@ -315,7 +314,7 @@ def make_position(duration_s: float, seed: int) -> tuple[np.ndarray, np.ndarray]
     place-bin size, so it does not change what the benchmark measures.
     """
     rng = np.random.default_rng(seed + 977)
-    n_samples = int(round(duration_s * SAMPLING_FREQUENCY)) + 1
+    n_samples = round(duration_s * SAMPLING_FREQUENCY) + 1
     position_time = np.linspace(0.0, duration_s, n_samples)
     # 20 s round trip, independent of duration, so the encoding model is
     # representative at every duration.
@@ -351,7 +350,7 @@ def make_recording(duration_s: float, seed: int = 0) -> Recording:
     rng = np.random.default_rng(seed)
     position_time, position = make_position(duration_s, seed)
     spike_times, features = make_decoding_spikes(duration_s, rng)
-    n_time = int(round(duration_s * SAMPLING_FREQUENCY)) + 1
+    n_time = round(duration_s * SAMPLING_FREQUENCY) + 1
     return Recording(
         duration_s=duration_s,
         time=np.linspace(0.0, duration_s, n_time),
@@ -374,7 +373,7 @@ def make_spike_sweep_recording(
     """
     rng = np.random.default_rng(seed)
     position_time, position = make_position(duration_s, seed)
-    n_time = int(round(duration_s * SAMPLING_FREQUENCY)) + 1
+    n_time = round(duration_s * SAMPLING_FREQUENCY) + 1
     time = np.linspace(0.0, duration_s, n_time)
 
     requested_end = time[SPIKE_SWEEP_ROWS]
@@ -522,27 +521,20 @@ def fit_backend(name: str, encoding) -> FittedBackend:
     position_time, position, environment, spike_times, features = encoding
 
     if name in _SORTED_SPIKES_ALGORITHMS:
-        fit_func, predict_func = _SORTED_SPIKES_ALGORITHMS[name]
-        geometry = {}
-        if name == "sorted_spikes_glm":
-            geometry = {
-                "place_bin_edges": environment.place_bin_edges_,
-                "edges": environment.edges_,
-                "is_track_interior": environment.is_track_interior_,
-                "is_track_boundary": environment.is_track_boundary_,
-            }
+        record = _SORTED_SPIKES_ALGORITHMS[name]
+        fit_func, predict_func = record.fit, record.predict
         encoding_model = fit_func(
             position_time=position_time,
             position=position,
             spike_times=spike_times,
             environment=environment,
-            **geometry,
             **BACKEND_FIT_PARAMS.get(name, {}),
         )
         is_clusterless = False
         mark_reference = None
     elif name in _CLUSTERLESS_ALGORITHMS:
-        fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
+        record = _CLUSTERLESS_ALGORITHMS[name]
+        fit_func, predict_func = record.fit, record.predict
         fit_params = BACKEND_FIT_PARAMS.get(name, {})
         encoding_model = fit_func(
             position_time=position_time,
@@ -553,11 +545,12 @@ def fit_backend(name: str, encoding) -> FittedBackend:
             **fit_params,
         )
         mark_reference = fit_mark_references(
-            features, _CLUSTERLESS_MARK_REFERENCE_SCALES[name](**fit_params)
+            features, record.mark_reference_scale(**fit_params)
         )
         is_clusterless = True
     else:
-        raise SystemExit(f"unknown backend {name!r}")
+        msg = f"unknown backend {name!r}"
+        raise SystemExit(msg)
 
     return FittedBackend(
         name=name,
@@ -572,7 +565,9 @@ def fit_backend(name: str, encoding) -> FittedBackend:
 
 
 def selection_sizes(
-    backend: FittedBackend, recording: Recording, row_slice: slice
+    backend: FittedBackend,  # noqa: ARG001 -- same signature as the other selection helpers
+    recording: Recording,
+    row_slice: slice,
 ) -> dict[str, int]:
     """Recompute, from the public helper, what the call selects for this chunk.
 
@@ -1036,7 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
             "jax": jax.__version__,
             **provenance(__file__),
         }
-        with open(args.json, "w") as handle:
+        with Path(args.json).open("w") as handle:
             json.dump(results, handle, indent=2)
         print(f"\nRaw results written to {args.json}")
 

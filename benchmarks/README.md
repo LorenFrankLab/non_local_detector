@@ -8,7 +8,7 @@ for its options.
 uv run python benchmarks/<script>.py --help
 ```
 
-`src/non_local_detector/tests/test_benchmark_scripts.py` runs every script's
+`tests/test_benchmark_scripts.py` runs every script's
 `--help` in the test suite. A script that stops importing against the current
 package fails CI instead of silently going stale.
 
@@ -56,6 +56,7 @@ names.
 
 | Script | Measures | Typical use |
 | --- | --- | --- |
+| `compare_model_formats.py` | For a fitted detector pickle: file size and median save and load times as a pickle and in the `save_model` format, `read_model_summary` time, and with `--predict-inputs` (a pickled dict of `predict` arguments) the largest posterior difference between the two loaded detectors. | `python benchmarks/compare_model_formats.py detector.pkl --predict-inputs inputs.pkl` |
 | `compare_prediction_modes.py` | One fit and prediction of a simulated 2-D recording: fit time, compile and warm prediction time, peak host RSS and device memory, saved state probabilities and actual output dtypes. Modes are `dense`, `chunked` (`n_chunks`), checkpointed `compact`, and benchmark-only `reference64` HMM inference with fixed float32 observations. `--algorithm` selects a likelihood and `--rate-spread` gives units different spike rates. Works on older checkouts via `PYTHONPATH` and refuses modes they lack. | One configuration per process: `--family --mode --duration --arena --bin-size` |
 | `benchmark_em.py` | EM parameter estimation (`estimate_parameters`) on the same simulated session: first and warm wall time, iterations, marginal log-likelihoods, peak host RSS and device memory. EM uses the dense filter/smoother. | `--family --duration --bin-size --max-iter [--algorithm]` |
 | `profile_em.py` | Splits EM (`estimate_parameters`) into nested stages: the internal fit (environment and all-pairs distances, transitions, encoding fit), each E-step's likelihood and filter/smoother (dense, or the checkpointed driver with `--transition-representation`), and the encoding and discrete M-steps. Records inclusive and exclusive seconds, XLA compiles attributed to the triggering stage, and device/host peak increases, for a compiling run, an uninstrumented warm run and an instrumented warm run. Runs on a real recording `.npz` (linearized track or `--environment 2d`) or the simulated session; `--xprof-dir` traces one warm iteration with stage annotations, `--cprofile` lists host hot spots. | `--recording FILE --duration --bin-size --max-iter`, or `--simulated {sorted,clusterless}` |
@@ -75,7 +76,7 @@ names.
 | `benchmark_gaussian_numerics.py` | Gaussian score/EM runtime, compiled buffers and preserved outputs. | `OUTPUT_DIR --samples --components` |
 | `benchmark_hmm_conditioning.py` | Compiled HMM kernels compared with a Git baseline or a saved core. | `--baseline-ref` |
 | `benchmark_sorted_spikes_diffusion.py` | Sorted-spikes diffusion eigendecomposition, diffusion and fit cost across grid sizes. | `[--neurons N] [--bin-sizes ...]` |
-| `benchmark_kde_distance.py` | First-call and warm linear/log KDE kernel runtime, checked against NumPy Gaussian values. | `[--eval-points N --samples N --dimensions N]` |
+| `benchmark_kde_distance.py` | First-call and warm log KDE kernel runtime, checked against NumPy Gaussian values. | `[--eval-points N --samples N --dimensions N]` |
 | `benchmark_clusterless_diffusion.py` | First-call and warm clusterless diffusion/KDE prediction time on a large 2D grid. | `[--grid-side N --encoding-spikes N --decoding-spikes N]` |
 | `qualify_long_encoding.py` | Long-encoding linear KDE compared with independent float64 references. | `--output-dir --platform` |
 

@@ -1,0 +1,166 @@
+"""User-facing errors in the detector classes belong to a package category.
+
+Callers catch ``NotFittedError``, ``ValidationError``, ``ConfigurationError``
+and ``DataError`` by category; none of these paths may raise a bare
+``ValueError`` or ``TypeError``.
+"""
+
+import numpy as np
+import pytest
+import xarray as xr
+
+from non_local_detector import (
+    ContFragClusterlessClassifier,
+    ContFragSortedSpikesClassifier,
+    time_edges_from_centers,
+)
+from non_local_detector.exceptions import (
+    ConfigurationError,
+    DataError,
+    NotFittedError,
+    ValidationError,
+)
+from non_local_detector.models._input_validation import (
+    _normalize_frozen_discrete_transition_rows,
+    _normalize_return_outputs,
+    _validate_covariate_time_length,
+)
+from tests.models._helpers import toy_recording, toy_sorted_decoder
+
+
+@pytest.fixture(scope="module")
+def fitted():
+    time, position, spike_times = toy_recording()
+    return toy_sorted_decoder().fit(time, position, spike_times), time, spike_times
+
+
+# -- unfitted state ----------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_predict_before_fit_raises_not_fitted_error():
+    time, _, spike_times = toy_recording()
+    with pytest.raises(NotFittedError, match="not fitted") as info:
+        toy_sorted_decoder().predict(
+            spike_times, time_edges=time_edges_from_centers(time)
+        )
+    assert isinstance(info.value, ConfigurationError)
+
+
+@pytest.mark.unit
+def test_transition_intervals_without_covariates_raises_configuration_error(fitted):
+    detector, _, _ = fitted
+    with pytest.raises(ConfigurationError, match="do not depend on covariates") as info:
+        detector.discrete_transition_intervals({"speed": np.zeros(3)})
+    assert not isinstance(info.value, NotFittedError)
+
+
+@pytest.mark.unit
+def test_transition_intervals_before_em_raises_not_fitted_error(fitted):
+    detector, _, _ = fitted
+    # Pretend the transition is covariate dependent but EM has not run.
+    detector = _shallow_copy_with(
+        detector,
+        discrete_transition_design_matrix_=np.zeros((3, 1)),
+        discrete_transition_coefficient_covariance_=None,
+    )
+    with pytest.raises(NotFittedError, match="No transition covariance"):
+        detector.discrete_transition_intervals({"speed": np.zeros(3)})
+
+
+def _shallow_copy_with(detector, **attributes):
+    import copy
+
+    clone = copy.copy(detector)
+    for name, value in attributes.items():
+        setattr(clone, name, value)
+    return clone
+
+
+@pytest.mark.unit
+def test_covariate_data_without_coefficients_raises_configuration_error(fitted):
+    detector, time, spike_times = fitted
+    with pytest.raises(ConfigurationError, match="discrete_transition_coefficients_"):
+        detector.predict(
+            spike_times,
+            time_edges=time_edges_from_centers(time),
+            discrete_transition_covariate_data={"speed": np.zeros(len(time))},
+        )
+
+
+# -- bad option values -------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("frozen_rows", "message"),
+    [
+        ("other", "must be 'no_spike', row indices"),
+        (np.array([True, False]), r"boolean mask must have shape \(4,\)"),
+        ([0, 9], r"indices must be in \[0, 4\)"),
+        ([-1], r"indices must be in \[0, 4\)"),
+        ([0.5], "must be integer indices or a boolean mask"),
+        (np.zeros((2, 2), int), "index array must be 1D"),
+    ],
+    ids=["string", "mask_shape", "high", "negative", "dtype", "ndim"],
+)
+def test_frozen_rows_errors_are_validation_errors(frozen_rows, message):
+    with pytest.raises(ValidationError, match=message):
+        _normalize_frozen_discrete_transition_rows(
+            frozen_rows, np.array([False, True, False, False])
+        )
+
+
+@pytest.mark.unit
+def test_covariate_length_mismatch_is_a_validation_error():
+    with pytest.raises(ValidationError, match="time steps"):
+        _validate_covariate_time_length(np.zeros((10, 2, 2)), np.arange(15))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "classifier", [ContFragSortedSpikesClassifier, ContFragClusterlessClassifier]
+)
+def test_cont_frag_posterior_without_position_dim_is_a_data_error(classifier):
+    """With no position dim to marginalize, ``unstacked.sum([])`` would return
+    the per-bin array unchanged, so ``get_posterior`` raises instead."""
+    import pandas as pd
+
+    mindex = pd.MultiIndex.from_product([["a", "b"], [0, 1]], names=("state", "foo"))
+    mindex_coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
+    results = xr.Dataset(
+        {"acausal_posterior": (("time", "state_bins"), np.full((3, 4), 0.25))},
+        coords={"time": np.arange(3), **mindex_coords},
+    )
+    with pytest.raises(DataError, match="no position dimension"):
+        classifier.get_posterior(results)
+
+
+# -- return_outputs collections ---------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("container", [list, tuple, set, frozenset])
+def test_return_outputs_accepts_any_collection(container):
+    names = container(["filter", "log_likelihood"])
+    assert _normalize_return_outputs(names) == {"filter", "log_likelihood"}
+    assert _normalize_return_outputs(container(["all"])) == _normalize_return_outputs(
+        "all"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        (3, "must be a string, a collection of strings, or None"),
+        (1.5, "must be a string, a collection of strings, or None"),
+        ({"filter": 1}, "must be a string, a collection of strings, or None"),
+        (["filter", 3], "entries must be strings"),
+        (("filter", None), "entries must be strings"),
+    ],
+    ids=repr,
+)
+def test_return_outputs_bad_types_are_validation_errors(bad, message):
+    with pytest.raises(ValidationError, match=message):
+        _normalize_return_outputs(bad)

@@ -26,7 +26,7 @@ fields being smoothed), it is computed once and cached on the ``Environment`` vi
 import heapq
 import warnings
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -37,10 +37,16 @@ import scipy.sparse
 import scipy.sparse.csgraph
 import scipy.sparse.linalg
 
-from non_local_detector.exceptions import ValidationError
+from non_local_detector._warnings import user_stacklevel
+from non_local_detector.exceptions import (
+    NumericalWarning,
+    ParameterWarning,
+    ValidationError,
+)
 
 if TYPE_CHECKING:
     from non_local_detector.environment import Environment
+
 
 # Defaults for heat_kernel_rank (bandwidth-aware auto-truncation): drop modes whose
 # heat-kernel weight exp(-t*lambda) is below _HEAT_KERNEL_RANK_TOL, and fall back to the
@@ -57,7 +63,15 @@ _HEAT_KERNEL_RANK_START = 32
 # Diffused-field values below this fraction of their column's maximum are not
 # resolved: the float32 spectral product and the heat-kernel rank truncation
 # (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
-_FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
+FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
+
+# Keys of this module's entries in the Environment cache (``Environment.get_cached``),
+# all cleared together by ``Environment.fit_place_grid``.
+_GRAPH_KEY = "diffusion_graph"
+_LAPLACIAN_KEY = "diffusion_laplacian"
+_EIGENBASIS_KEY = "diffusion_eigenbasis"
+_HEAT_KERNEL_RANK_KEY = "diffusion_heat_kernel_rank"
+_DEVICE_BASIS_KEY = "diffusion_device_basis"
 
 
 def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
@@ -93,8 +107,9 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     for u, v, data in graph.edges(data=True):
         distance = data["distance"]
         if not distance > 0:  # also catches NaN
+            msg = "graph edge has a non-positive 'distance'"
             raise ValidationError(
-                "graph edge has a non-positive 'distance'",
+                msg,
                 expected="every edge 'distance' > 0",
                 got=f"distance = {distance} on edge ({u}, {v})",
                 hint="Interior-bin edges must carry a positive Euclidean distance.",
@@ -112,8 +127,9 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
 def _require_rank_covers_components(rank: int, n_components: int) -> None:
     """Raise if a truncated ``rank`` would drop a connected component's null mode."""
     if rank < n_components:
+        msg = "rank is too small to retain every connected component's null mode"
         raise ValidationError(
-            "rank is too small to retain every connected component's null mode",
+            msg,
             expected=f"rank >= n_components = {n_components}",
             got=f"rank = {rank}",
             hint=(
@@ -160,8 +176,8 @@ def _block_eigenbasis(
             "Shift-invert eigsh failed; falling back to the no-shift-invert "
             "which='SM' solver, which may return a lower-quality eigenbasis. "
             "Consider a smaller rank or the full (rank=None) decomposition.",
-            UserWarning,
-            stacklevel=2,
+            NumericalWarning,
+            stacklevel=user_stacklevel(),
         )
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM", v0=v0)
 
@@ -270,7 +286,7 @@ def _weyl_exponent(eigvals: np.ndarray) -> float:
     if not 0.0 < low < high:
         return 1.0
     local = np.log(n_modes / half) / np.log(high / low)
-    return min(max(round(2.0 * local), 1), 2) / 2.0
+    return cast(float, min(max(round(2.0 * local), 1), 2) / 2.0)
 
 
 def _adaptive_heat_kernel_basis(
@@ -288,14 +304,16 @@ def _adaptive_heat_kernel_basis(
     the caller to use the full dense basis. See :func:`heat_kernel_rank` for the math.
     """
     if not sigma > 0:
+        msg = "smoothing bandwidth (sigma) must be positive"
         raise ValidationError(
-            "smoothing bandwidth (sigma) must be positive",
+            msg,
             expected="sigma > 0",
             got=f"sigma = {sigma}",
         )
     if not 0.0 < tol < 1.0:
+        msg = "heat-kernel truncation tolerance must lie in (0, 1)"
         raise ValidationError(
-            "heat-kernel truncation tolerance must lie in (0, 1)",
+            msg,
             expected="0 < tol < 1",
             got=f"tol = {tol}",
             hint="tol is a heat-kernel weight exp(-t*lambda); its cutoff -ln(tol) is "
@@ -339,7 +357,7 @@ def heat_kernel_rank(
     tol: float = _HEAT_KERNEL_RANK_TOL,
     dense_fraction: float = _HEAT_KERNEL_DENSE_FRACTION,
 ) -> int | None:
-    """Number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
+    """Return the number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
 
     :func:`diffuse` weights mode ``k`` by ``exp(-t λ_k)``, ``t = sigma**2 / 2``, so modes
     with ``exp(-t λ_k) < tol`` are negligible: dropping them changes the smoothed field
@@ -411,7 +429,7 @@ def connected_component_labels(graph: nx.Graph) -> np.ndarray:
 
 
 def n_connected_components(environment: "Environment") -> int:
-    """Number of connected components of the environment's interior-bin graph.
+    """Return the number of connected components of the environment's interior-bin graph.
 
     Each component contributes one Laplacian null (zero-eigenvalue) mode, so a truncated
     eigenbasis must keep **at least** this many modes (see :func:`diffusion_eigenbasis` /
@@ -432,7 +450,9 @@ def n_connected_components(environment: "Environment") -> int:
     environment_graph(environment)
     return int(
         scipy.sparse.csgraph.connected_components(
-            environment._diffusion_laplacian_, directed=False, return_labels=False
+            environment.get_cached(_LAPLACIAN_KEY),
+            directed=False,
+            return_labels=False,
         )
     )
 
@@ -501,7 +521,7 @@ def diffuse(
             out=np.zeros_like(input_mass, dtype=float),
             where=clipped_mass > 0,
         )
-        return clipped[rows] * scale
+        return cast(np.ndarray, clipped[rows] * scale)
 
     if component_labels is None:
         return _rescale_rows_to_input_mass(np.arange(clipped.shape[0]))
@@ -514,7 +534,9 @@ def diffuse(
 
 
 @partial(jax.jit, static_argnames=("n_components",))
-def _component_mass_sum(fields, labels, n_components):
+def _component_mass_sum(
+    fields: jax.Array, labels: jax.Array, n_components: int
+) -> jax.Array:
     """Sum each component's masses, one masked reduction per component.
 
     Masking and summing are fused; no component-by-node-by-field array is
@@ -523,16 +545,23 @@ def _component_mass_sum(fields, labels, n_components):
     """
     output = jnp.zeros((n_components, *fields.shape[1:]), dtype=fields.dtype)
 
-    def sum_component(component, masses):
+    def sum_component(component: jax.Array, masses: jax.Array) -> jax.Array:
         mask = (labels == component).reshape((-1, *((1,) * (fields.ndim - 1))))
         mass = jnp.sum(jnp.where(mask, fields, 0), axis=0)
         return masses.at[component].set(mass, unique_indices=True)
 
-    return jax.lax.fori_loop(0, n_components, sum_component, output)
+    return cast(jax.Array, jax.lax.fori_loop(0, n_components, sum_component, output))
 
 
 @partial(jax.jit, static_argnames=("sigma", "n_components"))
-def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components):
+def _heat_kernel_apply_jit(
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
+    sigma: float,
+    fields: jax.Array,
+    labels: jax.Array,
+    n_components: int,
+) -> jax.Array:
     """Jitted core of :func:`heat_kernel_apply` (see it for the full contract)."""
     t = sigma**2 / 2.0
     coeff = jnp.exp(-t * eigvals)  # (m,)
@@ -545,17 +574,17 @@ def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components
     in_mass = _component_mass_sum(fields, labels, n_components)
     cl_mass = _component_mass_sum(clipped, labels, n_components)
     scale = jnp.where(cl_mass > 0, in_mass / jnp.where(cl_mass > 0, cl_mass, 1.0), 0.0)
-    return clipped * scale[labels]  # gather back to (n_bins, n_fields)
+    return cast(jax.Array, clipped * scale[labels])  # gather back to (n_bins, n_fields)
 
 
 def heat_kernel_apply(
-    eigvals: jnp.ndarray,
-    eigvecs: jnp.ndarray,
+    eigvals: jax.Array,
+    eigvecs: jax.Array,
     sigma: float,
-    fields: jnp.ndarray,
-    component_labels: jnp.ndarray | None = None,
+    fields: jax.Array,
+    component_labels: jax.Array | None = None,
     n_components: int | None = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """JAX port of ``diffuse``: exp(-tL) F, clipped and per-component mass-rescaled.
 
     Mirrors :func:`diffuse` exactly (clip to >=0, then rescale each column to its
@@ -566,15 +595,15 @@ def heat_kernel_apply(
 
     Parameters
     ----------
-    eigvals : jnp.ndarray, shape (m,)
+    eigvals : jax.Array, shape (m,)
         Laplacian eigenvalues from :func:`diffusion_eigenbasis`.
-    eigvecs : jnp.ndarray, shape (n_bins, m)
+    eigvecs : jax.Array, shape (n_bins, m)
         Corresponding eigenvectors as columns.
     sigma : float
         Smoothing standard deviation in coordinate units (bandwidth).
-    fields : jnp.ndarray, shape (n_bins, n_fields)
+    fields : jax.Array, shape (n_bins, n_fields)
         Count fields on the interior bins, one column per field.
-    component_labels : jnp.ndarray, shape (n_bins,), optional
+    component_labels : jax.Array, shape (n_bins,), optional
         Connected-component id per bin, 0..K-1, by default None (treated as a
         single component).
     n_components : int, optional
@@ -586,7 +615,7 @@ def heat_kernel_apply(
 
     Returns
     -------
-    smoothed : jnp.ndarray, shape (n_bins, n_fields)
+    smoothed : jax.Array, shape (n_bins, n_fields)
         Diffused fields, clipped to be non-negative and renormalized so each
         column's total mass equals the input field's total, per component
         (mass-conserving).
@@ -601,8 +630,11 @@ def heat_kernel_apply(
             n_components = (
                 int(np.asarray(component_labels).max()) + 1
             )  # host sync — non-hot path only
-    return _heat_kernel_apply_jit(
-        eigvals, eigvecs, float(sigma), fields, labels, int(n_components)
+    return cast(
+        jax.Array,
+        _heat_kernel_apply_jit(
+            eigvals, eigvecs, float(sigma), fields, labels, int(n_components)
+        ),
     )
 
 
@@ -631,11 +663,11 @@ def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
     return np.where(mass > 0, smoothed / safe / bin_sizes[:, np.newaxis], 0.0)
 
 
-def _resolved_occupancy(occupancy):
+def resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Array:
     """Bins whose diffused occupancy the heat kernel resolves.
 
     Occupancy is itself a diffused field, so in unvisited bins it is numerical
-    noise below ``_FIELD_RESOLUTION`` of its maximum. Those bins carry no
+    noise below ``FIELD_RESOLUTION`` of its maximum. Those bins carry no
     encoding information: a ratio of a diffused spike field to this noise is
     not a rate, so the likelihoods treat them as zero-occupancy bins. A bin
     with zero occupancy is never resolved, even when no bin has any.
@@ -643,12 +675,13 @@ def _resolved_occupancy(occupancy):
     Parameters
     ----------
     occupancy : array, shape (n_bins,)
+        Diffused occupancy per bin.
 
     Returns
     -------
     resolved : array of bool, shape (n_bins,)
     """
-    return (occupancy > 0.0) & (occupancy >= _FIELD_RESOLUTION * occupancy.max())
+    return (occupancy > 0.0) & (occupancy >= FIELD_RESOLUTION * occupancy.max())
 
 
 def environment_graph(
@@ -696,18 +729,19 @@ def environment_graph(
 
     Notes
     -----
-    The result is cached on ``environment._diffusion_graph_`` (invalidated by
-    ``fit_place_grid``) so the graph is built once and shared by
+    The result is cached on the environment (see ``Environment.get_cached``;
+    cleared by ``fit_place_grid``) so the graph is built once and shared by
     :func:`cached_eigenbasis` and the likelihood fit. Callers must treat the
     returned graph and arrays as read-only.
     """
-    cached = getattr(environment, "_diffusion_graph_", None)
+    cached = environment.get_cached(_GRAPH_KEY)
     if cached is not None:
-        return cached
+        return cast(tuple[nx.Graph, np.ndarray, np.ndarray], cached)
 
-    if environment.is_track_interior_ is None or environment.place_bin_centers_ is None:
+    if not environment._is_fitted:
+        msg = "environment must be fitted before building the diffusion graph"
         raise ValidationError(
-            "environment must be fitted before building the diffusion graph",
+            msg,
             expected="a fitted Environment (place_bin_centers_, is_track_interior_ set)",
             got="an unfitted environment",
             hint="Call environment.fit_place_grid(position) first.",
@@ -715,16 +749,18 @@ def environment_graph(
 
     if environment.track_graph is None:
         if environment.track_graphDD is None:
+            msg = "fitted N-D environment is missing its track graph"
             raise ValidationError(
-                "fitted N-D environment is missing its track graph",
+                msg,
                 expected="track_graphDD set by fit_place_grid",
                 got="track_graphDD is None",
             )
         result = _nd_grid_graph(environment)
     else:
         if environment.track_graph_with_bin_centers_edges_ is None:
+            msg = "fitted linearized environment is missing its bin-center graph"
             raise ValidationError(
-                "fitted linearized environment is missing its bin-center graph",
+                msg,
                 expected="track_graph_with_bin_centers_edges_ set by fit_place_grid",
                 got="track_graph_with_bin_centers_edges_ is None",
             )
@@ -740,9 +776,11 @@ def environment_graph(
     nx.freeze(graph)
     node_order.setflags(write=False)
     bin_sizes.setflags(write=False)
-    environment._diffusion_laplacian_ = build_laplacian(graph)
-    environment._diffusion_graph_ = result
-    return result
+    environment.set_cached(_LAPLACIAN_KEY, build_laplacian(graph))
+    return cast(
+        tuple[nx.Graph, np.ndarray, np.ndarray],
+        environment.set_cached(_GRAPH_KEY, result),
+    )
 
 
 def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
@@ -769,13 +807,14 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
 
     Warns
     -----
-    UserWarning
+    ParameterWarning
         If ``sigma`` is below the characteristic (median) bin spacing, indicating
         the smoother will barely spread beyond a single bin.
     """
     if not sigma > 0:
+        msg = "smoothing bandwidth (position_std) must be positive"
         raise ValidationError(
-            "smoothing bandwidth (position_std) must be positive",
+            msg,
             expected="position_std > 0",
             got=f"position_std = {sigma}",
         )
@@ -789,13 +828,16 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
                 f"({characteristic:g}); the diffusion smoother barely spreads beyond "
                 "one bin, so place fields will stay close to the raw spike counts. "
                 "Increase position_std or use a coarser grid.",
-                UserWarning,
-                stacklevel=2,
+                ParameterWarning,
+                stacklevel=user_stacklevel(),
             )
 
 
 def _freeze_and_cache(
-    cache: dict, rank: int | None, eigvals: np.ndarray, eigvecs: np.ndarray
+    cache: dict[int | None, tuple[np.ndarray, np.ndarray]],
+    rank: int | None,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Freeze a basis read-only, store it under ``rank``, and return it.
 
@@ -815,12 +857,11 @@ def cached_eigenbasis(
     """Return the Laplacian eigenbasis for ``environment``, building it on a miss.
 
     The eigenbasis depends only on the environment's graph (not ``sigma`` and not
-    the fields), so it is computed once and cached on
-    ``environment._diffusion_eigenbasis_`` — a dict keyed by ``rank`` — and reused
-    across all neurons and every EM refit. A cached full-rank (``rank=None``) entry
-    serves any smaller-rank request by slicing its leading columns (valid because
-    the modes are returned ascending). The cache is invalidated by
-    ``fit_place_grid``.
+    the fields), so it is computed once, cached on the environment as a dict keyed
+    by ``rank``, and reused across all neurons and every EM refit. A cached
+    full-rank (``rank=None``) entry serves any smaller-rank request by slicing its
+    leading columns (valid because the modes are returned ascending). The cache is
+    invalidated by ``fit_place_grid``.
 
     Parameters
     ----------
@@ -838,18 +879,17 @@ def cached_eigenbasis(
         Corresponding eigenvectors as columns (read-only, cached). ``node_order`` /
         ``bin_sizes`` come from :func:`environment_graph` (also cached), not from here.
     """
-    cache = getattr(environment, "_diffusion_eigenbasis_", None)
+    cache = environment.get_cached(_EIGENBASIS_KEY)
     if cache is None:
-        cache = {}
-        environment._diffusion_eigenbasis_ = cache
+        cache = environment.set_cached(_EIGENBASIS_KEY, {})
 
     if rank in cache:
-        return cache[rank]
+        return cast(tuple[np.ndarray, np.ndarray], cache[rank])
 
     # Build (and cache) the Laplacian snapshot; environment_graph runs first so a
     # later mutation of the returned graph cannot reach this L.
     environment_graph(environment)
-    laplacian = environment._diffusion_laplacian_
+    laplacian = environment.get_cached(_LAPLACIAN_KEY)
 
     if rank is not None and None in cache:
         eigvals, eigvecs = cache[None]
@@ -882,12 +922,12 @@ def cached_heat_kernel_eigenbasis(
     eigenbasis at that rank in a **single** eigendecomposition — the adaptive probe's
     final eigensolve is reused as the basis, rather than resolving the rank and then
     recomputing it. The result is stored in the same rank-keyed cache as
-    :func:`cached_eigenbasis` (on ``environment._diffusion_eigenbasis_``), and the
-    resolved rank is memoized per ``(sigma, tol, dense_fraction)`` on
-    ``environment._diffusion_heat_kernel_rank_``, so EM refits at the same bandwidth
-    reuse the basis **without re-running the adaptive probe** (zero eigensolves). When
-    the bandwidth needs many modes the resolver falls back to the full dense basis. All
-    diffusion caches are invalidated together by ``Environment.fit_place_grid``.
+    :func:`cached_eigenbasis` (on the environment), and the resolved rank is
+    memoized per ``(sigma, tol, dense_fraction)`` on the environment too, so EM
+    refits at the same bandwidth reuse the basis **without re-running the adaptive
+    probe** (zero eigensolves). When the bandwidth needs many modes the resolver
+    falls back to the full dense basis. All diffusion caches are invalidated
+    together by ``Environment.fit_place_grid``.
 
     Parameters
     ----------
@@ -905,10 +945,9 @@ def cached_heat_kernel_eigenbasis(
     eigvecs : np.ndarray, shape (n_interior, m)
         Corresponding eigenvectors as columns (read-only, cached).
     """
-    rank_cache = getattr(environment, "_diffusion_heat_kernel_rank_", None)
+    rank_cache = environment.get_cached(_HEAT_KERNEL_RANK_KEY)
     if rank_cache is None:
-        rank_cache = {}
-        environment._diffusion_heat_kernel_rank_ = rank_cache
+        rank_cache = environment.set_cached(_HEAT_KERNEL_RANK_KEY, {})
 
     key = (sigma, tol, dense_fraction)
     if key in rank_cache:
@@ -918,7 +957,10 @@ def cached_heat_kernel_eigenbasis(
 
     environment_graph(environment)  # ensures the cached Laplacian snapshot
     rank, eigvals, eigvecs = _adaptive_heat_kernel_basis(
-        environment._diffusion_laplacian_, sigma, tol, dense_fraction
+        environment.get_cached(_LAPLACIAN_KEY),
+        sigma,
+        tol,
+        dense_fraction,
     )
     rank_cache[key] = rank
     if rank is None:
@@ -926,12 +968,11 @@ def cached_heat_kernel_eigenbasis(
             environment, None
         )  # light bandwidth -> dense full basis
 
-    cache = getattr(environment, "_diffusion_eigenbasis_", None)
+    cache = environment.get_cached(_EIGENBASIS_KEY)
     if cache is None:
-        cache = {}
-        environment._diffusion_eigenbasis_ = cache
+        cache = environment.set_cached(_EIGENBASIS_KEY, {})
     if rank in cache:
-        return cache[rank]
+        return cast(tuple[np.ndarray, np.ndarray], cache[rank])
     # Independent copies of the probe's final basis (sliced to the resolved rank) so the
     # frozen cache entry does not alias the probe's arrays.
     return _freeze_and_cache(
@@ -941,16 +982,16 @@ def cached_heat_kernel_eigenbasis(
 
 def get_device_basis(
     environment: "Environment", resolved_rank: int
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
+) -> tuple[jax.Array, jax.Array, jax.Array, int]:
     """Device (jnp) eigenbasis for the clusterless_diffusion predict matmul.
 
-    Transient cache on ``environment._diffusion_device_basis_`` keyed by
-    ``(resolved_rank, device, dtype)``. On a miss, the host basis is retrieved via
-    :func:`cached_eigenbasis` and converted to device arrays once; a cache hit
+    Transient environment cache entry keyed by ``(resolved_rank, device, dtype)``.
+    On a miss, the host basis is retrieved via :func:`cached_eigenbasis` and
+    converted to device arrays once; a cache hit
     returns the exact same device array objects, so a repeated predict-time call at
     the same rank reuses the device-resident basis rather than re-transferring it.
-    Excluded from pickling by ``Environment.__getstate__`` and invalidated on grid
-    refit by ``Environment.fit_place_grid`` (both in ``environment.py``).
+    Stored with ``transient=True`` so it is not pickled, and cleared on grid refit
+    by ``Environment.fit_place_grid``.
 
     Parameters
     ----------
@@ -961,11 +1002,11 @@ def get_device_basis(
 
     Returns
     -------
-    eigvals : jnp.ndarray, shape (resolved_rank,)
+    eigvals : jax.Array, shape (resolved_rank,)
         Laplacian eigenvalues, on ``device``.
-    eigvecs : jnp.ndarray, shape (n_interior, resolved_rank)
+    eigvecs : jax.Array, shape (n_interior, resolved_rank)
         Corresponding eigenvectors as columns, on ``device``.
-    component_labels : jnp.ndarray, shape (n_interior,)
+    component_labels : jax.Array, shape (n_interior,)
         Connected-component id per interior bin, ``0..n_components-1``, on
         ``device``.
     n_components : int
@@ -978,15 +1019,15 @@ def get_device_basis(
     # cache key must name the SAME device the cached arrays are placed on.
     device = (
         jax.local_devices()[0]
-        if jax.config.jax_default_device is None
-        else jax.config.jax_default_device
+        if jax.config.jax_default_device is None  # type: ignore[attr-defined]  # config option registered dynamically by JAX
+        else jax.config.jax_default_device  # type: ignore[attr-defined]  # config option registered dynamically by JAX
     )
     dtype = jnp.float32
     key = (int(resolved_rank), device, dtype)
-    cache = getattr(environment, "_diffusion_device_basis_", None)
+    cache = environment.get_cached(_DEVICE_BASIS_KEY)
     if cache is None:
-        cache = {}
-        environment._diffusion_device_basis_ = cache
+        # Keyed by a JAX ``Device``, which cannot be restored after unpickling.
+        cache = environment.set_cached(_DEVICE_BASIS_KEY, {}, transient=True)
     if key not in cache:
         eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
         # Component labels from the existing helper (indexed by interior-bin/node
@@ -1000,7 +1041,7 @@ def get_device_basis(
             jax.device_put(np.asarray(labels_host, dtype=np.int32), device),
             n_components,
         )
-    return cache[key]
+    return cast(tuple[jax.Array, jax.Array, jax.Array, int], cache[key])
 
 
 def _nd_grid_graph(
@@ -1008,7 +1049,7 @@ def _nd_grid_graph(
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
     """Adapter branch for N-D / 1D grid environments (``track_graph is None``)."""
     node_order = np.where(environment.is_track_interior_.ravel())[0]
-    track_graph = environment.track_graphDD
+    track_graph = cast(nx.Graph, environment.track_graphDD)
     subgraph = track_graph.subgraph(node_order)
     positions = nx.get_node_attributes(track_graph, "pos")
     relabel = {old: new for new, old in enumerate(node_order)}
@@ -1040,12 +1081,12 @@ def _linearized_graph(
 
     # Substrate node id for each interior place bin (gap bins carry -1 and are
     # excluded); order matches place_bin_centers_ / is_track_interior_.
-    node_ids = environment.place_bin_centers_nodes_df_.node_id.to_numpy()
+    node_ids = cast(Any, environment.place_bin_centers_nodes_df_).node_id.to_numpy()
     interior_node_ids = node_ids[is_interior].astype(int)
     centers = {int(nid) for nid in interior_node_ids}
     local_of = {int(nid): local for local, nid in enumerate(interior_node_ids)}
 
-    substrate = environment.track_graph_with_bin_centers_edges_
+    substrate = cast(nx.Graph, environment.track_graph_with_bin_centers_edges_)
     graph = nx.Graph()
     graph.add_nodes_from(range(interior_node_ids.size))
     for start in interior_node_ids:

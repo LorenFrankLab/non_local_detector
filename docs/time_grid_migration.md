@@ -16,6 +16,16 @@ transition-clock contract too. For variable-duration likelihoods without an
 HMM, call the registered predictors in `non_local_detector.likelihoods`
 directly with freshly fitted Hz encoding fields.
 
+The bin width must be the detector's `1 / sampling_frequency` (500 Hz by
+default), within the same floating-point tolerance as the uniformity check;
+other widths raise `ValidationError`. The transitions (for example a random
+walk's `movement_var`) are per decode bin, so the detector's rate states the
+bin width they mean. `detector.calculate_time_edges(time_range)` builds edges
+at that rate. When you decode at your position samples instead, construct the
+detector with their rate, e.g.
+`SortedSpikesDecoder(sampling_frequency=1 / np.median(np.diff(position_time)))`
+for 30 Hz tracking.
+
 ```python
 from non_local_detector import calculate_time_edges, time_edges_from_centers
 
@@ -27,13 +37,14 @@ results = detector.predict(spike_times, time_edges=edges)
 
 # Uniform existing sample timestamps, retaining their nominal row coordinates.
 edges = time_edges_from_centers(position_time)
-results = detector.predict(spike_times, time_edges=edges,
-                           position_time=position_time, position=position)
+results = detector.predict(
+    spike_times, time_edges=edges, position_time=position_time, position=position
+)
 sequence = detector.most_likely_sequence(spike_times, time_edges=edges)
 ```
 
 For a runnable example with camera jitter, tracking gaps, and independent
-intervals, see [`scripts/time_grid_migration_example.py`](../scripts/time_grid_migration_example.py).
+intervals, see [`scripts/time_grid_migration_example.py`](https://github.com/LorenFrankLab/non_local_detector/blob/main/scripts/time_grid_migration_example.py).
 
 The centered conversion preserves the number of rows, but between-sample spikes
 now belong to the nearest sample's bin. Old `time` bins assigned them to the
@@ -46,7 +57,9 @@ and counting. Keep spike times and marks from the same unit aligned:
 
 ```python
 from non_local_detector.likelihoods.common import (
-    get_spikecount_per_time_bin, select_spikes_in_rows, select_spike_rows,
+    get_spikecount_per_time_bin,
+    select_spikes_in_rows,
+    select_spike_rows,
 )
 
 n_bins = len(edges) - 1
@@ -63,31 +76,30 @@ replay/shuffle code.
 
 ## Keep encoding support separate from the decode grid
 
-Encoding uses original position timestamps and physical recording support.
-Uniform tracking defaults to endpoint half-cells, giving N * dt seconds of
-coverage. To clip recording support, pass `encoding_time_range=[start, stop]`
-to `fit`, `fit_encoding_model`, or `estimate_parameters`. A singleton position
-sample needs explicit recording bounds or a tracking interval.
-
-For camera jitter, irregular sampling, or disconnected epochs, explicitly
-identify continuous tracking intervals:
+Encoding uses original position timestamps and physical recording support, not
+the decode grid: [Tracking coverage](data_contract.md#tracking-coverage) gives
+the rules for `encoding_time_range` and `valid_position_intervals`. For camera
+jitter, irregular sampling, or disconnected epochs, identify the continuous
+tracking intervals, and pass them when decoding too:
 
 ```python
+intervals = [[epoch1_start, epoch1_stop], [epoch2_start, epoch2_stop]]
 detector.fit(
-    position_time, position, spike_times,
-    encoding_time_range=[acquisition_start, acquisition_stop],
-    valid_position_intervals=[[epoch1_start, epoch1_stop],
-                              [epoch2_start, epoch2_stop]],
+    position_time, position, spike_times, valid_position_intervals=intervals
+)
+results = detector.predict(
+    spike_times,
+    time_edges=edges,
+    position_time=position_time,
+    position=position,
+    valid_position_intervals=intervals,
 )
 ```
 
-Each interval needs at least one finite position sample. Positions are linearly
-interpolated within an interval and held at its endpoint samples. NaN rows split
-support before fitting; do not drop them and concatenate across tracking gaps.
-Only NaNs inside an explicitly declared interval split that interval. Missing
-samples outside it do not shorten its declared endpoint support.
-Acquisition bounds alone do not assert tracking continuity. Duplicate timestamps
-must be resolved upstream with an explicit policy.
+NaN rows split support before fitting; do not drop them and concatenate across
+tracking gaps. Only NaNs inside an explicitly declared interval split that
+interval. Missing samples outside it do not shorten its declared endpoint
+support. Duplicate timestamps must be resolved upstream with an explicit policy.
 
 Adjacent declared encoding intervals stay separate. If they share a boundary,
 an event on that boundary belongs to the interval on its right; a segment's
@@ -107,13 +119,15 @@ occupancy is weighted in seconds; spikes carry their dimensionless interpolated
 weight once. Fitted `mean_rates`, `place_fields`, and ground-process intensities
 are now Hz, independently of tracking frequency. Predictions multiply those
 rates by each decode-bin duration. The unused `sampling_frequency` argument has
-been removed from encoding fit functions; the detector setting remains useful
-for grid construction. The GLM penalty now comes from a prior on log firing
+been removed from encoding fit functions. The detector's `sampling_frequency`
+is the width of its decode bins: `calculate_time_edges` builds edges at that
+rate, and decoding raises `ValidationError` for `time_edges` of another width
+(set it with `set_params(sampling_frequency=...)`, which keeps the fit). The GLM penalty now comes from a prior on log firing
 rate (`log_rate_prior_std`, 2 nats by default) and penalizes the total log
 likelihood, so it no longer grows with recording length.
 
 Stored `mean_rates`, `place_fields`, and `summed_ground_process_intensity` are
-Hz; `interior_log_place_fields` is log-Hz. The historical
+Hz. The historical
 `no_spike_part_log_likelihood` key holds the **sum of Hz rates across neurons**,
 not a log likelihood. Predictors multiply it by duration and subtract it.
 Direct predictors default to `rate_units="Hz"`: callers supplying rate arrays
@@ -132,42 +146,14 @@ old fit when multiplied by `encoding_exposure_seconds`.
 ## Align masks, covariates, and interval labels
 
 Decode `is_missing` has N entries; training masks and encoding/environment labels
-have one entry per original position sample. Encoding support does not
-automatically mark decode gaps missing. For a uniform grid, explicitly mark bins
-outside declared valid observation intervals; keeping only bins whose entire
-span is supported is a conservative policy.
+have one entry per original position sample. Encoding support does not mark
+decode gaps missing: pass `valid_position_intervals` to `predict`,
+`most_likely_sequence` or `compute_log_likelihood`. Bins outside them are missing
+and the HMM propagates through them.
 
 Encoding's held endpoint positions do not change prediction interpolation.
-Local decoding interpolates the supplied `position_time`/`position`; concatenated
-finite segments can otherwise interpolate across a gap, including the held
-endpoint portions of encoding support. Either prepare held endpoints separately
-for each decode segment, or conservatively restrict observed bins to continuous
-finite sample spans, as here:
-
-```python
-import numpy as np
-
-# Two finite tracking spans. Encoding could additionally hold endpoints over
-# [-0.5, 1.5] and [9.5, 11.5]; this decode policy uses only measured spans.
-position_time = np.array([0., 1., 10., 11.])
-position = np.array([[0.], [0.], [100.], [100.]])
-observation_intervals = np.array([[0., 1.], [10., 11.]])
-edges = calculate_time_edges([0., 11.], sampling_frequency=500)
-supported = np.any(
-    (edges[:-1, None] >= observation_intervals[:, 0])
-    & (edges[1:, None] <= observation_intervals[:, 1]),
-    axis=1,
-)
-results = detector.predict(
-    spike_times, time_edges=edges, position_time=position_time,
-    position=position, is_missing=~supported,
-)
-```
-
-Derive these observation spans from the actual finite tracking segments,
-splitting at NaNs and declared discontinuities. This one-grid policy propagates
-the HMM through masked gaps. For separate calls, use each segment's own position
-timeline and aligned mask.
+Local decoding interpolates the supplied `position_time`/`position`, so for
+separate calls use each segment's own position timeline and aligned mask.
 
 Interpolate continuous covariates onto decode centers using their original
 sample timeline. Categorical labels and Boolean masks need an explicit ownership
@@ -176,14 +162,15 @@ transition data must have one aligned row per decode bin. Slice or rebuild
 per-interval arguments for every prediction instead of reusing a full-recording
 mask.
 
-Viterbi uses the fitted covariate-transition tensor. Its rows must already align
-with the requested bins; a different row count raises before likelihood
-evaluation. The same check applies when `predict` reuses stored covariates,
-including cached-likelihood prediction. Fit/estimate with aligned covariates
-before Viterbi. `predict` also accepts new aligned
-`discrete_transition_covariate_data` for another grid.
-The length check cannot prove timestamp alignment: rebuild covariates whenever
-the requested centers change, even if the new grid has the same number of bins.
+A detector whose discrete transitions depend on covariates needs them in every
+call. `fit` takes the training covariates: they place the formula's spline knots,
+on any timeline (one row per position sample, say). `estimate_parameters`,
+`predict` and `most_likely_sequence` take one row per decode bin of their own
+`time_edges` and raise `ValidationError` without them or with another row count,
+before any likelihood is evaluated. Decoding never reuses the transitions
+fitted on the training covariates, which describe the training recording even
+when the decoded grid has as many bins. The length check cannot prove timestamp
+alignment: rebuild covariates whenever the requested centers change.
 
 For downstream tracking analysis, the public alignment helper returns one row
 per actual result time and a whole-bin measured-support mask:
@@ -192,7 +179,8 @@ per actual result time and a whole-bin measured-support mask:
 from non_local_detector.analysis import align_tracking_to_results
 
 tracking, is_valid = align_tracking_to_results(
-    position_info, results,
+    position_info,
+    results,
     position_columns=["position_x", "position_y"],
     valid_position_intervals=observation_intervals,
     categorical_columns=["track_segment_id"],
@@ -220,10 +208,14 @@ from non_local_detector.core import row_slice_aware
 
 original_likelihood = detector.compute_log_likelihood
 
+
 @row_slice_aware
 def custom_likelihood(*args, time_edges, row_slice=None, is_missing=None):
     return original_likelihood(
-        *args, time_edges=time_edges, row_slice=row_slice, is_missing=is_missing,
+        *args,
+        time_edges=time_edges,
+        row_slice=row_slice,
+        is_missing=is_missing,
     )
 ```
 
@@ -269,12 +261,16 @@ For fitted Hz rates, select the units and provide the physical grid explicitly:
 
 ```python
 from non_local_detector.model_checking.sorted_spikes import (
-    TimeRescaling, point_process_residuals,
+    TimeRescaling,
+    point_process_residuals,
 )
 
 check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges)
 residuals = point_process_residuals(
-    rate_Hz, is_spike, rate_units="Hz", time_edges=edges,
+    rate_Hz,
+    is_spike,
+    rate_units="Hz",
+    time_edges=edges,
 )
 ```
 
@@ -333,11 +329,10 @@ The public functions in `non_local_detector.core` operate on observation rows
 and do not validate decode edges. Detector prediction, estimation, and Viterbi
 enforce this time contract, including internal cached prediction paths.
 
-Seven backend families preserve model units and predictions through pickle
-save/load. GLM model pickling remains unsupported because Patsy `DesignInfo`
-cannot be serialized; this pre-existing defect is deferred. Refit GLM models
-from their original recording and configuration in the process that decodes
-them. Result datasets can still be saved independently.
+Every backend family preserves model units and predictions through
+`save_model`/`load_model` (see [Saving and loading models](saving_models.md)),
+which rebuilds the GLM's patsy spline basis on load. Result datasets can still
+be saved independently.
 
 Spyglass adapters must construct uniform decode grids, preserve original
 tracking support, align masks and covariates, and label actual result rows.
