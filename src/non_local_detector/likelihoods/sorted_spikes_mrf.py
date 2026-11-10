@@ -3,19 +3,23 @@
 A second estimator on the same spectral engine as ``sorted_spikes_diffusion``, but
 more principled statistically. It fits a penalized-Poisson generalized additive
 model whose reduced-rank design matrix ``B`` is the ``rank`` smoothest eigenmodes of
-the environment's graph Laplacian and whose quadratic penalty is those eigenvalues
+the environment's diffusion operator and whose quadratic penalty is those eigenvalues
 ``d``::
 
     n_ik ~ Poisson( o_i * exp((B gamma_k)_i) )
     penalty  (lambda / 2) * gamma_k^T diag(d) gamma_k
 
-This is the *same operator* as the diffusion smoother viewed as a GAM: penalizing
-``gamma^T diag(d) gamma`` in the eigenbasis is penalizing the diffusion energy
-``g^T L g``. Occupancy ``o`` enters as a log-offset (exposure), never a denominator,
-so low-occupancy bins produce finite rates. The smoothing parameter ``lambda`` is
-chosen by REML (Wood 2011). The whole population is fit at once (the design matrix
-``B`` and offset ``o`` are shared; only the spike counts ``n_k`` and coefficients
-``gamma_k`` differ), vectorized over neurons.
+This is the *same operator* as the diffusion smoother viewed as a GAM. With ``q``
+the eigenvectors of its symmetric form ``M^{-1/2} (D - C) M^{-1/2}`` (bin volumes
+``m``, conductances ``C``; see ``diffusion.build_laplacian``), the modes are
+``B = sqrt(max(m) / m) * q``, so ``gamma^T diag(d) gamma`` is the finite-volume
+Dirichlet energy ``sum_ij c_ij (eta_i - eta_j)**2 / (2 max(m))`` of the log-rate
+``eta = B gamma``, and each connected component's unpenalized mode is a constant
+log-rate. On equal bins ``B = q``. Occupancy ``o`` enters as a log-offset
+(exposure), never a denominator, so low-occupancy bins produce finite rates. The
+smoothing parameter ``lambda`` is chosen by REML (Wood 2011). The whole population
+is fit at once (the design matrix ``B`` and offset ``o`` are shared; only the spike
+counts ``n_k`` and coefficients ``gamma_k`` differ), vectorized over neurons.
 
 Implementation. The Newton/IRLS fit and the REML score run in JAX (jit + GPU-ready):
 the whole loop compiles to batched linear algebra over the neuron axis, so the fit
@@ -32,10 +36,12 @@ mgcv's ``bs="mrf"`` Markov-random-field smoother. Two deliberate departures: (1)
 **single shared** ``lambda`` is selected for the whole population (pooled smoothing),
 whereas mgcv fits each response separately with its own smoothing parameter -- pooling
 regularizes sparse cells but can over/under-smooth a cell whose roughness differs from
-the population; (2) the penalty is the **weighted** finite-difference Laplacian
-(``w = 1/distance**2``, for grid-size-independent bandwidth), not mgcv's default
-unweighted neighbour Laplacian (degree on the diagonal, ``-1`` off) -- in mgcv terms
-this corresponds to a user-supplied ``xt$penalty``.
+the population; (2) the penalty is the diffusion smoother's **weighted**
+finite-volume operator (``diffusion.build_laplacian``: ``w = 1/h**2`` on equal bins,
+for grid-size-independent bandwidth, with Kirchhoff coupling at track junctions and
+bin-volume scaling on unequal bins), not mgcv's default unweighted neighbour
+Laplacian (degree on the diagonal, ``-1`` off) -- in mgcv terms this corresponds to
+a user-supplied ``xt$penalty``.
 
 Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`` /
 ``sorted_spikes_diffusion``, so the Poisson prediction is shared with the diffusion
@@ -327,10 +333,11 @@ def _newton_fit_jax(
     def newton_cond(state: _NewtonState) -> jax.Array:
         _coeffs, iteration, _max_step, rel_decrease = state
         # Converge on the penalized objective (-loglik + penalty), not the coefficient
-        # step. A Poisson GAM in a Laplacian eigenbasis has an unpenalized null
-        # (constant) mode; when many bins are empty (an undersampled arena) that mode is
-        # unconstrained, so its coefficient drifts forever and ``max|step|`` never
-        # settles -- even though ``exp(eta)`` (the actual place field) has converged.
+        # step. The MRF's eigenmode basis has an unpenalized null mode (a constant
+        # log-rate per component); when many bins are empty (an undersampled arena)
+        # that mode is unconstrained, so its coefficient drifts forever and
+        # ``max|step|`` never settles -- even though ``exp(eta)`` (the actual place
+        # field) has converged.
         # The objective is monotone (step-halving enforces descent) and stable under
         # that harmless null-space drift, so it detects true convergence where a
         # coefficient-step test cannot.
@@ -778,11 +785,11 @@ def _floor_unoccupied_components(
     """Give connected components with zero exposure the zero-exposure rate.
 
     A component with no exposure contributes nothing to the Poisson likelihood, and
-    its null (constant) mode is unpenalized, so the fit leaves that mode at the
-    global warm-start rate. Its rate is unidentified: set it to ``RATE_EPS_HZ``, as
-    an all-zero-exposure fit and ``sorted_spikes_diffusion`` do, and zero the
-    coefficients of its basis modes (every mode is local to one component). Other
-    components are untouched.
+    its null mode (a constant log-rate on it) is unpenalized, so the fit leaves
+    that mode at the global warm-start rate. Its rate is unidentified: set it to
+    ``RATE_EPS_HZ``, as an all-zero-exposure fit and ``sorted_spikes_diffusion``
+    do, and zero the coefficients of its basis modes (every mode is local to one
+    component). Other components are untouched.
 
     Parameters
     ----------
@@ -930,8 +937,10 @@ def fit_sorted_spikes_mrf_encoding_model(
 
         - ``mrf_penalty``: the selected (or supplied) smoothing parameter ``lambda``
         - ``mrf_rank``: number of eigenmodes used as the basis
-        - ``mrf_coefficients``: fitted coefficients, shape ``(rank, n_neurons)``
-        - ``mrf_penalty_weights``: per-mode penalty weights (the Laplacian eigenvalues)
+        - ``mrf_coefficients``: fitted coefficients, shape ``(rank, n_neurons)``, of
+          the modes ``sqrt(max(bin_sizes) / bin_sizes) * q``, ``q`` the eigenvectors
+          of ``cached_eigenbasis``
+        - ``mrf_penalty_weights``: per-mode penalty weights (the operator's eigenvalues)
         - ``mrf_reml_objective``: the REML objective at the selected ``lambda``
         - ``mrf_n_iter``: Newton iterations in the final fit
         - ``mrf_converged``: whether the final fit converged
@@ -990,7 +999,13 @@ def fit_sorted_spikes_mrf_encoding_model(
             n_connected_components(environment),
             min(node_order.shape[0], _DEFAULT_MAX_RANK),
         )
-    penalty_weights, basis = cached_eigenbasis(environment, requested_rank)
+    penalty_weights, eigenvectors = cached_eigenbasis(environment, requested_rank)
+    # The eigenvectors q of M^{-1/2} (D - C) M^{-1/2} are the smoothest modes in
+    # volume-scaled units. As log-rates, eta = sqrt(max(m) / m) * q: then
+    # eta^T (D - C) eta = max(m) * d for eigenvalue d, so the penalty is the
+    # Dirichlet energy of the log-rate, and the null mode (q proportional to
+    # sqrt(m)) is a constant log-rate. The scale is exactly 1 on equal volumes.
+    basis = eigenvectors * np.sqrt(np.max(bin_sizes) / bin_sizes)[:, np.newaxis]
     # cached_eigenbasis caps at the number of available modes, so the true basis rank
     # can be below the request; report what was actually used, not what was asked for.
     effective_rank = basis.shape[1]

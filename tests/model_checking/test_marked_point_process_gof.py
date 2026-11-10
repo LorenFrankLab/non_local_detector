@@ -19,6 +19,7 @@ from scipy.integrate import trapezoid
 from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import fit_clusterless_kde_encoding_model
 from non_local_detector.likelihoods.clusterless_diffusion import (
     fit_clusterless_diffusion_encoding_model,
@@ -799,6 +800,32 @@ def test_diffusion_mdci_keeps_marks_far_from_every_reachable_spike():
     )
     np.testing.assert_allclose(u, spike_times, rtol=1e-12)
     np.testing.assert_allclose(v, expected_v, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
+def test_diffusion_model_without_its_operator_asks_for_a_refit(transform):
+    """Model checking rebuilds the diffusion kernel from the environment, so a
+    model fitted with an earlier diffusion operator asks for a refit."""
+    time = np.linspace(0.0, 10.0, 101)
+    position = np.linspace(0.0, 10.0, 101)[:, None]
+    environment = Environment(place_bin_size=1.0).fit_place_grid(
+        position, infer_track_interior=True
+    )
+    model = fit_clusterless_diffusion_encoding_model(
+        time,
+        position,
+        [np.array([2.0, 5.0, 8.0])],
+        [np.zeros((3, 1))],
+        environment,
+        position_std=1.0,
+        waveform_std=1.0,
+        disable_progress_bar=True,
+    )
+    del model["diffusion_operator"]
+
+    with pytest.raises(ValidationError, match="diffusion operator"):
+        transform(model, 0, time, position, np.array([5.0]), np.zeros((1, 1)))
 
 
 @pytest.mark.unit

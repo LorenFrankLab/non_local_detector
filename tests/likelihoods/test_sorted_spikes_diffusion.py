@@ -18,6 +18,8 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import RATE_EPS_HZ, get_position_at_time
 from non_local_detector.likelihoods.diffusion import (
+    _EIGENBASIS_KEY,
+    _LAPLACIAN_KEY,
     cached_heat_kernel_eigenbasis,
     connected_component_labels,
     diffuse,
@@ -36,6 +38,7 @@ from tests.likelihoods._sorted_spikes_helpers import (
     binned_spike_counts_reference,
     make_linear_track_env,
     make_two_room_env,
+    make_two_width_env,
     poisson_log_likelihood_reference,
     simulate_place_data,
     simulate_sparse_uniform_tracking,
@@ -210,10 +213,10 @@ def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
     full = fit_sorted_spikes_diffusion_encoding_model(**common, rank=n_interior)
 
     # The default fit truncated, and used exactly the resolved rank.
-    resolved = heat_kernel_rank(env.get_cached("diffusion_laplacian"), std)
+    resolved = heat_kernel_rank(env.get_cached(_LAPLACIAN_KEY), std)
     assert resolved is not None
     assert resolved < n_interior
-    assert resolved in env.get_cached("diffusion_eigenbasis")
+    assert resolved in env.get_cached(_EIGENBASIS_KEY)
 
     # Compare where the field is substantial: at EPS-floor bins the rate is ~0 and the
     # relative error is meaningless (dividing by ~EPS), so restrict to bins above
@@ -447,6 +450,7 @@ def _fit_linear_track_with_smoothed_fields(position_std: float = 2.0):
         position_std,
         np.column_stack([exposure, *spike_counts]),
         component_labels=connected_component_labels(graph),
+        bin_sizes=bin_sizes,
     )
     return encoding, smoothed[:, 0], smoothed[:, 1:], node_order
 
@@ -1138,3 +1142,26 @@ def test_local_count_blocks_match_unblocked(three_neuron_fit, rows, monkeypatch)
     assert max(block_rows, default=0) <= 128
     if stop - start > 128:
         assert len(block_rows) > 1
+
+
+def test_occupancy_spreads_to_uniform_density_across_unequal_bins():
+    """With a bandwidth far wider than the track, the fitted occupancy density
+    is the same over 2.0 cm and 1.05 cm bins, wherever the animal was."""
+    env = make_two_width_env()
+    time = np.linspace(0.0, 10.0, 1001)
+    position = np.linspace(10.0, 50.0, time.size)[:, None]  # wide bins only
+
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=[time[::50]],
+        environment=env,
+        position_std=2000.0,
+    )
+
+    _, _, bin_sizes = environment_graph(env)
+    narrow = bin_sizes < 1.5
+    occupancy = encoding["occupancy"]
+    np.testing.assert_allclose(
+        occupancy[narrow].mean() / occupancy[~narrow].mean(), 1.0, atol=0.01
+    )
