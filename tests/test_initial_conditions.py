@@ -80,11 +80,8 @@ def test_uniform_initial_conditions_without_interior_bins_raises(
         UniformInitialConditions().make_initial_conditions(obs, (env,))
 
 
-@pytest.fixture(scope="module")
-def em_fit_with_unreachable_states():
-    """A detector after one EM step whose discrete initial conditions put zero
-    mass on the No-Spike (1) and Fragmented (3) states, so the smoothed
-    probability of those states at the first time bin is exactly zero.
+def _one_em_step(discrete_initial_conditions):
+    """A detector after one EM step that estimates the initial conditions.
 
     Any ``RuntimeWarning`` (e.g. 0/0 in the continuous IC update) is raised.
     """
@@ -95,7 +92,7 @@ def em_fit_with_unreachable_states():
     time, position = time[:n_time], position[:n_time]
     detector = NonLocalSortedSpikesDetector(
         sampling_frequency=SORTED_SIM_RATE,
-        discrete_initial_conditions=np.array([0.5, 0.0, 0.5, 0.0]),
+        discrete_initial_conditions=discrete_initial_conditions,
     )
     with warnings.catch_warnings():
         # max_iter=1 never converges; no other UserWarning is expected.
@@ -115,6 +112,14 @@ def em_fit_with_unreachable_states():
             estimate_initial_conditions=True,
         )
     return detector
+
+
+@pytest.fixture(scope="module")
+def em_fit_with_unreachable_states():
+    """Zero discrete initial mass on the No-Spike (1) and Fragmented (3)
+    states, so their smoothed probability at the first time bin is exactly
+    zero."""
+    return _one_em_step(np.array([0.5, 0.0, 0.5, 0.0]))
 
 
 @pytest.mark.integration
@@ -155,6 +160,22 @@ class TestContinuousICUpdate:
                 detector.continuous_initial_conditions_[is_state].sum(),
                 1.0,
                 rtol=1e-5,
+            )
+
+    def test_tiny_probability_states_keep_a_distribution(self):
+        """Only an exactly zero discrete probability leaves a state without a
+        conditional distribution; a tiny one still has one."""
+        detector = _one_em_step(np.array([1 - 3e-12, 1e-12, 1e-12, 1e-12]))
+        discrete_ic = detector.discrete_initial_conditions_
+        assert np.all(discrete_ic[1:] > 0)
+        assert np.all(discrete_ic[1:] < 1e-8)
+        for state in range(4):
+            is_state = detector.state_ind_ == state
+            np.testing.assert_allclose(
+                detector.continuous_initial_conditions_[is_state].sum(),
+                1.0,
+                rtol=1e-5,
+                err_msg=f"state {state}",
             )
 
 
