@@ -121,10 +121,30 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     Raises
     ------
     ValidationError
-        If a node's ``'volume'`` or an edge's ``'conductance'`` is not a positive
-        finite number.
+        If a node has no ``'volume'`` or an edge no ``'conductance'``, or one is
+        not a positive finite number.
     """
     n_nodes = graph.number_of_nodes()
+    missing_volume = [
+        node for node in range(n_nodes) if "volume" not in graph.nodes[node]
+    ]
+    missing_conductance = [
+        (u, v) for u, v, data in graph.edges(data=True) if "conductance" not in data
+    ]
+    if missing_volume or missing_conductance:
+        msg = "graph lacks the 'volume' or 'conductance' attributes of the operator"
+        raise ValidationError(
+            msg,
+            expected="a 'volume' on every node and a 'conductance' on every edge",
+            got=(
+                f"no 'volume' on {len(missing_volume)} node(s), no 'conductance' "
+                f"on {len(missing_conductance)} edge(s)"
+            ),
+            hint=(
+                "Build the graph with environment_graph. The operator no longer "
+                "reads edge 'distance' alone."
+            ),
+        )
     volumes = np.array([graph.nodes[node]["volume"] for node in range(n_nodes)])
     if not np.all(np.isfinite(volumes) & (volumes > 0)):
         msg = "graph node has a volume that is not a positive finite number"

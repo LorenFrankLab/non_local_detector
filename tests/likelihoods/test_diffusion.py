@@ -135,6 +135,18 @@ def test_laplacian_rejects_a_volume_that_is_not_positive_and_finite(bad):
         build_laplacian(graph)
 
 
+@pytest.mark.parametrize("missing", ["volume", "conductance"])
+def test_laplacian_names_a_missing_attribute(missing):
+    """A graph without node volumes or edge conductances, such as one built for
+    the earlier ``distance``-only contract, is refused naming the attribute."""
+    graph = path_graph(3)
+    items = graph.nodes.values() if missing == "volume" else graph.edges.values()
+    for data in items:
+        del data[missing]
+    with pytest.raises(ValidationError, match=f"'{missing}'"):
+        build_laplacian(graph)
+
+
 # ==============================================================================
 # diffusion_eigenbasis
 # ==============================================================================
