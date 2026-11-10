@@ -28,6 +28,10 @@ from non_local_detector.likelihoods.mark_reference import (
     fit_mark_references,
 )
 from non_local_detector.model_checking._clusterless_models import GMMElectrode
+from non_local_detector.model_checking.clusterless import (
+    ircm_transform,
+    mdci_transform,
+)
 from non_local_detector.time_edges import time_edges_from_centers
 
 pytestmark = pytest.mark.unit
@@ -425,3 +429,63 @@ def test_model_checking_intensity_applies_the_decoder_threshold(coverage):
         new_ground = electrode.ground_intensity(bins)
         np.testing.assert_allclose(old_ground, unthresholded, rtol=1e-12)
         np.testing.assert_array_equal(old_ground[~unresolved], new_ground[~unresolved])
+
+
+def _edge_crossing(data, n_spikes=30):
+    """A trajectory from covered to uncovered positions with spikes along it.
+
+    Returns the transform arguments, the spike positions and the place bin
+    centers holding them.
+    """
+    start, end = (np.asarray(p, float) for p in data["edge_path"])
+    position_time = np.arange(0.0, 1.0, DT)
+    fraction = position_time / position_time[-1]
+    position = start + fraction[:, None] * (end - start)
+    spike_times = np.linspace(0.01, position_time[-1] - 0.01, n_spikes)
+    spike_position = start + (spike_times / position_time[-1])[:, None] * (end - start)
+    environment = data["environment"]
+    interior = np.flatnonzero(environment.is_track_interior_flat_)
+    spike_bins = environment.get_bin_ind(spike_position)
+    assert np.isin(spike_bins, interior).all()
+    bin_centers = np.asarray(environment.place_bin_centers_)[spike_bins]
+    marks = data["decode_marks"][0][:1] + np.zeros((n_spikes, 4))
+    return (position_time, position, spike_times, marks), spike_position, bin_centers
+
+
+def _n_unresolved(data, points):
+    log_occupancy = np.asarray(
+        data["encoding"]["occupancy_model"].score_samples(jnp.asarray(points))
+    )
+    return int(np.sum(log_occupancy < data["encoding"]["log_occupancy_threshold"]))
+
+
+@pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
+def test_transforms_refuse_spikes_at_unresolved_positions(coverage, transform):
+    """Both goodness-of-fit transforms refuse spikes the place intensity gives
+    no probability, naming how many and the occupancy threshold. IRCM reads
+    the intensity at each spike's position, MDCI at its place bin."""
+    arguments, spike_position, bin_centers = _edge_crossing(coverage)
+    n_unresolved = _n_unresolved(
+        coverage, spike_position if transform is ircm_transform else bin_centers
+    )
+    assert 0 < n_unresolved < 30
+
+    with pytest.raises(
+        ValueError, match=rf"{n_unresolved} of 30 spikes .*log_occupancy_threshold"
+    ):
+        transform(coverage["encoding"], 0, *arguments)
+
+
+@pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
+def test_transforms_accept_an_encoding_model_without_threshold(coverage, transform):
+    """Without a stored threshold the same spikes keep their unthresholded
+    intensity and are transformed, as before."""
+    arguments, _, _ = _edge_crossing(coverage)
+
+    with np.errstate(over="ignore", under="ignore"):
+        u, v = transform(
+            _encoding_without_threshold(coverage["encoding"]), 0, *arguments
+        )
+
+    assert np.all(np.isfinite(u))
+    assert np.all(np.isfinite(v))

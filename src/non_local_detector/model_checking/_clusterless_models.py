@@ -437,6 +437,23 @@ class GMMElectrode:
             log_occupancy < self._log_occupancy_threshold, np.inf, log_occupancy
         )
 
+    def unresolved_positions(self, positions: np.ndarray) -> np.ndarray:
+        """Whether each position's occupancy is below the fit's threshold.
+
+        The place intensity is zero there, so the model gives a spike at such
+        a position no probability. The transforms refuse those spikes.
+
+        Parameters
+        ----------
+        positions : np.ndarray, shape (n_positions, n_position_dims)
+            Positions (or place bin centers), linearized as the fit's.
+
+        Returns
+        -------
+        unresolved : np.ndarray of bool, shape (n_positions,)
+        """
+        return cast(np.ndarray, np.isposinf(self._place_log_occupancy(positions)))
+
     def _log_ground(self, positions: np.ndarray) -> np.ndarray:
         return cast(
             np.ndarray,
