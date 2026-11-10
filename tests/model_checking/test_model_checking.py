@@ -114,7 +114,9 @@ class TestGetHighestPosteriorThreshold:
 
 @pytest.mark.integration
 def test_default_detector_conditional_nonlocal_posterior():
-    """The default Local-only initial frame must not break later HPDs."""
+    """Every frame of the default detector's conditional non-local posterior
+    has an HPD threshold, the first included: the default initial conditions
+    give the non-local states positive probability."""
     from non_local_detector import Environment, NonLocalSortedSpikesDetector
 
     time = np.linspace(0.0, 1.0, 11)
@@ -132,9 +134,8 @@ def test_default_detector_conditional_nonlocal_posterior():
     posterior = detector.get_conditional_non_local_posterior(results)
     threshold = get_highest_posterior_threshold(posterior)
 
-    assert np.isnan(threshold[0])
-    assert np.isfinite(threshold[1:]).all()
-    assert (threshold[1:] > 0.0).all()
+    assert np.isfinite(threshold).all()
+    assert (threshold > 0.0).all()
 
 
 # ---------------------------------------------------------------------------
