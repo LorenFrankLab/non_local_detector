@@ -93,7 +93,12 @@ def test_sorted_sampled_hz_rescaling_uses_physical_time(frequency):
     time = np.arange(frequency + 1) / frequency
     is_spike = np.isin(np.arange(len(time)), np.array([1, 2, 3, 4]) * frequency // 5)
     rate = np.full(len(time), 5.0)
-    kwargs = {"rate_units": "Hz", "time": time, "adjust_for_short_trials": False}
+    kwargs = {
+        "rate_units": "Hz",
+        "time": time,
+        "adjust_for_short_trials": False,
+        "discrete_time_correction": False,
+    }
     np.testing.assert_allclose(
         uniform_rescaled_ISIs(rate, is_spike, **kwargs), -np.expm1(-1.0)
     )
@@ -115,7 +120,12 @@ def test_sorted_irregular_bins_integrate_rate_times_each_duration():
     is_spike = np.array([False, True, False, True])
     cumulative = np.cumsum(rate * np.diff(edges))
     expected_isi = np.diff(np.r_[0.0, cumulative[is_spike]])
-    kwargs = {"rate_units": "Hz", "time_edges": edges, "adjust_for_short_trials": False}
+    kwargs = {
+        "rate_units": "Hz",
+        "time_edges": edges,
+        "adjust_for_short_trials": False,
+        "discrete_time_correction": False,
+    }
     np.testing.assert_allclose(
         uniform_rescaled_ISIs(rate, is_spike, **kwargs), -np.expm1(-expected_isi)
     )
@@ -142,6 +152,7 @@ def test_time_rescaling_trials_do_not_integrate_across_other_trials():
         adjust_for_short_trials=False,
         rate_units="Hz",
         time=time,
+        discrete_time_correction=False,
     ).uniform_rescaled_ISIs()
     np.testing.assert_allclose(result, -np.expm1(-0.5))
 
@@ -160,7 +171,12 @@ def test_expected_counts_integrate_a_linear_count_exactly():
     expected_isi = np.diff(np.r_[0.0, integral[spikes]])  # 0.6, 1.65
 
     np.testing.assert_allclose(
-        uniform_rescaled_ISIs(counts, spikes, adjust_for_short_trials=False),
+        uniform_rescaled_ISIs(
+            counts,
+            spikes,
+            adjust_for_short_trials=False,
+            discrete_time_correction=False,
+        ),
         -np.expm1(-expected_isi),
     )
     np.testing.assert_allclose(
@@ -265,6 +281,7 @@ def test_fitted_hz_rates_feed_physical_time_checkers(algorithm, frequency):
             adjust_for_short_trials=False,
             rate_units="Hz",
             time_edges=edges,
+            discrete_time_correction=False,
         ),
         -np.expm1(-1.0),
         rtol=1e-5,
