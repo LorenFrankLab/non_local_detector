@@ -384,11 +384,36 @@ class TestDiscreteTimeCorrection:
         np.testing.assert_array_equal(rescaled(1), rescaled(1))
         assert not np.array_equal(rescaled(1), rescaled(2))
 
-    def test_methods_of_one_object_agree_without_a_seed(self):
+    def test_default_is_repeatable(self):
+        """Without rng, separate objects and calls give the same result."""
+        expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+        np.testing.assert_array_equal(
+            TimeRescaling(expected_counts, is_spike).uniform_rescaled_ISIs(),
+            TimeRescaling(expected_counts, is_spike).uniform_rescaled_ISIs(),
+        )
+        np.testing.assert_array_equal(
+            uniform_rescaled_ISIs(expected_counts, is_spike),
+            uniform_rescaled_ISIs(expected_counts, is_spike),
+        )
+
+    def test_rng_none_draws_fresh_randomness(self):
+        expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+        assert not np.array_equal(
+            TimeRescaling(expected_counts, is_spike, rng=None).uniform_rescaled_ISIs(),
+            TimeRescaling(expected_counts, is_spike, rng=None).uniform_rescaled_ISIs(),
+        )
+        assert not np.array_equal(
+            uniform_rescaled_ISIs(expected_counts, is_spike, rng=None),
+            uniform_rescaled_ISIs(expected_counts, is_spike, rng=None),
+        )
+
+    def test_methods_of_an_unseeded_object_agree(self):
         """Within-bin draws are made once, so the KS plot shows ks_statistic."""
         expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
         is_spike = _spikes_from_model(expected_counts, seed=0)
-        check = TimeRescaling(expected_counts, is_spike)
+        check = TimeRescaling(expected_counts, is_spike, rng=None)
         u = check.uniform_rescaled_ISIs()
         np.testing.assert_array_equal(u, check.uniform_rescaled_ISIs())
         assert check.ks_statistic() == ks_statistic(

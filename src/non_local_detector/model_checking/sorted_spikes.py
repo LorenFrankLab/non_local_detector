@@ -81,12 +81,15 @@ class TimeRescaling:
         Place each spike within its bin by the discrete-time rescaling of
         [3]_, so that a correct model of binned spikes passes the KS test at
         any bin width; see `uniform_rescaled_ISIs`. By default True.
-    rng : numpy.random.Generator or int, optional
+    rng : numpy.random.Generator, int or None, optional
         Generator, or seed for one, for the correction's within-bin draws.
         They are drawn once, here, so every method of this object uses the
-        same intervals. By default a fresh, unseeded generator: two objects
-        built from the same data without a seed give different KS values.
-        Pass a seed, e.g. ``rng=0``, to reproduce a result.
+        same intervals. By default the fixed seed 0, so goodness-of-fit
+        numbers are repeatable: the same data give the same KS value in
+        every new object. ``rng=None`` draws fresh randomness. The KS value
+        still depends on the draw, so a cell near the band can move across
+        it with the seed: on 1000 s of 2 ms bins at a 40 Hz peak, KS ranged
+        0.0063-0.0077 across 20 seeds against a band of 0.0096.
 
     Notes
     -----
@@ -121,7 +124,7 @@ class TimeRescaling:
         time: np.ndarray | None = None,
         time_edges: np.ndarray | None = None,
         discrete_time_correction: bool = True,
-        rng: np.random.Generator | int | None = None,
+        rng: np.random.Generator | int | None = 0,
     ):
         """Initialize the TimeRescaling object."""
         self.conditional_intensity = np.atleast_1d(
@@ -710,7 +713,7 @@ def uniform_rescaled_ISIs(
     time: np.ndarray | None = None,
     time_edges: np.ndarray | None = None,
     discrete_time_correction: bool = True,
-    rng: np.random.Generator | int | None = None,
+    rng: np.random.Generator | int | None = 0,
 ) -> np.ndarray:
     """Rescale the interspike intervals (ISIs) to a uniform distribution.
 
@@ -747,11 +750,14 @@ def uniform_rescaled_ISIs(
         placed at its bin's closing edge.
     discrete_time_correction : bool, optional
         Use the discrete-time rescaling of [1]_ (see Notes). By default True.
-    rng : numpy.random.Generator or int, optional
+    rng : numpy.random.Generator, int or None, optional
         Generator, or seed for one, that places each spike within its bin
-        for the correction. By default a fresh, unseeded generator, so
-        repeated calls give different intervals and KS values; pass a seed,
-        e.g. ``rng=0``, to reproduce a result.
+        for the correction. By default the fixed seed 0, so goodness-of-fit
+        numbers are repeatable: the same data give the same result on every
+        call. ``rng=None`` draws fresh randomness. The KS value still
+        depends on the draw, so a cell near the band can move across it with
+        the seed: on 1000 s of 2 ms bins at a 40 Hz peak, KS ranged
+        0.0063-0.0077 across 20 seeds against a band of 0.0096.
 
     Returns
     -------

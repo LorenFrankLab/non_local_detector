@@ -265,7 +265,7 @@ from non_local_detector.model_checking.sorted_spikes import (
     point_process_residuals,
 )
 
-check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges, rng=0)
+check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges)
 residuals = point_process_residuals(
     rate_Hz,
     is_spike,
@@ -277,7 +277,8 @@ residuals = point_process_residuals(
 With `time_edges`, rates are piecewise constant within bins. A binned spike has
 no exact time within its bin, so `TimeRescaling` draws one from the model's
 conditional distribution (the discrete-time rescaling of Haslinger, Pipa & Brown,
-2010; pass `rng` to reproduce it). Alternatively, `time=sample_time` integrates
+2010). The draw uses a fixed seed by default, so the KS value repeats; pass
+`rng=None` for fresh randomness. Alternatively, `time=sample_time` integrates
 sampled Hz rates by trapezoids; a spike at a sample lies in the interval that
 ends there.
 Supply exactly one physical grid. Independent trials are integrated separately.
