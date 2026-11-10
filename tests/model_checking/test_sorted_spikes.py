@@ -271,17 +271,20 @@ class TestDiscreteTimeCorrection:
         check = TimeRescaling(
             np.full(6, 5.0), is_spike, trial_id, rate_units="Hz", time=time, rng=0
         )
-        with pytest.warns(DataQualityWarning, match="2 spikes"):
+        with pytest.warns(DataQualityWarning, match="2 spikes") as from_method:
             u = check.uniform_rescaled_ISIs()
         assert u.size == 2
         assert np.all(u > 0)
-        with pytest.warns(DataQualityWarning, match="2 spikes"):
+        with pytest.warns(DataQualityWarning, match="2 spikes") as from_ks:
             assert np.isfinite(check.ks_statistic())
-        with pytest.warns(DataQualityWarning, match="1 spike"):
+        with pytest.warns(DataQualityWarning, match="1 spike") as from_function:
             u = uniform_rescaled_ISIs(
                 np.full(6, 5.0), is_spike, rate_units="Hz", time=time, rng=0
             )
         assert u.size == 3
+        # Attributed to the caller's code, not the library.
+        for record in (from_method, from_ks, from_function):
+            assert {w.filename for w in record} == {__file__}
 
     def test_wrong_model_still_fails(self):
         """Data from a 40 Hz peak tested against a 20 Hz peak model fail."""
@@ -345,8 +348,12 @@ class TestDiscreteTimeCorrection:
             uniform_rescaled_ISIs(expected_counts, counts, rng=16)
         assert len(record) == 1
         check = TimeRescaling(expected_counts, counts, rng=16)
-        with pytest.warns(DataQualityWarning, match="point_process_residuals"):
+        with pytest.warns(
+            DataQualityWarning, match="point_process_residuals"
+        ) as from_method:
             check.uniform_rescaled_ISIs()
+        # Attributed to the caller's code, not the library.
+        assert {w.filename for w in [*record, *from_method]} == {__file__}
 
     def test_few_multi_spike_bins_do_not_warn(self):
         """At 2 ms and a 40 Hz peak about 3% of spike bins hold more than one."""

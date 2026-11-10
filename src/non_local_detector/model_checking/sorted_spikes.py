@@ -24,6 +24,7 @@ from scipy import integrate
 from scipy.signal import correlate
 from scipy.stats import expon, norm
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.exceptions import DataQualityWarning
 
 __all__ = [
@@ -544,7 +545,7 @@ def _warn_first_sample_spikes(n_left_out: int) -> None:
             "sample, outside the run. To keep them, pass time_edges whose "
             "first bin of each run contains its first spike time.",
             DataQualityWarning,
-            stacklevel=3,
+            stacklevel=user_stacklevel(),
         )
 
 
@@ -567,7 +568,7 @@ def _warn_counts_above_one(is_spike: np.ndarray) -> None:
             "test the number of spikes per bin; check counts with "
             "point_process_residuals, or use smaller bins.",
             DataQualityWarning,
-            stacklevel=3,
+            stacklevel=user_stacklevel(),
         )
 
 
