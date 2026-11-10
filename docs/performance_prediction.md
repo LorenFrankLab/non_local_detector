@@ -171,7 +171,7 @@ the read limit. Use the directory directly for large recordings.
 `transition_representation="structured"` requires a proven operator. Supported
 blocks include uniform, identity, scalar/rectangular state transitions and
 untruncated separable Gaussian random walks on Cartesian Euclidean grids, with
-interior holes and the existing row normalization. Multi-bin Local states retain
+interior holes and the same boundary scaling as the dense `RandomWalk`. Multi-bin Local states retain
 their existing transition upgrades. Discrete covariate weights stay indexed by
 global decode row. Structured setup also defers N-D graph all-pairs distances;
 optional position kernels request exact distances in bounded batches.

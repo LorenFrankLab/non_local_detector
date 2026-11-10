@@ -6,10 +6,12 @@ junction with ``1 / distance**2`` and ignored bin widths, on a T-maze with
 unequal bins (``generate_diffusion_track_artifacts.py``), each as a plain
 pickle (as ``save_model`` wrote models up to 0.6.9) and as that main's saved
 model file. Sorted-spikes diffusion and MRF models decode from their stored
-place fields, so they must decode as main did. A clusterless diffusion model
-decodes by rebuilding the heat kernel from its environment, which would mix
-the earlier operator's fitted occupancy with the new kernel, so decoding it
-asks for a refit; fitting it again gives the new operator's model.
+place fields, so the pickles must decode as main did. A clusterless diffusion
+model decodes by rebuilding the heat kernel from its environment, which would
+mix the earlier operator's fitted occupancy with the new kernel, so decoding
+it asks for a refit; fitting it again gives the new operator's model. The
+saved model files also hold main's ``RandomWalk`` block, which a load now
+rebuilds with a uniform stationary density, so each of them asks for a refit.
 """
 
 import pickle
@@ -30,7 +32,6 @@ pytestmark = pytest.mark.integration
 ARTIFACTS = Path(__file__).parents[1] / "compat_data" / "main-11d9b3de"
 SORTED = ("nonlocal_sorted_spikes_diffusion_tmaze", "nonlocal_sorted_spikes_mrf_tmaze")
 CLUSTERLESS = "nonlocal_clusterless_diffusion_tmaze"
-FORMS = ("pickle", "model")
 
 
 @pytest.fixture(scope="module")
@@ -94,14 +95,11 @@ def _training_data(recording):
     )
 
 
-@pytest.mark.parametrize("form", FORMS)
 @pytest.mark.parametrize("name", SORTED)
-def test_sorted_diffusion_detector_saved_by_main_decodes_as_main_did(
-    name, form, recording
-):
-    """A sorted-spikes diffusion or MRF detector fitted by 11d9b3de decodes,
+def test_sorted_diffusion_detector_pickled_by_main_decodes_as_main_did(name, recording):
+    """A sorted-spikes diffusion or MRF detector pickled by 11d9b3de decodes,
     Local state included, to 11d9b3de's own posterior."""
-    detector = _load(name, form, SortedSpikesDetector)
+    detector = _load(name, "pickle", SortedSpikesDetector)
 
     posterior = _decode(detector, recording)
 
@@ -111,11 +109,27 @@ def test_sorted_diffusion_detector_saved_by_main_decodes_as_main_did(
     np.testing.assert_allclose(posterior, reference, rtol=1e-6, atol=2e-6)
 
 
-@pytest.mark.parametrize("form", FORMS)
-def test_clusterless_diffusion_detector_saved_by_main_asks_for_a_refit(form, recording):
-    """A clusterless diffusion detector fitted by 11d9b3de loads, records no
+@pytest.mark.parametrize("name", [*SORTED, CLUSTERLESS])
+def test_model_file_saved_by_main_asks_for_a_refit_of_its_random_walk(name, recording):
+    """A model file saved by 11d9b3de loads for inspection, and decoding it
+    asks for a refit: its rebuilt RandomWalk block (Non-Local Continuous)
+    no longer matches the saved fingerprint."""
+    clusterless = name == CLUSTERLESS
+    detector = _load(
+        name, "model", ClusterlessDetector if clusterless else SortedSpikesDetector
+    )
+
+    with pytest.raises(
+        ValidationError, match="continuous transition from state 2 to 2"
+    ) as error:
+        _decode(detector, recording, clusterless=clusterless)
+    assert "refit the model" in str(error.value)
+
+
+def test_clusterless_diffusion_detector_pickled_by_main_asks_for_a_refit(recording):
+    """A clusterless diffusion detector pickled by 11d9b3de loads, records no
     diffusion operator, and decoding it asks for a refit."""
-    detector = _load(CLUSTERLESS, form, ClusterlessDetector)
+    detector = _load(CLUSTERLESS, "pickle", ClusterlessDetector)
     for encoding_model in detector.encoding_model_.values():
         assert "diffusion_operator" not in encoding_model
 
@@ -129,7 +143,9 @@ def test_refitting_the_encoding_of_a_main_clusterless_detector_uses_the_new_oper
 ):
     """``fit_encoding_model`` on the detector fitted by 11d9b3de, whose
     environment still caches the earlier operator, gives the encoding model a
-    fresh fit gives, with the operator recorded, and it decodes."""
+    fresh fit gives, with the operator recorded, and it decodes. Its
+    transitions, which ``fit_encoding_model`` leaves alone, are still the
+    ones 11d9b3de built, so its posterior is not a fresh fit's."""
     detector = _load(CLUSTERLESS, "pickle", ClusterlessDetector)
     fresh = clone(detector).fit(*_training_data(recording))
 
@@ -140,10 +156,10 @@ def test_refitting_the_encoding_of_a_main_clusterless_detector_uses_the_new_oper
         expected = fresh.encoding_model_[key]
         for array in ("occupancy", "summed_ground_process_intensity", "bin_sizes"):
             np.testing.assert_array_equal(encoding_model[array], expected[array])
-    np.testing.assert_array_equal(
-        _decode(detector, recording, clusterless=True),
-        _decode(fresh, recording, clusterless=True),
-    )
+    posterior = _decode(detector, recording, clusterless=True)
+    interior = ~np.isnan(posterior).all(axis=0)
+    assert np.isfinite(posterior[:, interior]).all()
+    np.testing.assert_allclose(posterior[:, interior].sum(axis=1), 1.0, atol=1e-5)
 
 
 @em_stops_at_max_iter

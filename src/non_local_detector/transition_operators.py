@@ -29,6 +29,7 @@ from non_local_detector.continuous_state_transitions import (
     _make_transition_block,
     _multi_bin_local_transition,
     _scalar_to_spatial_destination,
+    _uniform_density_scaling,
 )
 from non_local_detector.core import TransitionOperator
 from non_local_detector.environment import Environment
@@ -302,7 +303,19 @@ class IdentityBlock:
 @_register_operator
 @dataclass(frozen=True)
 class GaussianGridBlock:
-    """Masked, row-normalized tensor product of untruncated Gaussian axes.
+    """Tensor product of untruncated Gaussian axes with row and column scales.
+
+    The block is ``T = diag(mask / row_normalization) K diag(column_scale)``
+    with ``K`` the Kronecker product of ``factors``, and rows whose
+    ``row_normalization`` is 0 are zero. A zero-mean ``RandomWalk`` stores
+    ``row_normalization = 1 / d`` and ``column_scale = d``, with ``d`` the
+    scaling that makes rows sum to one, so ``T`` is symmetric and a uniform
+    density is stationary (see ``RandomWalk``). A walk with any nonzero
+    mean step, here a shifted and so non-symmetric Gaussian, stores the row
+    sums of ``K diag(mask)`` and ``column_scale = mask``, normalizing each
+    row. Blocks pickled before ``column_scale`` was stored
+    applied that row-normalized form and restore with ``column_scale =
+    mask``.
 
     Attributes
     ----------
@@ -312,13 +325,22 @@ class GaussianGridBlock:
     mask : np.ndarray or jax.Array, shape (n_bins,)
         Weight of each flattened grid bin (1 where on the track, else 0).
     row_normalization : np.ndarray or jax.Array, shape (n_bins,)
-        Sum over destination bins of each masked row of the unnormalized
-        product, used to normalize the rows.
+        Divisor of each row; 0 for rows that are zero.
+    column_scale : np.ndarray or jax.Array, shape (n_bins,)
+        Multiplier of each column; 0 for bins off the track.
     """
 
     factors: tuple[_Array, ...]
     mask: _Array
     row_normalization: _Array
+    column_scale: _Array
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the fields; earlier blocks scaled columns by the mask."""
+        state = dict(state)
+        state.setdefault("column_scale", state["mask"])
+        # A frozen dataclass: fill __dict__ instead of setting attributes.
+        self.__dict__.update(state)
 
     @property
     def grid_shape(self) -> tuple[int, ...]:
@@ -345,11 +367,14 @@ class GaussianGridBlock:
         """
         mask = jnp.asarray(self.mask, dtype=values.dtype)
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
+        column_scale = jnp.asarray(self.column_scale, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
         scale = jnp.maximum(jnp.max(jnp.abs(values)), 1)
+        # values @ T = ((values * mask / row_normalization) @ K) * column_scale.
         # Keep the original arithmetic for ordinary values. Cap finite scales
         # so a compiler-hoisted reciprocal remains normal instead of flushing
-        # to zero; row-normalized products still undo exactly this scale.
+        # to zero; the product is linear, so multiplying back undoes exactly
+        # this scale.
         limit = jnp.asarray(
             1 / finfo(values.dtype).tiny,
             dtype=values.dtype,
@@ -358,7 +383,7 @@ class GaussianGridBlock:
         weighted = jnp.where(normalizer > 0, (values / scale) * mask / safe, 0)
         result = (
             _axes_product(weighted.reshape(self.grid_shape), self.factors).ravel()
-            * mask
+            * column_scale
         )
         return _nan_result(result * scale, values)
 
@@ -377,7 +402,10 @@ class GaussianGridBlock:
         """
         mask = jnp.asarray(self.mask, dtype=values.dtype)
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
+        column_scale = jnp.asarray(self.column_scale, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
+        # T @ values = mask / row_normalization * (K @ (column_scale * values)),
+        # evaluated on values divided by their largest magnitude (kept normal).
         maximum = jnp.max(jnp.abs(values))
         scale = jnp.where(maximum > 0, maximum, 1)
         limits = finfo(values.dtype)
@@ -391,7 +419,7 @@ class GaussianGridBlock:
             scale,
         )
         result = _axes_product(
-            (values * mask / scale).reshape(self.grid_shape),
+            (values * column_scale / scale).reshape(self.grid_shape),
             self.factors,
             backward=True,
         ).ravel()
@@ -421,7 +449,7 @@ class GaussianGridBlock:
             self.factors, coordinates_from, coordinates_to, strict=True
         ):
             result *= np.asarray(factor)[source, destination]
-        result *= np.asarray(self.mask)[rows] * np.asarray(self.mask)[columns]
+        result *= np.asarray(self.mask)[rows] * np.asarray(self.column_scale)[columns]
         return _ratio(result, np.asarray(self.row_normalization)[rows])
 
 
@@ -1513,7 +1541,9 @@ def _gaussian_block(
         for axis, var in zip(axes, variance, strict=True)
     )
     if not mask.any():
-        return GaussianGridBlock(raw_factors, mask, np.zeros(len(mask)))
+        return GaussianGridBlock(
+            raw_factors, mask, np.zeros(len(mask)), np.zeros(len(mask))
+        )
 
     # Query the closest VALID destination in covariance-scaled coordinates.
     # This O(N) storage check uses scipy's original density evaluation to keep
@@ -1544,7 +1574,11 @@ def _gaussian_block(
 
     # Multiplying each axis row by a positive constant cancels EXACTLY in the
     # final row normalization. Scale before casting to float32 so a normal
-    # float64 density does not disappear before that normalization.
+    # float64 density does not disappear before that normalization. Without a
+    # mean step every valid row's maximum is its own diagonal, the same
+    # density at distance 0, so the scaled factors stay symmetric on the
+    # valid bins and the uniform-density scaling below sees the dense
+    # kernel divided by one constant.
     mask_grid = mask.reshape(shape)
     factors: list[np.ndarray] | tuple[np.ndarray, ...] = []
     source_coordinates = np.unravel_index(np.flatnonzero(mask), shape)
@@ -1590,7 +1624,26 @@ def _gaussian_block(
             f"float32; {_DENSE_BLOCK_HINT}"
         )
         raise UnsupportedTransitionError(msg)
-    return GaussianGridBlock(factors, mask, normalizer)
+    if not transition._keeps_uniform_density():
+        return GaussianGridBlock(factors, mask, normalizer, mask)
+
+    # T = diag(d) K diag(d), as the dense RandomWalk. The scaled kernel has a
+    # unit diagonal on valid bins and entries at most 1, so d_i**2 <= d_i (K
+    # d)_i = 1 gives d <= 1 and d_i = 1 / (K d)_i >= 1 / n_bins: both d and
+    # 1 / d are normal in float32. Bins whose float64 density underflows
+    # everywhere (``original_positive`` False) have no kernel in the dense
+    # build either, so they are left out and their rows stay zero.
+    def kernel_product(values: np.ndarray) -> np.ndarray:
+        product = _axes_product(
+            (values * original_positive).reshape(shape),
+            factors,
+            backward=True,
+            numpy=True,
+        ).ravel()
+        return cast(np.ndarray, product * original_positive)
+
+    scale = _uniform_density_scaling(kernel_product, original_positive.astype(float))
+    return GaussianGridBlock(factors, mask, _ratio(np.ones_like(scale), scale), scale)
 
 
 @runtime_checkable

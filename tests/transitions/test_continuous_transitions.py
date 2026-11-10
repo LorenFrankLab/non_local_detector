@@ -45,27 +45,173 @@ def test_random_walk_row_stochastic_and_spread_var(simple_1d_environment):
     assert offdiag_wide > offdiag_tight
 
 
-def test_random_walk_with_directional_constraints(simple_1d_environment):
-    env = simple_1d_environment
-    envs = (env,)
-    base = RandomWalk(
-        environment_name=env.environment_name, movement_var=3.0
-    ).make_state_transition(envs)
-    up = RandomWalkDirection1(
-        environment_name=env.environment_name, movement_var=3.0
-    ).make_state_transition(envs)
-    down = RandomWalkDirection2(
-        environment_name=env.environment_name, movement_var=3.0
-    ).make_state_transition(envs)
+def _line():
+    """0-40 cm in 2 cm bins, all on the track."""
+    return Environment(
+        place_bin_size=2.0, position_range=((0.0, 40.0),)
+    ).fit_place_grid(np.linspace(0.0, 40.0, 41)[:, None], infer_track_interior=False)
 
-    # Directional versions are masked upper/lower triangular
-    assert np.allclose(
-        up,
-        np.triu(base) / np.clip(np.triu(base).sum(axis=1, keepdims=True), 1e-12, None),
+
+def _grid_with_hole():
+    """20 x 16 cm in 2 cm bins with two bins off the track."""
+    xy = np.stack(
+        np.meshgrid(np.linspace(0, 20, 21), np.linspace(0, 16, 17)), -1
+    ).reshape(-1, 2)
+    kwargs = {"place_bin_size": 2.0, "position_range": ((0.0, 20.0), (0.0, 16.0))}
+    shape = Environment(**kwargs).fit_place_grid(xy, infer_track_interior=False)
+    mask = np.ones(shape.centers_shape_, dtype=bool)
+    mask[4, 3:5] = False
+    return Environment(**kwargs, is_track_interior=mask).fit_place_grid(
+        xy, infer_track_interior=False
     )
-    assert np.allclose(
-        down,
-        np.tril(base) / np.clip(np.tril(base).sum(axis=1, keepdims=True), 1e-12, None),
+
+
+def _y_track():
+    """A Y track in 2 cm bins with bins off the track in the edge gaps."""
+    positions = {0: (0.0, 0.0), 1: (0.0, 20.0), 2: (-15.0, 35.0), 3: (15.0, 35.0)}
+    edges = [(0, 1), (1, 2), (1, 3)]
+    graph = nx.Graph()
+    for node, position in positions.items():
+        graph.add_node(node, pos=position)
+    for edge_id, (node1, node2) in enumerate(edges):
+        length = np.linalg.norm(np.subtract(positions[node1], positions[node2]))
+        graph.add_edge(node1, node2, distance=float(length), edge_id=edge_id)
+    return Environment(
+        place_bin_size=2.0, track_graph=graph, edge_order=edges, edge_spacing=5.0
+    ).fit_place_grid()
+
+
+GEOMETRIES = {"line": _line, "grid_with_hole": _grid_with_hole, "y_track": _y_track}
+
+
+def _oracle_kernel(environment, movement_mean, movement_var):
+    """The Gaussian step density between bin centers, built with scipy alone.
+
+    ``K[i, j]`` is ``multivariate_normal(center_i + mean, var).pdf(center_j)``
+    on a grid and the density of the graph distance on a track graph, zero
+    on the rows and columns of bins off the track.
+    """
+    from scipy.stats import multivariate_normal
+
+    interior = environment.is_track_interior_flat_
+    if environment.track_graph is None:
+        centers = environment.place_bin_centers_
+        kernel = np.stack(
+            [
+                np.atleast_1d(
+                    multivariate_normal(
+                        mean=center + movement_mean, cov=movement_var
+                    ).pdf(centers)
+                )
+                for center in centers
+            ]
+        )
+    else:
+        nodes = np.asarray(environment.place_bin_centers_nodes_df_.node_id)
+        distances = environment.distance_between_nodes_
+        gaussian = multivariate_normal(mean=movement_mean, cov=movement_var)
+        kernel = np.zeros((len(nodes), len(nodes)))
+        for i, node1 in enumerate(nodes):
+            for j, node2 in enumerate(nodes):
+                if node1 in distances and node2 in distances[node1]:
+                    kernel[i, j] = gaussian.pdf(distances[node1][node2])
+    kernel[~interior] = 0.0
+    kernel[:, ~interior] = 0.0
+    return kernel
+
+
+def _oracle_row_normalized(matrix):
+    """Each row divided by its sum; rows that sum to zero stay zero."""
+    sums = matrix.sum(axis=1, keepdims=True)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(sums > 0, matrix / sums, 0.0)
+
+
+@pytest.mark.parametrize("geometry", GEOMETRIES)
+@pytest.mark.parametrize(
+    ("transition_class", "triangle"),
+    [(RandomWalkDirection1, np.triu), (RandomWalkDirection2, np.tril)],
+)
+def test_directional_random_walks_keep_one_triangle_of_the_normalized_gaussian(
+    geometry, transition_class, triangle
+):
+    """Each is one triangle of the Gaussian kernel divided by its row sums,
+    normalized again: no uniform-density scaling. Bit for bit, as releases
+    built it."""
+    environment = GEOMETRIES[geometry]()
+    expected = _oracle_row_normalized(
+        triangle(_oracle_row_normalized(_oracle_kernel(environment, 0.0, 3.0)))
+    )
+
+    transition = transition_class(movement_var=3.0).make_state_transition([environment])
+
+    np.testing.assert_array_equal(transition, expected)
+
+
+@pytest.mark.parametrize(
+    ("geometry", "movement_mean"),
+    [
+        ("line", 1.5),
+        ("line", 1e-300),
+        ("grid_with_hole", np.array([1.0, -2.0])),
+        ("grid_with_hole", 1e-300),
+    ],
+)
+def test_random_walk_with_a_mean_step_is_the_row_normalized_gaussian(
+    geometry, movement_mean
+):
+    """Any nonzero mean step, however small, divides the kernel by its row
+    sums, without the uniform-density scaling."""
+    environment = GEOMETRIES[geometry]()
+    expected = _oracle_row_normalized(_oracle_kernel(environment, movement_mean, 6.0))
+
+    transition = RandomWalk(movement_mean=movement_mean).make_state_transition(
+        [environment]
+    )
+
+    np.testing.assert_array_equal(transition, expected)
+
+
+@pytest.mark.parametrize("direction", ["inward", "outward"])
+def test_random_walk_with_a_direction_is_row_normalized_on_its_steps(direction):
+    """A walk with a direction keeps the steps its direction allows, each row
+    the Gaussian of the grid's graph distance divided by its sum there."""
+    from scipy.stats import multivariate_normal
+
+    environment = _grid_with_hole()
+    distances = environment.distance_between_nodes_
+    kernel = (
+        multivariate_normal(mean=0.0, cov=6.0)
+        .pdf(np.asarray(distances).ravel())
+        .reshape(np.shape(distances))
+    )
+    interior = environment.is_track_interior_flat_
+    kernel[~interior] = 0.0
+    kernel[:, ~interior] = 0.0
+
+    transition = RandomWalk(
+        use_manifold_distance=True, direction=direction
+    ).make_state_transition([environment])
+
+    allowed = transition > 0
+    assert 0 < allowed.sum() < (kernel > 0).sum()
+    np.testing.assert_array_equal(transition, _oracle_row_normalized(kernel * allowed))
+
+
+@pytest.mark.parametrize(
+    "zero",
+    [0, -0.0, [0.0, 0.0], np.zeros(2), np.float32(0), (0, 0)],
+    ids=["int", "negative_zero", "list", "array", "float32", "tuple"],
+)
+def test_every_zero_mean_step_is_scaled(zero):
+    environment = _grid_with_hole()
+    scaled = RandomWalk().make_state_transition([environment])
+
+    transition = RandomWalk(movement_mean=zero).make_state_transition([environment])
+
+    np.testing.assert_array_equal(transition, scaled)
+    assert not np.array_equal(
+        transition, _oracle_row_normalized(_oracle_kernel(environment, 0.0, 6.0))
     )
 
 
@@ -132,14 +278,16 @@ def test_euclidean_random_walk_accepts_flat_1d_centers():
 
 def test_random_walk_on_one_bin_grid_is_identity():
     """A one-bin grid's Euclidean random walk is the (1, 1) matrix [[1]]:
-    ``make_state_transition`` masks and normalizes it as a square matrix."""
+    ``make_state_transition`` masks and scales it as a square matrix, so its
+    one row sums to one within the scaling's tolerance."""
     env = Environment(place_bin_size=100.0, position_range=((0.0, 30.0),))
     env = env.fit_place_grid(np.linspace(0.0, 30.0, 11)[:, None])
     assert env.place_bin_centers_.shape == (1, 1)
 
     transition = RandomWalk().make_state_transition([env])
 
-    np.testing.assert_array_equal(transition, [[1.0]])
+    assert transition.shape == (1, 1)
+    np.testing.assert_allclose(transition, [[1.0]], rtol=0, atol=1e-12)
 
 
 @pytest.mark.parametrize(("movement_mean", "movement_var"), [(0.0, 6.0), (1.5, 0.5)])
@@ -802,8 +950,8 @@ def test_transition_on_an_unfitted_environment_raises_not_fitted(transition):
 def test_random_walk_crosses_junction_by_track_distance():
     """Two perpendicular 10 cm edges are linearized with a 10 cm gap
     between them. Across the junction, adjacent bins are 2 cm apart along
-    the track (12 cm apart linearized), so their transition probability
-    equals that of adjacent bins within an edge; the gap bin gets none."""
+    the track (12 cm apart linearized), so the walk on the bent track equals
+    the walk on one straight 20 cm edge; the gap bin gets none."""
     graph = nx.Graph()
     graph.add_node(0, pos=(0.0, 0.0))
     graph.add_node(1, pos=(10.0, 0.0))
@@ -829,10 +977,27 @@ def test_random_walk_crosses_junction_by_track_distance():
         environment_name="track", movement_var=4.0
     ).make_state_transition((env,))
 
+    straight_graph = nx.Graph()
+    straight_graph.add_node(0, pos=(0.0, 0.0))
+    straight_graph.add_node(1, pos=(20.0, 0.0))
+    straight_graph.add_edge(0, 1, distance=20.0, edge_id=0)
+    straight = Environment(
+        environment_name="track",
+        place_bin_size=2.0,
+        track_graph=straight_graph,
+        edge_order=[(0, 1)],
+        edge_spacing=0.0,
+    ).fit_place_grid()
+    straight_trans = RandomWalk(
+        environment_name="track", movement_var=4.0
+    ).make_state_transition((straight,))
+
     assert trans.shape == (11, 11)
     np.testing.assert_allclose(trans[is_interior].sum(axis=1), 1.0)
     np.testing.assert_array_equal(trans[5], 0.0)
     np.testing.assert_array_equal(trans[:, 5], 0.0)
-    # Last bin of edge 0 -> first bin of edge 1 vs. a within-edge step.
-    np.testing.assert_allclose(trans[4, 6], trans[4, 3], rtol=1e-6)
+    np.testing.assert_allclose(
+        trans[np.ix_(is_interior, is_interior)], straight_trans, rtol=1e-6, atol=0
+    )
+    # Last bin of edge 0 -> first bin of edge 1.
     assert trans[4, 6] > 0.1

@@ -358,8 +358,11 @@ class _PersistenceMixin:
         without it (see the "Saving and loading models" documentation). It
         stores what the fit learned, and the inputs of the structures it
         rebuilds on load (environment grids, the continuous transition and
-        any covariate design), not the structures themselves. ``.nld`` is the
-        conventional suffix.
+        any covariate design), not the structures themselves, except for
+        continuous transition blocks that a load would not rebuild exactly
+        (one built from fit data, or one an earlier version built, in a
+        detector it pickled), which are stored so that the file decodes as
+        the detector does. ``.nld`` is the conventional suffix.
 
         Parameters
         ----------
@@ -377,7 +380,10 @@ class _PersistenceMixin:
             the saved ones, or its ``state_names``, ``observation_models``,
             ``continuous_transition_types``, ``local_position_std``,
             ``discrete_transition_type``, ``discrete_initial_conditions`` or
-            ``environments`` changed after it was fitted (``set_params``).
+            ``environments`` changed after it was fitted (``set_params``), or
+            it holds a continuous transition block that a load would rebuild
+            differently and that is too large to store within
+            ``max_dense_transition_bytes``.
         NotFittedError
             If the detector is only partly fitted, or lacks what ``load_model``
             requires of a fitted file, as one pickled by an earlier release
