@@ -26,12 +26,17 @@ from non_local_detector.transition_operators import (
 _LOADED_ONLY = {"_rebuild_check_"}
 
 
-def _assert_arrays(a, b, where):
+def _assert_arrays(a, b, where, tolerance=None):
+    """Equal type, dtype and shape; values bit for bit, or within ``tolerance``
+    (``assert_allclose`` keywords) when one is given."""
     assert isinstance(a, jax.Array) == isinstance(b, jax.Array), where
     a, b = np.asarray(a), np.asarray(b)
     assert a.dtype == b.dtype, (where, a.dtype, b.dtype)
     assert a.shape == b.shape, (where, a.shape, b.shape)
-    np.testing.assert_array_equal(a, b, err_msg=where)
+    if tolerance is None:
+        np.testing.assert_array_equal(a, b, err_msg=where)
+    else:
+        np.testing.assert_allclose(a, b, err_msg=where, **tolerance)
 
 
 def _assert_graphs(a, b, where):
@@ -73,21 +78,29 @@ def _assert_distance_dicts(a, b, where):
         assert distances == b[node], (where, node)
 
 
-def assert_same(a, b, where="detector"):
-    """Assert ``a`` and ``b`` hold the same values, recursively."""
+def assert_same(a, b, where="detector", tolerances=None):
+    """Assert ``a`` and ``b`` hold the same values, recursively.
+
+    ``tolerances`` maps the ``where`` path of an array to the
+    ``assert_allclose`` keywords it is compared with; every other array is
+    compared bit for bit. By default every array is.
+    """
+    tolerances = {} if tolerances is None else tolerances
     if isinstance(a, (np.ndarray, jax.Array)) and not hasattr(a, "design_info"):
         assert isinstance(b, (np.ndarray, jax.Array)), where
-        _assert_arrays(a, b, where)
+        _assert_arrays(a, b, where, tolerances.get(where))
     elif hasattr(a, "design_info") and isinstance(a, np.ndarray):  # DesignMatrix
         assert type(a) is type(b), where
         _assert_arrays(np.asarray(a), np.asarray(b), where)
         assert a.design_info.column_names == b.design_info.column_names, where
     elif isinstance(a, Environment):
         assert type(a) is type(b), where
-        assert_same(a.get_params(), b.get_params(), f"{where}.config")
+        assert_same(a.get_params(), b.get_params(), f"{where}.config", tolerances)
         assert (a._place_grid is None) == (b._place_grid is None), where
         if a._place_grid is not None:
-            assert_same(a._place_grid, b._place_grid, f"{where}.place_grid_")
+            assert_same(
+                a._place_grid, b._place_grid, f"{where}.place_grid_", tolerances
+            )
     elif isinstance(a, PlaceGrid):
         for field in dataclasses.fields(PlaceGrid):
             if field.name == "distance_between_nodes" and isinstance(
@@ -103,6 +116,7 @@ def assert_same(a, b, where="detector"):
                     getattr(a, field.name),
                     getattr(b, field.name),
                     f"{where}.{field.name}",
+                    tolerances,
                 )
     elif isinstance(a, nx.Graph):
         _assert_graphs(a, b, where)
@@ -129,12 +143,12 @@ def assert_same(a, b, where="detector"):
         assert isinstance(b, dict), where
         assert list(a) == list(b), (where, list(a), list(b))
         for key in a:
-            assert_same(a[key], b[key], f"{where}[{key!r}]")
+            assert_same(a[key], b[key], f"{where}[{key!r}]", tolerances)
     elif isinstance(a, (list, tuple)):
         assert type(a) is type(b), (where, type(a), type(b))
         assert len(a) == len(b), where
         for i, (x, y) in enumerate(zip(a, b, strict=True)):
-            assert_same(x, y, f"{where}[{i}]")
+            assert_same(x, y, f"{where}[{i}]", tolerances)
     elif isinstance(a, float) and math.isnan(a):
         assert isinstance(b, float), where
         assert math.isnan(b), where
@@ -159,14 +173,19 @@ def assert_same(a, b, where="detector"):
             {name: state_a.get(name, getattr(a, name)) for name in names},
             {name: state_b.get(name, getattr(b, name)) for name in names},
             f"{where}<{type(a).__name__}>",
+            tolerances,
         )
 
 
-def assert_same_fitted_state(original, loaded):
-    """Every attribute of ``loaded`` equals that of ``original``."""
+def assert_same_fitted_state(original, loaded, tolerances=None):
+    """Every attribute of ``loaded`` equals that of ``original``.
+
+    Arrays are compared bit for bit, except those whose path is a key of
+    ``tolerances`` (see ``assert_same``).
+    """
     assert type(loaded) is type(original)
     state_a = {k: v for k, v in vars(original).items() if k not in _LOADED_ONLY}
     state_b = {k: v for k, v in vars(loaded).items() if k not in _LOADED_ONLY}
     assert sorted(state_a) == sorted(state_b)
     for name in state_a:
-        assert_same(state_a[name], state_b[name], name)
+        assert_same(state_a[name], state_b[name], name, tolerances)
