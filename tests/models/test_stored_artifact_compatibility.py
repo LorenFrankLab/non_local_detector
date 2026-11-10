@@ -44,6 +44,7 @@ from non_local_detector.models.base import (
     _ModelUnpickler,
 )
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.transition_operators import GaussianGridBlock
 from tests.models._helpers import SORTED_SIM_RATE, type_violations
 
 COMPAT_DATA = Path(__file__).parents[1] / "compat_data"
@@ -759,3 +760,73 @@ def test_row_with_the_removed_kde_log_algorithm_rebuilds_but_does_not_fit(inputs
     with pytest.raises(ValidationError, match="clusterless_kde_log") as error:
         detector.fit(position_time=inputs["time"], position=position, **spikes)
     assert 'Use "clusterless_kde"' in str(error.value)
+
+
+# Saved by main 11d9b3de, the last main whose RandomWalk truncated its Gaussian
+# at the track's edge and normalized each row: a ContFrag classifier fitted on
+# the open field in 2 cm bins with a structured transition operator.
+BEFORE_UNIFORM_DENSITY_WALK = COMPAT_DATA / "main-11d9b3de"
+STRUCTURED_FINE_BINS = "contfrag_clusterless_2d_structured"
+
+
+def _decode_whole_recording(model, inputs):
+    position, spikes = _recording(inputs, clusterless=True)
+    time = inputs["time"]
+    time_edges = model.calculate_time_edges([time[0], time[-1]], trim=True)
+    return model.predict(
+        **_spikes_in(spikes, time_edges),
+        time_edges=time_edges,
+        position_time=time,
+        position=position,
+    ).acausal_posterior.values
+
+
+def test_structured_detector_pickled_before_the_uniform_density_walk_keeps_its_walk(
+    inputs,
+):
+    """A plain pickle, as ``save_model`` wrote models up to 0.6.9 (which could
+    not fit a structured transition), of a structured fit by 11d9b3de decodes
+    with the transition operator it holds, as 11d9b3de decoded it.
+
+    Its ``GaussianGridBlock`` predates ``column_scale`` and restores with it
+    set to the mask. A block rebuilt with the current walk differs from the
+    stored one by up to 0.076 per entry and moves this decode by up to 0.092,
+    far outside the tolerance.
+    """
+    model = ClusterlessDetector.load_model(
+        BEFORE_UNIFORM_DENSITY_WALK / f"{STRUCTURED_FINE_BINS}_pickle.pkl"
+    )
+    (block,) = [
+        block
+        for row in model.state_space_.transition_operator.blocks
+        for block in row
+        if isinstance(block, GaussianGridBlock)
+    ]
+    np.testing.assert_array_equal(block.column_scale, block.mask)
+
+    posterior = _decode_whole_recording(model, inputs)
+
+    reference = pickle.loads(
+        (BEFORE_UNIFORM_DENSITY_WALK / "predict_reference.pkl").read_bytes()
+    )[STRUCTURED_FINE_BINS]
+    np.testing.assert_allclose(posterior, reference, rtol=1e-6, atol=2e-6)
+
+
+def test_saved_model_file_from_before_the_uniform_density_walk_asks_for_a_refit(
+    inputs,
+):
+    """The same fit saved by 11d9b3de's ``save_model`` keeps only fingerprints
+    of its transitions, so loading rebuilds them with the current walk: the
+    model loads for inspection, and decoding refuses it, naming the changed
+    continuous transition."""
+    model = ClusterlessDetector.load_model(
+        BEFORE_UNIFORM_DENSITY_WALK / f"{STRUCTURED_FINE_BINS}_model.pkl"
+    )
+    assert model.environments_[0].centers_shape_ == (14, 14)
+    assert model.discrete_state_transitions_.shape == (2, 2)
+
+    with pytest.raises(
+        ValidationError, match="continuous transition from state 0 to 0"
+    ) as error:
+        _decode_whole_recording(model, inputs)
+    assert "refit the model" in str(error.value)

@@ -1,0 +1,10 @@
+{
+ "non_local_detector": "0.6.10.dev2059+g50cc76e22",
+ "python": "3.13.13",
+ "numpy": "2.4.1",
+ "pandas": "3.0.0",
+ "xarray": "2026.1.0",
+ "jax": "0.9.0",
+ "datajoint_round_trip": false,
+ "commit": "11d9b3de76fd1e60b86d5e96ed24fc4a3b8c5685"
+}

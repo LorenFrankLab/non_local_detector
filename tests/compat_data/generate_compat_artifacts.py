@@ -12,6 +12,10 @@ is imported::
         datajoint setuptools netCDF4
     v060/bin/python -I generate_compat_artifacts.py OUT_DIR
 
+A second argument, the commit the package was installed from, is recorded
+in ``VERSION.json`` as ``commit``, for an install whose version string does
+not name it (an editable install keeps the version of its first build).
+
 The fixtures in this directory were generated from 2026-11-03 to 2026-11-04
 (macOS, arm64), each with ``datajoint setuptools netCDF4`` added:
 
@@ -34,6 +38,8 @@ main-66047901   3.13    ``non_local_detector @ git+...@66047901``    0.12.0
                         ``--exclude-newer 2026-11-03 "pandas<3"``
 main-d5f85823   3.13    ``non_local_detector @ git+...@d5f85823``    0.12.0
                         ``--exclude-newer 2026-11-03 "pandas<3"``
+main-11d9b3de   3.13    the repository's own ``uv sync`` environment 0.9.0
+                        at ``11d9b3de`` (pandas 3.0, no datajoint)
 ==============  ======  ===========================================  ======
 
 Spyglass's v1 decoding (2024-01, unpinned) needs ``save_results``, added in
@@ -56,7 +62,25 @@ before ``predict`` took ``time_edges``, and the only one here with the
 since-removed ``clusterless_kde_log``; only its ``clusterless_kde_log``
 artifacts are kept. ``inputs.pkl`` is the same for every version and is kept
 once, at the top level. ``predict_reference.pkl`` holds each main version's
-own decode of its saved models, for 66047901 and d5f85823.
+own decode of its saved models, for 66047901, d5f85823 and 11d9b3de.
+
+11d9b3de is the last main whose ``RandomWalk`` truncated its Gaussian at the
+track's edge and normalized each row. Versions whose ``estimate_parameters``
+takes ``transition_representation`` also fit
+``contfrag_clusterless_2d_structured``: a ``ContFragClusterlessClassifier``
+on the clusterless open field in 2 cm bins with
+``transition_representation="structured"`` (in a NonLocal detector this
+short recording leaves all of the mass in Local, so the walk would not show
+in its decode). From 2026-11-04 main's ``save_model`` writes a zip format
+that stores fingerprints of the transitions and rebuilds them on load, so
+the structured fit is also written as a plain pickle (``*_pickle.pkl``),
+the way ``save_model`` wrote models up to 0.6.9, which keeps the fitted
+``GaussianGridBlock`` operator of the walk; 0.6.9 itself could not fit a
+structured transition. Only that artifact is kept for 11d9b3de (its rows,
+results, both model files and the reference). It was generated in the
+repository's own environment, so its rows did not go through DataJoint;
+the detector holds no pandas objects, so the pandas 3.0 it was written
+with does not matter to readers.
 
 Rows are written the way the Spyglass of each era wrote them: as
 ``vars(model)`` (Spyglass ``master``, da36473c8) and, for versions with
@@ -114,6 +138,11 @@ except ImportError:  # the round trip only checks the row is storable
     pack = unpack = None
 
 NEW_API = "time_edges" in inspect.signature(SortedSpikesDetector.predict).parameters
+# Versions that can fit a structured (separable Gaussian) transition operator.
+STRUCTURED = (
+    "transition_representation"
+    in inspect.signature(SortedSpikesDetector.estimate_parameters).parameters
+)
 
 
 def simulate() -> dict:
@@ -287,12 +316,21 @@ def restore(row: dict):
 
 
 def decode(
-    detector, data: dict, position: np.ndarray, spikes: dict, *, legacy_layout: bool
+    detector,
+    data: dict,
+    position: np.ndarray,
+    spikes: dict,
+    *,
+    legacy_layout: bool,
+    fit_options: dict | None = None,
 ) -> xr.Dataset:
-    """Spyglass's default ``estimate_decoding_params=1`` branch of ``make()``."""
+    """Spyglass's default ``estimate_decoding_params=1`` branch of ``make()``.
+
+    ``fit_options`` are further ``estimate_parameters`` arguments.
+    """
     time = data["time"]
     is_training = (time >= ENCODING_INTERVAL[0]) & (time <= ENCODING_INTERVAL[1])
-    kwargs = {"is_training": is_training, "max_iter": MAX_ITER}
+    kwargs = {"is_training": is_training, "max_iter": MAX_ITER, **(fit_options or {})}
     if NEW_API:
         # Spyglass PR #1618: uniform bins over the tracking range, missing
         # outside the decoding intervals.
@@ -381,7 +419,8 @@ def save_netcdf3(detector, results: xr.Dataset, path: Path) -> None:
     assert path.read_bytes().startswith(b"CDF"), path
 
 
-def main(out_dir: Path) -> None:
+def main(out_dir: Path, commit: str | None = None) -> None:
+    """Write every artifact to ``out_dir``; ``commit`` is recorded in VERSION.json."""
     out_dir.mkdir(parents=True, exist_ok=True)
     version = nld.__version__
     print(f"non_local_detector {version} from {nld.__file__}")  # noqa: T201
@@ -421,6 +460,15 @@ def main(out_dir: Path) -> None:
             clusterless_algorithm="clusterless_kde_log",
             **common,
         )
+    if STRUCTURED:
+        # Bins fine enough (2 cm, sd 2.45 cm steps) that the walk's boundary
+        # treatment visibly changes its transition.
+        presets["contfrag_clusterless_2d_structured"] = (
+            nld.ContFragClusterlessClassifier(
+                environments=[Environment(environment_name="", place_bin_size=2.0)],
+                **common,
+            )
+        )
     rows = {}
     for name, preset in presets.items():
         rows[name] = {"vars": store(vars_row(preset))}
@@ -444,6 +492,12 @@ def main(out_dir: Path) -> None:
     }
     if kde_log:
         fits["nonlocal_clusterless_kde_log_2d"] = fits["nonlocal_clusterless_2d"]
+    fit_options = {}
+    if STRUCTURED:
+        fits["contfrag_clusterless_2d_structured"] = fits["nonlocal_clusterless_2d"]
+        fit_options["contfrag_clusterless_2d_structured"] = {
+            "transition_representation": "structured"
+        }
     reference = {}
     for name, (position, spikes) in fits.items():
         # Old Spyglass built the base detector from the restored dict;
@@ -464,10 +518,23 @@ def main(out_dir: Path) -> None:
                     else "NonLocalSortedSpikesDetector",
                 )
             restored = base(**restored)
-        results = decode(restored, data, position, spikes, legacy_layout=legacy_layout)
+        results = decode(
+            restored,
+            data,
+            position,
+            spikes,
+            legacy_layout=legacy_layout,
+            fit_options=fit_options.get(name),
+        )
         restored.save_results(results, out_dir / f"{name}_results.nc")
         save_netcdf3(restored, results, out_dir / f"{name}_results_netcdf3.nc")
         restored.save_model(out_dir / f"{name}_model.pkl")
+        if name in fit_options:
+            # A plain pickle, as save_model wrote up to 0.6.9: it keeps the
+            # fitted transition operator, which the zip format rebuilds.
+            (out_dir / f"{name}_pickle.pkl").write_bytes(
+                pickle.dumps(restored, protocol=pickle.HIGHEST_PROTOCOL)
+            )
         if NEW_API:
             # This version's own decode of the whole recording with the saved
             # model, for checking that a later release decodes it the same.
@@ -499,6 +566,7 @@ def main(out_dir: Path) -> None:
                 "xarray": xr.__version__,
                 "jax": jax.__version__,
                 "datajoint_round_trip": pack is not None,
+                **({"commit": commit} if commit else {}),
             },
             indent=1,
         )
@@ -507,4 +575,4 @@ def main(out_dir: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else None)
