@@ -1334,7 +1334,14 @@ def _messages_of(caplog):
 
 def _uninformative_warning(messages, n_rows, n_time):
     return any(
-        f"{n_rows}/{n_time} time step(s)" in m and "uninformative" in m
+        f"treated {n_rows}/{n_time} time step(s) as uninformative" in m
+        for m in messages
+    )
+
+
+def _ignored_warning(messages, n_steps, n_time):
+    return any(
+        f"ignored the transition into {n_steps}/{n_time} time step(s)" in m
         for m in messages
     )
 
@@ -1435,8 +1442,8 @@ class TestViterbiUnsatisfiableRows:
         """Every state moves to 0 except 2, which moves to 1, and nothing
         enters 2. Row 2 allows only 1 (so row 1 must be at 2) and row 1
         allows only 0: without row 1's evidence the scores are still all
-        ``-inf``, so the transition into row 1 is ignored too and the path
-        stays at 2, a zero-probability self-transition."""
+        ``-inf``, so the transition into row 1 is ignored too. Row 0 is
+        decoded as its own problem (a tie, so state 0) and jumps to 2."""
         transition = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
         log_likelihoods = np.array(
             [[0.0, 0.0, 0.0], [0.0, -np.inf, -np.inf], [-np.inf, 0.0, -np.inf]]
@@ -1444,20 +1451,71 @@ class TestViterbiUnsatisfiableRows:
         path, messages = self._decode(
             np.full(3, 1 / 3), log_likelihoods, caplog, transition
         )
-        np.testing.assert_array_equal(path, [2, 2, 1])
+        np.testing.assert_array_equal(path, [0, 2, 1])
         assert _uninformative_warning(messages, 1, 3), messages
-        assert any("At 1 of those steps" in m for m in messages), messages
+        assert _ignored_warning(messages, 1, 3), messages
+
+    def test_rows_before_a_state_nobody_enters_keep_their_evidence(self, caplog):
+        """Twelve states: 0-9 a one-step walk, 10 entered by nothing (not
+        even itself) and moving to 11, which only 10 enters. Row 60 allows
+        only 11, so row 59 must be at 10, which no path reaches. Row 59 is
+        dropped and the transition into it ignored; rows 0-58 are decoded
+        as their own problem instead of all sitting at 10."""
+        transition = np.zeros((12, 12))
+        transition[:10, :10] = _tridiagonal(10)
+        transition[10, 11] = 1.0
+        transition[11, 5] = 1.0
+        truth = (5 + 3 * np.sin(np.arange(100) / 10)).round().astype(int)
+        log_likelihoods = np.full((100, 12), -30.0)
+        log_likelihoods[:, :10] = _near(100, 10, truth)
+        log_likelihoods[60] = _only(1, 12, [11])
+        initial = np.full(12, 1 / 12)
+        path, messages = self._decode(initial, log_likelihoods, caplog, transition)
+        own_problem, _ = self._decode(initial, log_likelihoods[:59], caplog, transition)
+        np.testing.assert_array_equal(path[:59], own_problem)
+        assert np.count_nonzero(path[:59] == truth[:59]) >= 58
+        np.testing.assert_array_equal(path[59:61], [10, 11])
+        assert _uninformative_warning(messages, 1, 100), messages
+        assert _ignored_warning(messages, 1, 100), messages
+
+    def test_rows_before_a_state_nobody_enters_short(self, caplog):
+        """Three states: 0 and 1 move to 0, 2 moves to 1 and nothing enters
+        2. Row 30 allows only 1, so row 29 must be at 2: rows 0-28 decode
+        on their own evidence (state 0), not at 2."""
+        transition = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        log_likelihoods = np.zeros((40, 3))
+        log_likelihoods[:, 1:] = -2.0
+        log_likelihoods[30] = [-np.inf, 0.0, -np.inf]
+        path, messages = self._decode(
+            np.full(3, 1 / 3), log_likelihoods, caplog, transition
+        )
+        np.testing.assert_array_equal(path, [0] * 29 + [2, 1] + [0] * 9)
+        assert _uninformative_warning(messages, 1, 40), messages
+        assert _ignored_warning(messages, 1, 40), messages
 
     def test_initial_distribution_ignored_where_it_cannot_continue(self, caplog):
         """All initial mass on 0, which never leaves 0, and rows 1-3 allow
-        only 1: row 0's evidence and then the initial distribution are
-        dropped."""
+        only 1: the initial distribution is dropped and row 0 kept."""
         initial = np.array([1.0, 0.0])
         log_likelihoods = np.array([[0.0, 0.0]] + [[-np.inf, 0.0]] * 3)
         path, messages = self._decode(initial, log_likelihoods, caplog, np.eye(2))
         np.testing.assert_array_equal(path, [1, 1, 1, 1])
-        assert _uninformative_warning(messages, 1, 4), messages
-        assert any("At 1 of those steps" in m for m in messages), messages
+        assert not any("as uninformative" in m for m in messages), messages
+        assert _ignored_warning(messages, 1, 4), messages
+
+    def test_first_row_kept_when_the_initial_distribution_is_dropped(self, caplog):
+        """All initial mass on 8; row 0 favours 5 and row 1 allows only 2.
+        No path from 8 reaches 2 by row 1, with or without row 0's evidence,
+        so the initial distribution is dropped and row 0's evidence picks
+        3 (next to 2 and nearest 5) rather than 2."""
+        log_likelihoods = _near(40, self.n_states, [5] + [2] * 39)
+        log_likelihoods[1] = _only(1, self.n_states, [2])
+        initial = np.zeros(self.n_states)
+        initial[8] = 1.0
+        path, messages = self._decode(initial, log_likelihoods, caplog)
+        np.testing.assert_array_equal(path, [3] + [2] * 39)
+        assert not any("as uninformative" in m for m in messages), messages
+        assert _ignored_warning(messages, 1, 40), messages
 
     def test_covariate_driver(self, caplog):
         """The every-row-hard case through the covariate-dependent driver,
