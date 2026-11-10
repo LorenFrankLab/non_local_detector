@@ -132,7 +132,7 @@ def test_refit_requires_encoding_refit() -> None:
     # The predict output's column count is tied to the device basis's row
     # count, which is n_interior for whatever grid it was built from. Since
     # the refit changes the grid (n_interior_original (10) != n_interior_new
-    # (20)), any stale-basis bug -- e.g. get_device_basis returning the
+    # (20)), any stale-basis bug -- e.g. get_device_point_source_basis returning the
     # pre-refit eigenvectors, or predict being called with the un-refit
     # ``encoding_model`` against the rebuilt environment -- would yield a
     # 10-column result (or a shape-mismatch crash inside predict, since

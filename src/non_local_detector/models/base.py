@@ -378,6 +378,15 @@ class _DetectorBase(
         ``estimate_parameters``, starting from the user-supplied
         ``discrete_initial_conditions`` constructor argument, and cleared by
         ``fit``.
+    continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
+        Each state's initial distribution over its own bins. ``fit`` sets
+        what ``continuous_initial_conditions_types`` give, for every state.
+        ``estimate_parameters`` replaces it with each state's share of the
+        first bin's smoothed posterior, normalized within the state; a state
+        whose fitted discrete initial probability is exactly zero has no such
+        distribution and holds zeros. Such a state adds nothing to the joint
+        ``initial_conditions_`` either way, so decoding does not depend on
+        what it holds.
     state_space_ : StateSpace
         The fit's state bins and continuous transition, with the
         ``state_names``, ``observation_models``,

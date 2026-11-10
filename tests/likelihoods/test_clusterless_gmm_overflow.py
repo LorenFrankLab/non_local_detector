@@ -1,10 +1,12 @@
-"""Over-fitted clusterless GMM: its ground intensity overflows only where predicted.
+"""Over-fitted clusterless GMM: the ratio that would overflow is never formed.
 
 A stress regression on a 2-D simulation with fifteen electrodes: fitted with
 many components and almost no covariance regularization, the GMM's
-``rate * p_gpi / p_occ`` exceeds the float32 range at some bins. The fitted
-intensity and the non-local log likelihood must then be infinite exactly
-there and correct elsewhere.
+``rate * p_gpi / p_occ`` exceeds the float32 range at some bins. Those bins'
+occupancy density is far below ``1e-6`` of its maximum, so the occupancy
+mixture does not resolve them: their place intensity is zero, the intensity
+at resolved bins is the reference ratio, and the non-local log likelihood is
+finite everywhere.
 """
 
 import jax.numpy as jnp
@@ -120,17 +122,18 @@ def _fit_gmm(data, gmm_components, gmm_reg_covar):
     return gmm_encoding, mark_reference
 
 
-def test_overparameterized_gmm_overflow_locations(comparison_data):
-    """Stress regression: an over-fitted GMM overflows only where predicted.
+def test_overparameterized_gmm_overflow_bins_are_unresolved(comparison_data):
+    """Stress regression: where the raw ratio would overflow, the intensity is zero.
 
     With 16 occupancy / 32 joint components on ~100 spikes per electrode the
-    fitted ratio ``rate * p_gpi / p_occ`` exceeds the float32 range at several
+    raw ratio ``rate * p_gpi / p_occ`` exceeds the float32 range at several
     bins (and the float64 range at one). The reference is the complete
     summed intensity accumulated in float64 from the fitted models' own log
-    densities (rate included, aggregated over electrodes): the log likelihood
-    must be ``-inf`` exactly where that sum exceeds the working dtype's
-    maximum, finite and equal to the reference elsewhere, and never NaN or
-    ``+inf``. At least one candidate per time bin must stay finite.
+    densities (rate included, aggregated over electrodes). Every bin where it
+    exceeds the working dtype's maximum has occupancy below ``1e-6`` of the
+    maximum; the fitted intensity is zero at all such unresolved bins and
+    equals the reference at the resolved ones, and the log likelihood is
+    finite everywhere.
     """
     # Nearly unregularized, so the over-fitted components are sharp enough
     # to overflow.
@@ -155,15 +158,16 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
     summed = np.asarray(gmm_enc["summed_ground_process_intensity"])
     working_max = np.finfo(summed.dtype).max
     overflow = expected_intensity > working_max
-    clearly_finite = expected_intensity < 0.5 * working_max
-    assert (overflow | clearly_finite).all(), "no bin may sit at the rounding boundary"
     if summed.dtype == np.float32:
         assert overflow.any(), "stress configuration must overflow float32 somewhere"
+    resolved = log_occ >= log_occ.max() + np.log(1e-6)
+    assert not (overflow & resolved).any()
+    assert np.all(expected_intensity[resolved] < 0.5 * working_max)
 
     summed = summed.astype(np.float64)
-    assert np.all(np.isposinf(summed[overflow]))
+    assert np.all(summed[~resolved] == 0.0)
     np.testing.assert_allclose(
-        summed[clearly_finite], expected_intensity[clearly_finite], rtol=1e-4
+        summed[resolved], expected_intensity[resolved], rtol=1e-4
     )
 
     data = comparison_data
@@ -181,10 +185,4 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
             is_local=False,
         )
     )
-    assert not np.any(np.isnan(ll_gmm))
-    assert not np.any(np.isposinf(ll_gmm))
-    assert np.all(np.isneginf(ll_gmm[:, overflow]))
-    assert np.all(np.isfinite(ll_gmm[:, clearly_finite]))
-    assert np.all(np.isfinite(ll_gmm).any(axis=1)), (
-        "every time bin needs a finite candidate"
-    )
+    assert np.all(np.isfinite(ll_gmm))

@@ -1395,8 +1395,10 @@ class LazyDenseTransition:
                 basic.append(False)
         rows, columns = indices
         if rows.ndim and columns.ndim and any(basic):
+            # A slice with another index forms their outer product, with the
+            # row axes first, as in NumPy.
             rows, columns = (
-                rows[..., None],
+                rows.reshape(rows.shape + (1,) * columns.ndim),
                 columns.reshape((1,) * rows.ndim + columns.shape),
             )
         requested_shape = np.broadcast_shapes(rows.shape, columns.shape)

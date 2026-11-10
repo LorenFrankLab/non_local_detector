@@ -545,7 +545,8 @@ def get_map_speed(
         Samples per second, by default 500.0.
     smooth_sigma : float, optional
         Standard deviation of the Gaussian smoothing kernel applied to the
-        speed, in seconds, by default 0.0025.
+        speed, in seconds, by default 0.0025. Near the first and last times
+        the kernel is renormalized over the samples that exist.
 
     Returns
     -------
@@ -618,6 +619,12 @@ def get_map_speed(
             )
             / dt,
         )
-    speed = _gaussian_smooth(np.abs(speed), smooth_sigma, sampling_frequency)
+    # Divide by the kernel mass inside the array: zero padding alone would pull
+    # the first and last samples toward zero.
+    speed = cast(
+        "np.ndarray",
+        _gaussian_smooth(np.abs(speed), smooth_sigma, sampling_frequency)
+        / _gaussian_smooth(np.ones_like(speed), smooth_sigma, sampling_frequency),
+    )
     speed[~has_position] = np.nan
     return speed

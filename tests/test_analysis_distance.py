@@ -143,6 +143,19 @@ class TestGetVelocity:
         np.testing.assert_allclose(velocity[mid, 0], 10.0, atol=0.1)
         np.testing.assert_allclose(velocity[mid, 1], 5.0, atol=0.1)
 
+    def test_constant_velocity_is_exact_at_the_ends(self):
+        """Smoothing does not pull the first and last samples toward zero."""
+        sampling_frequency = 500.0
+        time = np.arange(50) / sampling_frequency
+        position = np.column_stack([100.0 * time, -40.0 * time])
+
+        velocity = get_velocity(
+            position, time=time, sampling_frequency=sampling_frequency
+        )
+
+        np.testing.assert_allclose(velocity[:, 0], 100.0, rtol=0, atol=1e-9)
+        np.testing.assert_allclose(velocity[:, 1], -40.0, rtol=0, atol=1e-9)
+
     def test_output_shape(self):
         """Output shape should match input."""
         rng = np.random.default_rng(0)
@@ -511,6 +524,20 @@ class TestGetMapSpeedBoundaryHandling:
                 weight="distance",
             ) / (2.0 * dt)
             np.testing.assert_allclose(speed[t], expected_interior, atol=1e-10)
+
+    def test_smoothed_constant_speed_is_exact_at_the_ends(self):
+        """A MAP moving 0.2 cm per sample at 500 Hz is 100 cm/s at every sample,
+        including the first and last, with the default smoothing."""
+        n_time, sampling_frequency = 50, 500.0
+        track_graph = _make_linear_track(n_time, edge_length=0.2)
+        nodes = np.arange(n_time)
+        posterior = _posterior_from_node_sequence(nodes, nodes)
+
+        speed = get_map_speed(
+            posterior, track_graph, nodes, sampling_frequency=sampling_frequency
+        )
+
+        np.testing.assert_allclose(speed, 100.0, rtol=0, atol=1e-9)
 
     @pytest.mark.usefixtures("_identity_gaussian_smooth")
     def test_get_map_speed_monotone_on_constant_velocity(self):

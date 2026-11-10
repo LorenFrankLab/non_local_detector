@@ -1242,8 +1242,12 @@ def _initial_nonstationary_transition(
 class DiscreteNonStationaryDiagonal:
     """Non-stationary transition matrix driven by covariates.
 
-    Initialized with a stationary diagonal matrix, then coefficients are estimated.
-    Off-diagonals are uniform based on the diagonal value at each time step.
+    Each row of the transition matrix is a multinomial logistic regression on
+    the covariates. The initial coefficients give the stationary matrix with
+    ``diagonal_values`` on the diagonal and the rest of each row split evenly
+    among its off-diagonal entries. Estimation fits every entry of a row, so
+    after fitting the off-diagonal entries generally differ from one another;
+    only the initial guess has them equal.
 
     Attributes
     ----------

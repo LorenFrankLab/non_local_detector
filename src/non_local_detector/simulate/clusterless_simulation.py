@@ -22,6 +22,7 @@ from non_local_detector.simulate.simulate import (
     simulate_position,
     simulate_time,
 )
+from non_local_detector.time_edges import time_edges_from_centers
 
 __all__ = [
     "ClusterlessSimOutput",
@@ -52,6 +53,8 @@ class ClusterlessSimOutput:
     edges : np.ndarray, shape (n_time_bins + 1,)
         Decoding time bin edges in seconds, monotonically increasing.
         Defines intervals [edges[i], edges[i+1]) for decoding.
+        ``make_simulated_run_data`` centers bin ``i`` on ``position_time[i]``,
+        so a spike at that sample lies strictly inside it.
     spike_times : list of np.ndarray, length n_electrodes
         Per-electrode spike times in seconds. Each array has shape (n_spikes_e,)
         and is strictly increasing. Empty electrodes have shape (0,).
@@ -283,8 +286,9 @@ def make_simulated_run_data(
         spike_times.append(electrode_spike_times)
         spike_waveform_features.append(electrode_features)
 
-    # Create decoding bin edges (use position sampling rate)
-    edges = np.arange(0.0, position_time[-1] + 1e-12, 1.0 / sampling_frequency)
+    # One decoding bin centered on each position sample, so every spike (at a
+    # sample time) sits half a bin from both of its bin's edges.
+    edges = time_edges_from_centers(position_time)
     bin_widths = np.diff(edges)
 
     # Create environment

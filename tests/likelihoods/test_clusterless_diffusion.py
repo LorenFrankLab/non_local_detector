@@ -61,16 +61,20 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
 )
 from non_local_detector.likelihoods.diffusion import (
+    DIFFUSION_OPERATOR,
+    FIELD_RESOLUTION,
     cached_eigenbasis,
     connected_component_labels,
     diffuse,
     environment_graph,
-    get_device_basis,
+    get_device_point_source_basis,
     heat_kernel_apply,
     n_connected_components,
 )
 from tests.likelihoods._sorted_spikes_helpers import (
     make_two_room_env,
+    make_two_width_env,
+    make_w_track_env,
     simulate_sparse_uniform_tracking,
 )
 from tests.likelihoods.conftest import training_mark_references
@@ -228,7 +232,7 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
             n_bins,
             8,
         )
-        eigvals, eigvecs, labels, n_components = get_device_basis(
+        eigvals, eigvecs, labels, n_components = get_device_point_source_basis(
             s["env"], enc["resolved_rank"]
         )
         log_source = _log_source_marks(
@@ -381,9 +385,12 @@ def _hand_log_likelihood(
     occ_bins = interior_bin_indices(env, occ_pos, f2l)
     occ_field = np.bincount(occ_bins, weights=exposure, minlength=n_bins)[:, None]
 
-    P = diffuse(eigvals, eigvecs, position_std, D, component_labels=labels)
-    Shat = diffuse(eigvals, eigvecs, position_std, S, component_labels=labels)
-    Ohat = diffuse(eigvals, eigvecs, position_std, occ_field, component_labels=labels)
+    smooth = partial(
+        diffuse, eigvals, eigvecs, position_std, component_labels=labels, bin_sizes=dV
+    )
+    P = smooth(D)
+    Shat = smooth(S)
+    Ohat = smooth(occ_field)
 
     pi = np.clip(Ohat[:, 0] / (sum_w_pos * dV), EPS, None)
     p_e = P / (w_total * dV[:, None])
@@ -529,10 +536,15 @@ def test_mass_invariance_across_ranks():
     D = jnp.zeros((n_bins, dec_marks.shape[0])).at[enc_bins].add(w[:, None] * K)
 
     masses = {}
+    labels = jnp.asarray(connected_component_labels(_graph))
     for rank in (full_rank, half_rank):
-        Lam, Q, labels, n_components = get_device_basis(env, rank)
+        Lam, Q = cached_eigenbasis(env, rank)
         P = heat_kernel_apply(
-            Lam, Q, enc["position_std"], D, labels, n_components=n_components
+            jnp.asarray(Lam, jnp.float32),
+            jnp.asarray(Q, jnp.float32),
+            enc["position_std"],
+            D,
+            labels,
         )
         masses[rank] = np.asarray(P.sum(axis=0))
 
@@ -1992,7 +2004,36 @@ def _make_nonuniform_dv_env():
     return env.fit_place_grid(position_1d, infer_track_interior=True)
 
 
-def test_nonuniform_dv_log_likelihood_matches_hand_computation():
+def _make_connected_nonuniform_dv_env():
+    """The same two segments joined at a node: one component whose 4 bins of
+    5.0 and 5 bins of 4.4 diffuse into each other, so the kernel columns
+    depend on the bin volumes (on the two-component track each component's
+    bins are equal and the volumes cancel from its normalized columns)."""
+    g = nx.Graph()
+    g.add_node(0, pos=(0.0, 0.0))
+    g.add_node(1, pos=(20.0, 0.0))
+    g.add_node(2, pos=(42.0, 0.0))
+    g.add_edge(0, 1, distance=20.0, edge_id=0)
+    g.add_edge(1, 2, distance=22.0, edge_id=1)
+    env = Environment(
+        environment_name="connected_nonuniform_dv",
+        place_bin_size=5.0,
+        track_graph=g,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=0.0,
+    )
+    return env.fit_place_grid(np.linspace(0.0, 42.0, 120), infer_track_interior=True)
+
+
+@pytest.mark.parametrize(
+    ("make_env", "segments"),
+    [
+        (_make_nonuniform_dv_env, ((0.5, 19.5), (23.5, 44.5))),
+        (_make_connected_nonuniform_dv_env, ((0.5, 19.5), (20.5, 41.5))),
+    ],
+    ids=["two_components", "connected"],
+)
+def test_nonuniform_dv_log_likelihood_matches_hand_computation(make_env, segments):
     """Absolute non-local log-likelihood on a NON-UNIFORM ``dV`` grid.
 
     ``dV`` enters the fit twice -- the occupancy ``pi = H O / (sum w_pos * dV)`` and
@@ -2002,9 +2043,10 @@ def test_nonuniform_dv_log_likelihood_matches_hand_computation():
     :func:`test_absolute_log_likelihood_small_fixture`) cannot detect. Here ``dV``
     is 5.0 on one segment and 4.4 on the other, so ``bin_sizes`` must equal the
     geometric bin widths and the predicted log-likelihood must match the
-    independent hand computation.
+    independent hand computation. On the connected track it also pins the
+    heat kernel's columns across bins of unequal width.
     """
-    env = _make_nonuniform_dv_env()
+    env = make_env()
     _, node_order, bin_sizes = environment_graph(env)
     bin_sizes = np.asarray(bin_sizes)
     n_bins = node_order.shape[0]
@@ -2022,8 +2064,8 @@ def test_nonuniform_dv_log_likelihood_matches_hand_computation():
     position_time = np.linspace(0.0, 1.0, n_pos)
     x = np.concatenate(
         [
-            np.linspace(0.5, 19.5, n_pos // 2),
-            np.linspace(23.5, 44.5, n_pos - n_pos // 2),
+            np.linspace(*segments[0], n_pos // 2),
+            np.linspace(*segments[1], n_pos - n_pos // 2),
         ]
     )
     position = np.column_stack([x, np.zeros_like(x)])
@@ -2142,3 +2184,80 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
     np.testing.assert_allclose(
         np.sum(encoding["encoding_weights"][0]), len(spike_times[0])
     )
+
+
+def test_occupancy_spreads_to_uniform_density_across_unequal_bins():
+    """With a bandwidth far wider than the track, the fitted occupancy density
+    is the same over 2.0 cm and 1.05 cm bins, wherever the animal was."""
+    env = make_two_width_env()
+    position_time = np.linspace(0.0, 10.0, 1001)
+    position = np.linspace(10.0, 50.0, position_time.size)[:, None]  # wide bins
+    rng = np.random.default_rng(0)
+    spike_times = np.sort(rng.uniform(0.0, 10.0, 20))
+
+    encoding = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        [spike_times],
+        [rng.standard_normal((spike_times.size, 2))],
+        env,
+        position_std=2000.0,
+        waveform_std=WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
+
+    _, _, bin_sizes = environment_graph(env)
+    narrow = bin_sizes < 1.5
+    occupancy = encoding["occupancy"]
+    np.testing.assert_allclose(
+        occupancy[narrow].mean() / occupancy[~narrow].mean(), 1.0, atol=0.01
+    )
+
+
+def test_encoding_model_without_its_diffusion_operator_asks_for_a_refit():
+    """A model fitted before encoding models recorded their diffusion operator
+    holds occupancy and intensities from an earlier operator; predict rebuilds
+    the kernel from the environment, so decoding it would mix the two."""
+    s = _sim(seed=0)
+    encoding = _fit(s)
+    assert encoding["diffusion_operator"] == DIFFUSION_OPERATOR
+    del encoding["diffusion_operator"]
+
+    with pytest.raises(ValidationError, match="diffusion operator") as error:
+        _predict(s, encoding)
+    assert "Refit the model" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "make_env", [make_w_track_env, make_two_width_env], ids=["w_track", "two_widths"]
+)
+def test_kernel_columns_are_the_mass_kernel_on_unequal_bins(make_env):
+    """Each spatial kernel column is the diffusion of a unit mass under
+    ``dp/dt = -(D - C) M^-1 p``, at the default bandwidth, on tracks whose bins
+    differ in width: an independent float64 ``expm`` of that operator, cut
+    below ``FIELD_RESOLUTION`` of its peak and normalized like the columns,
+    matches the float32 columns to 1e-5 of each column's peak."""
+    import scipy.linalg
+
+    env = make_env()
+    graph, _, bin_sizes = environment_graph(env)
+    assert np.ptp(bin_sizes) > 0.05
+    n_bins = bin_sizes.size
+    position_std = float(np.sqrt(12.5))
+    conductance = np.zeros((n_bins, n_bins))
+    for u, v, data in graph.edges(data=True):
+        conductance[u, v] = conductance[v, u] = data["conductance"]
+    mass_operator = (np.diag(conductance.sum(axis=1)) - conductance) / bin_sizes
+    expected = scipy.linalg.expm(-(position_std**2) / 2.0 * mass_operator)
+    expected = np.where(
+        expected >= FIELD_RESOLUTION * expected.max(axis=0), expected, 0.0
+    )
+    expected = expected / expected.sum(axis=0)
+
+    columns = np.asarray(
+        spatial_kernel_columns(env, n_bins, position_std, np.arange(n_bins)),
+        dtype=float,
+    )
+
+    error_of_peak = np.abs(columns - expected) / expected.max(axis=0)
+    np.testing.assert_array_less(error_of_peak, 1e-5)
