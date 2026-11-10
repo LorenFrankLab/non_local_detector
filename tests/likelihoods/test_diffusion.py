@@ -1086,8 +1086,14 @@ def test_check_bandwidth_warns_when_undersmoothing():
 # ==============================================================================
 
 
-def make_star_env(n_arms: int, bin_size: float, arm_length: float = 60.0):
-    """``n_arms`` straight arms of ``arm_length`` meeting at one vertex."""
+def make_star_env(n_arms: int, bin_size: float, arm_length: float = 29.9999):
+    """``n_arms`` straight arms of ``arm_length`` meeting at one vertex.
+
+    The default is just under 30 cm, so rounding of the arms' end coordinates
+    cannot add a bin to one arm: every arm splits into equal bins of any
+    ``bin_size`` that divides 30 cm. Sources within 7 cm of the vertex are more
+    than 6 ``sqrt(12.5)`` from the arm ends.
+    """
     from track_linearization import make_track_graph
 
     angles = np.linspace(0.0, 2.0 * np.pi, n_arms, endpoint=False)
@@ -1210,6 +1216,24 @@ def _finite_difference_laplacian(graph: nx.Graph) -> np.ndarray:
     return laplacian
 
 
+def _laplacian_from_bin_centers(env: Environment) -> np.ndarray:
+    """The ``1 / h**2`` Laplacian of an equal-bin grid from its bin centers alone.
+
+    Bins whose centers differ by the spacing ``h`` along exactly one axis are
+    neighbors; nothing is read from the diffusion graph.
+    """
+    _, node_order, bin_sizes = environment_graph(env)
+    centers = np.asarray(env.place_bin_centers_)[node_order]
+    spacing = bin_sizes[0] ** (1.0 / centers.shape[1])
+    offset = np.abs(centers[:, None, :] - centers[None, :, :])
+    adjacent = (np.count_nonzero(offset > 1e-9, axis=2) == 1) & np.isclose(
+        offset.sum(axis=2), spacing
+    )
+    laplacian = -adjacent.astype(float) / spacing**2
+    laplacian[np.diag_indices(len(centers))] = adjacent.sum(axis=1) / spacing**2
+    return laplacian
+
+
 def make_uniform_track_path_env() -> Environment:
     """A single straight track-graph edge of 50 bins of 2 cm."""
     from track_linearization import make_track_graph
@@ -1235,7 +1259,7 @@ def test_uniform_grids_keep_the_finite_difference_operator(make_env):
     graph, _, bin_sizes = environment_graph(env)
     assert np.ptp(bin_sizes) <= 1e-12 * bin_sizes.max()
     laplacian = build_laplacian(graph).toarray()
-    expected = _finite_difference_laplacian(graph)
+    expected = _laplacian_from_bin_centers(env)
 
     np.testing.assert_allclose(laplacian, expected, rtol=1e-12, atol=0.0)
     sigma = np.sqrt(12.5)
