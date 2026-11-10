@@ -2,11 +2,15 @@
 
 Run with the package of main 11d9b3de, the last main whose graph diffusion
 coupled every pair of arm end bins at a junction with ``1 / distance**2`` and
-ignored bin widths, from the repository's own ``uv sync`` environment at that
-commit::
+ignored bin widths, installed with the lowest dependencies the package
+supports on its lowest Python, as the "lowest supported dependencies" CI job
+installs them (Python 3.10, ``uv pip install --resolution lowest-direct -e .``):
+the plain pickles hold pandas objects, which a later pandas reads but an
+earlier one cannot::
 
-    uv run --no-sync python tests/compat_data/generate_diffusion_track_artifacts.py \\
-        tests/compat_data/main-11d9b3de 11d9b3de76fd1e60b86d5e96ed24fc4a3b8c5685
+    python generate_diffusion_track_artifacts.py OUT_DIR COMMIT
+
+The fixtures were generated on Linux x86-64 on 2026-11-10.
 
 It fits three ``NonLocal*Detector``s on a simulated T-maze whose junction is
 joined by a 3 cm segment, in 3 cm bins, so its bins are 2.82 to 3.0 cm wide:
@@ -19,12 +23,13 @@ decode of the last 200 samples, which a later version must reproduce. A
 clusterless diffusion detector's stored occupancy and intensities come from
 the earlier operator, so decoding it must ask for a refit; it has no
 reference. ``diffusion_tmaze_inputs.pkl`` holds the recording.
-``VERSION.json`` records the environment and the commit, as
-``generate_compat_artifacts.py`` does.
+``diffusion_tmaze_VERSION.json`` records the environment and the commit, as
+``generate_compat_artifacts.py`` does in ``VERSION.json`` for its artifacts.
 """
 
 import json
 import pickle
+import platform
 import sys
 from itertools import pairwise
 from pathlib import Path
@@ -32,6 +37,7 @@ from pathlib import Path
 import jax
 import numpy as np
 import pandas as pd
+import scipy
 import xarray as xr
 from track_linearization import make_track_graph
 
@@ -165,24 +171,23 @@ def main(out_dir: Path, commit: str) -> None:
     (out_dir / "diffusion_tmaze_reference.pkl").write_bytes(
         pickle.dumps(reference, protocol=pickle.HIGHEST_PROTOCOL)
     )
-    version_path = out_dir / "VERSION.json"
-    if not version_path.exists():
-        version_path.write_text(
-            json.dumps(
-                {
-                    "non_local_detector": nld.__version__,
-                    "python": sys.version.split()[0],
-                    "numpy": np.__version__,
-                    "pandas": pd.__version__,
-                    "xarray": xr.__version__,
-                    "jax": jax.__version__,
-                    "datajoint_round_trip": False,
-                    "commit": commit,
-                },
-                indent=1,
-            )
-            + "\n"
+    (out_dir / "diffusion_tmaze_VERSION.json").write_text(
+        json.dumps(
+            {
+                "non_local_detector": nld.__version__,
+                "python": sys.version.split()[0],
+                "platform": f"{platform.system()} {platform.machine()}",
+                "numpy": np.__version__,
+                "pandas": pd.__version__,
+                "scipy": scipy.__version__,
+                "xarray": xr.__version__,
+                "jax": jax.__version__,
+                "commit": commit,
+            },
+            indent=1,
         )
+        + "\n"
+    )
 
 
 if __name__ == "__main__":
