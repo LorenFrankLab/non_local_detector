@@ -621,8 +621,10 @@ def get_map_speed(
         )
     # Divide by the kernel mass inside the array: zero padding alone would pull
     # the first and last samples toward zero.
-    speed = _gaussian_smooth(
-        np.abs(speed), smooth_sigma, sampling_frequency
-    ) / _gaussian_smooth(np.ones_like(speed), smooth_sigma, sampling_frequency)
+    speed = cast(
+        "np.ndarray",
+        _gaussian_smooth(np.abs(speed), smooth_sigma, sampling_frequency)
+        / _gaussian_smooth(np.ones_like(speed), smooth_sigma, sampling_frequency),
+    )
     speed[~has_position] = np.nan
     return speed

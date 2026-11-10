@@ -495,10 +495,12 @@ def get_velocity(
     velocity = np.gradient(position, time, axis=0)
     # Divide by the kernel mass inside the array: zero padding alone would pull
     # the first and last samples toward zero.
-    return _gaussian_smooth(
-        velocity, sigma, sampling_frequency, axis=0, truncate=8
-    ) / _gaussian_smooth(
-        np.ones_like(velocity), sigma, sampling_frequency, axis=0, truncate=8
+    return cast(
+        "np.ndarray",
+        _gaussian_smooth(velocity, sigma, sampling_frequency, axis=0, truncate=8)
+        / _gaussian_smooth(
+            np.ones_like(velocity), sigma, sampling_frequency, axis=0, truncate=8
+        ),
     )
 
 
