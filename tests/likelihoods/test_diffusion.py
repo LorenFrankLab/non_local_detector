@@ -1275,11 +1275,15 @@ def test_uniform_grids_keep_the_finite_difference_operator(make_env):
 
     np.testing.assert_allclose(laplacian, expected, rtol=1e-12, atol=0.0)
     sigma = np.sqrt(12.5)
+    t = sigma**2 / 2.0
+    root = np.sqrt(bin_sizes)
+    kernel = root[:, None] * scipy.linalg.expm(-t * laplacian) / root[None, :]
+    expected_kernel = scipy.linalg.expm(-t * expected)
+    # Both kernels come from expm, so only the operators differ. Entries far in
+    # the tail (~1e-23) carry the rounding of the large ones, which depends on
+    # the platform's BLAS, so the absolute tolerance is relative to the peak.
     np.testing.assert_allclose(
-        dense_mass_kernel(env, sigma),
-        scipy.linalg.expm(-(sigma**2) / 2.0 * expected),
-        rtol=1e-12,
-        atol=1e-15,
+        kernel, expected_kernel, rtol=1e-12, atol=1e-12 * expected_kernel.max()
     )
 
 
