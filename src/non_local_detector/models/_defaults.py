@@ -118,7 +118,7 @@ class _ModelDefaults:
     def multi_environment_defaults() -> dict[str, Callable[[], Any]]:
         """Defaults for multi-environment classifier (sorted and clusterless)."""
 
-        def transition_type():
+        def transition_type() -> DiscreteStationaryDiagonal:
             return DiscreteStationaryDiagonal(diagonal_values=np.array([0.999, 0.98]))
 
         return {
@@ -172,7 +172,7 @@ class _ModelDefaults:
         non_local_frag_prob = 0.96
         no_spike_prob = 0.98
 
-        def transition_type():
+        def transition_type() -> DiscreteStationaryCustom:
             return DiscreteStationaryCustom(
                 values=np.array(
                     [
