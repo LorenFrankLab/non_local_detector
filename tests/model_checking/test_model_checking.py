@@ -447,12 +447,12 @@ def _two_arm_posterior(within_arm_slope):
 class TestHPDUnequalBinWidths:
     """``coverage`` with ``bin_width`` gives the highest-density region."""
 
-    def test_region_has_smallest_width_for_its_coverage(self):
+    def test_region_holds_the_densest_bins(self):
         """Half the mass: all of the narrow, dense arm and 7 wide bins.
 
-        The dense arm holds 75/175 of the mass in 50 cm; 7 more 2 cm bins
-        reach half, 64 cm in all. A mass threshold takes the wide arm first:
-        88 cm, none of the dense arm.
+        The dense arm holds 75/175 of the mass in 50 cm; the 7 densest 2 cm
+        bins take the region past half, 64 cm in all. A mass threshold takes
+        the wide arm first: 88 cm, none of the dense arm.
         """
         posterior, widths = _two_arm_posterior(within_arm_slope=1e-4)
         by_density = get_HPD_spatial_coverage(posterior, bin_width=widths, coverage=0.5)

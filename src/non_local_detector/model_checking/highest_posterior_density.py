@@ -86,7 +86,7 @@ def get_highest_posterior_threshold(
 def _highest_density_threshold(
     posterior: np.ndarray, coverage: float, bin_width: np.ndarray
 ) -> np.ndarray:
-    """Density threshold of the smallest-width region with `coverage` mass.
+    """Density threshold of the highest-density region holding `coverage`.
 
     Parameters
     ----------
@@ -165,10 +165,14 @@ def get_HPD_spatial_coverage(
         Compute the highest-density region with this coverage here instead
         of taking `hpd_threshold`: bins are ranked by density,
         ``posterior / bin_width``, and their mass is accumulated in that
-        order, so the region has the smallest total width for its coverage.
-        Requires `bin_width` and excludes `hpd_threshold`. Use it when the
-        bin widths differ; with a mass threshold, a wide bin can enter
-        before a narrower one of higher density.
+        order until it reaches `coverage`. The region is that density level
+        set: every bin in it is at least as dense as every bin outside. It
+        holds at least `coverage`, possibly more, since the last bin enters
+        whole, with every bin of equal density. With discrete bins it is not
+        always the narrowest set of bins holding `coverage`. Requires
+        `bin_width` and excludes `hpd_threshold`. Use it when the bin widths
+        differ; with a mass threshold, a wide bin can enter before a narrower
+        one of higher density.
 
     Returns
     -------
