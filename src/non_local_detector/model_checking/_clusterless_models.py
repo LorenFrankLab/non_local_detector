@@ -381,7 +381,9 @@ class GMMElectrode:
     Fits store the joint mixture's position marginal as ``p_gpi``, so
     ``Lambda(x) = mu p_gpi(x) / p_occ(x)`` integrates the event intensity.
     The transforms use ``lambda(x, m) = mu p_joint(x, m) / p_occ(x)`` and
-    the joint mixture's conditional mark density.
+    the joint mixture's conditional mark density. Both are zero where the
+    occupancy density is below the fit's ``log_occupancy_threshold``, as in
+    decoding; a model stored without one has no threshold.
     """
 
     def __init__(self, model: dict[str, Any], electrode: int) -> None:
@@ -393,6 +395,8 @@ class GMMElectrode:
         self.mean_rate = float(model["mean_rates"][electrode])
         self.gpi = model["gpi_models"][electrode]
         self.occupancy = model["occupancy_model"]
+        threshold = model.get("log_occupancy_threshold")
+        self._log_occupancy_threshold = -np.inf if threshold is None else threshold
         self.bin_centers, self.full_to_local = _interior_bins(self.environment)
         self.n_bins = len(self.bin_centers)
         p = self.n_position_dims = self.bin_centers.shape[1]
@@ -414,20 +418,48 @@ class GMMElectrode:
             - np.log(np.diagonal(chol, axis1=1, axis2=2)).sum(axis=1)[None]
             - 0.5 * p * np.log(2 * np.pi)
         )
-        self._log_rate_over_occupancy_at_bins = np.log(self.mean_rate) - self._score(
-            self.occupancy, self.bin_centers
-        )
+        self._log_rate_over_occupancy_at_bins = np.log(
+            self.mean_rate
+        ) - self._place_log_occupancy(self.bin_centers)
 
     @staticmethod
     def _score(model: Any, points: ArrayLike) -> np.ndarray:
         return np.asarray(model.score_samples(np.asarray(points)), float)
+
+    def _place_log_occupancy(self, points: ArrayLike) -> np.ndarray:
+        """Log occupancy density, ``+inf`` where it is unresolved.
+
+        The decoder's rule (``clusterless_gmm._place_log_occupancy``): every
+        place ratio over an infinite occupancy is zero. A NaN stays NaN.
+        """
+        log_occupancy = self._score(self.occupancy, points)
+        return np.where(
+            log_occupancy < self._log_occupancy_threshold, np.inf, log_occupancy
+        )
+
+    def unresolved_positions(self, positions: np.ndarray) -> np.ndarray:
+        """Whether each position's occupancy is below the fit's threshold.
+
+        The place intensity is zero there, so the model gives a spike at such
+        a position no probability. The transforms refuse those spikes.
+
+        Parameters
+        ----------
+        positions : np.ndarray, shape (n_positions, n_position_dims)
+            Positions (or place bin centers), linearized as the fit's.
+
+        Returns
+        -------
+        unresolved : np.ndarray of bool, shape (n_positions,)
+        """
+        return cast(np.ndarray, np.isposinf(self._place_log_occupancy(positions)))
 
     def _log_ground(self, positions: np.ndarray) -> np.ndarray:
         return cast(
             np.ndarray,
             np.log(self.mean_rate)
             + self._score(self.gpi, positions)
-            - self._score(self.occupancy, positions),
+            - self._place_log_occupancy(positions),
         )
 
     def ground_intensity(self, positions: np.ndarray) -> np.ndarray:

@@ -41,7 +41,10 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     compute_precision_cholesky,
 )
-from non_local_detector.likelihoods.mark_reference import MarkReference
+from non_local_detector.likelihoods.mark_reference import (
+    MarkReference,
+    background_rate,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -429,13 +432,15 @@ class TestGroundProcessRange:
         assert np.isfinite(float(actual[0]))
         assert np.isnan(float(actual[1]))
 
-    def test_fit_ground_process_survives_density_underflow(self):
-        """Far from the data both densities underflow; the ratio is still the rate.
+    def test_fit_ground_process_is_zero_where_occupancy_is_unresolved(self):
+        """Far from the data the densities underflow; those bins get no intensity.
 
-        GPI and occupancy models are fitted to identical samples, so the true
-        ratio is exactly ``mean_rate`` at every bin. The reference uses the
-        fitted models' own log densities in float64, so only the ratio
-        arithmetic is under test; a probability-space ratio gives ``0 / 0``.
+        GPI and occupancy models are fitted to identical samples, so the ratio
+        is ``mean_rate`` wherever the occupancy resolves the position (log
+        density within ``log(1e-6)`` of its maximum). Farther out, including
+        every bin where the densities underflow in float32, the place intensity
+        is zero. The reference uses the fitted models' own log densities in
+        float64, so only the ratio arithmetic and the threshold are under test.
         """
         model, _env = _fit_far_from_most_bins(seed=0)
         bins = model["interior_place_bin_centers"]
@@ -448,11 +453,15 @@ class TestGroundProcessRange:
         working_dtype = np.asarray(model["log_occupancy"]).dtype
         far = np.exp(occ_logp.astype(working_dtype)) == 0.0
         assert far.sum() >= 10, "case must underflow in the working dtype"
+        resolved = occ_logp >= occ_logp.max() + np.log(1e-6)
+        assert resolved.any()
+        assert not (resolved & far).any()
 
         actual = np.asarray(model["summed_ground_process_intensity"], dtype=np.float64)
 
-        np.testing.assert_allclose(actual[far], expected[far], rtol=1e-4)
-        np.testing.assert_allclose(actual[far], rate, rtol=1e-2)
+        np.testing.assert_allclose(actual[resolved], expected[resolved], rtol=1e-4)
+        np.testing.assert_allclose(actual[resolved], rate, rtol=1e-2)
+        assert np.all(actual[~resolved] == 0.0)
 
     def test_local_likelihood_is_minus_rate_where_densities_underflow(self):
         """Identical GPI and occupancy models: no-spike local likelihood is ``-rate``.
@@ -509,10 +518,15 @@ class TestGroundProcessRange:
         assert np.isnan(np.asarray(log_likelihood).ravel()[1])
 
     def test_fit_and_local_ground_process_agree_at_bin_centres(self):
-        """The fit-time summed intensity and the local no-spike term share one formula."""
+        """The fit-time summed intensity and the local no-spike term share one
+        formula and one occupancy threshold, so they agree at every bin centre,
+        including the unresolved bins where both are zero."""
         model, env = _fit_far_from_most_bins(seed=1)
         bins = np.asarray(model["interior_place_bin_centers"])
         n_bins = bins.shape[0]
+        summed = np.asarray(model["summed_ground_process_intensity"])
+        assert (summed == 0.0).any()
+        assert (summed > 0.0).any()
 
         local = compute_local_log_likelihood(
             time_edges=time_edges_from_centers(np.arange(n_bins, dtype=np.float64)),
@@ -525,12 +539,12 @@ class TestGroundProcessRange:
             gpi_models=model["gpi_models"],
             joint_models=model["joint_models"],
             mean_rates=model["mean_rates"],
+            log_occupancy_threshold=model["log_occupancy_threshold"],
             mark_reference=[None],
             disable_progress_bar=True,
         )
 
+        # 1 s bins: the no-spike term is minus the intensity plus the background.
         np.testing.assert_allclose(
-            -np.asarray(local).ravel(),
-            np.asarray(model["summed_ground_process_intensity"]),
-            rtol=1e-5,
+            -np.asarray(local).ravel(), summed + background_rate(1), rtol=1e-5
         )
