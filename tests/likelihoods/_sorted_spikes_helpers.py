@@ -54,9 +54,9 @@ def make_linear_track_env(edge_spacing: float) -> Environment:
     ).fit_place_grid()
 
 
-def make_two_width_env() -> Environment:
-    """A 1-D grid of 60 bins of 2.0 cm followed by 100 bins of 1.05 cm."""
-    widths = np.r_[np.full(60, 2.0), np.full(100, 1.05)]
+def make_two_width_env(n_wide: int = 60, n_narrow: int = 100) -> Environment:
+    """A 1-D grid of ``n_wide`` bins of 2.0 cm then ``n_narrow`` bins of 1.05 cm."""
+    widths = np.r_[np.full(n_wide, 2.0), np.full(n_narrow, 1.05)]
     return Environment(environment_name="two_widths").fit_place_grid_from_edges(
         [np.r_[0.0, np.cumsum(widths)]],
         is_track_interior=np.ones(widths.size, dtype=bool),
