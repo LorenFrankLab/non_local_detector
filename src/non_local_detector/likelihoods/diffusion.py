@@ -1,29 +1,42 @@
 """Graph-diffusion spectral engine for manifold-aware place-field smoothing.
 
-This module builds a finite-difference graph Laplacian ``L`` on an environment's
-interior bins and applies the heat kernel ``exp(-t L)``, ``t = sigma**2 / 2``, as a
-smoother that respects track geometry (walls, holes, junctions) in 1D and N-D.
+This module discretizes the heat equation on an environment's interior bins and
+applies its kernel for ``t = sigma**2 / 2`` as a smoother that respects track
+geometry (walls, holes, junctions) in 1D and N-D.
 
 Unlike Gaussian KDE, which smooths in the coordinate metric and smears across
 walls, graph diffusion smooths along the diffusion distance on the domain:
 reflecting (Neumann) boundaries are intrinsic (no edges to absent bins) and the
-operator conserves each field's total mass (``1ᵀL = 0`` gives ``exp(-t L)`` unit
-column sums; entrywise non-negativity is a separate property of the Laplacian
-heat semigroup).
+operator conserves each field's total mass.
 
-The Laplacian uses the **finite-difference** edge weight ``w = 1 / distance**2`` on
-a **face-adjacent** graph, which gives ``L ≈ -∂²`` on a regular grid; the resulting
-heat kernel is a Gaussian of standard deviation ``sigma`` **independent of bin
-size**. (The alternative ``exp(-d²/2σ²)`` weighting yields an effective bandwidth
-that scales with the grid spacing.) Diagonal / Moore edges are excluded because
-with ``1/d²`` weighting they oversmooth by ≈√2 in 2D.
+The operator is the **finite-volume** heat equation. Adjacent bins ``i`` and
+``j`` exchange mass through a conductance ``c_ij``, and bin ``i`` has the volume
+``m_i`` (its width on a track, its area or volume on a grid), so the masses ``p``
+evolve as ``dp/dt = -(D - C) M⁻¹ p``, with ``C = [c_ij]``, ``D`` its row sums and
+``M = diag(m)``:
 
-Because the eigendecomposition depends only on the graph (not ``sigma`` and not the
-fields being smoothed), it is computed once and cached on the ``Environment`` via
-``cached_eigenbasis``, then reused across all neurons and all EM refits.
+- On a grid, face-adjacent bins at spacing ``h`` sharing a face of area ``A``
+  have ``c = A / h``. Diagonal / Moore neighbors are not coupled.
+- On a track graph, the bin centers, bin edges and track nodes form a resistor
+  network with conductance ``1 / length`` per segment, and eliminating every
+  node that is not a bin center (a Kron reduction) gives ``c_ij``: ``1 / h``
+  between neighbors at separation ``h``, and ``g_i g_j / sum_k g_k`` between the
+  end bins of the arms meeting at a vertex, ``g_k`` the conductance from end bin
+  ``k`` to it. This is the Kirchhoff condition of diffusion on a metric graph:
+  mass crossing a vertex of degree ``d`` splits evenly among its ``d`` arms.
+
+On equal bins this is the finite-difference Laplacian with weight ``1 / h**2``.
+The heat kernel is a Gaussian of standard deviation ``sigma`` whatever the bin
+size, at junctions and across unequal bins too, and its long-time limit is a
+uniform density.
+
+The eigendecomposition is of the symmetric form ``L = M^{-1/2} (D - C) M^{-1/2}``
+(see :func:`build_laplacian`); the mass kernel is ``M^{1/2} exp(-t L) M^{-1/2}``.
+Because the eigendecomposition depends only on the graph (not ``sigma`` and not
+the fields being smoothed), it is computed once and cached on the ``Environment``
+via ``cached_eigenbasis``, then reused across all neurons and all EM refits.
 """
 
-import heapq
 import warnings
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -65,63 +78,103 @@ _HEAT_KERNEL_RANK_START = 32
 # (``_HEAT_KERNEL_RANK_TOL``) both perturb them by up to about this much.
 FIELD_RESOLUTION = max(float(np.finfo(np.float32).eps), _HEAT_KERNEL_RANK_TOL)
 
+# The diffusion operator this version builds. Encoding models whose fitted arrays
+# depend on it record it, and decoding one that records another asks for a refit.
+DIFFUSION_OPERATOR = "finite_volume"
+
 # Keys of this module's entries in the Environment cache (``Environment.get_cached``),
-# all cleared together by ``Environment.fit_place_grid``.
-_GRAPH_KEY = "diffusion_graph"
-_LAPLACIAN_KEY = "diffusion_laplacian"
-_EIGENBASIS_KEY = "diffusion_eigenbasis"
-_HEAT_KERNEL_RANK_KEY = "diffusion_heat_kernel_rank"
+# all cleared together by ``Environment.fit_place_grid``. The persistent ones name
+# the operator: an environment unpickled from a version that built another one
+# carries that operator's entries under other keys, which are never read.
+_GRAPH_KEY = f"diffusion_graph:{DIFFUSION_OPERATOR}"
+_LAPLACIAN_KEY = f"diffusion_laplacian:{DIFFUSION_OPERATOR}"
+_EIGENBASIS_KEY = f"diffusion_eigenbasis:{DIFFUSION_OPERATOR}"
+_HEAT_KERNEL_RANK_KEY = f"diffusion_heat_kernel_rank:{DIFFUSION_OPERATOR}"
 _DEVICE_BASIS_KEY = "diffusion_device_basis"
 
 
 def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
-    """Finite-difference symmetric graph Laplacian ``L = D - W``.
+    """Symmetric finite-volume diffusion operator ``L = M^{-1/2} (D - C) M^{-1/2}``.
 
-    The edge weight is the finite-difference coefficient ``w = 1 / distance**2``,
-    so that ``L ≈ -∂²`` on a regular face-adjacent grid and the heat kernel
-    ``exp(-t L)`` is a Gaussian of standard deviation ``sqrt(2 t)`` independent of
-    bin size. ``L`` is symmetric with zero row sums (``1ᵀL = 0``) and is positive
-    semi-definite with one null mode per connected component.
+    ``C`` holds the edge conductances, ``D`` is its row sums and ``M`` the node
+    volumes. The masses ``p`` of the bins evolve as ``dp/dt = -(D - C) M⁻¹ p``,
+    which is ``M^{1/2} L M^{-1/2}``, so the mass kernel is
+    ``M^{1/2} exp(-t L) M^{-1/2}``: it conserves total mass, and its long-time
+    limit has mass proportional to volume (uniform density). On equal volumes
+    ``h**d`` with face conductances ``h**(d-2)`` this is the finite-difference
+    Laplacian with weight ``1 / h**2``. ``L`` is symmetric positive
+    semi-definite with one null mode per connected component, ``sqrt(m)``
+    restricted to the component.
 
     Parameters
     ----------
     graph : nx.Graph
-        Face-adjacent interior-bin graph with contiguous integer nodes
-        ``0..n_nodes-1``. Each edge must carry a positive ``'distance'`` attribute
-        (Euclidean distance between the two bin centers). ``sigma``-independent.
+        Interior-bin graph with contiguous integer nodes ``0..n_nodes-1``. Each
+        node carries a positive ``'volume'`` and each edge a positive
+        ``'conductance'`` (see :func:`environment_graph`).
 
     Returns
     -------
     L : scipy.sparse.csr_matrix, shape (n_nodes, n_nodes)
-        The sparse symmetric graph Laplacian.
+        The sparse symmetric operator.
 
     Raises
     ------
     ValidationError
-        If any edge's ``'distance'`` attribute is not strictly positive (or is NaN).
+        If a node has no ``'volume'`` or an edge no ``'conductance'``, or one is
+        not a positive finite number.
     """
     n_nodes = graph.number_of_nodes()
+    missing_volume = [
+        node for node in range(n_nodes) if "volume" not in graph.nodes[node]
+    ]
+    missing_conductance = [
+        (u, v) for u, v, data in graph.edges(data=True) if "conductance" not in data
+    ]
+    if missing_volume or missing_conductance:
+        msg = "graph lacks the 'volume' or 'conductance' attributes of the operator"
+        raise ValidationError(
+            msg,
+            expected="a 'volume' on every node and a 'conductance' on every edge",
+            got=(
+                f"no 'volume' on {len(missing_volume)} node(s), no 'conductance' "
+                f"on {len(missing_conductance)} edge(s)"
+            ),
+            hint=(
+                "Build the graph with environment_graph. The operator no longer "
+                "reads edge 'distance' alone."
+            ),
+        )
+    volumes = np.array([graph.nodes[node]["volume"] for node in range(n_nodes)])
+    if not np.all(np.isfinite(volumes) & (volumes > 0)):
+        msg = "graph node has a volume that is not a positive finite number"
+        raise ValidationError(
+            msg,
+            expected="every node 'volume' > 0 and finite",
+            got=f"volumes {volumes[~(np.isfinite(volumes) & (volumes > 0))]}",
+        )
     rows: list[int] = []
     cols: list[int] = []
     vals: list[float] = []
     for u, v, data in graph.edges(data=True):
-        distance = data["distance"]
-        if not distance > 0:  # also catches NaN
-            msg = "graph edge has a non-positive 'distance'"
+        conductance = data["conductance"]
+        if not 0 < conductance < np.inf:  # also catches NaN
+            msg = "graph edge has a conductance that is not a positive finite number"
             raise ValidationError(
                 msg,
-                expected="every edge 'distance' > 0",
-                got=f"distance = {distance} on edge ({u}, {v})",
-                hint="Interior-bin edges must carry a positive Euclidean distance.",
+                expected="every edge 'conductance' > 0 and finite",
+                got=f"conductance = {conductance} on edge ({u}, {v})",
             )
-        w = 1.0 / distance**2  # finite-difference weight
         rows += [u, v]
         cols += [v, u]
-        vals += [w, w]
+        vals += [conductance, conductance]
 
-    weights = scipy.sparse.csr_matrix((vals, (rows, cols)), shape=(n_nodes, n_nodes))
-    degree = np.asarray(weights.sum(axis=1)).ravel()
-    return (scipy.sparse.diags(degree) - weights).tocsr()
+    conductances = scipy.sparse.csr_matrix(
+        (vals, (rows, cols)), shape=(n_nodes, n_nodes)
+    )
+    degree = np.asarray(conductances.sum(axis=1)).ravel()
+    scale = scipy.sparse.diags(1.0 / np.sqrt(volumes))
+    return (scale @ (scipy.sparse.diags(degree) - conductances) @ scale).tocsr()
 
 
 def _require_rank_covers_components(rank: int, n_components: int) -> None:
@@ -160,7 +213,8 @@ def _block_eigenbasis(
     # (near-)degenerate eigenspaces run-to-run. The eigenvalues and the diffusion /
     # penalty operators are invariant to that rotation, but a fixed v0 makes the basis
     # -- and hence fitted place fields -- reproducible. A generic (non-eigenvector)
-    # direction avoids ARPACK stagnating on v0 == the constant null mode.
+    # direction avoids ARPACK stagnating on v0 == the null mode (the square root of
+    # the bin volumes, constant on equal volumes).
     v0 = np.random.default_rng(0).standard_normal(n)
     try:
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(
@@ -463,28 +517,35 @@ def diffuse(
     sigma: float,
     fields: np.ndarray,
     component_labels: np.ndarray | None = None,
+    bin_sizes: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Apply the heat kernel ``exp(-t L)``, ``t = sigma**2 / 2``, to ``fields``.
+    """Diffuse per-bin masses ``fields`` for ``t = sigma**2 / 2``.
 
-    Computed in the eigenbasis as ``Q (exp(-tΛ) ⊙ (Qᵀ F))``, never materializing
-    the dense ``(n_bins, n_bins)`` kernel. All fields (occupancy + every neuron's
-    count field) diffuse in a single batched matmul.
+    Applies the mass kernel ``M^{1/2} exp(-t L) M^{-1/2}`` (see
+    :func:`build_laplacian`), computed in the eigenbasis as
+    ``M^{1/2} Q (exp(-tΛ) ⊙ (Qᵀ M^{-1/2} F))``, never materializing the dense
+    ``(n_bins, n_bins)`` kernel. All fields (occupancy + every neuron's count
+    field) diffuse in a single batched matmul.
 
     Parameters
     ----------
     eigvals : np.ndarray, shape (m,)
-        Laplacian eigenvalues from :func:`diffusion_eigenbasis`.
+        Eigenvalues from :func:`diffusion_eigenbasis`.
     eigvecs : np.ndarray, shape (n_bins, m)
         Corresponding eigenvectors as columns.
     sigma : float
         Smoothing standard deviation in coordinate units (bandwidth).
     fields : np.ndarray, shape (n_bins, n_fields)
-        Count fields on the interior bins, one column per field.
+        Count fields (masses) on the interior bins, one column per field.
     component_labels : np.ndarray, shape (n_bins,), optional
         Connected-component id per bin (see :func:`connected_component_labels`), by
         default None. When given, mass is renormalized within each component; when
         None, over the whole column. Pass labels on disconnected graphs so clipping in
         one component cannot shift mass into another.
+    bin_sizes : np.ndarray, shape (n_bins,), optional
+        The bin volumes ``M`` the operator was built with (see
+        :func:`environment_graph`), by default None: equal volumes. Only their
+        ratios enter.
 
     Returns
     -------
@@ -494,11 +555,12 @@ def diffuse(
 
     Notes
     -----
-    The heat kernel conserves each field's total mass because the constant (null)
-    mode is always retained. At full rank the kernel is already non-negative, so
-    clipping only removes round-off. A truncated basis, however, can produce
-    non-tiny negative lobes (e.g. for a point source); clipping those alone would
-    inflate the total, so each column is renormalized back to its input sum.
+    The kernel conserves each field's total mass because every component's null
+    mode (``sqrt(m)``) is always retained. At full rank the kernel is already
+    non-negative, so clipping only removes round-off. A truncated basis, however,
+    can produce non-tiny negative lobes (e.g. for a point source); clipping those
+    alone would inflate the total, so each column is renormalized back to its
+    input sum.
 
     On a disconnected graph the heat kernel conserves each *component's* mass
     independently, but a single global renormalization would redistribute mass
@@ -507,8 +569,14 @@ def diffuse(
     """
     t = sigma**2 / 2.0
     coeff = np.exp(-t * eigvals)  # (m,)
-    proj = eigvecs.T @ fields  # (m, n_fields)
-    smoothed = eigvecs @ (coeff[:, None] * proj)  # (n_bins, n_fields)
+    # sqrt of the volumes relative to the largest, exactly 1 on equal volumes.
+    root = (
+        np.ones((fields.shape[0], 1))
+        if bin_sizes is None
+        else np.sqrt(bin_sizes / np.max(bin_sizes))[:, None]
+    )
+    proj = eigvecs.T @ (fields / root)  # (m, n_fields)
+    smoothed = root * (eigvecs @ (coeff[:, None] * proj))  # (n_bins, n_fields)
     clipped = np.clip(smoothed, 0.0, None)
 
     def _rescale_rows_to_input_mass(rows: np.ndarray) -> np.ndarray:
@@ -585,20 +653,28 @@ def heat_kernel_apply(
     component_labels: jax.Array | None = None,
     n_components: int | None = None,
 ) -> jax.Array:
-    """JAX port of ``diffuse``: exp(-tL) F, clipped and per-component mass-rescaled.
+    """JAX port of ``diffuse`` on equal volumes, clipped and mass-rescaled.
 
-    Mirrors :func:`diffuse` exactly (clip to >=0, then rescale each column to its
-    input mass, per connected component) so likelihood magnitude is truncation-rank
-    stable. Jittable; the mass rescale reduces one component at a time
-    (see ``_component_mass_sum``). ``component_labels`` are 0..K-1 segment ids
-    (a device/host int array; a single connected graph passes all zeros or None).
+    Computes ``Q exp(-tΛ) Qᵀ F`` and mirrors :func:`diffuse` with
+    ``bin_sizes=None`` exactly (clip to >=0, then rescale each column to its input
+    mass, per connected component) so likelihood magnitude is truncation-rank
+    stable. Jittable; the mass rescale reduces one component at a time (see
+    ``_component_mass_sum``). ``component_labels`` are 0..K-1 segment ids (a
+    device/host int array; a single connected graph passes all zeros or None).
+
+    ``eigvecs`` is an orthonormal eigenbasis (:func:`diffusion_eigenbasis`,
+    :func:`cached_eigenbasis`); on unequal volumes the result is then not the
+    mass kernel, for which use :func:`diffuse` with ``bin_sizes``. The one other
+    input it takes is the point-source factors of
+    :func:`get_device_point_source_basis` with unit point sources as ``fields``,
+    whose columns, normalized to unit mass, are the mass kernel's columns.
 
     Parameters
     ----------
     eigvals : jax.Array, shape (m,)
-        Laplacian eigenvalues from :func:`diffusion_eigenbasis`.
+        Eigenvalues from :func:`diffusion_eigenbasis`.
     eigvecs : jax.Array, shape (n_bins, m)
-        Corresponding eigenvectors as columns.
+        Orthonormal eigenvectors as columns (see above).
     sigma : float
         Smoothing standard deviation in coordinate units (bandwidth).
     fields : jax.Array, shape (n_bins, n_fields)
@@ -608,7 +684,7 @@ def heat_kernel_apply(
         single component).
     n_components : int, optional
         The **static** component count — pass it explicitly (the production
-        caller gets it from :func:`get_device_basis`) to avoid a per-call
+        caller gets it from :func:`get_device_point_source_basis`) to avoid a per-call
         device->host sync of the labels. If ``None``, it is derived host-side
         once (convenience for tests / one-off calls only — NOT the hot predict
         path).
@@ -684,6 +760,48 @@ def resolved_occupancy(occupancy: np.ndarray | jax.Array) -> np.ndarray | jax.Ar
     return (occupancy > 0.0) & (occupancy >= FIELD_RESOLUTION * occupancy.max())
 
 
+def check_diffusion_operator(diffusion_operator: str | None) -> None:
+    """Raise unless an encoding model was fitted with this version's operator.
+
+    An encoding model that decodes by rebuilding the heat kernel from its
+    environment combines that kernel with arrays it fitted with its own
+    operator, so the two must be the same operator.
+
+    Parameters
+    ----------
+    diffusion_operator : str or None
+        The operator the encoding model records (``DIFFUSION_OPERATOR`` at its
+        fit), or None for a model fitted before models recorded it.
+
+    Raises
+    ------
+    ValidationError
+        If ``diffusion_operator`` is not ``DIFFUSION_OPERATOR``.
+    """
+    if diffusion_operator == DIFFUSION_OPERATOR:
+        return
+    msg = (
+        "The clusterless_diffusion encoding model was fitted with another "
+        "diffusion operator than this version builds: its occupancy and "
+        "intensities come from that operator, and decoding would combine them "
+        "with this version's heat kernel. The diffusion operator changed to "
+        "couple track junctions and unequal bin widths correctly."
+    )
+    raise ValidationError(
+        msg,
+        expected=f"diffusion_operator = {DIFFUSION_OPERATOR!r}",
+        got=(
+            "no recorded diffusion operator"
+            if diffusion_operator is None
+            else f"diffusion_operator = {diffusion_operator!r}"
+        ),
+        hint=(
+            "Refit the model with the installed version, or decode with the "
+            "version that fitted it."
+        ),
+    )
+
+
 def environment_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
@@ -693,12 +811,14 @@ def environment_graph(
 
     - **N-D / 1D grid** (``track_graph is None``): the subgraph of
       ``track_graphDD`` induced by interior bins, keeping only **face-adjacent**
-      edges (bin centers differing in exactly one dimension); diagonal / Moore
-      edges are dropped because with ``1/d²`` weighting they oversmooth.
-    - **Linearized track graph**: interior bin centers of
-      ``track_graph_with_bin_centers_edges_`` contracted to a bin-center adjacency
-      graph, connecting each interior bin center to the neighbors reachable through
-      bin-edge / junction nodes; junctions link arms, gap bins are excluded.
+      edges (bin centers differing in exactly one dimension), each with the
+      conductance ``face area / center distance``; diagonal / Moore neighbors
+      share no face.
+    - **Linearized track graph**: the interior bin centers of
+      ``track_graph_with_bin_centers_edges_``, coupled by the conductances of its
+      resistor network with every other node eliminated (see
+      :func:`_center_conductances`); junctions couple the arms' end bins with the
+      Kirchhoff weights, and gap bins are excluded.
 
     Nodes are relabeled ``0..n_interior-1`` in interior flat-bin order
     (``np.where(is_track_interior_.ravel())[0]``), matching every consumer's
@@ -712,8 +832,10 @@ def environment_graph(
     Returns
     -------
     graph : nx.Graph
-        Interior-bin graph with nodes ``0..n_interior-1`` and ``'distance'``-weighted
-        edges.
+        Interior-bin graph with nodes ``0..n_interior-1``, each with its
+        ``'volume'``, and edges with a ``'conductance'`` and the ``'distance'``
+        between the two bin centers (the shortest path through the track, on a
+        track graph). :func:`build_laplacian` builds the operator from it.
     node_order : np.ndarray, shape (n_interior,)
         Interior flat-bin indices in graph-node order (maps local nodes back to the
         full grid).
@@ -771,7 +893,7 @@ def environment_graph(
     # cannot corrupt later callers. `nx.freeze` does NOT block edge-attribute
     # writes, so snapshot the Laplacian here — before the graph is handed out — and
     # derive the eigenbasis from that snapshot (see `cached_eigenbasis`); a later
-    # `graph.edges[e]["distance"] = ...` then cannot change the cached basis.
+    # `graph.edges[e]["conductance"] = ...` then cannot change the cached basis.
     graph, node_order, bin_sizes = result
     nx.freeze(graph)
     node_order.setflags(write=False)
@@ -980,10 +1102,20 @@ def cached_heat_kernel_eigenbasis(
     )
 
 
-def get_device_basis(
+def get_device_point_source_basis(
     environment: "Environment", resolved_rank: int
 ) -> tuple[jax.Array, jax.Array, jax.Array, int]:
-    """Device (jnp) eigenbasis for the clusterless_diffusion predict matmul.
+    """Device factors of the heat kernel's point-source columns.
+
+    For the clusterless_diffusion kernel columns only. The factors are the
+    eigenvectors scaled by ``sqrt(m / max(m))``, ``m`` the bin volumes, so
+    ``P exp(-tΛ) Pᵀ e_s``, ``P`` the factors, is the mass kernel's column for a
+    unit mass at bin ``s`` times ``m_s / max(m)``: normalized to unit mass, as
+    every kernel column is, it is the mass kernel's column on any volumes. On
+    equal volumes the scale is exactly 1. On unequal volumes ``P`` is not
+    orthonormal, so it is not an eigenbasis: applying it to any field other than
+    a point source gives neither the mass kernel nor a density. Use
+    :func:`cached_eigenbasis` with :func:`diffuse` for other fields.
 
     Transient environment cache entry keyed by ``(resolved_rank, device, dtype)``.
     On a miss, the host basis is retrieved via :func:`cached_eigenbasis` and
@@ -1004,8 +1136,8 @@ def get_device_basis(
     -------
     eigvals : jax.Array, shape (resolved_rank,)
         Laplacian eigenvalues, on ``device``.
-    eigvecs : jax.Array, shape (n_interior, resolved_rank)
-        Corresponding eigenvectors as columns, on ``device``.
+    point_source_factors : jax.Array, shape (n_interior, resolved_rank)
+        The eigenvectors scaled by ``sqrt(m / max(m))``, on ``device``.
     component_labels : jax.Array, shape (n_interior,)
         Connected-component id per interior bin, ``0..n_components-1``, on
         ``device``.
@@ -1032,12 +1164,13 @@ def get_device_basis(
         eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
         # Component labels from the existing helper (indexed by interior-bin/node
         # order) — do NOT rebuild the Laplacian from the exposed frozen graph.
-        graph, _, _ = environment_graph(environment)
+        graph, _, bin_sizes = environment_graph(environment)
         labels_host = connected_component_labels(graph)  # np.ndarray, 0..K-1
         n_components = int(labels_host.max()) + 1  # static, computed once
+        root = np.sqrt(bin_sizes / np.max(bin_sizes))[:, np.newaxis]
         cache[key] = (
             jax.device_put(np.asarray(eigvals, dtype=np.float32), device),
-            jax.device_put(np.asarray(eigvecs, dtype=np.float32), device),
+            jax.device_put(np.asarray(root * eigvecs, dtype=np.float32), device),
             jax.device_put(np.asarray(labels_host, dtype=np.int32), device),
             n_components,
         )
@@ -1047,20 +1180,18 @@ def get_device_basis(
 def _nd_grid_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
-    """Adapter branch for N-D / 1D grid environments (``track_graph is None``)."""
+    """Adapter branch for N-D / 1D grid environments (``track_graph is None``).
+
+    Face-adjacent bins at center distance ``h`` along an axis share a face whose
+    area ``A`` is the product of their widths along the other axes (1 in 1D),
+    so their conductance is ``A / h``; a bin's volume is the product of its
+    widths.
+    """
     node_order = np.where(environment.is_track_interior_.ravel())[0]
     track_graph = cast(nx.Graph, environment.track_graphDD)
     subgraph = track_graph.subgraph(node_order)
     positions = nx.get_node_attributes(track_graph, "pos")
     relabel = {old: new for new, old in enumerate(node_order)}
-
-    graph = nx.Graph()
-    graph.add_nodes_from(range(node_order.size))
-    for u, v, data in subgraph.edges(data=True):
-        offset = np.asarray(positions[u]) - np.asarray(positions[v])
-        # Keep only face-adjacent pairs (differ in exactly one dimension).
-        if np.count_nonzero(np.abs(offset) > 1e-9) == 1:
-            graph.add_edge(relabel[u], relabel[v], distance=data["distance"])
 
     # bin_sizes = product of per-dimension bin widths, over the interior bins.
     widths = [np.diff(edge) for edge in environment.edges_]
@@ -1069,57 +1200,208 @@ def _nd_grid_graph(
         bin_volume = bin_volume * axis_width
     bin_sizes = bin_volume.ravel()[node_order]
 
+    graph = nx.Graph()
+    graph.add_nodes_from(
+        (local, {"volume": volume}) for local, volume in enumerate(bin_sizes)
+    )
+    for u, v, data in subgraph.edges(data=True):
+        offset = np.asarray(positions[u]) - np.asarray(positions[v])
+        differs = np.flatnonzero(np.abs(offset) > 1e-9)
+        # Keep only face-adjacent pairs (differ in exactly one dimension).
+        if differs.size == 1:
+            (axis,) = differs
+            index = np.unravel_index(u, environment.centers_shape_)
+            face_area = bin_volume[index] / widths[axis][index[axis]]
+            graph.add_edge(
+                relabel[u],
+                relabel[v],
+                distance=data["distance"],
+                conductance=face_area / data["distance"],
+            )
+
     return graph, node_order, bin_sizes
 
 
 def _linearized_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
-    """Adapter branch for linearized ``track_graph`` environments."""
+    """Adapter branch for linearized ``track_graph`` environments.
+
+    A bin's volume is its width; the conductances between bin centers come
+    from :func:`_center_conductances` on the track's bin-center graph.
+    """
     is_interior = environment.is_track_interior_.ravel()
     node_order = np.where(is_interior)[0]
+    bin_sizes = np.diff(environment.place_bin_edges_.ravel())[is_interior]
 
     # Substrate node id for each interior place bin (gap bins carry -1 and are
     # excluded); order matches place_bin_centers_ / is_track_interior_.
     node_ids = cast(Any, environment.place_bin_centers_nodes_df_).node_id.to_numpy()
     interior_node_ids = node_ids[is_interior].astype(int)
-    centers = {int(nid) for nid in interior_node_ids}
     local_of = {int(nid): local for local, nid in enumerate(interior_node_ids)}
 
-    substrate = cast(nx.Graph, environment.track_graph_with_bin_centers_edges_)
     graph = nx.Graph()
-    graph.add_nodes_from(range(interior_node_ids.size))
-    for start in interior_node_ids:
-        for neighbor, distance in _neighbor_centers(substrate, int(start), centers):
-            graph.add_edge(local_of[int(start)], local_of[neighbor], distance=distance)
-
-    bin_sizes = np.diff(environment.place_bin_edges_.ravel())[is_interior]
+    graph.add_nodes_from(
+        (local, {"volume": volume}) for local, volume in enumerate(bin_sizes)
+    )
+    substrate = cast(nx.Graph, environment.track_graph_with_bin_centers_edges_)
+    for (u, v), (conductance, distance) in _center_conductances(
+        substrate, set(local_of)
+    ).items():
+        graph.add_edge(
+            local_of[u], local_of[v], distance=distance, conductance=conductance
+        )
     return graph, node_order, bin_sizes
 
 
-def _neighbor_centers(
-    substrate: nx.Graph, start: int, centers: set[int]
-) -> list[tuple[int, float]]:
-    """Bin-center nodes reachable from ``start`` without passing another center.
+def _center_conductances(
+    substrate: nx.Graph, centers: set[int]
+) -> dict[tuple[int, int], tuple[float, float]]:
+    """Conductances between bin centers of a track's bin-center graph.
 
-    Runs Dijkstra from ``start`` over ``substrate`` (bin-center, bin-edge, and
-    junction nodes), treating every other center node as a sink (recorded but not
-    expanded through). Returns ``(center_node, path_distance)`` pairs — the local
-    bin-center adjacency the contraction needs; junction nodes link arms.
+    ``substrate`` joins bin centers, bin edges and track nodes by segments with
+    a ``'distance'`` (length); each segment conducts ``1 / length``. The nodes
+    a zero-length segment joins are merged. Every node that is not a bin center
+    is then eliminated (Kron reduction): each connected group of such nodes,
+    with the centers next to it, is a resistor network whose Schur complement
+    onto those centers gives their pairwise conductances. Two centers in series
+    through one bin edge, at lengths ``a`` and ``b``, get ``1 / (a + b)``; the
+    end bins of the arms at a vertex get ``g_i g_j / sum_k g_k``.
+
+    Parameters
+    ----------
+    substrate : nx.Graph
+        The bin-center graph (``track_graph_with_bin_centers_edges_``).
+    centers : set of int
+        Its nodes that are interior bin centers.
+
+    Returns
+    -------
+    conductances : dict[tuple[int, int], tuple[float, float]]
+        For each coupled pair of centers, the conductance between them and
+        the length of the shortest path joining them through non-center nodes.
+
+    Raises
+    ------
+    ValidationError
+        If two bin centers are joined by a zero-length segment.
     """
-    distances: dict[int, float] = {start: 0.0}
-    heap: list[tuple[float, int]] = [(0.0, start)]
-    neighbors: list[tuple[int, float]] = []
-    while heap:
-        dist, node = heapq.heappop(heap)
-        if dist > distances.get(node, np.inf):
+    nodes = list(substrate.nodes)
+    position = {node: k for k, node in enumerate(nodes)}
+    lengths = {
+        (position[u], position[v]): float(data["distance"])
+        for u, v, data in substrate.edges(data=True)
+    }
+
+    # Merge the nodes zero-length segments join; a merged group is a center
+    # when it holds one.
+    zero = np.array([pair for pair, length in lengths.items() if length == 0.0])
+    zero = zero.reshape(-1, 2)
+    _, group = scipy.sparse.csgraph.connected_components(
+        scipy.sparse.coo_matrix(
+            (np.ones(len(zero)), (zero[:, 0], zero[:, 1])),
+            shape=(len(nodes), len(nodes)),
+        ),
+        directed=False,
+    )
+    center_of: dict[int, int] = {}
+    for node in centers:
+        if group[position[node]] in center_of:
+            msg = "two bin centers of the track graph are at zero distance"
+            raise ValidationError(
+                msg,
+                got=f"centers {center_of[group[position[node]]]} and {node}",
+                hint="Every place bin needs a positive width.",
+            )
+        center_of[group[position[node]]] = node
+
+    # Conductance (summed over parallel segments) and shortest length between
+    # merged groups, as adjacency maps.
+    neighbors: dict[int, dict[int, list[float]]] = {}
+    for (u, v), length in lengths.items():
+        a, b = int(group[u]), int(group[v])
+        if a == b:
             continue
-        if node != start and node in centers:
-            neighbors.append((node, dist))
-            continue  # do not expand through another bin center
-        for adjacent, edge_data in substrate[node].items():
-            candidate = dist + edge_data["distance"]
-            if candidate < distances.get(adjacent, np.inf):
-                distances[adjacent] = candidate
-                heapq.heappush(heap, (candidate, adjacent))
-    return neighbors
+        for x, y in ((a, b), (b, a)):
+            link = neighbors.setdefault(x, {}).setdefault(y, [0.0, np.inf])
+            link[0] += 1.0 / length
+            link[1] = min(link[1], length)
+
+    coupled: dict[tuple[int, int], tuple[float, float]] = {}
+
+    def couple(i: int, j: int, conductance: float, distance: float) -> None:
+        key = (min(i, j), max(i, j))
+        previous_conductance, previous_distance = coupled.get(key, (0.0, np.inf))
+        coupled[key] = (
+            previous_conductance + conductance,
+            min(previous_distance, distance),
+        )
+
+    # Center-center segments couple directly.
+    for a, links in neighbors.items():
+        if a in center_of:
+            for b, (conductance, length) in links.items():
+                if b in center_of and a < b:
+                    couple(center_of[a], center_of[b], conductance, length)
+
+    # Eliminate each connected group of non-center nodes onto the centers
+    # around it.
+    visited: set[int] = set()
+    for seed in neighbors:
+        if seed in center_of or seed in visited:
+            continue
+        cluster = [seed]
+        visited.add(seed)
+        for node in cluster:  # breadth-first; grows while iterating
+            for adjacent in neighbors[node]:
+                if adjacent not in center_of and adjacent not in visited:
+                    visited.add(adjacent)
+                    cluster.append(adjacent)
+        boundary = sorted(
+            {b for node in cluster for b in neighbors[node] if b in center_of}
+        )
+        if len(boundary) < 2:
+            continue  # a dead end (track end): no coupling
+        if len(cluster) == 1:
+            # One node joining the centers: c_ij = g_i g_j / sum_k g_k.
+            links = neighbors[cluster[0]]
+            total = sum(links[b][0] for b in boundary)
+            for k, i in enumerate(boundary):
+                for j in boundary[k + 1 :]:
+                    couple(
+                        center_of[i],
+                        center_of[j],
+                        links[i][0] * links[j][0] / total,
+                        links[i][1] + links[j][1],
+                    )
+            continue
+        inner = {node: k for k, node in enumerate(cluster)}
+        outer = {b: k for k, b in enumerate(boundary)}
+        g_inner = np.zeros((len(cluster), len(cluster)))
+        g_outer = np.zeros((len(cluster), len(boundary)))
+        length_inner = np.zeros((len(cluster), len(cluster)))
+        length_outer = np.full((len(cluster), len(boundary)), np.inf)
+        for node, k in inner.items():
+            for adjacent, (conductance, length) in neighbors[node].items():
+                if adjacent in inner:
+                    g_inner[k, inner[adjacent]] = conductance
+                    length_inner[k, inner[adjacent]] = length
+                else:
+                    g_outer[k, outer[adjacent]] = conductance
+                    length_outer[k, outer[adjacent]] = length
+        # Schur complement onto the boundary: C = G_ob^T L_oo^{-1} G_ob.
+        l_inner = np.diag(g_inner.sum(axis=1) + g_outer.sum(axis=1)) - g_inner
+        schur = g_outer.T @ np.linalg.solve(l_inner, g_outer)
+        through = scipy.sparse.csgraph.shortest_path(length_inner, directed=False)
+        # Shortest boundary-to-node path, then node to boundary.
+        to_inner = np.min(length_outer.T[:, :, None] + through[None], axis=1)
+        distance = np.min(to_inner[:, None, :] + length_outer.T[None], axis=2)
+        for k, i in enumerate(boundary):
+            for m in range(k + 1, len(boundary)):
+                couple(
+                    center_of[i],
+                    center_of[boundary[m]],
+                    float(schur[k, m]),
+                    float(distance[k, m]),
+                )
+    return coupled
