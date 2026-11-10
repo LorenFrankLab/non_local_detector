@@ -85,7 +85,8 @@ def simulate_place_field_firing_rate(
     position : np.ndarray, shape (n_time, n_position_dims)
         Position trajectory.
     max_rate : float, optional
-        Peak firing rate at the field center.
+        Peak firing rate at the field center, whether or not the trajectory
+        reaches it.
     variance : float, optional
         Place-field variance.
     is_condition : None or np.ndarray, shape (n_time,)
@@ -94,13 +95,13 @@ def simulate_place_field_firing_rate(
     Returns
     -------
     firing_rate : np.ndarray, shape (n_time,)
-        Firing rate at each time point.
+        Firing rate at each time point; NaN where the position is NaN.
     """
     if is_condition is None:
         is_condition = np.ones(position.shape[0], dtype=bool)
     position = position if position.ndim > 1 else position[:, np.newaxis]
-    firing_rate = np.asarray(multivariate_normal(means, variance).pdf(position))
-    firing_rate /= firing_rate.max()
+    field = multivariate_normal(means, variance)
+    firing_rate = np.asarray(field.pdf(position) / field.pdf(field.mean))
     firing_rate *= max_rate
     firing_rate[~is_condition] = 0.0
 

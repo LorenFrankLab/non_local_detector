@@ -92,19 +92,20 @@ def create_place_field(
     place_field_std_deviation : float, optional
         Standard deviation of the Gaussian place field, by default sqrt(12.5).
     max_firing_rate : float, optional
-        Maximum firing rate at the field center, by default 20.0.
+        Firing rate above baseline at the field center, whether or not the
+        trajectory reaches it, by default 20.0.
     baseline_firing_rate : float, optional
         Baseline firing rate outside the field, by default 0.001.
 
     Returns
     -------
     firing_rate : np.ndarray, shape (n_time,)
-        Firing rate at each time point.
+        Firing rate at each time point; NaN where the position is NaN.
     """
     if is_condition is None:
         is_condition = np.ones_like(position, dtype=bool)
-    field_firing_rate = norm(place_field_mean, place_field_std_deviation).pdf(position)
-    field_firing_rate /= np.nanmax(field_firing_rate)
+    field = norm(place_field_mean, place_field_std_deviation)
+    field_firing_rate = field.pdf(position) / field.pdf(place_field_mean)
     field_firing_rate[~is_condition] = 0
     return cast(
         "np.ndarray", baseline_firing_rate + max_firing_rate * field_firing_rate
@@ -491,6 +492,25 @@ def make_fragmented_replay(
     return spikes
 
 
+def _spike_times_from_counts(time: np.ndarray, counts: np.ndarray) -> list[np.ndarray]:
+    """Spike times of each neuron, one entry per spike.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+        Sample times in seconds.
+    counts : np.ndarray, shape (n_time, n_neurons)
+        Spike count of each neuron in each sample.
+
+    Returns
+    -------
+    spike_times : list of np.ndarray, length n_neurons
+        A sample with ``k`` spikes contributes its time ``k`` times, so
+        ``spike_times[i].size == counts[:, i].sum()``.
+    """
+    return [np.repeat(time, neuron_counts.astype(int)) for neuron_counts in counts.T]
+
+
 def make_simulated_data(
     track_height: float = TRACK_HEIGHT,
     sampling_frequency: int = SAMPLING_FREQUENCY,
@@ -532,7 +552,8 @@ def make_simulated_data(
     linear_distance : np.ndarray, shape (n_time,)
         Linear distance along the track.
     spike_times : list[np.ndarray]
-        Spike times in seconds for each neuron.
+        Spike times in seconds for each neuron, one per spike: a sample with
+        several Poisson spikes repeats its time.
     time : np.ndarray, shape (n_time,)
         Time in seconds.
     event_times : np.ndarray, shape (n_events, 2)
@@ -651,7 +672,7 @@ def make_simulated_data(
 
     event_times = np.stack([event_starts, event_ends], axis=1)
 
-    spike_times = [time[np.nonzero(spike_indicator)[0]] for spike_indicator in spikes.T]
+    spike_times = _spike_times_from_counts(time, spikes)
 
     is_event = np.zeros_like(time, dtype=bool)
     for event_start, event_end in event_times[:-1]:

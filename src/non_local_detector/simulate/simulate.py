@@ -106,6 +106,14 @@ def simulate_multiunit_with_place_fields(
 ) -> np.ndarray:
     """Simulate a multiunit with neurons at ``place_means``.
 
+    The output holds one mark row per time sample, so at most one spike per
+    sample. Each sample spikes with probability ``sum(rates) /
+    sampling_frequency``, the expected number of spikes of the neurons'
+    Poisson processes in that sample, and the spike belongs to neuron ``i``
+    with probability ``rate_i / sum(rates)``. Neuron ``i`` therefore spikes in
+    a sample with probability ``rate_i / sampling_frequency``, so its mean
+    rate is its place-field rate.
+
     Parameters
     ----------
     place_means : np.ndarray, shape (n_neurons, n_position_dims)
@@ -139,29 +147,51 @@ def simulate_multiunit_with_place_fields(
     Returns
     -------
     multiunit : np.ndarray, shape (n_time, n_mark_dims)
-        Marks at each time sample; NaN where no neuron spiked.
+        Marks at each time sample; NaN where no neuron spiked, which includes
+        every sample with a NaN position.
+
+    Raises
+    ------
+    ValueError
+        If the summed rate exceeds ``sampling_frequency`` at some sample, so
+        that sample would need more than one spike on average.
     """
     if rng is None:
         rng = np.random.default_rng(seed)
     n_neurons = place_means.shape[0]
     mark_centers = np.arange(0, n_neurons * mark_spacing, mark_spacing)
     n_time = position.shape[0]
-    marks = np.full((n_time, n_mark_dims), np.nan)
-    for mean, mark_center in zip(place_means, mark_centers, strict=False):
-        is_spike = (
-            simulate_neuron_with_place_field(
-                mean,
-                position,
-                max_rate=max_rate,
-                variance=place_variance,
-                sampling_frequency=sampling_frequency,
-                is_condition=is_condition,
-                rng=rng,
+    # Firing rate of each neuron, shape (n_neurons, n_time).
+    rate = np.stack(
+        [
+            simulate_place_field_firing_rate(
+                mean, position, max_rate, place_variance, is_condition
             )
-            > 0
+            for mean in place_means
+        ]
+    )
+    # A few ulps of allowance, so that rates summing to sampling_frequency up
+    # to rounding are accepted.
+    if np.nanmax(rate.sum(axis=0)) > sampling_frequency * (1 + 4 * np.finfo(float).eps):
+        msg = (
+            "The summed place-field rate exceeds sampling_frequency "
+            f"({sampling_frequency}), but each sample holds at most one spike. "
+            "Raise sampling_frequency or lower max_rate."
         )
-        n_spikes = int(is_spike.sum())
+        raise ValueError(msg)
+    # Per-sample spike probability, cumulated over neurons.
+    cumulative_probability = np.cumsum(rate / sampling_frequency, axis=0)
+    # One uniform per sample decides both whether it spikes (u below the
+    # summed probability) and which neuron spikes (the first whose cumulative
+    # probability exceeds u), so neuron i owns probability rate_i / fs.
+    uniform = rng.uniform(size=n_time)
+    is_below = uniform < cumulative_probability
+    has_spike = is_below[-1]
+    spiking_neuron = np.argmax(is_below, axis=0)
+    marks = np.full((n_time, n_mark_dims), np.nan)
+    for neuron, mark_center in enumerate(mark_centers):
+        is_spike = has_spike & (spiking_neuron == neuron)
         marks[is_spike] = multivariate_normal(
             mean=[mark_center] * n_mark_dims, cov=mark_variance
-        ).rvs(size=n_spikes, random_state=rng)
+        ).rvs(size=int(is_spike.sum()), random_state=rng)
     return marks

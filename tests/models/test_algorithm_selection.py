@@ -575,9 +575,11 @@ def test_current_encoding_models_add_only_known_keys_to_the_saved_ones(algorithm
 
     Since they were saved, the types gained only ``algorithm`` and, for
     clusterless KDE and diffusion, ``mark_dimensions``, both restored on
-    load, and for clusterless diffusion ``diffusion_operator``, whose absence
-    asks for a refit. A further key needs a load-time default for saved
-    models (and listing here), not an edit of the saved key sets.
+    load; for clusterless diffusion ``diffusion_operator``, whose absence
+    asks for a refit; and for clusterless GMM ``log_occupancy_threshold``,
+    whose absence predict reads as no threshold. A further key needs a
+    load-time default for saved models (and listing here), not an edit of the
+    saved key sets.
     """
     registry = {**_SORTED_SPIKES_ALGORITHMS, **_CLUSTERLESS_ALGORITHMS}
     model_type = registry[algorithm].encoding_model_type
@@ -587,4 +589,6 @@ def test_current_encoding_models_add_only_known_keys_to_the_saved_ones(algorithm
         added |= {"mark_dimensions"}
     if algorithm == "clusterless_diffusion":
         added |= {"diffusion_operator"}
+    if algorithm == "clusterless_gmm":
+        added |= {"log_occupancy_threshold"}
     assert current - _PRE_ALGORITHM_ENCODING_KEYS[algorithm] == added
