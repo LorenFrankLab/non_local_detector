@@ -3,6 +3,7 @@
 import numpy as np
 from numpy.typing import ArrayLike
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.visualization._optional import sortingview_available
 
 __all__ = [
@@ -14,24 +15,49 @@ __all__ = [
 def get_sampling_freq(times: ArrayLike) -> float:
     """Get the sampling frequency from a series of times.
 
-    The median time difference picks out the regular sample interval, so
-    gaps are ignored; the mean of the differences within 1% of it then
-    averages out the rounding of large time stamps, such as Unix seconds.
+    The times are split into contiguous runs wherever a difference exceeds
+    1.5 times the regular sample interval, taken as the 10th percentile of
+    the differences (a low percentile, so that it is the one-sample interval
+    even when frames are dropped as often as they are kept). The rate is the
+    number of intervals inside the runs divided by the time the runs span.
+    Gaps and dropped frames are thus left out, and jitter or rounding of the
+    time stamps (to the millisecond, or of Unix seconds in float64) only
+    moves the runs' end points.
 
     Parameters
     ----------
     times : array_like, shape (n_time,)
-        Sample times in seconds.
+        Sample times in seconds, finite and strictly increasing.
 
     Returns
     -------
     sampling_rate : float
         Samples per second.
+
+    Raises
+    ------
+    ValidationError
+        If there are fewer than two times, or they are not finite and
+        strictly increasing.
     """
-    time_differences = np.diff(np.asarray(times, dtype=float))
-    median_difference = np.median(time_differences)
-    is_regular = np.isclose(time_differences, median_difference, rtol=0.01, atol=0)
-    return float(1.0 / np.mean(time_differences[is_regular]))
+    times = np.asarray(times, dtype=float)
+    time_differences = np.diff(times)
+    if (
+        times.ndim != 1
+        or times.size < 2
+        or not np.all(np.isfinite(times))
+        or np.any(time_differences <= 0)
+    ):
+        msg = "Cannot read a sampling rate from these times"
+        raise ValidationError(
+            msg,
+            expected="finite, strictly increasing times with shape (n_time,), "
+            "n_time >= 2",
+            got=f"array with shape {times.shape}",
+        )
+    regular_interval = np.quantile(time_differences, 0.1)
+    is_in_run = time_differences < 1.5 * regular_interval
+    return float(np.count_nonzero(is_in_run) / np.sum(time_differences[is_in_run]))
 
 
 if sortingview_available():
