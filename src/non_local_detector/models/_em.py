@@ -1537,7 +1537,13 @@ class _EMMixin:
     def _em_update_initial_conditions(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase", e_step: _EMEStep
     ) -> None:
-        """Initial-condition M-step: the first bin's smoothed posterior."""
+        """Initial-condition M-step: the first bin's smoothed posterior.
+
+        Each state's continuous initial conditions are its bins' joint
+        posterior over the state's probability. A state whose probability is
+        exactly zero has no such distribution and gets zeros; any positive
+        probability, however small, gives one.
+        """
         self.initial_conditions_[self.state_space_.is_track_interior] = (
             e_step.first_smoothed
         )
@@ -1548,7 +1554,7 @@ class _EMMixin:
         expanded_discrete_ic = e_step.acausal_state_probabilities[0][
             self.state_space_.state_ind
         ]
-        is_zero = np.isclose(expanded_discrete_ic, 0.0)
+        is_zero = expanded_discrete_ic == 0.0
         safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
         self.continuous_initial_conditions_ = np.where(
             is_zero,
@@ -1698,14 +1704,22 @@ class _EMMixin:
                 f"moved one by {state.transition_change:.3e}; consider "
                 "increasing max_iter."
             )
+        elif state.n_iter < 2:
+            advice = "Judging convergence needs max_iter of at least 2."
         else:
             advice = "Consider increasing max_iter or relaxing tolerance."
+        if state.n_iter < 2:
+            # The first check compares iterations 1 and 2.
+            change = "no change in the penalized log-likelihood was computed"
+        else:
+            change = (
+                "final penalized log-likelihood change per time bin="
+                f"{state.objective_change / settings.n_observed_bins:.3e}"
+            )
         warnings.warn(
             f"EM did not converge after max_iter={settings.max_iter} iterations "
-            f"(final penalized log-likelihood change per time bin="
-            f"{state.objective_change / settings.n_observed_bins:.3e}, "
-            f"tolerance={settings.tolerance:.3e}). Fitted parameters may be biased. "
-            f"{advice}",
+            f"({change}, tolerance={settings.tolerance:.3e}). Fitted parameters "
+            f"may be biased. {advice}",
             NumericalWarning,
             stacklevel=user_stacklevel(),
         )

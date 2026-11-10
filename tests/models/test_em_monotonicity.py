@@ -424,11 +424,13 @@ class TestEMConvergenceSurfacing:
     def test_max_iter_warning_emitted(self, sim):
         """A fit that exits because ``max_iter`` was reached (with an
         unreachable tolerance) sets ``converged_=False``, ``n_iter_==max_iter``,
-        and emits a ``UserWarning`` mentioning "did not converge".
+        and emits a ``UserWarning`` mentioning "did not converge". One
+        iteration computes no change, so the warning says so instead of
+        reporting an infinite change.
         """
 
         decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
-        with pytest.warns(UserWarning, match="did not converge"):
+        with pytest.warns(UserWarning, match="did not converge") as caught:
             decoder.estimate_parameters(
                 position_time=sim.position_time,
                 position=sim.position,
@@ -442,6 +444,12 @@ class TestEMConvergenceSurfacing:
 
         assert decoder.converged_ is False
         assert decoder.n_iter_ == 1
+        (message,) = [
+            str(w.message) for w in caught if "did not converge" in str(w.message)
+        ]
+        assert "inf" not in message
+        assert "no change" in message
+        assert "relaxing tolerance" not in message
 
     def test_max_iter_after_a_decrease_does_not_suggest_a_looser_tolerance(
         self, monkeypatch, sim
@@ -548,7 +556,7 @@ class TestEMConvergenceSurfacing:
         """``max_iter=0`` skips EM but still returns the final E-step posterior."""
 
         decoder = ClusterlessDecoder(sampling_frequency=CLUSTERLESS_SIM_RATE)
-        with pytest.warns(UserWarning, match="did not converge"):
+        with pytest.warns(UserWarning, match="did not converge") as caught:
             results = decoder.estimate_parameters(
                 position_time=sim.position_time,
                 position=sim.position,
@@ -561,6 +569,10 @@ class TestEMConvergenceSurfacing:
             )
 
         assert decoder.n_iter_ == 0
+        (message,) = [
+            str(w.message) for w in caught if "did not converge" in str(w.message)
+        ]
+        assert "inf" not in message
         assert "acausal_posterior" in results
         assert results.attrs["em_objectives"].shape == (1,)
         np.testing.assert_array_equal(

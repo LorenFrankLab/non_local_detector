@@ -708,6 +708,33 @@ def test_supported_construction_and_pickle_never_call_dense_builders(monkeypatch
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "key",
+    [
+        (slice(2, 4), np.array([[0], [1]])),
+        (np.array([[0], [1]]), slice(2, 4)),
+        (slice(1, 3), np.array([0, 5])),
+        (np.array([1, 2]), np.array([3, 4])),
+        (3, np.array([[0, 1], [2, 3]])),
+        (slice(None, None, 2), slice(1, 4)),
+    ],
+    ids=["slice-2d", "2d-slice", "slice-1d", "paired-1d", "int-2d", "slice-slice"],
+)
+def test_lazy_dense_indexing_matches_numpy(key):
+    env = Environment(place_bin_size=10.0).fit_place_grid(
+        np.linspace(0.0, 100.0, 101)[:, None], infer_track_interior=False
+    )
+    count = len(env.place_bin_centers_)
+    lazy = LazyDenseTransition(
+        build_transition_operator([[RandomWalk(movement_var=30.0)]], [env], [count])
+    )
+    expected = np.asarray(lazy)[key]
+    selected = lazy[key]
+    assert selected.shape == expected.shape
+    np.testing.assert_array_equal(selected, expected)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("fused", [False, True])
 def test_runtime_products_and_discrete_weights_have_correct_gradients(fused):
     with precision_mode(True):
