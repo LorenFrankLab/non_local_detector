@@ -488,6 +488,24 @@ def test_multiunit_refuses_more_than_one_expected_spike_per_sample() -> None:
         )
 
 
+def test_multiunit_accepts_a_summed_rate_equal_to_the_sampling_rate() -> None:
+    """Nine co-located 500/9 Hz neurons at 500 Hz spike in every sample.
+
+    Their per-sample probabilities sum to 1 up to rounding (1 + 2.2e-16).
+    """
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    marks = simulate_multiunit_with_place_fields(
+        np.zeros((9, 1)),
+        np.zeros((100, 1)),
+        max_rate=500.0 / 9,
+        sampling_frequency=500,
+        rng=np.random.default_rng(0),
+    )
+
+    assert np.all(np.isfinite(marks))
+
+
 def test_sorted_spike_times_hold_every_counted_spike() -> None:
     """A sample counted twice yields two spike times, at that sample."""
     from non_local_detector.simulate.sorted_spikes_simulation import (

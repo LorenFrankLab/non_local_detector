@@ -161,26 +161,26 @@ def simulate_multiunit_with_place_fields(
     n_neurons = place_means.shape[0]
     mark_centers = np.arange(0, n_neurons * mark_spacing, mark_spacing)
     n_time = position.shape[0]
-    # Per-sample spike probability of each neuron, shape (n_neurons, n_time).
-    spike_probability = (
-        np.stack(
-            [
-                simulate_place_field_firing_rate(
-                    mean, position, max_rate, place_variance, is_condition
-                )
-                for mean in place_means
-            ]
-        )
-        / sampling_frequency
+    # Firing rate of each neuron, shape (n_neurons, n_time).
+    rate = np.stack(
+        [
+            simulate_place_field_firing_rate(
+                mean, position, max_rate, place_variance, is_condition
+            )
+            for mean in place_means
+        ]
     )
-    cumulative_probability = np.cumsum(spike_probability, axis=0)
-    if np.nanmax(cumulative_probability[-1]) > 1.0:
+    # A few ulps of allowance, so that rates summing to sampling_frequency up
+    # to rounding are accepted.
+    if np.nanmax(rate.sum(axis=0)) > sampling_frequency * (1 + 4 * np.finfo(float).eps):
         msg = (
             "The summed place-field rate exceeds sampling_frequency "
             f"({sampling_frequency}), but each sample holds at most one spike. "
             "Raise sampling_frequency or lower max_rate."
         )
         raise ValueError(msg)
+    # Per-sample spike probability, cumulated over neurons.
+    cumulative_probability = np.cumsum(rate / sampling_frequency, axis=0)
     # One uniform per sample decides both whether it spikes (u below the
     # summed probability) and which neuron spikes (the first whose cumulative
     # probability exceeds u), so neuron i owns probability rate_i / fs.
