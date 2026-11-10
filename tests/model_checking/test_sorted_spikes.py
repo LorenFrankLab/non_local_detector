@@ -82,6 +82,7 @@ class TestTimeRescalingCorrectness:
             homogeneous_poisson_spike_train["conditional_intensity"],
             homogeneous_poisson_spike_train["is_spike"],
             adjust_for_short_trials=False,
+            rng=0,
         )
         u = tr.uniform_rescaled_ISIs()
 
@@ -102,6 +103,7 @@ class TestTimeRescalingCorrectness:
             homogeneous_poisson_spike_train["conditional_intensity"],
             homogeneous_poisson_spike_train["is_spike"],
             adjust_for_short_trials=False,
+            rng=0,
         )
         ks = tr.ks_statistic()
         band = 1.36 / np.sqrt(tr.n_spikes)
@@ -115,10 +117,10 @@ class TestTimeRescalingCorrectness:
         wrong_ci = true_ci * 20.0
 
         ks_true = TimeRescaling(
-            true_ci, is_spike, adjust_for_short_trials=False
+            true_ci, is_spike, adjust_for_short_trials=False, rng=0
         ).ks_statistic()
         ks_wrong = TimeRescaling(
-            wrong_ci, is_spike, adjust_for_short_trials=False
+            wrong_ci, is_spike, adjust_for_short_trials=False, rng=0
         ).ks_statistic()
 
         assert ks_wrong > ks_true
@@ -468,6 +470,46 @@ class TestTrialGrouping:
         u = tr.uniform_rescaled_ISIs()
         np.testing.assert_allclose(u, -np.expm1(-np.array([1.5, 2.0, 1.5, 2.0])))
 
+    @pytest.mark.parametrize("mode", ["expected_counts", "time_edges", "time"])
+    def test_each_interval_lies_within_its_own_trial(self, mode):
+        """With the correction, no interval reaches into the previous trial.
+
+        Two trials of 10 bins of mass 0.5, spikes at local bins 3 and 7. A
+        first interval spans the trial's bins before its spike plus part of
+        the spike's bin; with sample times the first sample adds no mass.
+        Bridging the trials would put trial 1's first interval at 2.5-3.0.
+        """
+        c = 0.5
+        is_spike = np.zeros(20, dtype=bool)
+        is_spike[[3, 7, 13, 17]] = True
+        trial_id = np.repeat([0, 1], 10)
+        kwargs = {
+            "expected_counts": {"conditional_intensity": np.full(20, c)},
+            "time_edges": {
+                "conditional_intensity": np.full(20, 5.0),
+                "rate_units": "Hz",
+                "time_edges": np.arange(21) * 0.1,
+            },
+            "time": {
+                "conditional_intensity": np.full(20, 5.0),
+                "rate_units": "Hz",
+                "time": np.arange(20) * 0.1,
+            },
+        }[mode]
+        u = TimeRescaling(
+            is_spike=is_spike,
+            trial_id=trial_id,
+            adjust_for_short_trials=False,
+            rng=19,
+            **kwargs,
+        ).uniform_rescaled_ISIs()
+        first = 2 * c if mode == "time" else 3 * c
+        lower = np.array([first, 3 * c, first, 3 * c])
+        isi = -np.log1p(-u)
+        assert isi.shape == (4,)
+        assert np.all(isi >= lower - 1e-12)
+        assert np.all(isi <= lower + c + 1e-12)
+
 
 # ---------------------------------------------------------------------------
 # rescaled_ISI_autocorrelation
@@ -482,6 +524,7 @@ class TestRescaledISIAutocorrelation:
             homogeneous_poisson_spike_train["conditional_intensity"],
             homogeneous_poisson_spike_train["is_spike"],
             adjust_for_short_trials=False,
+            rng=0,
         )
         ac = tr.rescaled_ISI_autocorrelation()
         assert ac.shape == (2 * tr.n_spikes - 1,)
@@ -546,6 +589,7 @@ class TestPlotting:
             homogeneous_poisson_spike_train["conditional_intensity"],
             homogeneous_poisson_spike_train["is_spike"],
             adjust_for_short_trials=False,
+            rng=0,
         )
 
     def test_plots_draw_on_axes(self, fitted_rescaling):
