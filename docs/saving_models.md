@@ -75,7 +75,13 @@ Only what cannot be rebuilt is stored. Loading rebuilds:
   stored covariates, and the GLM spline basis from its stored inputs.
 
 A transition block built from the fit data, such as `EmpiricalMovement`, is
-stored instead, since the training positions are not.
+stored instead, since the training positions are not. So is any continuous
+transition block the model holds that the installed version would rebuild
+differently, as for a model pickled by an earlier version: `save_model`
+compares each block with its rebuild, exactly, and stores those that differ,
+so the file decodes as the model does. A block that differs and does not fit
+within `max_dense_transition_bytes` as a dense array is not stored, and
+`save_model` raises `ValidationError` asking for a refit.
 
 Since the state bins and the transitions are rebuilt from `config.json`,
 `save_model` refuses a detector whose `state_names`, `observation_models`,
@@ -202,7 +208,10 @@ refuses to decode and asks for a refit.
 
 `convert_model(old_path, new_path)` (in `non_local_detector.model_format`)
 rewrites a pickle that can decode in the new format. The fingerprints are
-computed at conversion, from the structures the pickle holds. It refuses
+computed at conversion, from the structures the pickle holds, and the
+transition blocks this version would rebuild differently (a `RandomWalk`
+fitted before it kept a uniform density stationary, for example) are stored,
+so the converted model decodes as the pickle does. It refuses
 models that cannot decode, those fitted before rates were in Hz and those
 using the removed `clusterless_kde_log` algorithm, which stay pickles.
 

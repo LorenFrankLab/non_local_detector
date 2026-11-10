@@ -16,9 +16,11 @@ from non_local_detector.model_format import convert_model, is_saved_model_format
 from non_local_detector.models import SortedSpikesDecoder
 from tests.model_format._compare import assert_same_fitted_state
 from tests.models.test_stored_artifact_compatibility import (
+    BEFORE_UNIFORM_DENSITY_WALK,
     COMPAT_DATA,
     LEGACY_VERSIONS,
     MODELS,
+    STRUCTURED_FINE_BINS,
     _family,
     _recording,
     _spikes_in,
@@ -73,6 +75,55 @@ def test_converted_model_decodes_as_the_pickle(version, artifact, inputs, tmp_pa
     # there.
     del pickled.environments, converted.environments
     assert_same_fitted_state(pickled, converted)
+
+
+def test_converted_structured_pickle_keeps_the_walk_it_was_fitted_with(
+    inputs, tmp_path
+):
+    """A structured detector pickled before the uniform-density RandomWalk
+    holds a block the installed version would rebuild differently (by up to
+    0.076 per entry). The converted file stores the held block, so it decodes
+    as the pickle does, and saving the loaded model again keeps it."""
+    source = BEFORE_UNIFORM_DENSITY_WALK / f"{STRUCTURED_FINE_BINS}_pickle.pkl"
+    family = _family(STRUCTURED_FINE_BINS)
+    pickled = family.load_model(source)
+    path = tmp_path / "converted.nld"
+
+    convert_model(source, path)
+    converted = family.load_model(path)
+    converted.save_model(tmp_path / "again.nld")
+    again = family.load_model(tmp_path / "again.nld")
+
+    expected = _posterior(pickled, inputs, STRUCTURED_FINE_BINS)
+    np.testing.assert_array_equal(
+        _posterior(converted, inputs, STRUCTURED_FINE_BINS), expected
+    )
+    np.testing.assert_array_equal(
+        _posterior(again, inputs, STRUCTURED_FINE_BINS), expected
+    )
+
+
+def test_held_block_too_large_to_store_is_refused_at_save(tmp_path):
+    """A structured detector whose held block a load would rebuild
+    differently, and which is too large to store densely, is not saved."""
+    from dataclasses import replace
+
+    from non_local_detector.transition_operators import LazyDenseTransition
+
+    source = BEFORE_UNIFORM_DENSITY_WALK / f"{STRUCTURED_FINE_BINS}_pickle.pkl"
+    model = _family(STRUCTURED_FINE_BINS).load_model(source)
+    state_space = model.state_space_
+    model.state_space_ = replace(
+        state_space,
+        continuous_transitions=LazyDenseTransition(
+            state_space.transition_operator, max_bytes=8
+        ),
+    )
+    path = tmp_path / "model.nld"
+
+    with pytest.raises(ValidationError, match="too large to store"):
+        model.save_model(path)
+    assert not path.exists()
 
 
 @pytest.mark.parametrize(("version", "artifact"), UNDECODABLE)

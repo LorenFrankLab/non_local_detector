@@ -15,9 +15,13 @@ in ``_STORED`` (file name, attribute), plus:
     entries; each model's ``environment`` refers to a fitted environment by
     name.
 ``stored_transition_blocks``
-    Continuous transition blocks built from the fit data (registered with
-    ``block_needs_fit_data``, as ``EmpiricalMovement``), which the file does not
-    keep: ``{from_state, to_state, block}``.
+    Dense continuous transition blocks a load could not rebuild:
+    ``{from_state, to_state, block}``. These are the blocks built from the
+    fit data (registered with ``block_needs_fit_data``, as
+    ``EmpiricalMovement``), which the file does not keep, and any block the
+    detector holds that the installed version would rebuild differently,
+    as for a detector pickled by an earlier version, whose transitions that
+    version built.
 ``fingerprints``
     Small float64 summaries of the structures rebuilt on load.
 
@@ -56,7 +60,6 @@ from non_local_detector._formula_grammar import (
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.continuous_state_transitions import (
     _declared_destination,
-    _no_structured_block,
     _RebuildContext,
 )
 from non_local_detector.environment import Environment
@@ -283,7 +286,7 @@ def _block_summary(block: Any, n_rows: int, n_columns: int) -> np.ndarray:
 
 
 def _transition_fingerprints(
-    detector: "_DetectorBase", stored_blocks: Mapping[tuple[int, int], Any]
+    state_space: StateSpace, stored_blocks: Mapping[tuple[int, int], Any]
 ) -> list[Any]:
     """``[from_state, to_state, summary]`` of each rebuilt continuous block.
 
@@ -291,7 +294,6 @@ def _transition_fingerprints(
     a change to any entry shows. It reads the dense matrix's block, or the
     structured operator's block through its products.
     """
-    state_space = detector.state_space_
     transitions = state_space.continuous_transitions
     operator = getattr(transitions, "operator", None)
     state_ind = np.asarray(state_space.state_ind)
@@ -321,7 +323,9 @@ def _structure_fingerprints(
         "environments": [
             _environment_fingerprint(env) for env in detector.environments_
         ],
-        "continuous_transitions": _transition_fingerprints(detector, stored_blocks),
+        "continuous_transitions": _transition_fingerprints(
+            detector.state_space_, stored_blocks
+        ),
         "discrete_transition_design": None
         if design is None
         else _column_summary(design),
@@ -436,7 +440,8 @@ class _FittedBlock:
     """A continuous transition whose saved block replaces its constructor.
 
     Used only while rebuilding a loaded detector's continuous transition,
-    for blocks built from fit data the file does not keep.
+    for the blocks ``stored_transition_blocks`` holds. In a structured
+    operator the block is a ``DenseBlock``.
     """
 
     environment_name: str | None
@@ -451,7 +456,9 @@ class _FittedBlock:
         return self.block
 
     def structured_block(self, environments: Sequence[Environment]) -> Any:  # noqa: ARG002 -- SupportsStructuredBlock signature
-        return _no_structured_block(self)
+        from non_local_detector.transition_operators import DenseBlock
+
+        return DenseBlock(self.block)
 
     def dense_block_shape(self, environments: Sequence[Environment]) -> tuple[int, int]:  # noqa: ARG002 -- SupportsStructuredBlock signature
         return cast("tuple[int, int]", self.block.shape)
@@ -478,6 +485,134 @@ def _data_blocks(detector: "_DetectorBase") -> dict[tuple[int, int], np.ndarray]
                 state_space.continuous_transitions[np.ix_(rows, columns)]
             )
     return blocks
+
+
+def _blocks_a_load_would_change(
+    detector: "_DetectorBase", blocks: Mapping[tuple[int, int], np.ndarray]
+) -> dict[tuple[int, int], np.ndarray]:
+    """Return the held continuous blocks that a load would not rebuild exactly.
+
+    A detector pickled by an earlier version holds the transitions that
+    version built. The state space a load would build, with ``blocks``
+    stored, is built here and compared block by block, exactly: dense blocks
+    entry by entry, structured blocks by their arrays, and a block held in
+    one representation and rebuilt in the other by its fingerprint. Each
+    block that differs at all is returned, dense, so that the saved file
+    decodes as the detector does. A detector fitted by this version rebuilds
+    bit for bit, so nothing is returned for it. Blocks between a one-bin
+    state and a spatial state are set by a rule, not a stored block, and are
+    left out.
+
+    Raises
+    ------
+    ValidationError
+        If such a block is too large for the detector's dense transition
+        byte limit.
+    """
+    state_space = detector.state_space_
+    layout = state_layout(
+        detector.observation_models, detector.environments_, detector.local_position_std
+    )
+    rebuilt = _rebuilt_state_space(
+        detector,
+        blocks,
+        layout,
+        state_space.transition_representation,
+        state_space.max_dense_transition_bytes,
+    )
+    state_ind = np.asarray(state_space.state_ind)
+    changed = {}
+    for source in range(state_space.n_states):
+        rows = np.flatnonzero(state_ind == source)
+        for target in range(state_space.n_states):
+            columns = np.flatnonzero(state_ind == target)
+            if (
+                (source, target) in blocks
+                or len(rows) == 1
+                or len(columns) == 1
+                or _same_block(state_space, rebuilt, source, target, rows, columns)
+            ):
+                continue
+            changed[(source, target)] = _dense_block(
+                state_space, source, target, rows, columns
+            )
+    return changed
+
+
+def _same_block(
+    held: StateSpace,
+    rebuilt: StateSpace,
+    source: int,
+    target: int,
+    rows: np.ndarray,
+    columns: np.ndarray,
+) -> bool:
+    """Whether a continuous block is rebuilt exactly as it is held."""
+    import jax
+
+    held_operator, rebuilt_operator = (
+        held.transition_operator,
+        rebuilt.transition_operator,
+    )
+    if held_operator is None and rebuilt_operator is None:
+        index = np.ix_(rows, columns)
+        return np.array_equal(
+            np.asarray(held.continuous_transitions[index]),
+            np.asarray(rebuilt.continuous_transitions[index]),
+        )
+    if held_operator is not None and rebuilt_operator is not None:
+        held_leaves, held_tree = jax.tree_util.tree_flatten(
+            held_operator.blocks[source][target]
+        )
+        rebuilt_leaves, rebuilt_tree = jax.tree_util.tree_flatten(
+            rebuilt_operator.blocks[source][target]
+        )
+        return cast(Any, held_tree) == rebuilt_tree and all(
+            np.array_equal(np.asarray(a), np.asarray(b))
+            for a, b in zip(held_leaves, rebuilt_leaves, strict=True)
+        )
+    # Fingerprint only this block: every other one counts as stored.
+    others = dict.fromkeys(
+        (s, t)
+        for s in range(held.n_states)
+        for t in range(held.n_states)
+        if (s, t) != (source, target)
+    )
+    (held_summary,) = _transition_fingerprints(held, others)
+    (rebuilt_summary,) = _transition_fingerprints(rebuilt, others)
+    return np.array_equal(held_summary[2], rebuilt_summary[2])
+
+
+def _dense_block(
+    state_space: StateSpace,
+    source: int,
+    target: int,
+    rows: np.ndarray,
+    columns: np.ndarray,
+) -> np.ndarray:
+    """Return the held block from ``source`` to ``target`` as a dense float64 array.
+
+    Raises
+    ------
+    ValidationError
+        If it is too large for the detector's dense transition byte limit.
+    """
+    from non_local_detector.transition_operators import DenseTransitionBudgetError
+
+    try:
+        return np.array(state_space.continuous_transitions[np.ix_(rows, columns)])
+    except DenseTransitionBudgetError as error:
+        msg = (
+            "Cannot save the detector: the installed version would rebuild its "
+            f"continuous transition from state {source} to {target} differently "
+            "from the one it holds, and that block is too large to store within "
+            "max_dense_transition_bytes"
+        )
+        raise ValidationError(
+            msg,
+            hint="Refit the detector with the installed version and save that "
+            "fit, or keep the detector pickled.",
+        ) from error
 
 
 # ------------------------------------------------------------- environments
@@ -779,6 +914,7 @@ def detector_documents(
             detector.discrete_state_transitions_, "discrete_state_transitions"
         )
     blocks = _data_blocks(detector)
+    blocks.update(_blocks_a_load_would_change(detector, blocks))
     state["stored_transition_blocks"] = [
         {
             "from_state": source,
@@ -952,6 +1088,42 @@ def _rebuild_state_space(
     stored : mapping
         The decoded stored state, holding the ``_STATE_SPACE_STORED`` names.
     """
+    detector.state_space_ = _rebuilt_state_space(
+        detector,
+        blocks,
+        layout,
+        stored["transition_representation"],
+        stored["max_dense_transition_bytes"],
+    )
+
+
+def _rebuilt_state_space(
+    detector: "_DetectorBase",
+    blocks: Mapping[tuple[int, int], np.ndarray],
+    layout: tuple[np.ndarray, np.ndarray, np.ndarray],
+    representation: str,
+    max_dense_transition_bytes: int,
+) -> StateSpace:
+    """Return the ``state_space_`` a load builds from the detector's parameters.
+
+    Parameters
+    ----------
+    detector : _DetectorBase
+        A detector with its fitted environments.
+    blocks : mapping
+        The continuous transition blocks the file stores, by (from_state,
+        to_state); each replaces its transition.
+    layout : tuple of np.ndarray
+        ``state_layout`` of the detector's parameters and environments.
+    representation : {"dense", "structured", "auto"}
+        The stored transition representation.
+    max_dense_transition_bytes : int
+        The stored dense transition byte limit.
+
+    Returns
+    -------
+    state_space : StateSpace
+    """
     building = [
         [
             _FittedBlock(
@@ -965,8 +1137,6 @@ def _rebuild_state_space(
         ]
         for source, row in enumerate(detector.continuous_transition_types)
     ]
-    representation = stored["transition_representation"]
-    max_dense_transition_bytes = stored["max_dense_transition_bytes"]
     # Dense EM after an "auto" fit converts the fitted operator (whose
     # environments keep deferred distances) to a dense matrix: rebuild that.
     from_operator = representation == "dense" and any(
@@ -998,7 +1168,7 @@ def _rebuild_state_space(
         transition_representation=built_as,
         max_dense_transition_bytes=int(max_dense_transition_bytes),
     )
-    detector.state_space_ = state_space.densified() if from_operator else state_space
+    return state_space.densified() if from_operator else state_space
 
 
 # The schema of the documents ``detector_documents`` writes. A reader ignores,
