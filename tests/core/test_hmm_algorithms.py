@@ -12,6 +12,7 @@ Testing philosophy:
 4. Test scaling to different problem sizes
 """
 
+import functools
 import logging
 
 import jax
@@ -345,13 +346,15 @@ class TestViterbi:
         assert states.shape == (1,)
         assert int(states[0]) == 0
 
+    @pytest.mark.parametrize("drop_unsatisfiable", [False, True])
     @pytest.mark.parametrize("covariate", [False, True])
-    def test_viterbi_scan_keeps_float32_with_x64(self, covariate):
+    def test_viterbi_scan_keeps_float32_with_x64(self, covariate, drop_unsatisfiable):
         """With 64-bit mode on, float32 inputs keep the scan in float32.
 
         The backward carry used to start as ``jnp.zeros(n_state_bins)``, which
         is float64 under x64, so every step promoted the (n_state_bins,
-        n_state_bins) max-plus scores to float64.
+        n_state_bins) max-plus scores to float64. Both the plain scan and the
+        one that drops unsatisfiable rows are checked.
         """
         with precision_mode(True):
             n_bins, n_time = 4, 6
@@ -369,7 +372,9 @@ class TestViterbi:
                 ]
             else:
                 function = core_module._viterbi_impl
-            jaxpr = jax.make_jaxpr(function)(*arguments).jaxpr
+            jaxpr = jax.make_jaxpr(
+                functools.partial(function, drop_unsatisfiable=drop_unsatisfiable)
+            )(*arguments).jaxpr
             scans = [eqn for eqn in jaxpr.eqns if eqn.primitive.name == "scan"]
             float_dtypes = {
                 var.aval.dtype
@@ -733,7 +738,8 @@ class TestViterbiDegenerateTimestepWarning:
 
     def test_viterbi_degenerate_step_warns_with_viterbi_wording(self, caplog):
         """An all-(-inf) step warns, and the message describes Viterbi behavior
-        (argmax over an all-(-inf) column), NOT the filter's posterior fallback."""
+        (the step is treated as uninformative), NOT the filter's posterior
+        fallback."""
         log_likes = jnp.array([[0.0, -1.0], [-jnp.inf, -jnp.inf], [0.0, -1.0]])
         self._run(log_likes, caplog)
         msgs = [
@@ -744,7 +750,7 @@ class TestViterbiDegenerateTimestepWarning:
         )
         joined = " ".join(msgs)
         assert "Viterbi decoding" in joined
-        assert "arbitrary" in joined
+        assert "uninformative" in joined
         # Must not use the filter-only phrasing.
         assert "posterior" not in joined
         assert "predicted distribution" not in joined
@@ -874,7 +880,7 @@ def test_positive_infinite_log_likelihood_raises(path, caplog):
 @pytest.mark.parametrize("path", ["viterbi", "viterbi_covariate"])
 def test_public_viterbi_warns_on_impossible_steps(path, caplog):
     """The jit-composable Viterbi passes warn about all-(-inf) steps, as the
-    filters do, with the Viterbi wording; the path itself is unchanged."""
+    filters do, with the Viterbi wording."""
     log_likes = np.array([[0.0, -1.0], [-np.inf, -np.inf], [0.0, -1.0]])
     with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
         _decode_with_log_likelihoods(path, log_likes)
@@ -1002,6 +1008,533 @@ class TestViterbiGlobalOptimum:
         greedy = tuple(int(s) for s in jnp.argmax(log_likelihoods, axis=1))
         assert greedy == (0, 1, 0)
         assert tuple(int(s) for s in path) == (0, 0, 0)
+
+
+def _simulate_place_cell_decoding(
+    n_time: int,
+    n_bins: int = 60,
+    n_cells: int = 40,
+    walk_std: float = 1.5,
+    gain: float = 1.0,
+) -> dict[str, np.ndarray]:
+    """A random-walk trajectory and the log likelihoods of Poisson place cells.
+
+    By default 60 position bins, 40 cells and a Gaussian random-walk
+    transition with a 1.5-bin standard deviation; 2 ms bins and a fixed
+    seed. ``gain`` scales the log likelihoods, so that each row spans tens
+    to hundreds of nats as many electrodes' clusterless likelihoods do.
+
+    Returns
+    -------
+    model : dict
+        ``time_edges`` (n_time + 1,), ``initial_distribution`` (n_bins,),
+        ``transition_matrix`` (n_bins, n_bins) and ``log_likelihoods``
+        (n_time, n_bins), all float64.
+    """
+    dt = 0.002
+    rng = np.random.default_rng(0)
+    bins = np.arange(n_bins)
+    transition = np.exp(-0.5 * ((bins[:, None] - bins[None, :]) / walk_std) ** 2)
+    transition /= transition.sum(axis=1, keepdims=True)
+
+    position = np.empty(n_time, dtype=int)
+    position[0] = n_bins // 2
+    cumulative = np.cumsum(transition, axis=1)
+    draws = rng.random(n_time)
+    for t in range(1, n_time):
+        position[t] = min(
+            np.searchsorted(cumulative[position[t - 1]], draws[t]), n_bins - 1
+        )
+    centers = rng.uniform(0, n_bins, n_cells)
+    rates = 0.5 + 15 * np.exp(-0.5 * ((bins[None] - centers[:, None]) / 4) ** 2)
+    counts = rng.poisson(rates[:, position].T * dt)  # (n_time, n_cells)
+    log_likelihoods = counts @ np.log(rates * dt) - (rates * dt).sum(axis=0)
+    log_likelihoods *= gain
+    return {
+        "time_edges": np.arange(n_time + 1) * dt,
+        "initial_distribution": np.full(n_bins, 1 / n_bins),
+        "transition_matrix": transition,
+        "log_likelihoods": log_likelihoods,
+    }
+
+
+@pytest.fixture
+def place_cell_decoding(request):
+    """:func:`_simulate_place_cell_decoding` for ``request.param`` time bins."""
+    return _simulate_place_cell_decoding(request.param)
+
+
+@pytest.fixture
+def clusterless_scale_decoding():
+    """300 bins, 120 cells, a 3-bin walk and log likelihoods scaled 300-fold.
+
+    Transition entries float32 cannot hold (below its smallest normal
+    number) are set to 0 in both dtypes, so a difference between the paths
+    comes from the scan, not from jumps only float64 allows.
+    """
+    model = _simulate_place_cell_decoding(
+        20_000, n_bins=300, n_cells=120, walk_std=3.0, gain=300.0
+    )
+    transition = model["transition_matrix"]
+    transition[transition < np.finfo(np.float32).tiny] = 0.0
+    return model
+
+
+def _joint_log_probability(decoding, path):
+    """Float64 log probability of ``path`` and the observations.
+
+    Parameters
+    ----------
+    decoding : dict
+        Driver arguments, as built by :func:`_float32_and_float64_paths`.
+    path : np.ndarray, shape (n_time,)
+
+    Returns
+    -------
+    log_probability : float
+    """
+    with np.errstate(divide="ignore"):
+        log_initial = np.log(decoding["initial_distribution"])
+        if "transition_matrix" in decoding:
+            log_moves = np.log(decoding["transition_matrix"][path[:-1], path[1:]])
+        else:
+            state = decoding["state_ind"]
+            discrete = decoding["discrete_transition_matrix"]
+            steps = np.arange(len(path) - 1)
+            log_moves = np.log(
+                decoding["continuous_transition_matrix"][path[:-1], path[1:]]
+            ) + np.log(discrete[steps, state[path[:-1]], state[path[1:]]])
+    log_likelihoods = decoding["log_likelihoods"]
+    return float(
+        log_initial[path[0]]
+        + log_likelihoods[np.arange(len(path)), path].sum()
+        + log_moves.sum()
+    )
+
+
+def _float32_and_float64_paths(model, covariate):
+    """Decode ``model`` with both dtypes through one Viterbi driver.
+
+    The covariate-dependent driver gets two discrete states sharing the
+    model's log likelihoods: a random walk with the model's transition and
+    a uniform jump, with a sticky discrete transition that changes every
+    row.
+
+    Returns
+    -------
+    path32, path64 : np.ndarray, shape (n_time,)
+    decoding : dict
+        The driver arguments.
+    """
+    common = {
+        "time_edges": model["time_edges"],
+        "log_likelihood_func": None,
+        "log_likelihood_args": (),
+    }
+    if covariate:
+        n_time, n_bins = model["log_likelihoods"].shape
+        uniform = np.full((n_bins, n_bins), 1 / n_bins)
+        walk = model["transition_matrix"]
+        stay = 0.98 + 0.015 * np.sin(np.arange(n_time) / 50)
+        discrete = np.empty((n_time, 2, 2))
+        discrete[:, 0, 0] = discrete[:, 1, 1] = stay
+        discrete[:, 0, 1] = discrete[:, 1, 0] = 1 - stay
+        common |= {
+            "initial_distribution": np.full(2 * n_bins, 1 / (2 * n_bins)),
+            "log_likelihoods": np.tile(model["log_likelihoods"], 2),
+            "state_ind": np.repeat([0, 1], n_bins),
+            "discrete_transition_matrix": discrete,
+            "continuous_transition_matrix": np.block(
+                [[walk, uniform], [walk, uniform]]
+            ),
+        }
+        decode = most_likely_sequence_covariate_dependent
+    else:
+        common |= {
+            "initial_distribution": model["initial_distribution"],
+            "log_likelihoods": model["log_likelihoods"],
+            "transition_matrix": model["transition_matrix"],
+        }
+        decode = most_likely_sequence
+    with precision_mode(True):
+        path32, path64 = (
+            decode(**common, dtype=dtype)[0] for dtype in (np.float32, np.float64)
+        )
+    return path32, path64, common
+
+
+def _assert_matches_float64(path32, path64, decoding, max_deficit):
+    """The float32 path is as probable as the float64 one, to near-ties.
+
+    Its float64 log probability is at most ``max_deficit`` nats below the
+    float64 path's, and fewer than 1e-4 of its bins differ (or at most 8: a
+    near-tie can flip one short run).
+    """
+    deficit = _joint_log_probability(decoding, path64) - _joint_log_probability(
+        decoding, path32
+    )
+    n_differ = np.count_nonzero(path32 != path64)
+    assert deficit <= max_deficit, (deficit, n_differ)
+    assert n_differ <= max(1e-4 * len(path64), 8), (deficit, n_differ)
+
+
+@pytest.mark.unit
+class TestViterbiFloat32Precision:
+    """The float32 path matches the float64 path to within near-ties.
+
+    The best score of the remaining bins grows linearly with the number of
+    bins: about 4.8e5 nats at 200,000 bins of the place-cell simulation,
+    where float32 spacing is 0.03, coarser than the transition and
+    likelihood differences that choose between neighbouring bins. Without
+    re-centring, 12.8% of those bins differed from the float64 path (101
+    nats less probable), 0.8% at 20,000 bins. A near-tie can still resolve
+    differently in float32, so the paths are compared by probability.
+    """
+
+    @pytest.mark.parametrize("place_cell_decoding", [2_000], indirect=True)
+    def test_short_recording_matches_float64(self, place_cell_decoding):
+        _assert_matches_float64(
+            *_float32_and_float64_paths(place_cell_decoding, False), 1e-3
+        )
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("place_cell_decoding", [200_000], indirect=True)
+    def test_long_recording_matches_float64(self, place_cell_decoding):
+        _assert_matches_float64(
+            *_float32_and_float64_paths(place_cell_decoding, False), 1e-3
+        )
+
+    @pytest.mark.parametrize("place_cell_decoding", [20_000], indirect=True)
+    def test_covariate_dependent_matches_float64(self, place_cell_decoding):
+        _assert_matches_float64(
+            *_float32_and_float64_paths(place_cell_decoding, True), 1e-3
+        )
+
+    def test_clusterless_scale_likelihoods_match_float64(
+        self, clusterless_scale_decoding
+    ):
+        """Rows spanning tens to hundreds of nats: the path's log
+        probability reaches millions of nats within 20,000 bins.
+
+        The float32 rounding of the likelihoods themselves bounds how close
+        the paths can be, so the allowed deficit is relative: 1e-9 of the
+        path's log probability.
+        """
+        path32, path64, decoding = _float32_and_float64_paths(
+            clusterless_scale_decoding, False
+        )
+        max_deficit = 1e-9 * abs(_joint_log_probability(decoding, path64))
+        _assert_matches_float64(path32, path64, decoding, max_deficit)
+
+
+def _wandering_decoding(n_bins=20, n_time=400):
+    """A sinusoidal path over ``n_bins`` with sharp Gaussian likelihoods.
+
+    Returns ``(time_edges, initial, transition, log_likelihoods)``.
+    """
+    bins = np.arange(n_bins)
+    transition = np.exp(-0.5 * (bins[:, None] - bins[None, :]) ** 2)
+    transition /= transition.sum(axis=1, keepdims=True)
+    true = (10 + 6 * np.sin(np.arange(n_time) / 30)).round().astype(int)
+    log_likelihoods = -0.5 * (bins[None, :] - true[:, None]) ** 2 - 5.0
+    initial = np.full(n_bins, 1 / n_bins)
+    return np.arange(n_time + 1) * 0.002, initial, transition, log_likelihoods
+
+
+def _viterbi_path(time_edges, initial, transition, log_likelihoods, caplog):
+    with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+        path, _ = most_likely_sequence(
+            time_edges=time_edges,
+            initial_distribution=initial,
+            transition_matrix=transition,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likelihoods,
+        )
+    return path
+
+
+@pytest.mark.unit
+class TestViterbiImpossibleRow:
+    """A row no path can satisfy is decoded as if it had no evidence.
+
+    Its scores are ``-inf`` for every state, so before it was treated as
+    uninformative every earlier back-pointer was the argmax of a constant
+    and the path sat in bin 0 from the start of the recording to that row.
+    """
+
+    def _assert_as_without_evidence(self, log_likelihoods, transition, caplog):
+        time_edges, initial, _, _ = _wandering_decoding()
+        without_evidence = log_likelihoods.copy()
+        without_evidence[300] = 0.0
+        expected = _viterbi_path(
+            time_edges, initial, transition, without_evidence, caplog
+        )
+        caplog.clear()
+        path = _viterbi_path(time_edges, initial, transition, log_likelihoods, caplog)
+        assert np.mean(expected[:300] == 0) < 0.5
+        np.testing.assert_array_equal(path, expected)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "1/400 time step(s)" in m and "uninformative" in m for m in messages
+        ), messages
+
+    def test_all_impossible_row(self, caplog):
+        _, _, transition, log_likelihoods = _wandering_decoding()
+        log_likelihoods[300] = -np.inf
+        self._assert_as_without_evidence(log_likelihoods, transition, caplog)
+
+    def test_row_finite_only_on_an_unreachable_bin(self, caplog):
+        """No transition enters bin 19, the one bin row 300 allows."""
+        _, _, transition, log_likelihoods = _wandering_decoding()
+        transition[:, 19] = 0.0
+        transition /= transition.sum(axis=1, keepdims=True)
+        log_likelihoods[300] = -np.inf
+        log_likelihoods[300, 19] = 0.0
+        self._assert_as_without_evidence(log_likelihoods, transition, caplog)
+
+    def test_rows_no_path_joins(self, caplog):
+        """Rows 300 and 301 each allow one bin, 13 bins apart, and a step
+        moves at most 2 bins: no path explains both, and neither row is
+        all-impossible. Row 300 is the one dropped: row 301 can be reached
+        from the rows before it once row 300 carries no evidence."""
+        _, _, transition, log_likelihoods = _wandering_decoding()
+        bins = np.arange(len(transition))
+        transition[np.abs(bins[:, None] - bins[None, :]) > 2] = 0.0
+        transition /= transition.sum(axis=1, keepdims=True)
+        log_likelihoods[300:302] = -np.inf
+        log_likelihoods[300, 19] = 0.0
+        log_likelihoods[301, 6] = 0.0
+        self._assert_as_without_evidence(log_likelihoods, transition, caplog)
+
+
+def _tridiagonal(n_states):
+    """Transition that moves at most one state per step."""
+    states = np.arange(n_states)
+    transition = np.exp(-0.5 * (states[:, None] - states[None, :]) ** 2.0)
+    transition[np.abs(states[:, None] - states[None, :]) > 1] = 0.0
+    return transition / transition.sum(axis=1, keepdims=True)
+
+
+def _only(n_time, n_states, states):
+    """Log likelihoods finite (0) only on ``states[t]`` at each row."""
+    log_likelihoods = np.full((n_time, n_states), -np.inf)
+    log_likelihoods[np.arange(n_time), states] = 0.0
+    return log_likelihoods
+
+
+def _near(n_time, n_states, states):
+    """Gaussian log likelihoods centred on ``states[t]``, finite everywhere."""
+    return -0.5 * (np.arange(n_states)[None, :] - np.asarray(states)[:, None]) ** 2
+
+
+def _messages_of(caplog):
+    return [r.getMessage() for r in caplog.records]
+
+
+def _uninformative_warning(messages, n_rows, n_time):
+    return any(
+        f"treated {n_rows}/{n_time} time step(s) as uninformative" in m
+        for m in messages
+    )
+
+
+def _ignored_warning(messages, n_steps, n_time):
+    return any(
+        f"ignored the transition into {n_steps}/{n_time} time step(s)" in m
+        for m in messages
+    )
+
+
+@pytest.mark.unit
+class TestViterbiUnsatisfiableRows:
+    """Rows whose evidence no path can satisfy are dropped, the transition kept.
+
+    Ten states, a transition that moves at most one state per step, and
+    rows that each allow one state ("hard" rows): reaching state 2 from
+    state 7 needs five steps, so the four rows before the first row at 2
+    are dropped however many hard rows at 7 precede it.
+    """
+
+    n_states = 10
+    after_jump = [7] * 46 + [6, 5, 4, 3] + [2] * 50
+
+    def _decode(self, initial, log_likelihoods, caplog, transition=None):
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            path, _ = most_likely_sequence(
+                time_edges=np.arange(len(log_likelihoods) + 1.0),
+                initial_distribution=initial,
+                transition_matrix=(
+                    _tridiagonal(self.n_states) if transition is None else transition
+                ),
+                log_likelihood_func=None,
+                log_likelihood_args=(),
+                log_likelihoods=log_likelihoods,
+            )
+        return path, _messages_of(caplog)
+
+    def test_every_row_hard(self, caplog):
+        """Rows 0-49 allow 7 and rows 50-99 allow 2."""
+        log_likelihoods = _only(100, self.n_states, [7] * 50 + [2] * 50)
+        path, messages = self._decode(
+            np.full(self.n_states, 0.1), log_likelihoods, caplog
+        )
+        np.testing.assert_array_equal(path, self.after_jump)
+        assert _uninformative_warning(messages, 4, 100), messages
+        assert not any("transition was ignored" in m for m in messages), messages
+
+    @pytest.mark.parametrize("n_hard", [1, 5, 45])
+    def test_hard_rows_before_a_jump(self, n_hard, caplog):
+        """Soft rows, ``n_hard`` hard rows at 7 before row 50, which allows
+        only 2: the rows dropped are the ones the jump needs, at most four."""
+        log_likelihoods = _near(100, self.n_states, [7] * 50 + [2] * 50)
+        log_likelihoods[50 - n_hard : 50] = _only(n_hard, self.n_states, [7] * n_hard)
+        log_likelihoods[50] = _only(1, self.n_states, [2])
+        path, messages = self._decode(
+            np.full(self.n_states, 0.1), log_likelihoods, caplog
+        )
+        np.testing.assert_array_equal(path, self.after_jump)
+        assert _uninformative_warning(messages, min(n_hard, 4), 100), messages
+
+    def test_conflict_at_the_first_rows(self, caplog):
+        """Rows 0 and 1 allow only 7 and 2: row 0 is dropped."""
+        log_likelihoods = _near(40, self.n_states, [2] * 40)
+        log_likelihoods[0] = _only(1, self.n_states, [7])
+        log_likelihoods[1] = _only(1, self.n_states, [2])
+        path, messages = self._decode(
+            np.full(self.n_states, 0.1), log_likelihoods, caplog
+        )
+        np.testing.assert_array_equal(path, [2] * 40)
+        assert _uninformative_warning(messages, 1, 40), messages
+
+    def test_initial_distribution_conflicts_with_the_first_row(self, caplog):
+        """All initial mass on 8, and row 0 allows only 5: row 0 is dropped
+        and the path walks from 8 to 5, as the smoother does."""
+        log_likelihoods = _near(40, self.n_states, [5] * 40)
+        log_likelihoods[0] = _only(1, self.n_states, [5])
+        initial = np.zeros(self.n_states)
+        initial[8] = 1.0
+        path, messages = self._decode(initial, log_likelihoods, caplog)
+        np.testing.assert_array_equal(path, [8, 7, 6] + [5] * 37)
+        assert _uninformative_warning(messages, 1, 40), messages
+
+    def test_dropped_row_keeps_a_transition_with_no_self_loop(self, caplog):
+        """No state may stay put; row 2 allows only state 2, which no state
+        enters. Without row 2's evidence the path still follows the
+        transition, the enumerated best path with row 2 set to 0."""
+        transition = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.5, 0.0]])
+        log_likelihoods = np.array(
+            [
+                [0.0, -3.0, -np.inf],
+                [-3.0, 0.0, -np.inf],
+                [-np.inf, -np.inf, 0.0],
+                [0.0, -3.0, -np.inf],
+                [-3.0, 0.0, -np.inf],
+            ]
+        )
+        path, messages = self._decode(
+            np.array([0.5, 0.5, 0.0]), log_likelihoods, caplog, transition
+        )
+        np.testing.assert_array_equal(path, [0, 1, 0, 1, 0])
+        assert _uninformative_warning(messages, 1, 5), messages
+
+    def test_transition_ignored_where_no_state_can_be_entered(self, caplog):
+        """Every state moves to 0 except 2, which moves to 1, and nothing
+        enters 2. Row 2 allows only 1 (so row 1 must be at 2) and row 1
+        allows only 0: without row 1's evidence the scores are still all
+        ``-inf``, so the transition into row 1 is ignored too. Row 0 is
+        decoded as its own problem (a tie, so state 0) and jumps to 2."""
+        transition = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        log_likelihoods = np.array(
+            [[0.0, 0.0, 0.0], [0.0, -np.inf, -np.inf], [-np.inf, 0.0, -np.inf]]
+        )
+        path, messages = self._decode(
+            np.full(3, 1 / 3), log_likelihoods, caplog, transition
+        )
+        np.testing.assert_array_equal(path, [0, 2, 1])
+        assert _uninformative_warning(messages, 1, 3), messages
+        assert _ignored_warning(messages, 1, 3), messages
+
+    def test_rows_before_a_state_nobody_enters_keep_their_evidence(self, caplog):
+        """Twelve states: 0-9 a one-step walk, 10 entered by nothing (not
+        even itself) and moving to 11, which only 10 enters. Row 60 allows
+        only 11, so row 59 must be at 10, which no path reaches. Row 59 is
+        dropped and the transition into it ignored; rows 0-58 are decoded
+        as their own problem instead of all sitting at 10."""
+        transition = np.zeros((12, 12))
+        transition[:10, :10] = _tridiagonal(10)
+        transition[10, 11] = 1.0
+        transition[11, 5] = 1.0
+        truth = (5 + 3 * np.sin(np.arange(100) / 10)).round().astype(int)
+        log_likelihoods = np.full((100, 12), -30.0)
+        log_likelihoods[:, :10] = _near(100, 10, truth)
+        log_likelihoods[60] = _only(1, 12, [11])
+        initial = np.full(12, 1 / 12)
+        path, messages = self._decode(initial, log_likelihoods, caplog, transition)
+        own_problem, _ = self._decode(initial, log_likelihoods[:59], caplog, transition)
+        np.testing.assert_array_equal(path[:59], own_problem)
+        assert np.count_nonzero(path[:59] == truth[:59]) >= 58
+        np.testing.assert_array_equal(path[59:61], [10, 11])
+        assert _uninformative_warning(messages, 1, 100), messages
+        assert _ignored_warning(messages, 1, 100), messages
+
+    def test_rows_before_a_state_nobody_enters_short(self, caplog):
+        """Three states: 0 and 1 move to 0, 2 moves to 1 and nothing enters
+        2. Row 30 allows only 1, so row 29 must be at 2: rows 0-28 decode
+        on their own evidence (state 0), not at 2."""
+        transition = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        log_likelihoods = np.zeros((40, 3))
+        log_likelihoods[:, 1:] = -2.0
+        log_likelihoods[30] = [-np.inf, 0.0, -np.inf]
+        path, messages = self._decode(
+            np.full(3, 1 / 3), log_likelihoods, caplog, transition
+        )
+        np.testing.assert_array_equal(path, [0] * 29 + [2, 1] + [0] * 9)
+        assert _uninformative_warning(messages, 1, 40), messages
+        assert _ignored_warning(messages, 1, 40), messages
+
+    def test_initial_distribution_ignored_where_it_cannot_continue(self, caplog):
+        """All initial mass on 0, which never leaves 0, and rows 1-3 allow
+        only 1: the initial distribution is dropped and row 0 kept."""
+        initial = np.array([1.0, 0.0])
+        log_likelihoods = np.array([[0.0, 0.0]] + [[-np.inf, 0.0]] * 3)
+        path, messages = self._decode(initial, log_likelihoods, caplog, np.eye(2))
+        np.testing.assert_array_equal(path, [1, 1, 1, 1])
+        assert not any("as uninformative" in m for m in messages), messages
+        assert _ignored_warning(messages, 1, 4), messages
+
+    def test_first_row_kept_when_the_initial_distribution_is_dropped(self, caplog):
+        """All initial mass on 8; row 0 favours 5 and row 1 allows only 2.
+        No path from 8 reaches 2 by row 1, with or without row 0's evidence,
+        so the initial distribution is dropped and row 0's evidence picks
+        3 (next to 2 and nearest 5) rather than 2."""
+        log_likelihoods = _near(40, self.n_states, [5] + [2] * 39)
+        log_likelihoods[1] = _only(1, self.n_states, [2])
+        initial = np.zeros(self.n_states)
+        initial[8] = 1.0
+        path, messages = self._decode(initial, log_likelihoods, caplog)
+        np.testing.assert_array_equal(path, [3] + [2] * 39)
+        assert not any("as uninformative" in m for m in messages), messages
+        assert _ignored_warning(messages, 1, 40), messages
+
+    def test_covariate_driver(self, caplog):
+        """The every-row-hard case through the covariate-dependent driver,
+        with two discrete states that never switch and share the rows."""
+        log_likelihoods = _only(100, self.n_states, [7] * 50 + [2] * 50)
+        walk = _tridiagonal(self.n_states)
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            path, _ = most_likely_sequence_covariate_dependent(
+                time_edges=np.arange(101.0),
+                state_ind=np.repeat([0, 1], self.n_states),
+                initial_distribution=np.full(2 * self.n_states, 0.05),
+                discrete_transition_matrix=np.broadcast_to(np.eye(2), (100, 2, 2)),
+                continuous_transition_matrix=np.block([[walk, walk], [walk, walk]]),
+                log_likelihood_func=None,
+                log_likelihood_args=(),
+                log_likelihoods=np.tile(log_likelihoods, 2),
+            )
+        np.testing.assert_array_equal(path, self.after_jump)
+        assert _uninformative_warning(_messages_of(caplog), 4, 100)
 
 
 @pytest.mark.unit
