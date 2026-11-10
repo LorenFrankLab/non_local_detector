@@ -85,6 +85,12 @@ class TimeRescaling:
         They are drawn once, here, so every method of this object uses the
         same intervals. By default a fresh, unseeded generator.
 
+    Notes
+    -----
+    With the correction, the test checks whether each bin has a spike, not
+    how many: within-bin count dispersion is not tested, so check counts with
+    `point_process_residuals`. See `uniform_rescaled_ISIs`.
+
     References
     ----------
     .. [1] Brown, E.N., Barbieri, R., Ventura, V., Kass, R.E., and Frank,
@@ -176,6 +182,8 @@ class TimeRescaling:
         uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
             Rescaled ISIs, uniform on [0, 1] if the model fits well.
         """
+        if self.discrete_time_correction:
+            _warn_counts_above_one(self.is_spike)
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
         n_left_out = 0
@@ -536,6 +544,29 @@ def _warn_first_sample_spikes(n_left_out: int) -> None:
         )
 
 
+# Fraction of spike-containing bins with more than one spike above which the
+# unused spikes are worth a warning.
+_MULTI_SPIKE_BIN_FRACTION = 0.05
+
+
+def _warn_counts_above_one(is_spike: np.ndarray) -> None:
+    """Warn when many bins with a spike hold more than one."""
+    is_spike = np.asarray(is_spike)
+    n_spike_bins = np.count_nonzero(is_spike)
+    if not n_spike_bins:
+        return
+    fraction = np.count_nonzero(is_spike > 1) / n_spike_bins
+    if fraction > _MULTI_SPIKE_BIN_FRACTION:
+        warnings.warn(
+            f"{fraction:.1%} of bins with a spike hold more than one. The "
+            "discrete-time rescaling counts each as one spike, so it does not "
+            "test the number of spikes per bin; check counts with "
+            "point_process_residuals, or use smaller bins.",
+            DataQualityWarning,
+            stacklevel=3,
+        )
+
+
 def _within_bin_uniforms(
     is_spike: np.ndarray, rng: np.random.Generator | int | None
 ) -> np.ndarray:
@@ -742,7 +773,14 @@ def uniform_rescaled_ISIs(
     The correction tests whether each bin has a spike. A count above one
     is one spike: a Poisson model with expected count ``q_k`` also gives
     the bin at least one spike with probability ``1 - exp(-q_k)``, so the
-    test stays exact, but the extra spikes in a bin are not used.
+    test stays exact, but the extra spikes in a bin are not used, and
+    within-bin count dispersion is not tested: a model expecting half the
+    spikes of data whose every occupied bin holds two can pass. Check counts
+    with `point_process_residuals`. For a Poisson model the fraction of
+    spikes unused is ``1 - (1 - exp(-q)) / q``: 1.0% at 10 Hz, 3.9% at
+    40 Hz and 9.4% at 100 Hz in 2 ms bins, and 31% at 40 Hz in 20 ms
+    bins. A `DataQualityWarning` is issued when more than 5% of the bins
+    with a spike hold more than one.
 
     References
     ----------
@@ -754,6 +792,8 @@ def uniform_rescaled_ISIs(
            for application to short-trial spike train data. Neural
            Computation 15, 2565-2576.
     """
+    if discrete_time_correction:
+        _warn_counts_above_one(is_spike)
     within_bin_uniforms = (
         _within_bin_uniforms(is_spike, rng) if discrete_time_correction else None
     )

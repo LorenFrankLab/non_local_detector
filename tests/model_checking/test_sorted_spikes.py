@@ -331,6 +331,29 @@ class TestDiscreteTimeCorrection:
         )
         assert from_counts.ks_statistic() < _ks_band(from_counts.n_spikes)
 
+    def test_many_multi_spike_bins_warn_once_per_call(self):
+        """Counts above one are not tested, so a high fraction is flagged.
+
+        Every bin with spikes holds two: a model expecting half the spikes
+        would still pass, because only whether a bin has a spike is tested.
+        """
+        expected_counts = np.full(2000, 0.1)
+        counts = 2 * _spikes_from_model(expected_counts, seed=15)
+        with pytest.warns(DataQualityWarning, match=r"100\.0% of bins") as record:
+            uniform_rescaled_ISIs(expected_counts, counts, rng=16)
+        assert len(record) == 1
+        check = TimeRescaling(expected_counts, counts, rng=16)
+        with pytest.warns(DataQualityWarning, match="point_process_residuals"):
+            check.uniform_rescaled_ISIs()
+
+    def test_few_multi_spike_bins_do_not_warn(self):
+        """At 2 ms and a 40 Hz peak about 3% of spike bins hold more than one."""
+        expected_counts = _sinusoid_expected_counts(40.0)
+        counts = np.random.default_rng(17).poisson(expected_counts)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DataQualityWarning)
+            TimeRescaling(expected_counts, counts, rng=18).uniform_rescaled_ISIs()
+
     def test_seed_determines_result(self):
         expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
         is_spike = _spikes_from_model(expected_counts, seed=0)
