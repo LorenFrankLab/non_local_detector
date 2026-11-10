@@ -193,7 +193,8 @@ def _block_eigenbasis(
     # (near-)degenerate eigenspaces run-to-run. The eigenvalues and the diffusion /
     # penalty operators are invariant to that rotation, but a fixed v0 makes the basis
     # -- and hence fitted place fields -- reproducible. A generic (non-eigenvector)
-    # direction avoids ARPACK stagnating on v0 == the constant null mode.
+    # direction avoids ARPACK stagnating on v0 == the null mode (the square root of
+    # the bin volumes, constant on equal volumes).
     v0 = np.random.default_rng(0).standard_normal(n)
     try:
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(
@@ -637,19 +638,23 @@ def heat_kernel_apply(
     Computes ``Q exp(-tΛ) Qᵀ F`` and mirrors :func:`diffuse` with
     ``bin_sizes=None`` exactly (clip to >=0, then rescale each column to its input
     mass, per connected component) so likelihood magnitude is truncation-rank
-    stable. Jittable; the mass rescale reduces one
-    component at a time (see ``_component_mass_sum``). ``component_labels`` are
-    0..K-1 segment ids (a device/host int array; a single connected graph passes
-    all zeros or None). With the basis of :func:`get_device_basis`, a unit point
-    source's column normalized to unit mass is the mass kernel's column on any
-    volumes.
+    stable. Jittable; the mass rescale reduces one component at a time (see
+    ``_component_mass_sum``). ``component_labels`` are 0..K-1 segment ids (a
+    device/host int array; a single connected graph passes all zeros or None).
+
+    ``eigvecs`` is an orthonormal eigenbasis (:func:`diffusion_eigenbasis`,
+    :func:`cached_eigenbasis`); on unequal volumes the result is then not the
+    mass kernel, for which use :func:`diffuse` with ``bin_sizes``. The one other
+    input it takes is the point-source factors of
+    :func:`get_device_point_source_basis` with unit point sources as ``fields``,
+    whose columns, normalized to unit mass, are the mass kernel's columns.
 
     Parameters
     ----------
     eigvals : jax.Array, shape (m,)
         Eigenvalues from :func:`diffusion_eigenbasis`.
     eigvecs : jax.Array, shape (n_bins, m)
-        Corresponding eigenvectors as columns.
+        Orthonormal eigenvectors as columns (see above).
     sigma : float
         Smoothing standard deviation in coordinate units (bandwidth).
     fields : jax.Array, shape (n_bins, n_fields)
@@ -659,7 +664,7 @@ def heat_kernel_apply(
         single component).
     n_components : int, optional
         The **static** component count — pass it explicitly (the production
-        caller gets it from :func:`get_device_basis`) to avoid a per-call
+        caller gets it from :func:`get_device_point_source_basis`) to avoid a per-call
         device->host sync of the labels. If ``None``, it is derived host-side
         once (convenience for tests / one-off calls only — NOT the hot predict
         path).
@@ -1077,19 +1082,20 @@ def cached_heat_kernel_eigenbasis(
     )
 
 
-def get_device_basis(
+def get_device_point_source_basis(
     environment: "Environment", resolved_rank: int
 ) -> tuple[jax.Array, jax.Array, jax.Array, int]:
-    """Device (jnp) eigenbasis for the clusterless_diffusion kernel columns.
+    """Device factors of the heat kernel's point-source columns.
 
-    The eigenvectors are scaled by ``sqrt(m / max(m))``, ``m`` the bin volumes,
-    so ``P exp(-tΛ) Pᵀ e_s``, ``P`` the scaled basis, is the mass kernel's column
-    for a unit mass at bin ``s`` times ``m_s / max(m)``: once normalized to unit
-    mass, as :func:`heat_kernel_apply` point-source columns are by their callers,
-    it is the mass kernel's column on any volumes. On equal volumes the scale is
-    exactly 1. The scaled basis is not orthonormal on unequal volumes, so it is
-    for point-source columns only; :func:`diffuse` takes the volumes for other
-    fields.
+    For the clusterless_diffusion kernel columns only. The factors are the
+    eigenvectors scaled by ``sqrt(m / max(m))``, ``m`` the bin volumes, so
+    ``P exp(-tΛ) Pᵀ e_s``, ``P`` the factors, is the mass kernel's column for a
+    unit mass at bin ``s`` times ``m_s / max(m)``: normalized to unit mass, as
+    every kernel column is, it is the mass kernel's column on any volumes. On
+    equal volumes the scale is exactly 1. On unequal volumes ``P`` is not
+    orthonormal, so it is not an eigenbasis: applying it to any field other than
+    a point source gives neither the mass kernel nor a density. Use
+    :func:`cached_eigenbasis` with :func:`diffuse` for other fields.
 
     Transient environment cache entry keyed by ``(resolved_rank, device, dtype)``.
     On a miss, the host basis is retrieved via :func:`cached_eigenbasis` and
@@ -1110,9 +1116,8 @@ def get_device_basis(
     -------
     eigvals : jax.Array, shape (resolved_rank,)
         Laplacian eigenvalues, on ``device``.
-    eigvecs : jax.Array, shape (n_interior, resolved_rank)
-        Corresponding eigenvectors as columns, scaled by ``sqrt(m / max(m))``,
-        on ``device``.
+    point_source_factors : jax.Array, shape (n_interior, resolved_rank)
+        The eigenvectors scaled by ``sqrt(m / max(m))``, on ``device``.
     component_labels : jax.Array, shape (n_interior,)
         Connected-component id per interior bin, ``0..n_components-1``, on
         ``device``.

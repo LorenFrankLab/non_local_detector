@@ -13,7 +13,7 @@ from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     diffuse,
     diffusion_eigenbasis,
-    get_device_basis,
+    get_device_point_source_basis,
     heat_kernel_apply,
 )
 
@@ -93,19 +93,19 @@ def _fitted_env():
     )
 
 
-def test_get_device_basis_hit_and_device_arrays():
+def test_get_device_point_source_basis_hit_and_device_arrays():
     env = _fitted_env()
     _, vecs = cached_eigenbasis(env, None)
     rank = vecs.shape[1]
-    b1 = get_device_basis(env, rank)
-    b2 = get_device_basis(env, rank)
+    b1 = get_device_point_source_basis(env, rank)
+    b2 = get_device_point_source_basis(env, rank)
     assert isinstance(b1[1], jax.Array)  # device eigvecs
     assert b1[1] is b2[1]  # cache hit returns same object
 
 
 def test_device_cache_invalidated_on_refit():
     env = _fitted_env()
-    get_device_basis(env, cached_eigenbasis(env, None)[1].shape[1])
+    get_device_point_source_basis(env, cached_eigenbasis(env, None)[1].shape[1])
     assert env.get_cached("diffusion_device_basis") is not None
     env.fit_place_grid(
         position=np.linspace(0, 20, 80)[:, None], infer_track_interior=True
@@ -115,7 +115,7 @@ def test_device_cache_invalidated_on_refit():
 
 def test_device_cache_excluded_from_pickle():
     env = _fitted_env()
-    get_device_basis(env, cached_eigenbasis(env, None)[1].shape[1])
+    get_device_point_source_basis(env, cached_eigenbasis(env, None)[1].shape[1])
     blob = pickle.dumps(env)  # must not raise on the JAX Device key
     env2 = pickle.loads(blob)
     assert env2.get_cached("diffusion_device_basis") is None

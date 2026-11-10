@@ -131,7 +131,7 @@ from non_local_detector.likelihoods.diffusion import (
     check_diffusion_operator,
     check_smoothing_bandwidth,
     environment_graph,
-    get_device_basis,
+    get_device_point_source_basis,
     heat_kernel_apply,
     resolved_occupancy,
 )
@@ -433,7 +433,7 @@ def fit_clusterless_diffusion_encoding_model(
     full_to_local = full_to_local_index(node_order, n_total_bins)
 
     # Resolve the eigenbasis ONCE and record its rank; predict retrieves the device
-    # basis via get_device_basis(environment, resolved_rank).
+    # basis via get_device_point_source_basis(environment, resolved_rank).
     if heat_kernel_rank is None:
         _, eigvecs = cached_heat_kernel_eigenbasis(environment, position_std)
     else:
@@ -613,7 +613,8 @@ def _kernel_columns(
     Parameters
     ----------
     eigvals, eigvecs, labels : jax.Array
-        Device heat-kernel basis and component labels (``get_device_basis``).
+        Device point-source factors and component labels
+        (``get_device_point_source_basis``).
     sources : jax.Array, shape (n_sources,)
         Interior bin indices.
     position_std : float
@@ -670,7 +671,7 @@ def spatial_kernel_columns(
         ``FIELD_RESOLUTION`` of its peak. ``resolved_rank`` and
         ``position_std`` must be the fitted model's.
     """
-    eigvals, eigvecs, labels, n_components = get_device_basis(
+    eigvals, eigvecs, labels, n_components = get_device_point_source_basis(
         environment, resolved_rank
     )
     sources = np.asarray(sources, dtype=np.int32)
@@ -758,7 +759,7 @@ def _diffuse_fields(
     at fit time, by the same linear map as every spike's marked field. Only the
     bins with mass in some field contribute, in tiles of kernel columns.
     """
-    eigvals, eigvecs, labels, n_components = get_device_basis(
+    eigvals, eigvecs, labels, n_components = get_device_point_source_basis(
         environment, resolved_rank
     )
     fields = np.asarray(fields, dtype=np.float64)
@@ -1458,7 +1459,7 @@ def predict_clusterless_diffusion_log_likelihood(
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     n_bins = occupancy.shape[0]
 
-    eigvals, eigvecs, labels, n_components = get_device_basis(
+    eigvals, eigvecs, labels, n_components = get_device_point_source_basis(
         environment, resolved_rank
     )
     tile_budget = _source_tile_size(memory_budget, n_bins, resolved_rank)

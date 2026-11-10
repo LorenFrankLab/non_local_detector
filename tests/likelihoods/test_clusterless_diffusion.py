@@ -66,7 +66,7 @@ from non_local_detector.likelihoods.diffusion import (
     connected_component_labels,
     diffuse,
     environment_graph,
-    get_device_basis,
+    get_device_point_source_basis,
     heat_kernel_apply,
     n_connected_components,
 )
@@ -230,7 +230,7 @@ def test_diffused_field_keeps_each_spike_scale_in_any_units(n_features, offset):
             n_bins,
             8,
         )
-        eigvals, eigvecs, labels, n_components = get_device_basis(
+        eigvals, eigvecs, labels, n_components = get_device_point_source_basis(
             s["env"], enc["resolved_rank"]
         )
         log_source = _log_source_marks(
@@ -534,10 +534,15 @@ def test_mass_invariance_across_ranks():
     D = jnp.zeros((n_bins, dec_marks.shape[0])).at[enc_bins].add(w[:, None] * K)
 
     masses = {}
+    labels = jnp.asarray(connected_component_labels(_graph))
     for rank in (full_rank, half_rank):
-        Lam, Q, labels, n_components = get_device_basis(env, rank)
+        Lam, Q = cached_eigenbasis(env, rank)
         P = heat_kernel_apply(
-            Lam, Q, enc["position_std"], D, labels, n_components=n_components
+            jnp.asarray(Lam, jnp.float32),
+            jnp.asarray(Q, jnp.float32),
+            enc["position_std"],
+            D,
+            labels,
         )
         masses[rank] = np.asarray(P.sum(axis=0))
 
