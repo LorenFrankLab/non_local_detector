@@ -518,6 +518,16 @@ class TestHPDUnequalBinWidths:
         with pytest.raises(ValueError, match=message):
             get_HPD_spatial_coverage(posterior, **kwargs)
 
+    @pytest.mark.parametrize("coverage", [1.5, -0.1, 0.0, np.nan])
+    def test_rejects_coverage_outside_unit_interval(self, coverage):
+        posterior, widths = _two_arm_posterior(within_arm_slope=0.0)
+        with pytest.raises(ValueError, match="coverage"):
+            get_HPD_spatial_coverage(posterior, bin_width=widths, coverage=coverage)
+        with pytest.raises(ValueError, match="coverage"):
+            posterior_consistency_hpd_overlap(
+                posterior.values, posterior.values, coverage=coverage, bin_width=widths
+            )
+
     def test_rejects_nonpositive_widths(self):
         posterior, widths = _two_arm_posterior(within_arm_slope=0.0)
         widths[3] = 0.0
@@ -669,6 +679,28 @@ class TestPosteriorConsistencyHPDOverlap:
         )
         np.testing.assert_allclose(
             posterior_consistency_hpd_overlap(p, q, coverage=0.95), [0.5]
+        )
+
+    def test_bin_width_takes_both_inputs_as_masses(self):
+        """A likelihood at bin centres is multiplied by the widths first.
+
+        Two arms: 50 bins of 2 cm and 50 of 1 cm. The likelihood is 1.2 on the
+        wide arm and 1.0 on the narrow one, so the wide arm is its 50% region;
+        the posterior sits on the narrow arm, so the regions do not overlap.
+        Passing ``L / sum(L)`` instead would divide by the widths twice and
+        make the likelihood's region the whole track.
+        """
+        widths = np.repeat([2.0, 1.0], 50)
+        likelihood_at_centers = np.repeat([1.2, 1.0], 50)[None]
+        likelihood = likelihood_at_centers * widths
+        likelihood /= likelihood.sum(axis=1, keepdims=True)
+        posterior = np.repeat([0.0, 1.0 / 50], 50)[None]
+
+        np.testing.assert_array_equal(
+            posterior_consistency_hpd_overlap(
+                posterior, likelihood, coverage=0.5, bin_width=widths
+            ),
+            [0.0],
         )
 
     def test_overlap_in_unit_range(self):

@@ -12,6 +12,7 @@ import numpy as np
 from scipy.stats import entropy
 
 from non_local_detector.model_checking.highest_posterior_density import (
+    _check_density_coverage,
     _highest_density_threshold,
     get_highest_posterior_threshold,
 )
@@ -110,11 +111,15 @@ def posterior_consistency_hpd_overlap(
         Coverage probability for the HPD regions. Must be between 0 and 1.
         Default is 0.95 for 95% HPD regions.
     bin_width : np.ndarray, shape (n_position_bins,), optional
-        Width of each position bin, when the widths differ. The HPD regions
-        then hold the highest-density bins (``mass / bin_width``), and their
-        sizes and intersection are total widths. Without it, the regions
-        hold the highest-mass bins and each bin counts once, which is right
-        for equal widths.
+        Width of each position bin, when the widths differ. Both `posterior`
+        and `likelihood` must then be masses per bin, each row summing to
+        one. A likelihood evaluated at bin centres is a density, so multiply
+        it by the widths before normalising:
+        ``mass = likelihood * bin_width; mass /= mass.sum(axis=1, keepdims=True)``.
+        The HPD regions then hold the highest-density bins
+        (``mass / bin_width``), and their sizes and intersection are total
+        widths. Without it, the regions hold the highest-mass bins and each
+        bin counts once, which is right for equal widths.
 
     Returns
     -------
@@ -165,6 +170,7 @@ def posterior_consistency_hpd_overlap(
             np.ndarray, (isin_posterior_hpd & isin_likelihood_hpd).sum(axis=1) / denom
         )
 
+    _check_density_coverage(coverage)
     width = np.asarray(bin_width, dtype=float)
     if width.shape != (posterior.shape[1],) or not np.all(
         np.isfinite(width) & (width > 0)
@@ -184,6 +190,9 @@ def posterior_consistency_hpd_overlap(
     )
     intersection = ((isin_posterior_hpd & isin_likelihood_hpd) * width).sum(axis=1)
     # An empty region (a row without mass) has no overlap.
-    return np.divide(
-        intersection, smaller, out=np.zeros_like(intersection), where=smaller > 0
+    return cast(
+        np.ndarray,
+        np.divide(
+            intersection, smaller, out=np.zeros_like(intersection), where=smaller > 0
+        ),
     )
