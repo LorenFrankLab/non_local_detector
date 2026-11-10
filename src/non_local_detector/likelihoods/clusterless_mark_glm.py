@@ -489,8 +489,12 @@ def fit_clusterless_mark_glm_encoding_model(
     mark_random_state : int, optional
         Seed of the mark subsample and k-means initialization, by default 0.
     emission_knot_spacing : float, optional
-        Spacing of the rate-map spline knots in position units, by default
-        ``sqrt(12.5) * 2`` (about 7.07), as in the sorted-spikes GLM.
+        Requested spacing of the rate-map spline knots in position units, by
+        default ``sqrt(12.5) * 2`` (about 7.07), as in the sorted-spikes GLM.
+        Without a track graph the knots end up farther apart than requested
+        (10.5 apart over a 21-unit extent at the default); on a track graph
+        they are at most the request apart. See
+        ``fit_sorted_spikes_glm_encoding_model`` for the rule.
     log_rate_prior_std : float, optional
         Prior SD, in nats, of each component's log-rate deviation from its
         baseline across the interior bins, by default

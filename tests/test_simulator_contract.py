@@ -120,8 +120,9 @@ def test_no_nans_finite_features() -> None:
 
 def test_optional_empty_electrode() -> None:
     """A silent electrode yields times of shape (0,) and features of shape (0, 4)."""
-    # A 20 ms recording with one neuron per tetrode (peak rate 100 Hz) leaves
-    # some electrodes without spikes; seed 3 gives spike counts [1, 1, 0, 1].
+    # A 20 ms recording on a 1 cm track with one neuron per tetrode (peak rate
+    # 100 Hz): only the field at 0 cm is on the track, so the other electrodes
+    # are nearly silent; seed 3 gives spike counts [2, 0, 0, 0].
     sim = make_simulated_run_data(
         n_tetrodes=4,
         place_field_means=np.array([0.0, 10.0, 20.0, 30.0]),
@@ -361,3 +362,193 @@ def test_get_firing_rate_without_weights_matches_unit_weights() -> None:
     np.testing.assert_allclose(
         get_firing_rate(*args), get_firing_rate(*args, weights=np.ones(n_time))
     )
+
+
+def _gaussian_field(x, mean, max_rate, variance):
+    return max_rate * np.exp(-0.5 * (x - mean) ** 2 / variance)
+
+
+def test_place_field_rate_does_not_depend_on_the_trajectory() -> None:
+    """The field peaks at ``max_rate`` at its center wherever the animal went.
+
+    A field at 70 cm read at 60 cm is the same whether the trajectory reaches
+    the center (0-100 cm) or stops short of it (0-60 cm).
+    """
+    from non_local_detector.simulate import simulate_place_field_firing_rate
+
+    full = simulate_place_field_firing_rate([70.0], np.linspace(0, 100, 1001)[:, None])
+    short = simulate_place_field_firing_rate([70.0], np.linspace(0, 60, 601)[:, None])
+
+    expected = _gaussian_field(60.0, 70.0, max_rate=15.0, variance=12.5)
+    np.testing.assert_allclose(full[600], expected, rtol=1e-12)
+    np.testing.assert_allclose(short[-1], expected, rtol=1e-12)
+
+
+def test_place_field_beyond_the_track_follows_its_gaussian() -> None:
+    """A field centered off the track is only its Gaussian tail on the track."""
+    from non_local_detector.simulate import simulate_place_field_firing_rate
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        create_place_field,
+    )
+
+    position = np.linspace(0.0, 100.0, 10_001)
+    rate = simulate_place_field_firing_rate([120.0], position[:, None])
+    sorted_rate = create_place_field(120.0, position)
+
+    np.testing.assert_allclose(
+        rate[-1], _gaussian_field(100.0, 120.0, 15.0, 12.5), rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        sorted_rate[-1],
+        0.001 + _gaussian_field(100.0, 120.0, 20.0, 12.5),
+        rtol=1e-12,
+    )
+
+
+def test_nan_position_leaves_other_rates_finite() -> None:
+    """A NaN position gives a NaN rate at that sample only."""
+    from non_local_detector.simulate import simulate_place_field_firing_rate
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        create_place_field,
+    )
+
+    position = np.linspace(0.0, 100.0, 101)
+    position[10] = np.nan
+    finite = np.ones(position.shape, dtype=bool)
+    finite[10] = False
+
+    for rate in (
+        simulate_place_field_firing_rate([50.0], position[:, None]),
+        create_place_field(50.0, position),
+    ):
+        assert np.all(np.isfinite(rate[finite]))
+        assert np.isnan(rate[10])
+
+
+def test_multiunit_spike_probability_and_neuron_choice_are_unbiased() -> None:
+    """Each sample spikes with probability ``sum(rate) / fs``, split by rate.
+
+    Two neurons with fields at the animal's position fire at 100 Hz each,
+    sampled at 1 kHz: a sample spikes with probability 0.2 and each neuron
+    owns half of the spikes. Neuron identity is read from the mark cluster
+    (centers 0 and 5, unit variance, four dimensions).
+    """
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    n_time, sampling_frequency, max_rate = 200_000, 1000, 100.0
+    marks = simulate_multiunit_with_place_fields(
+        np.zeros((2, 1)),
+        np.zeros((n_time, 1)),
+        max_rate=max_rate,
+        sampling_frequency=sampling_frequency,
+        rng=np.random.default_rng(0),
+    )
+
+    has_spike = ~np.isnan(marks[:, 0])
+    p_spike = 2 * max_rate / sampling_frequency
+    expected = n_time * p_spike
+    standard_error = np.sqrt(n_time * p_spike * (1 - p_spike))
+    assert abs(has_spike.sum() - expected) < 3 * standard_error, has_spike.sum()
+
+    from_second = marks[has_spike].mean(axis=1) > 2.5
+    fraction_standard_error = np.sqrt(0.25 / has_spike.sum())
+    assert abs(from_second.mean() - 0.5) < 3 * fraction_standard_error, (
+        from_second.mean()
+    )
+
+
+def test_multiunit_has_no_spike_at_a_nan_position() -> None:
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    position = np.zeros((1000, 1))
+    position[::2] = np.nan
+    marks = simulate_multiunit_with_place_fields(
+        np.zeros((2, 1)),
+        position,
+        max_rate=400.0,
+        sampling_frequency=1000,
+        rng=np.random.default_rng(0),
+    )
+
+    assert np.all(np.isnan(marks[::2]))
+    assert np.any(~np.isnan(marks[1::2, 0]))
+
+
+def test_multiunit_refuses_more_than_one_expected_spike_per_sample() -> None:
+    """One mark row per sample cannot hold a total rate above the sampling rate."""
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    with pytest.raises(ValueError, match="sampling_frequency"):
+        simulate_multiunit_with_place_fields(
+            np.zeros((2, 1)),
+            np.zeros((10, 1)),
+            max_rate=600.0,
+            sampling_frequency=1000,
+            rng=np.random.default_rng(0),
+        )
+
+
+def test_multiunit_accepts_a_summed_rate_equal_to_the_sampling_rate() -> None:
+    """Nine co-located 500/9 Hz neurons at 500 Hz spike in every sample.
+
+    Their per-sample probabilities sum to 1 up to rounding (1 + 2.2e-16).
+    """
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    marks = simulate_multiunit_with_place_fields(
+        np.zeros((9, 1)),
+        np.zeros((100, 1)),
+        max_rate=500.0 / 9,
+        sampling_frequency=500,
+        rng=np.random.default_rng(0),
+    )
+
+    assert np.all(np.isfinite(marks))
+
+
+def test_sorted_spike_times_hold_every_counted_spike() -> None:
+    """A sample counted twice yields two spike times, at that sample."""
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        _spike_times_from_counts,
+    )
+
+    time = np.array([0.0, 0.1, 0.2, 0.3])
+    counts = np.array([[0, 2], [1, 0], [3, 1], [0, 0]])
+
+    spike_times = _spike_times_from_counts(time, counts)
+
+    assert sum(times.size for times in spike_times) == counts.sum()
+    np.testing.assert_array_equal(spike_times[0], [0.1, 0.2, 0.2, 0.2])
+    np.testing.assert_array_equal(spike_times[1], [0.0, 0.0, 0.2])
+
+
+def test_sorted_simulation_keeps_samples_with_two_spikes() -> None:
+    """The default seeded simulation has samples with two Poisson spikes."""
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        make_simulated_data,
+    )
+
+    spike_times = make_simulated_data()[2]
+
+    assert any(np.any(np.diff(times) == 0) for times in spike_times)
+
+
+def test_run_data_spikes_lie_strictly_inside_their_sample_bins() -> None:
+    """Each decode bin is centered on one position sample and holds its spikes.
+
+    A spike at sample ``i`` falls in bin ``i``, with neither edge within a
+    quarter of a sample of it, so float rounding cannot move it to a neighbor.
+    """
+    sim = make_simulated_run_data(n_runs=1, seed=0)
+    edges, position_time = sim.edges, sim.position_time
+    quarter_sample = 0.25 * np.median(np.diff(position_time))
+
+    assert edges.size == position_time.size + 1
+    np.testing.assert_allclose(sim.bin_widths, np.diff(edges))
+    for times in sim.spike_times:
+        sample = np.searchsorted(position_time, times)
+        np.testing.assert_array_equal(position_time[sample], times)
+        bin_ind = np.searchsorted(edges, times, side="right") - 1
+        np.testing.assert_array_equal(bin_ind, sample)
+        assert np.all(times - edges[bin_ind] > quarter_sample)
+        assert np.all(edges[bin_ind + 1] - times > quarter_sample)

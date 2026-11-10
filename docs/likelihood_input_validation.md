@@ -30,7 +30,7 @@ fitting, instead of raising.
 
 ## Spline design matrices
 
-When a varying spatial axis is shorter than the knot spacing, no interior knot
+When a varying spatial axis is at most twice the knot spacing, no interior knot
 falls inside the data and Patsy raised an error (for example, a 0-10
 environment at the default spacing). Such an axis now gets one natural-cubic
 knot at the midpoint of its observed positions. Each axis keeps its own knot
