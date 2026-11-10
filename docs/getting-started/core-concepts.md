@@ -93,7 +93,9 @@ Fitted firing rates are in Hz.
 ## Transitions
 
 - **Continuous transitions** set how position moves within and between
-  states: `RandomWalk` (Gaussian steps, `movement_var` per time bin),
+  states: `RandomWalk` (Gaussian steps, `movement_var` per time bin, scaled
+  at walls, track ends, holes and junctions so that with no evidence a
+  uniform density stays uniform rather than draining from the edges),
   `Uniform` (jump anywhere), `Identity` (stay put), `Discrete` (the state has
   no position, as in Local and No-Spike) and `EmpiricalMovement` (learned
   from the animal's own movement). Each is a `ContinuousTransition`: its

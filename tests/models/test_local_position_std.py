@@ -812,3 +812,57 @@ class TestDeltaKernel:
             np.log(n_interior),
             rtol=1e-6,
         )
+
+
+def test_uniform_blocks_and_initial_conditions_are_per_bin_on_unequal_track_bins():
+    """The multi-bin Local state (``local_position_std``) spreads the Local
+    state over the bins with 1/n initial conditions and a per-bin
+    Local->Local ``Uniform`` block, and its likelihood adds
+    ``log(n_interior_bins)`` to cancel them. So on a track whose bins differ
+    in width both stay exactly 1/n per interior bin, dense and structured;
+    weighting them by width moved the delta-kernel Local state up to 0.21
+    off the one-bin Local state."""
+    import networkx as nx
+
+    from non_local_detector.continuous_state_transitions import Uniform
+    from non_local_detector.environment import Environment
+    from non_local_detector.initial_conditions import UniformInitialConditions
+    from non_local_detector.observation_models import ObservationModel
+    from non_local_detector.transition_operators import (
+        LazyDenseTransition,
+        build_transition_operator,
+    )
+
+    nodes = [0.0, 51.0, 110.3, 170.0]
+    graph = nx.Graph()
+    for node, x in enumerate(nodes):
+        graph.add_node(node, pos=(x, 0.0))
+    for edge in range(3):
+        graph.add_edge(
+            edge, edge + 1, distance=nodes[edge + 1] - nodes[edge], edge_id=edge
+        )
+    env = Environment(
+        place_bin_size=2.0,
+        track_graph=graph,
+        edge_order=[(0, 1), (1, 2), (2, 3)],
+        edge_spacing=0.0,
+    ).fit_place_grid()
+    interior = env.is_track_interior_flat_
+    widths = np.diff(env.edges_[0])[interior]
+    assert len(np.unique(np.round(widths, 3))) == 3
+    n_bins, n_interior = len(interior), int(interior.sum())
+
+    dense = Uniform().make_state_transition([env])
+    structured = np.asarray(
+        LazyDenseTransition(build_transition_operator([[Uniform()]], [env], (n_bins,)))
+    )
+    initial = UniformInitialConditions().make_initial_conditions(
+        ObservationModel(), [env]
+    )
+
+    per_bin = np.where(interior[:, None] & interior[None, :], 1.0 / n_interior, 0.0)
+    np.testing.assert_array_equal(dense, per_bin)
+    np.testing.assert_array_equal(structured, per_bin)
+    np.testing.assert_array_equal(
+        initial, interior.astype(np.float32) / np.float32(n_interior)
+    )

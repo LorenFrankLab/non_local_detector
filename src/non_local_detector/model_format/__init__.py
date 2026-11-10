@@ -234,10 +234,12 @@ def convert_model(pickle_path: str | Path, path: str | Path) -> None:
     ``path`` with ``save_model``. Only convert files you trust: loading a
     pickle can execute arbitrary code. The fingerprints the new file uses to
     check its rebuilt structures are computed now, from the structures the
-    pickle holds, not at the original fit. The transition formula is written
-    as the pickle has it; if it is outside the formula grammar, loading the
-    converted file evaluates it only with ``load_model(path,
-    trust_formulas=True)``.
+    pickle holds, not at the original fit, and any continuous transition
+    block the installed version would rebuild differently is stored in the
+    file, so the converted model decodes as the pickle does. The transition
+    formula is written as the pickle has it; if it is outside the formula
+    grammar, loading the converted file evaluates it only with
+    ``load_model(path, trust_formulas=True)``.
 
     Parameters
     ----------
@@ -254,7 +256,9 @@ def convert_model(pickle_path: str | Path, path: str | Path) -> None:
         model cannot decode: fitted before rates were in Hz (the 0.6
         releases and earlier) or with the removed ``clusterless_kde_log``
         algorithm. Such files stay pickles, which ``load_model`` still
-        reads for inspection.
+        reads for inspection. Also if a transition block the installed
+        version would rebuild differently is too large to store within
+        ``max_dense_transition_bytes``.
     """
     from non_local_detector.models.base import _DetectorBase
 
