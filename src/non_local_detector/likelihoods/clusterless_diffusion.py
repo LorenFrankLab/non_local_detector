@@ -65,7 +65,7 @@ import logging
 import warnings
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import jax
 import jax.numpy as jnp
@@ -124,9 +124,11 @@ from non_local_detector.likelihoods.common import (
     zero_if_neginf,
 )
 from non_local_detector.likelihoods.diffusion import (
+    DIFFUSION_OPERATOR,
     FIELD_RESOLUTION,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
+    check_diffusion_operator,
     check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
@@ -276,7 +278,19 @@ def _effective_block(
     return min(1 << (raw.bit_length() - 1), block_size)
 
 
-class ClusterlessDiffusionEncodingModel(ClusterlessEncodingModel):
+class _RecordedDiffusionOperator(TypedDict, total=False):
+    """The operator key, which models fitted before it was recorded lack.
+
+    Optional, so a saved model without it still loads and decoding it raises
+    the refit error of ``check_diffusion_operator``, not a missing-key error.
+    """
+
+    diffusion_operator: str
+
+
+class ClusterlessDiffusionEncodingModel(
+    ClusterlessEncodingModel, _RecordedDiffusionOperator
+):
     """The encoding model ``fit_clusterless_diffusion_encoding_model`` returns.
 
     Its keys are the encoding-model parameters of
@@ -387,7 +401,9 @@ def fit_clusterless_diffusion_encoding_model(
         ``block_size``, ``memory_budget``, ``disable_progress_bar``,
         ``rate_units`` (``"Hz"``), ``encoding_exposure_seconds`` (weighted
         encoding occupancy time in seconds), ``mark_dimensions`` (each
-        electrode's waveform-feature count).
+        electrode's waveform-feature count), ``diffusion_operator`` (the
+        operator the occupancy and intensities were diffused with,
+        ``diffusion.DIFFUSION_OPERATOR``).
     """
     position_time = as_array(position_time)
     spike_times = as_arrays(spike_times)
@@ -536,6 +552,7 @@ def fit_clusterless_diffusion_encoding_model(
 
     return {
         "algorithm": "clusterless_diffusion",
+        "diffusion_operator": DIFFUSION_OPERATOR,
         "environment": environment,
         "environment_grid": environment_grid_fingerprint(environment),
         "occupancy": occupancy,
@@ -1294,6 +1311,7 @@ def predict_clusterless_diffusion_log_likelihood(
     row_slice: slice | None = None,
     mark_reference: list[MarkReference | None],
     environment_grid: dict[str, Any] | None = None,
+    diffusion_operator: str | None = None,
     _spike_time_order: SpikeTimeOrder | None = None,
     _time_grid: _DecodeTimeGrid | None = None,
 ) -> jax.Array:
@@ -1382,6 +1400,12 @@ def predict_clusterless_diffusion_log_likelihood(
         ``environment_grid_fingerprint``), by default None, which skips the
         check (a model fitted before the grid was recorded). Prediction raises
         if the environment has since been refit to another grid.
+    diffusion_operator : str or None, optional
+        The diffusion operator the fit recorded
+        (``diffusion.DIFFUSION_OPERATOR``). Prediction rebuilds the heat kernel
+        from ``environment`` and combines it with the fitted occupancy and
+        intensities, so it raises unless this is the operator it builds; None,
+        a model fitted before models recorded it, also raises.
     _spike_time_order : SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -1395,7 +1419,14 @@ def predict_clusterless_diffusion_log_likelihood(
     log_likelihood : jax.Array, shape (n_rows, n_interior_bins) if ``is_local`` is
         False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
+
+    Raises
+    ------
+    ValidationError
+        If the model was fitted with another diffusion operator (see
+        ``diffusion_operator``).
     """
+    check_diffusion_operator(diffusion_operator)
     validate_encoding_contract(rate_units, environment, environment_grid)
     _validate_execution_settings(memory_budget, block_size)
     spike_times = as_arrays(spike_times)

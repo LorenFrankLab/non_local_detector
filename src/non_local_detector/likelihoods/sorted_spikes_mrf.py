@@ -32,10 +32,12 @@ mgcv's ``bs="mrf"`` Markov-random-field smoother. Two deliberate departures: (1)
 **single shared** ``lambda`` is selected for the whole population (pooled smoothing),
 whereas mgcv fits each response separately with its own smoothing parameter -- pooling
 regularizes sparse cells but can over/under-smooth a cell whose roughness differs from
-the population; (2) the penalty is the **weighted** finite-difference Laplacian
-(``w = 1/distance**2``, for grid-size-independent bandwidth), not mgcv's default
-unweighted neighbour Laplacian (degree on the diagonal, ``-1`` off) -- in mgcv terms
-this corresponds to a user-supplied ``xt$penalty``.
+the population; (2) the penalty is the diffusion smoother's **weighted**
+finite-volume operator (``diffusion.build_laplacian``: ``w = 1/h**2`` on equal bins,
+for grid-size-independent bandwidth, with Kirchhoff coupling at track junctions and
+bin-volume scaling on unequal bins), not mgcv's default unweighted neighbour
+Laplacian (degree on the diagonal, ``-1`` off) -- in mgcv terms this corresponds to
+a user-supplied ``xt$penalty``.
 
 Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`` /
 ``sorted_spikes_diffusion``, so the Poisson prediction is shared with the diffusion

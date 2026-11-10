@@ -320,7 +320,11 @@ def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
     algorithm,
 ):
     """Loading identifies the algorithm from the encoding model's keys and
-    restores ``mark_dimensions``, so the detector decodes as before."""
+    restores ``mark_dimensions``, so the detector decodes as before.
+
+    A ``clusterless_diffusion`` model of that age was fitted with an earlier
+    diffusion operator, so it asks for a refit instead.
+    """
     detector, expected, args, kwargs = _round_trip_fit(algorithm)
     (entry,) = detector.encoding_model_.values()
     recorded = {
@@ -339,7 +343,32 @@ def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
 
     (restored_entry,) = restored.encoding_model_.values()
     assert {key: restored_entry[key] for key in recorded} == recorded
-    xr.testing.assert_identical(restored.predict(*args, **kwargs), expected)
+    if algorithm == "clusterless_diffusion":
+        with pytest.raises(ValidationError, match="diffusion operator"):
+            restored.predict(*args, **kwargs)
+    else:
+        xr.testing.assert_identical(restored.predict(*args, **kwargs), expected)
+
+
+@pytest.mark.filterwarnings(
+    r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
+)
+def test_saved_clusterless_diffusion_model_without_its_operator_asks_for_a_refit(
+    tmp_path,
+):
+    """A saved model file of a clusterless diffusion detector fitted before
+    encoding models recorded their diffusion operator loads, and decoding it
+    asks for a refit rather than failing on the missing key."""
+    detector, _, args, kwargs = _round_trip_fit("clusterless_diffusion")
+    (entry,) = detector.encoding_model_.values()
+    del entry["diffusion_operator"]
+    detector.save_model(tmp_path / "model")
+
+    restored = type(detector).load_model(tmp_path / "model")
+
+    with pytest.raises(ValidationError, match="diffusion operator") as error:
+        restored.predict(*args, **kwargs)
+    assert "Refit the model" in str(error.value)
 
 
 def test_saved_encoding_model_of_no_registered_type_still_asks_for_a_refit():
@@ -546,8 +575,9 @@ def test_current_encoding_models_add_only_known_keys_to_the_saved_ones(algorithm
 
     Since they were saved, the types gained only ``algorithm`` and, for
     clusterless KDE and diffusion, ``mark_dimensions``, both restored on
-    load. A further key needs a load-time default for saved models (and
-    listing here), not an edit of the saved key sets.
+    load, and for clusterless diffusion ``diffusion_operator``, whose absence
+    asks for a refit. A further key needs a load-time default for saved
+    models (and listing here), not an edit of the saved key sets.
     """
     registry = {**_SORTED_SPIKES_ALGORITHMS, **_CLUSTERLESS_ALGORITHMS}
     model_type = registry[algorithm].encoding_model_type
@@ -555,4 +585,6 @@ def test_current_encoding_models_add_only_known_keys_to_the_saved_ones(algorithm
     added = {"algorithm"}
     if algorithm in _WITHOUT_MARK_DIMENSIONS:
         added |= {"mark_dimensions"}
+    if algorithm == "clusterless_diffusion":
+        added |= {"diffusion_operator"}
     assert current - _PRE_ALGORITHM_ENCODING_KEYS[algorithm] == added

@@ -12,11 +12,15 @@ from non_local_detector.environment import Environment
 
 
 def path_graph(n_nodes: int, distance: float = 1.0) -> nx.Graph:
-    """1D chain 0-1-...-(n-1) with uniform ``distance`` edge attribute."""
+    """1D chain 0-1-...-(n-1) of bins of width ``distance``.
+
+    Each node has the ``volume`` ``distance`` and each edge the ``distance``
+    and the ``conductance`` ``1 / distance``, as for a uniform 1D grid.
+    """
     graph = nx.Graph()
-    graph.add_nodes_from(range(n_nodes))
+    graph.add_nodes_from(range(n_nodes), volume=distance)
     for node in range(n_nodes - 1):
-        graph.add_edge(node, node + 1, distance=distance)
+        graph.add_edge(node, node + 1, distance=distance, conductance=1.0 / distance)
     return graph
 
 
@@ -48,6 +52,15 @@ def make_linear_track_env(edge_spacing: float) -> Environment:
         edge_order=[(0, 1), (1, 2)],
         edge_spacing=edge_spacing,
     ).fit_place_grid()
+
+
+def make_two_width_env() -> Environment:
+    """A 1-D grid of 60 bins of 2.0 cm followed by 100 bins of 1.05 cm."""
+    widths = np.r_[np.full(60, 2.0), np.full(100, 1.05)]
+    return Environment(environment_name="two_widths").fit_place_grid_from_edges(
+        [np.r_[0.0, np.cumsum(widths)]],
+        is_track_interior=np.ones(widths.size, dtype=bool),
+    )
 
 
 def simulate_place_data(env, n_neurons=3, n_time=3000, seed=1, sampling_frequency=100):

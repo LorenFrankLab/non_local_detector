@@ -16,6 +16,10 @@ import scipy.sparse
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.diffusion import (
+    _EIGENBASIS_KEY,
+    _GRAPH_KEY,
+    _HEAT_KERNEL_RANK_KEY,
+    _LAPLACIAN_KEY,
     build_laplacian,
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
@@ -30,6 +34,7 @@ from non_local_detector.likelihoods.diffusion import (
 from tests.likelihoods._sorted_spikes_helpers import (
     make_2d_env,
     make_linear_track_env,
+    make_two_width_env,
     path_graph,
 )
 
@@ -37,18 +42,28 @@ pytestmark = pytest.mark.unit
 
 
 def grid_graph_2d(n_x: int, n_y: int, spacing: float = 1.0) -> nx.Graph:
-    """Face-adjacent 2D grid graph; nodes 0..n_x*n_y-1 in row-major (ij) order."""
+    """Face-adjacent 2D grid graph; nodes 0..n_x*n_y-1 in row-major (ij) order.
+
+    Square bins of side ``spacing``: volume ``spacing**2``, and a face of
+    length ``spacing`` at center distance ``spacing``, so conductance 1.
+    """
     graph = nx.Graph()
     for i in range(n_x):
         for j in range(n_y):
-            graph.add_node(i * n_y + j, pos=(i * spacing, j * spacing))
+            graph.add_node(
+                i * n_y + j, pos=(i * spacing, j * spacing), volume=spacing**2
+            )
     for i in range(n_x):
         for j in range(n_y):
             node = i * n_y + j
             if i + 1 < n_x:
-                graph.add_edge(node, (i + 1) * n_y + j, distance=spacing)
+                graph.add_edge(
+                    node, (i + 1) * n_y + j, distance=spacing, conductance=1.0
+                )
             if j + 1 < n_y:
-                graph.add_edge(node, i * n_y + (j + 1), distance=spacing)
+                graph.add_edge(
+                    node, i * n_y + (j + 1), distance=spacing, conductance=1.0
+                )
     return graph
 
 
@@ -102,16 +117,21 @@ def test_laplacian_disconnected_components_two_zero_modes():
     assert np.count_nonzero(np.abs(eigvals) < 1e-9) == 2
 
 
-@pytest.mark.parametrize("bad_distance", [0.0, -1.0, float("nan")])
-def test_laplacian_rejects_nonpositive_distance(bad_distance):
-    """A zero/negative/NaN edge distance fails loudly (not ZeroDivisionError / silent)."""
-    graph = nx.Graph()
-    graph.add_nodes_from([0, 1, 2])
-    graph.add_edge(0, 1, distance=1.0)
-    graph.add_edge(1, 2, distance=bad_distance)
-    with pytest.raises(
-        ValidationError, match="graph edge has a non-positive 'distance'"
-    ):
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_laplacian_rejects_a_conductance_that_is_not_positive_and_finite(bad):
+    """A zero/negative/NaN/infinite edge conductance fails loudly."""
+    graph = path_graph(3)
+    graph.edges[1, 2]["conductance"] = bad
+    with pytest.raises(ValidationError, match="graph edge has a conductance"):
+        build_laplacian(graph)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_laplacian_rejects_a_volume_that_is_not_positive_and_finite(bad):
+    """A zero/negative/NaN node volume fails loudly."""
+    graph = path_graph(3)
+    graph.nodes[1]["volume"] = bad
+    with pytest.raises(ValidationError, match="graph node has a volume"):
         build_laplacian(graph)
 
 
@@ -457,7 +477,7 @@ def test_cached_heat_kernel_eigenbasis_reuses_probe_eigensolve(monkeypatch):
     )
     sigma = 8.0
     environment_graph(env)  # populate the cached Laplacian (no eigensolve)
-    laplacian = env.get_cached("diffusion_laplacian")
+    laplacian = env.get_cached(_LAPLACIAN_KEY)
 
     calls = {"n": 0}
     real = diffusion_mod.diffusion_eigenbasis
@@ -686,37 +706,38 @@ def test_to_density_equal_volumes_match_volume_weighted_normalization():
 def test_to_density_nonuniform_matches_oracle():
     """On a non-uniform 1D chain, diffuse+to_density matches an independent oracle.
 
-    The oracle smooths with ``expm_multiply`` and converts the resulting per-bin
-    masses to density as ``(mass / total mass) / volume``.
+    The oracle integrates the mass equation ``dp/dt = -(D - C) M⁻¹ p`` with
+    ``expm_multiply`` and converts the resulting per-bin masses to density as
+    ``(mass / total mass) / volume``.
     """
     import scipy.sparse.linalg
 
     rng = np.random.default_rng(1)
     n = 25
-    distances = rng.uniform(0.5, 2.0, size=n - 1)
+    widths = rng.uniform(0.5, 2.0, size=n)
+    spacing = 0.5 * (widths[:-1] + widths[1:])  # center-to-center distances
     graph = nx.Graph()
-    graph.add_nodes_from(range(n))
+    graph.add_nodes_from((k, {"volume": widths[k]}) for k in range(n))
     for k in range(n - 1):
-        graph.add_edge(k, k + 1, distance=distances[k])
-    L = build_laplacian(graph)
-    eigvals, eigvecs = diffusion_eigenbasis(L, rank=None)
-
-    # bin_sizes for an interior node ~ mean of its adjacent edge lengths.
-    bin_sizes = np.empty(n)
-    bin_sizes[1:-1] = 0.5 * (distances[:-1] + distances[1:])
-    bin_sizes[0] = distances[0]
-    bin_sizes[-1] = distances[-1]
+        graph.add_edge(k, k + 1, distance=spacing[k], conductance=1.0 / spacing[k])
+    eigvals, eigvecs = diffusion_eigenbasis(build_laplacian(graph), rank=None)
 
     field = rng.uniform(0.1, 1.0, size=(n, 1))
-    density = to_density(diffuse(eigvals, eigvecs, 1.5, field), bin_sizes)
+    density = to_density(
+        diffuse(eigvals, eigvecs, 1.5, field, bin_sizes=widths), widths
+    )
 
-    t = 1.5**2 / 2.0
-    oracle = scipy.sparse.linalg.expm_multiply(-t * L, field.ravel())
-    oracle = np.clip(oracle, 0.0, None)
-    oracle_density = oracle / oracle.sum() / bin_sizes
+    conductance = np.zeros((n, n))
+    conductance[np.arange(n - 1), np.arange(1, n)] = 1.0 / spacing
+    conductance += conductance.T
+    mass_operator = (np.diag(conductance.sum(axis=1)) - conductance) / widths
+    oracle = scipy.sparse.linalg.expm_multiply(
+        -(1.5**2) / 2.0 * mass_operator, field.ravel()
+    )
+    oracle_density = oracle / oracle.sum() / widths
 
     np.testing.assert_allclose(density.ravel(), oracle_density, atol=1e-8)
-    np.testing.assert_allclose(bin_sizes @ density.ravel(), 1.0, atol=1e-12)
+    np.testing.assert_allclose(widths @ density.ravel(), 1.0, atol=1e-12)
 
 
 # ==============================================================================
@@ -930,14 +951,14 @@ def test_cached_eigenbasis_reuse_and_rank_keying():
     full1 = cached_eigenbasis(env, rank=None)
     full2 = cached_eigenbasis(env, rank=None)
     assert full1[0] is full2[0]  # identical object -> no recompute
-    assert env.get_cached("diffusion_eigenbasis")[None] is full1
+    assert env.get_cached(_EIGENBASIS_KEY)[None] is full1
 
     # A cached full-rank basis serves a smaller-rank request by slicing, and the
     # slice is stored under its own rank key.
     trunc_vals, trunc_vecs = cached_eigenbasis(env, rank=5)
     np.testing.assert_allclose(trunc_vals, full1[0][:5])
     np.testing.assert_allclose(trunc_vecs, full1[1][:, :5])
-    assert 5 in env.get_cached("diffusion_eigenbasis")
+    assert 5 in env.get_cached(_EIGENBASIS_KEY)
 
 
 def test_cached_eigenbasis_rank_below_components_raises_even_when_full_cached():
@@ -990,13 +1011,13 @@ def test_cached_objects_are_read_only():
 
 def test_cached_eigenbasis_immune_to_graph_edge_attribute_mutation():
     """nx.freeze allows edge-attribute writes; the Laplacian snapshot must still
-    protect the cached eigenbasis from a mutated edge distance."""
+    protect the cached eigenbasis from a mutated edge conductance."""
     reference, _ = cached_eigenbasis(make_2d_env(), rank=8)
 
     env = make_2d_env()  # identical grid (same seed)
     graph, _, _ = environment_graph(env)  # snapshots L before the mutation below
     an_edge = next(iter(graph.edges))
-    graph.edges[an_edge]["distance"] = 999.0  # freeze does NOT block this
+    graph.edges[an_edge]["conductance"] = 999.0  # freeze does NOT block this
 
     got, _ = cached_eigenbasis(env, rank=8)  # built from the pristine snapshot
     np.testing.assert_allclose(got, reference, atol=1e-8)
@@ -1008,17 +1029,17 @@ def test_eig_cache_invalidated_on_refit():
     basis = cached_eigenbasis(env, rank=None)
     graph = environment_graph(env)
     cached_heat_kernel_eigenbasis(env, sigma=6.0)  # populates the resolved-rank memo
-    assert env.get_cached("diffusion_eigenbasis") is not None
-    assert env.get_cached("diffusion_graph") is not None
-    assert env.get_cached("diffusion_heat_kernel_rank") is not None
+    assert env.get_cached(_EIGENBASIS_KEY) is not None
+    assert env.get_cached(_GRAPH_KEY) is not None
+    assert env.get_cached(_HEAT_KERNEL_RANK_KEY) is not None
 
     rng = np.random.default_rng(0)
     env.fit_place_grid(
         rng.uniform(1.0, 49.0, size=(4000, 2)), infer_track_interior=True
     )
-    assert env.get_cached("diffusion_eigenbasis") is None
-    assert env.get_cached("diffusion_graph") is None
-    assert env.get_cached("diffusion_heat_kernel_rank") is None
+    assert env.get_cached(_EIGENBASIS_KEY) is None
+    assert env.get_cached(_GRAPH_KEY) is None
+    assert env.get_cached(_HEAT_KERNEL_RANK_KEY) is None
 
     rebuilt = cached_eigenbasis(env, rank=None)
     assert rebuilt[0] is not basis[0]  # recomputed after invalidation
@@ -1058,3 +1079,327 @@ def test_check_bandwidth_warns_when_undersmoothing():
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning -> test failure
         check_smoothing_bandwidth(15.0, graph)
+
+
+# ==============================================================================
+# Finite-volume operator: junctions, unequal bin widths, cache layout
+# ==============================================================================
+
+
+def make_star_env(n_arms: int, bin_size: float, arm_length: float = 60.0):
+    """``n_arms`` straight arms of ``arm_length`` meeting at one vertex."""
+    from track_linearization import make_track_graph
+
+    angles = np.linspace(0.0, 2.0 * np.pi, n_arms, endpoint=False)
+    nodes = [(0.0, 0.0)] + [
+        (arm_length * np.cos(a), arm_length * np.sin(a)) for a in angles
+    ]
+    edges = [(0, k) for k in range(1, n_arms + 1)]
+    return Environment(
+        environment_name=f"star{n_arms}",
+        track_graph=make_track_graph(nodes, edges),
+        edge_order=edges,
+        edge_spacing=0.0,
+        place_bin_size=bin_size,
+    ).fit_place_grid()
+
+
+def arm_and_distance_from_vertex(env: Environment):
+    """Each interior bin's arm (edge id) and its center's distance from the vertex.
+
+    The arms of :func:`make_star_env` start at the vertex, so a bin's distance
+    from it is its linear position minus its arm's start.
+    """
+    _, node_order, bin_sizes = environment_graph(env)
+    arm = env.place_bin_centers_nodes_df_.edge_id.to_numpy()[node_order]
+    center = env.place_bin_centers_[node_order, 0]
+    start = {e: center[arm == e].min() - bin_sizes[arm == e][0] / 2 for e in arm}
+    return arm, center - np.array([start[e] for e in arm])
+
+
+def mass_kernel_column(env: Environment, sigma: float, source: int) -> np.ndarray:
+    """Masses after diffusing a unit mass from ``source`` for ``t = sigma**2 / 2``.
+
+    The operator is symmetric in the volume-scaled variable ``M^{-1/2} m``, so
+    the mass kernel is ``M^{1/2} exp(-t L) M^{-1/2}``.
+    """
+    import scipy.sparse.linalg
+
+    graph, _, bin_sizes = environment_graph(env)
+    laplacian = build_laplacian(graph)
+    root = np.sqrt(bin_sizes)
+    unit = np.zeros(bin_sizes.size)
+    unit[source] = 1.0
+    return root * scipy.sparse.linalg.expm_multiply(
+        -(sigma**2) / 2.0 * laplacian, unit / root
+    )
+
+
+def dense_mass_kernel(env: Environment, sigma: float) -> np.ndarray:
+    """``M^{1/2} exp(-t L) M^{-1/2}`` from a dense eigendecomposition."""
+    graph, _, bin_sizes = environment_graph(env)
+    eigvals, eigvecs = scipy.linalg.eigh(build_laplacian(graph).toarray())
+    root = np.sqrt(bin_sizes)
+    heat = (eigvecs * np.exp(-(sigma**2) / 2.0 * eigvals)) @ eigvecs.T
+    return root[:, None] * heat / root[None, :]
+
+
+def other_arm_mass(env: Environment, sigma: float, distance: float) -> tuple:
+    """Mass reaching the other arms from the first arm's bin ``distance`` away.
+
+    Returns the operator's mass and the metric-graph (Kirchhoff) value
+    ``2 (d - 1) / d * P(Z > a / sigma)``, ``a`` the source's distance from the
+    vertex: of the Gaussian mass that crosses the vertex, the fraction ``2 / d``
+    enters each arm (``d`` arms).
+    """
+    from scipy.stats import norm
+
+    arm, from_vertex = arm_and_distance_from_vertex(env)
+    n_arms = np.unique(arm).size
+    first = arm == arm.min()
+    source = np.flatnonzero(first)[np.argmin(np.abs(from_vertex[first] - distance))]
+    a = from_vertex[source]
+    column = mass_kernel_column(env, sigma, source)
+    exact = 2.0 * (n_arms - 1) / n_arms * norm.sf(a / sigma)
+    return column[~first].sum(), exact
+
+
+@pytest.mark.parametrize("n_arms", [3, 4])
+@pytest.mark.parametrize("distance", [1.0, 7.0])
+def test_junction_passes_the_metric_graph_share_to_the_other_arms(n_arms, distance):
+    """At a vertex of degree 3 or 4, 2 cm bins and sigma = sqrt(12.5), the mass
+    reaching the other arms is within 3% of the Kirchhoff heat kernel's.
+
+    Coupling each pair of end bins at full strength sent up to 1.39 times the
+    exact mass across a degree-4 vertex.
+    """
+    leak, exact = other_arm_mass(
+        make_star_env(n_arms, bin_size=2.0), np.sqrt(12.5), distance
+    )
+    np.testing.assert_allclose(leak / exact, 1.0, atol=0.03)
+
+
+@pytest.mark.parametrize("bin_size", [2.0, 1.0, 0.5, 0.25])
+def test_junction_share_holds_at_every_bin_size(bin_size):
+    """Degree 3, source about 7 cm from the vertex: within 2% of the exact
+    share at every bin size, so the junction coupling does not depend on the
+    grid (it was 1.24 times exact at 2 cm and 1.03 at 0.25 cm)."""
+    leak, exact = other_arm_mass(
+        make_star_env(3, bin_size=bin_size), np.sqrt(12.5), 7.0
+    )
+    np.testing.assert_allclose(leak / exact, 1.0, atol=0.02)
+
+
+@pytest.mark.parametrize("distance", [1.0, 7.0])
+def test_degree_two_vertex_is_a_straight_path(distance):
+    """Two arms meeting at a vertex diffuse like one straight track."""
+    leak, exact = other_arm_mass(
+        make_star_env(2, bin_size=2.0), np.sqrt(12.5), distance
+    )
+    np.testing.assert_allclose(leak / exact, 1.0, atol=0.02)
+
+
+def _finite_difference_laplacian(graph: nx.Graph) -> np.ndarray:
+    """The ``1 / distance**2`` face-adjacent Laplacian of a uniform grid."""
+    n_nodes = graph.number_of_nodes()
+    laplacian = np.zeros((n_nodes, n_nodes))
+    for u, v, data in graph.edges(data=True):
+        weight = 1.0 / data["distance"] ** 2
+        laplacian[u, v] = laplacian[v, u] = -weight
+    laplacian[np.diag_indices(n_nodes)] = -laplacian.sum(axis=1)
+    return laplacian
+
+
+def make_uniform_track_path_env() -> Environment:
+    """A single straight track-graph edge of 50 bins of 2 cm."""
+    from track_linearization import make_track_graph
+
+    return Environment(
+        environment_name="path",
+        track_graph=make_track_graph([(0.0, 0.0), (100.0, 0.0)], [(0, 1)]),
+        edge_order=[(0, 1)],
+        edge_spacing=0.0,
+        place_bin_size=2.0,
+    ).fit_place_grid()
+
+
+@pytest.mark.parametrize(
+    "make_env",
+    [make_uniform_track_path_env, make_2d_env],
+    ids=["track_path", "grid_2d"],
+)
+def test_uniform_grids_keep_the_finite_difference_operator(make_env):
+    """On equal bins the operator is the ``1 / h**2`` finite-difference
+    Laplacian, and its heat kernel matches that Laplacian's to 1e-12."""
+    env = make_env()
+    graph, _, bin_sizes = environment_graph(env)
+    assert np.ptp(bin_sizes) <= 1e-12 * bin_sizes.max()
+    laplacian = build_laplacian(graph).toarray()
+    expected = _finite_difference_laplacian(graph)
+
+    np.testing.assert_allclose(laplacian, expected, rtol=1e-12, atol=0.0)
+    sigma = np.sqrt(12.5)
+    np.testing.assert_allclose(
+        dense_mass_kernel(env, sigma),
+        scipy.linalg.expm(-(sigma**2) / 2.0 * expected),
+        rtol=1e-12,
+        atol=1e-15,
+    )
+
+
+def make_w_track_env() -> Environment:
+    """A W-track whose arms and connecting segments have unequal bin widths."""
+    from track_linearization import make_track_graph
+
+    nodes = [
+        (0.0, 81.0),
+        (0.0, 0.0),
+        (31.0, 0.0),
+        (31.0, 75.0),
+        (61.0, 0.0),
+        (61.0, 80.0),
+    ]
+    edges = [(0, 1), (1, 2), (2, 3), (2, 4), (4, 5)]
+    return Environment(
+        environment_name="w_track",
+        track_graph=make_track_graph(nodes, edges),
+        edge_order=edges,
+        edge_spacing=0.0,
+        place_bin_size=2.0,
+    ).fit_place_grid()
+
+
+def test_kernel_conserves_mass_on_a_track_with_unequal_bin_widths():
+    """Every column of the mass kernel sums to one on a W-track whose segments
+    have different bin widths, without the clip-and-rescale ``diffuse`` adds."""
+    env = make_w_track_env()
+    _, _, bin_sizes = environment_graph(env)
+    assert np.ptp(bin_sizes) > 0.05
+
+    kernel = dense_mass_kernel(env, np.sqrt(12.5))
+
+    np.testing.assert_allclose(kernel.sum(axis=0), 1.0, rtol=0.0, atol=1e-10)
+
+
+def test_long_diffusion_spreads_mass_to_uniform_density():
+    """After a long diffusion the density (mass over bin width) is the same in
+    the 2.0 cm and 1.05 cm regions; equal mass per bin made the narrow region
+    1.9 times as dense."""
+    env = make_two_width_env()
+    _, _, bin_sizes = environment_graph(env)
+    density = dense_mass_kernel(env, sigma=2000.0)[:, 0] / bin_sizes
+    narrow = bin_sizes < 1.5
+
+    np.testing.assert_allclose(
+        density[narrow].mean() / density[~narrow].mean(), 1.0, atol=0.01
+    )
+
+
+def test_diffuse_with_bin_sizes_applies_the_mass_kernel():
+    """``diffuse`` given the bin volumes applies ``M^{1/2} exp(-t L) M^{-1/2}``
+    to masses, on a track with a junction and unequal bin widths."""
+    env = make_w_track_env()
+    _, _, bin_sizes = environment_graph(env)
+    eigvals, eigvecs = cached_eigenbasis(env, rank=None)
+    fields = np.random.default_rng(0).uniform(0.0, 1.0, size=(bin_sizes.size, 3))
+
+    smoothed = diffuse(eigvals, eigvecs, 3.0, fields, bin_sizes=bin_sizes)
+
+    np.testing.assert_allclose(
+        smoothed, dense_mass_kernel(env, 3.0) @ fields, rtol=1e-9, atol=1e-12
+    )
+
+
+def test_zero_length_track_edges_build_a_finite_connected_operator():
+    """Track nodes sit at zero distance from the bin edges they coincide with;
+    the operator stays finite, connected and positive semi-definite, and its
+    null vector is the square root of the bin volumes (uniform density)."""
+    env = make_w_track_env()
+    substrate = env.track_graph_with_bin_centers_edges_
+    assert any(d["distance"] == 0.0 for _, _, d in substrate.edges(data=True))
+    graph, _, bin_sizes = environment_graph(env)
+
+    laplacian = build_laplacian(graph).toarray()
+    eigvals, eigvecs = np.linalg.eigh(laplacian)
+
+    assert np.all(np.isfinite(laplacian))
+    assert nx.is_connected(graph)
+    assert eigvals[0] > -1e-12
+    assert eigvals[1] > 1e-6  # one null mode: connected
+    null = eigvecs[:, 0] * np.sign(eigvecs[0, 0])
+    np.testing.assert_allclose(
+        null, np.sqrt(bin_sizes / bin_sizes.sum()), rtol=0.0, atol=1e-10
+    )
+
+
+def test_operator_cache_entries_of_earlier_versions_are_not_used():
+    """An environment unpickled from an earlier version carries that version's
+    graph, Laplacian, eigenbasis and resolved ranks under the earlier cache
+    keys. They describe the earlier operator, so none of them is reused."""
+    env = make_star_env(3, bin_size=2.0)
+    graph, node_order, bin_sizes = environment_graph(make_star_env(3, bin_size=2.0))
+    stale_laplacian = scipy.sparse.csr_matrix(_finite_difference_laplacian(graph))
+    stale_basis = scipy.linalg.eigh(stale_laplacian.toarray())
+    sigma = float(np.sqrt(12.5))
+    for key, stale in {
+        "diffusion_graph": (graph, node_order, bin_sizes),
+        "diffusion_laplacian": stale_laplacian,
+        "diffusion_eigenbasis": {None: stale_basis},
+        "diffusion_heat_kernel_rank": {(sigma, 1e-6, 0.2): 3},
+    }.items():
+        env.set_cached(key, stale)
+
+    fresh = make_star_env(3, bin_size=2.0)
+    np.testing.assert_allclose(
+        cached_eigenbasis(env, rank=None)[0], cached_eigenbasis(fresh, rank=None)[0]
+    )
+    assert cached_heat_kernel_eigenbasis(env, sigma)[0].size > 3
+    assert not np.allclose(cached_eigenbasis(env, rank=None)[0], stale_basis[0])
+
+
+def test_center_conductances_equal_the_dense_kron_reduction():
+    """Eliminating each group of non-center nodes gives the conductances of
+    the whole network's Schur complement onto the centers, here with a group
+    of two nodes (a junction split in two) and a group of one (a bin edge)."""
+    from non_local_detector.likelihoods.diffusion import _center_conductances
+
+    lengths = {
+        ("c0", "a"): 1.0,
+        ("c1", "a"): 2.0,
+        ("a", "b"): 3.0,
+        ("b", "c2"): 1.5,
+        ("b", "c3"): 0.5,
+        ("c3", "e"): 0.7,
+        ("e", "c4"): 0.8,
+    }
+    substrate = nx.Graph()
+    for (u, v), length in lengths.items():
+        substrate.add_edge(u, v, distance=length)
+    centers = {"c0", "c1", "c2", "c3", "c4"}
+
+    coupled = _center_conductances(substrate, centers)
+
+    nodes = sorted(substrate.nodes)
+    index = {node: k for k, node in enumerate(nodes)}
+    full = np.zeros((len(nodes), len(nodes)))
+    for (u, v), length in lengths.items():
+        full[index[u], index[v]] = full[index[v], index[u]] = -1.0 / length
+    full[np.diag_indices(len(nodes))] = -full.sum(axis=1)
+    kept = [index[c] for c in sorted(centers)]
+    gone = [index[n] for n in nodes if n not in centers]
+    schur = full[np.ix_(kept, kept)] - full[np.ix_(kept, gone)] @ np.linalg.solve(
+        full[np.ix_(gone, gone)], full[np.ix_(gone, kept)]
+    )
+    expected = {
+        (i, j): -schur[a, b]
+        for a, i in enumerate(sorted(centers))
+        for b, j in enumerate(sorted(centers))
+        if a < b and -schur[a, b] > 1e-12
+    }
+
+    assert set(coupled) == set(expected)
+    for pair, conductance in expected.items():
+        np.testing.assert_allclose(coupled[pair][0], conductance, rtol=1e-12)
+    # Path lengths through the eliminated nodes.
+    assert coupled[("c0", "c2")][1] == 1.0 + 3.0 + 1.5
+    assert coupled[("c3", "c4")][1] == 0.7 + 0.8

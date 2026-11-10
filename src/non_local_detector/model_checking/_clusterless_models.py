@@ -252,7 +252,10 @@ class DiffusionElectrode(_MarkKernelMixture):
             log_intensity_scale,
             spatial_kernel_columns,
         )
+        from non_local_detector.likelihoods.diffusion import check_diffusion_operator
 
+        # The kernel columns below are rebuilt from the environment.
+        check_diffusion_operator(model.get("diffusion_operator"))
         self.environment = model["environment"]
         self.mean_rate = float(model["mean_rates"][electrode])
         self.weight_total = float(model["weight_total"][electrode])

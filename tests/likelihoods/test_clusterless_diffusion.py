@@ -61,6 +61,7 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
 )
 from non_local_detector.likelihoods.diffusion import (
+    DIFFUSION_OPERATOR,
     cached_eigenbasis,
     connected_component_labels,
     diffuse,
@@ -71,6 +72,7 @@ from non_local_detector.likelihoods.diffusion import (
 )
 from tests.likelihoods._sorted_spikes_helpers import (
     make_two_room_env,
+    make_two_width_env,
     simulate_sparse_uniform_tracking,
 )
 from tests.likelihoods.conftest import training_mark_references
@@ -381,9 +383,12 @@ def _hand_log_likelihood(
     occ_bins = interior_bin_indices(env, occ_pos, f2l)
     occ_field = np.bincount(occ_bins, weights=exposure, minlength=n_bins)[:, None]
 
-    P = diffuse(eigvals, eigvecs, position_std, D, component_labels=labels)
-    Shat = diffuse(eigvals, eigvecs, position_std, S, component_labels=labels)
-    Ohat = diffuse(eigvals, eigvecs, position_std, occ_field, component_labels=labels)
+    smooth = partial(
+        diffuse, eigvals, eigvecs, position_std, component_labels=labels, bin_sizes=dV
+    )
+    P = smooth(D)
+    Shat = smooth(S)
+    Ohat = smooth(occ_field)
 
     pi = np.clip(Ohat[:, 0] / (sum_w_pos * dV), EPS, None)
     p_e = P / (w_total * dV[:, None])
@@ -2142,3 +2147,45 @@ def test_uniform_rate_is_recovered_under_sparse_tracking():
     np.testing.assert_allclose(
         np.sum(encoding["encoding_weights"][0]), len(spike_times[0])
     )
+
+
+def test_occupancy_spreads_to_uniform_density_across_unequal_bins():
+    """With a bandwidth far wider than the track, the fitted occupancy density
+    is the same over 2.0 cm and 1.05 cm bins, wherever the animal was."""
+    env = make_two_width_env()
+    position_time = np.linspace(0.0, 10.0, 1001)
+    position = np.linspace(10.0, 50.0, position_time.size)[:, None]  # wide bins
+    rng = np.random.default_rng(0)
+    spike_times = np.sort(rng.uniform(0.0, 10.0, 20))
+
+    encoding = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        [spike_times],
+        [rng.standard_normal((spike_times.size, 2))],
+        env,
+        position_std=2000.0,
+        waveform_std=WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
+
+    _, _, bin_sizes = environment_graph(env)
+    narrow = bin_sizes < 1.5
+    occupancy = encoding["occupancy"]
+    np.testing.assert_allclose(
+        occupancy[narrow].mean() / occupancy[~narrow].mean(), 1.0, atol=0.01
+    )
+
+
+def test_encoding_model_without_its_diffusion_operator_asks_for_a_refit():
+    """A model fitted before encoding models recorded their diffusion operator
+    holds occupancy and intensities from an earlier operator; predict rebuilds
+    the kernel from the environment, so decoding it would mix the two."""
+    s = _sim(seed=0)
+    encoding = _fit(s)
+    assert encoding["diffusion_operator"] == DIFFUSION_OPERATOR
+    del encoding["diffusion_operator"]
+
+    with pytest.raises(ValidationError, match="diffusion operator") as error:
+        _predict(s, encoding)
+    assert "Refit the model" in str(error.value)

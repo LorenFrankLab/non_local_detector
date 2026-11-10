@@ -23,8 +23,8 @@ pytestmark = pytest.mark.unit
 def _grid_basis(n=6, rank=None):
     g = nx.grid_2d_graph(n, n)
     g = nx.convert_node_labels_to_integers(g)
-    for u, v in g.edges():
-        g[u][v]["distance"] = 1.0
+    nx.set_node_attributes(g, 1.0, "volume")
+    nx.set_edge_attributes(g, 1.0, "conductance")
     L = build_laplacian(g)
     vals, vecs = diffusion_eigenbasis(L, rank=rank)
     return vals, vecs
@@ -53,8 +53,8 @@ def test_heat_kernel_apply_disconnected_components_preserve_mass_independently()
 
     g = nx.disjoint_union(nx.grid_2d_graph(4, 4), nx.grid_2d_graph(3, 3))
     g = nx.convert_node_labels_to_integers(g)
-    for u, v in g.edges():
-        g[u][v]["distance"] = 1.0
+    nx.set_node_attributes(g, 1.0, "volume")
+    nx.set_edge_attributes(g, 1.0, "conductance")
     L = build_laplacian(g)
     n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
     assert n_comp == 2

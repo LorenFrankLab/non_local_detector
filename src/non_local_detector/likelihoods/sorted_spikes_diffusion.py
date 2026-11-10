@@ -572,6 +572,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
             position_std,
             fields,
             component_labels=connected_component_labels(graph),
+            bin_sizes=bin_sizes,
         ),
         bin_sizes,
     )
