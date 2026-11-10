@@ -35,6 +35,7 @@ from tests.likelihoods._sorted_spikes_helpers import (
     make_2d_env,
     make_linear_track_env,
     make_two_width_env,
+    make_w_track_env,
     path_graph,
 )
 
@@ -1285,28 +1286,6 @@ def test_uniform_grids_keep_the_finite_difference_operator(make_env):
     np.testing.assert_allclose(
         kernel, expected_kernel, rtol=1e-12, atol=1e-12 * expected_kernel.max()
     )
-
-
-def make_w_track_env() -> Environment:
-    """A W-track whose arms and connecting segments have unequal bin widths."""
-    from track_linearization import make_track_graph
-
-    nodes = [
-        (0.0, 81.0),
-        (0.0, 0.0),
-        (31.0, 0.0),
-        (31.0, 75.0),
-        (61.0, 0.0),
-        (61.0, 80.0),
-    ]
-    edges = [(0, 1), (1, 2), (2, 3), (2, 4), (4, 5)]
-    return Environment(
-        environment_name="w_track",
-        track_graph=make_track_graph(nodes, edges),
-        edge_order=edges,
-        edge_spacing=0.0,
-        place_bin_size=2.0,
-    ).fit_place_grid()
 
 
 def test_kernel_conserves_mass_on_a_track_with_unequal_bin_widths():

@@ -62,6 +62,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.diffusion import (
     DIFFUSION_OPERATOR,
+    FIELD_RESOLUTION,
     cached_eigenbasis,
     connected_component_labels,
     diffuse,
@@ -73,6 +74,7 @@ from non_local_detector.likelihoods.diffusion import (
 from tests.likelihoods._sorted_spikes_helpers import (
     make_two_room_env,
     make_two_width_env,
+    make_w_track_env,
     simulate_sparse_uniform_tracking,
 )
 from tests.likelihoods.conftest import training_mark_references
@@ -2002,7 +2004,36 @@ def _make_nonuniform_dv_env():
     return env.fit_place_grid(position_1d, infer_track_interior=True)
 
 
-def test_nonuniform_dv_log_likelihood_matches_hand_computation():
+def _make_connected_nonuniform_dv_env():
+    """The same two segments joined at a node: one component whose 4 bins of
+    5.0 and 5 bins of 4.4 diffuse into each other, so the kernel columns
+    depend on the bin volumes (on the two-component track each component's
+    bins are equal and the volumes cancel from its normalized columns)."""
+    g = nx.Graph()
+    g.add_node(0, pos=(0.0, 0.0))
+    g.add_node(1, pos=(20.0, 0.0))
+    g.add_node(2, pos=(42.0, 0.0))
+    g.add_edge(0, 1, distance=20.0, edge_id=0)
+    g.add_edge(1, 2, distance=22.0, edge_id=1)
+    env = Environment(
+        environment_name="connected_nonuniform_dv",
+        place_bin_size=5.0,
+        track_graph=g,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=0.0,
+    )
+    return env.fit_place_grid(np.linspace(0.0, 42.0, 120), infer_track_interior=True)
+
+
+@pytest.mark.parametrize(
+    ("make_env", "segments"),
+    [
+        (_make_nonuniform_dv_env, ((0.5, 19.5), (23.5, 44.5))),
+        (_make_connected_nonuniform_dv_env, ((0.5, 19.5), (20.5, 41.5))),
+    ],
+    ids=["two_components", "connected"],
+)
+def test_nonuniform_dv_log_likelihood_matches_hand_computation(make_env, segments):
     """Absolute non-local log-likelihood on a NON-UNIFORM ``dV`` grid.
 
     ``dV`` enters the fit twice -- the occupancy ``pi = H O / (sum w_pos * dV)`` and
@@ -2012,9 +2043,10 @@ def test_nonuniform_dv_log_likelihood_matches_hand_computation():
     :func:`test_absolute_log_likelihood_small_fixture`) cannot detect. Here ``dV``
     is 5.0 on one segment and 4.4 on the other, so ``bin_sizes`` must equal the
     geometric bin widths and the predicted log-likelihood must match the
-    independent hand computation.
+    independent hand computation. On the connected track it also pins the
+    heat kernel's columns across bins of unequal width.
     """
-    env = _make_nonuniform_dv_env()
+    env = make_env()
     _, node_order, bin_sizes = environment_graph(env)
     bin_sizes = np.asarray(bin_sizes)
     n_bins = node_order.shape[0]
@@ -2032,8 +2064,8 @@ def test_nonuniform_dv_log_likelihood_matches_hand_computation():
     position_time = np.linspace(0.0, 1.0, n_pos)
     x = np.concatenate(
         [
-            np.linspace(0.5, 19.5, n_pos // 2),
-            np.linspace(23.5, 44.5, n_pos - n_pos // 2),
+            np.linspace(*segments[0], n_pos // 2),
+            np.linspace(*segments[1], n_pos - n_pos // 2),
         ]
     )
     position = np.column_stack([x, np.zeros_like(x)])
@@ -2194,3 +2226,38 @@ def test_encoding_model_without_its_diffusion_operator_asks_for_a_refit():
     with pytest.raises(ValidationError, match="diffusion operator") as error:
         _predict(s, encoding)
     assert "Refit the model" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "make_env", [make_w_track_env, make_two_width_env], ids=["w_track", "two_widths"]
+)
+def test_kernel_columns_are_the_mass_kernel_on_unequal_bins(make_env):
+    """Each spatial kernel column is the diffusion of a unit mass under
+    ``dp/dt = -(D - C) M^-1 p``, at the default bandwidth, on tracks whose bins
+    differ in width: an independent float64 ``expm`` of that operator, cut
+    below ``FIELD_RESOLUTION`` of its peak and normalized like the columns,
+    matches the float32 columns to 1e-5 of each column's peak."""
+    import scipy.linalg
+
+    env = make_env()
+    graph, _, bin_sizes = environment_graph(env)
+    assert np.ptp(bin_sizes) > 0.05
+    n_bins = bin_sizes.size
+    position_std = float(np.sqrt(12.5))
+    conductance = np.zeros((n_bins, n_bins))
+    for u, v, data in graph.edges(data=True):
+        conductance[u, v] = conductance[v, u] = data["conductance"]
+    mass_operator = (np.diag(conductance.sum(axis=1)) - conductance) / bin_sizes
+    expected = scipy.linalg.expm(-(position_std**2) / 2.0 * mass_operator)
+    expected = np.where(
+        expected >= FIELD_RESOLUTION * expected.max(axis=0), expected, 0.0
+    )
+    expected = expected / expected.sum(axis=0)
+
+    columns = np.asarray(
+        spatial_kernel_columns(env, n_bins, position_std, np.arange(n_bins)),
+        dtype=float,
+    )
+
+    error_of_peak = np.abs(columns - expected) / expected.max(axis=0)
+    np.testing.assert_array_less(error_of_peak, 1e-5)

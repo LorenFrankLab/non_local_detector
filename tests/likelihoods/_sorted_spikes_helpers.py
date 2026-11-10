@@ -63,6 +63,28 @@ def make_two_width_env(n_wide: int = 60, n_narrow: int = 100) -> Environment:
     )
 
 
+def make_w_track_env() -> Environment:
+    """A W-track whose arms and connecting segments have unequal bin widths."""
+    from track_linearization import make_track_graph
+
+    nodes = [
+        (0.0, 81.0),
+        (0.0, 0.0),
+        (31.0, 0.0),
+        (31.0, 75.0),
+        (61.0, 0.0),
+        (61.0, 80.0),
+    ]
+    edges = [(0, 1), (1, 2), (2, 3), (2, 4), (4, 5)]
+    return Environment(
+        environment_name="w_track",
+        track_graph=make_track_graph(nodes, edges),
+        edge_order=edges,
+        edge_spacing=0.0,
+        place_bin_size=2.0,
+    ).fit_place_grid()
+
+
 def simulate_place_data(env, n_neurons=3, n_time=3000, seed=1, sampling_frequency=100):
     """A folded random-walk trajectory with Gaussian place-tuned Poisson spikes."""
     rng = np.random.default_rng(seed)
