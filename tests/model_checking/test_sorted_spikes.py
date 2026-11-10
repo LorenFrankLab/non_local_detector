@@ -11,11 +11,14 @@ import matplotlib as mpl
 
 mpl.use("Agg")
 
+import warnings
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from scipy.stats import norm
 
+from non_local_detector.exceptions import DataQualityWarning
 from non_local_detector.model_checking.sorted_spikes import (
     TimeRescaling,
     ks_statistic,
@@ -215,6 +218,68 @@ class TestDiscreteTimeCorrection:
         is_spike = _spikes_from_model(interval_mass, seed=13)
         check = TimeRescaling(rate, is_spike, rate_units="Hz", time=time, rng=14)
         assert check.ks_statistic() < _ks_band(check.n_spikes)
+
+    @pytest.mark.parametrize("mode", ["expected_counts", "time_edges", "time"])
+    def test_short_trials_are_calibrated_in_every_input_mode(self, mode):
+        """Datasets from the model fail at about the band's 5% rate.
+
+        100 datasets of 200 trials x 10 bins of 2 ms at 40 Hz, short-trial
+        adjustment on. With sample times, a spike at a trial's first sample
+        has no interval before it; rescaling it to zero rejected 58% of
+        these datasets.
+        """
+        n_trials, n_bins = 200, 10
+        n_time = n_trials * n_bins
+        trial_id = np.repeat(np.arange(n_trials), n_bins)
+        rate = np.full(n_time, 40.0)
+        kwargs = {
+            "expected_counts": {"conditional_intensity": rate * BIN_SIZE},
+            "time_edges": {
+                "conditional_intensity": rate,
+                "rate_units": "Hz",
+                "time_edges": np.arange(n_time + 1) * BIN_SIZE,
+            },
+            "time": {
+                "conditional_intensity": rate,
+                "rate_units": "Hz",
+                "time": np.arange(n_time) * BIN_SIZE,
+            },
+        }[mode]
+        rejected = []
+        for seed in range(100):
+            is_spike = _spikes_from_model(rate * BIN_SIZE, seed=seed)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DataQualityWarning)
+                check = TimeRescaling(
+                    is_spike=is_spike,
+                    trial_id=trial_id,
+                    adjust_for_short_trials=True,
+                    rng=1000 + seed,
+                    **kwargs,
+                )
+                n_intervals = check.uniform_rescaled_ISIs().size
+                rejected.append(check.ks_statistic() > _ks_band(n_intervals))
+        assert np.mean(rejected) <= 0.12
+
+    def test_spike_at_first_sample_of_a_run_is_left_out(self):
+        """With sample times, a run's first sample closes no interval."""
+        time = np.arange(6) * 0.1
+        is_spike = np.array([True, False, True, True, False, True])
+        trial_id = np.array([0, 0, 0, 1, 1, 1])
+        check = TimeRescaling(
+            np.full(6, 5.0), is_spike, trial_id, rate_units="Hz", time=time, rng=0
+        )
+        with pytest.warns(DataQualityWarning, match="2 spikes"):
+            u = check.uniform_rescaled_ISIs()
+        assert u.size == 2
+        assert np.all(u > 0)
+        with pytest.warns(DataQualityWarning, match="2 spikes"):
+            assert np.isfinite(check.ks_statistic())
+        with pytest.warns(DataQualityWarning, match="1 spike"):
+            u = uniform_rescaled_ISIs(
+                np.full(6, 5.0), is_spike, rate_units="Hz", time=time, rng=0
+            )
+        assert u.size == 3
 
     def test_wrong_model_still_fails(self):
         """Data from a 40 Hz peak tested against a 20 Hz peak model fail."""

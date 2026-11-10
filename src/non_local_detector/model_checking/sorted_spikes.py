@@ -14,6 +14,7 @@ References
        2477-2506.
 """
 
+import warnings
 from typing import Any, cast
 
 import matplotlib.pyplot as plt
@@ -22,6 +23,8 @@ from matplotlib.axes import Axes
 from scipy import integrate
 from scipy.signal import correlate
 from scipy.stats import expon, norm
+
+from non_local_detector.exceptions import DataQualityWarning
 
 __all__ = [
     "TimeRescaling",
@@ -66,7 +69,9 @@ class TimeRescaling:
         Sample times in seconds. Rates are integrated with the trapezoid
         rule, and each contiguous trial run starts at its first sample (zero
         initial integrated intensity). With the correction, a spike at
-        sample ``k`` lies in ``(t_{k-1}, t_k]``; without it, at ``t_k``.
+        sample ``k`` lies in ``(t_{k-1}, t_k]``; without it, at ``t_k``. A
+        spike at a run's first sample then closes no interval in the run, so
+        it is left out, with a `DataQualityWarning` giving the count.
     time_edges : np.ndarray, shape (n_time + 1,), optional
         Bin edges in seconds. Rates are constant in each bin. The first
         interval includes exposure from the trial's opening edge. Without
@@ -173,6 +178,7 @@ class TimeRescaling:
         """
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
+        n_left_out = 0
         for trial in trial_IDs:
             indices = np.flatnonzero(np.isin(self.trial_id, trial))
             # Interrupted trials have separate physical observation windows.
@@ -189,20 +195,21 @@ class TimeRescaling:
                     if self.time_edges is None
                     else self.time_edges[run[0] : run[-1] + 2]
                 )
-                uniform_rescaled_ISIs_by_trial.append(
-                    _uniform_rescaled_ISIs(
-                        self.conditional_intensity[run],
-                        self.is_spike[run],
-                        None
-                        if self._within_bin_uniforms is None
-                        else self._within_bin_uniforms[run],
-                        adjust_for_short_trials=self.adjust_for_short_trials,
-                        rate_units=self.rate_units,
-                        time=time,
-                        time_edges=edges,
-                    )
+                uniform, n_first = _uniform_rescaled_ISIs(
+                    self.conditional_intensity[run],
+                    self.is_spike[run],
+                    None
+                    if self._within_bin_uniforms is None
+                    else self._within_bin_uniforms[run],
+                    adjust_for_short_trials=self.adjust_for_short_trials,
+                    rate_units=self.rate_units,
+                    time=time,
+                    time_edges=edges,
                 )
+                uniform_rescaled_ISIs_by_trial.append(uniform)
+                n_left_out += n_first
 
+        _warn_first_sample_spikes(n_left_out)
         return np.concatenate(uniform_rescaled_ISIs_by_trial)
 
     def ks_statistic(self) -> float:
@@ -216,8 +223,8 @@ class TimeRescaling:
             Kolmogorov-Smirnov statistic between the sorted rescaled ISIs and
             the uniform CDF.
         """
-        uniform_cdf_values = _uniform_cdf_values(self.n_spikes)
-        return ks_statistic(np.sort(self.uniform_rescaled_ISIs()), uniform_cdf_values)
+        uniform = self.uniform_rescaled_ISIs()
+        return ks_statistic(np.sort(uniform), _uniform_cdf_values(uniform.size))
 
     def rescaled_ISI_autocorrelation(self) -> np.ndarray:
         """Examine rescaled ISI dependence.
@@ -515,6 +522,20 @@ def _bin_integrated_intensity(
     return np.diff(integrated, prepend=0.0)
 
 
+def _warn_first_sample_spikes(n_left_out: int) -> None:
+    """Warn that spikes at a run's first sample were left out."""
+    if n_left_out:
+        noun = "spike" if n_left_out == 1 else "spikes"
+        warnings.warn(
+            f"{n_left_out} {noun} at the first sample of a run of sample times "
+            "left out of time rescaling: each lies in the interval before that "
+            "sample, outside the run. To keep them, pass time_edges whose "
+            "first bin of each run contains its first spike time.",
+            DataQualityWarning,
+            stacklevel=3,
+        )
+
+
 def _within_bin_uniforms(
     is_spike: np.ndarray, rng: np.random.Generator | int | None
 ) -> np.ndarray:
@@ -583,8 +604,12 @@ def _uniform_rescaled_ISIs(
     rate_units: str,
     time: np.ndarray | None,
     time_edges: np.ndarray | None,
-) -> np.ndarray:
-    """Shared body of `uniform_rescaled_ISIs`; no correction when uniforms are None."""
+) -> tuple[np.ndarray, int]:
+    """Shared body of `uniform_rescaled_ISIs`; no correction when uniforms are None.
+
+    Returns the uniform transform and the number of spikes left out (a spike
+    at the first sample time, with the correction).
+    """
     if within_bin_uniforms is not None:
         q = _bin_integrated_intensity(
             conditional_intensity,
@@ -596,12 +621,19 @@ def _uniform_rescaled_ISIs(
         if is_spike.shape != q.shape:
             msg = "is_spike must match conditional_intensity rows"
             raise ValueError(msg)
-        return _discrete_time_uniform_rescaled_ISIs(
+        n_left_out = 0
+        if time is not None and is_spike[0]:
+            # The first sample has no interval before it within the run.
+            is_spike = is_spike.copy()
+            is_spike[0] = 0
+            n_left_out = 1
+        uniform = _discrete_time_uniform_rescaled_ISIs(
             q,
             is_spike,
             within_bin_uniforms,
             adjust_for_short_trials=adjust_for_short_trials,
         )
+        return uniform, n_left_out
 
     integrated_conditional_intensity = _integrated_conditional_intensity(
         conditional_intensity, rate_units=rate_units, time=time, time_edges=time_edges
@@ -624,7 +656,10 @@ def _uniform_rescaled_ISIs(
         max_transformed_interval = 1
 
     # Transform the ISIs to a uniform distribution (1 - exp(-ISI))
-    return cast(np.ndarray, expon.cdf(rescaled_ISIs) / max_transformed_interval)
+    return (
+        cast(np.ndarray, expon.cdf(rescaled_ISIs) / max_transformed_interval),
+        0,
+    )
 
 
 def uniform_rescaled_ISIs(
@@ -664,7 +699,9 @@ def uniform_rescaled_ISIs(
     time : np.ndarray, shape (n_time,), optional
         Sample timestamps. Rates are integrated by trapezoids from the first
         sample. With the correction, a spike at sample ``k`` lies in
-        ``(t_{k-1}, t_k]``; without it, at ``t_k``.
+        ``(t_{k-1}, t_k]``; without it, at ``t_k``. A spike at the first
+        sample then lies before the integrated window, so it is left out,
+        with a `DataQualityWarning`.
     time_edges : np.ndarray, shape (n_time + 1,), optional
         Bin edges. Rates are constant within each bin, and the first ISI
         starts at the first edge. Without the correction, each spike is
@@ -679,7 +716,8 @@ def uniform_rescaled_ISIs(
     Returns
     -------
     uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
-        Rescaled ISIs, uniform on [0, 1] if the model fits well.
+        Rescaled ISIs, uniform on [0, 1] if the model fits well. One fewer
+        with sample times and a spike at the first sample.
 
     Notes
     -----
@@ -719,7 +757,7 @@ def uniform_rescaled_ISIs(
     within_bin_uniforms = (
         _within_bin_uniforms(is_spike, rng) if discrete_time_correction else None
     )
-    return _uniform_rescaled_ISIs(
+    uniform, n_left_out = _uniform_rescaled_ISIs(
         conditional_intensity,
         is_spike,
         within_bin_uniforms,
@@ -728,6 +766,8 @@ def uniform_rescaled_ISIs(
         time=time,
         time_edges=time_edges,
     )
+    _warn_first_sample_spikes(n_left_out)
+    return uniform
 
 
 def point_process_residuals(
