@@ -265,7 +265,7 @@ from non_local_detector.model_checking.sorted_spikes import (
     point_process_residuals,
 )
 
-check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges)
+check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges, rng=0)
 residuals = point_process_residuals(
     rate_Hz,
     is_spike,

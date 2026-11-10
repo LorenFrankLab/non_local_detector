@@ -83,13 +83,17 @@ class TimeRescaling:
     rng : numpy.random.Generator or int, optional
         Generator, or seed for one, for the correction's within-bin draws.
         They are drawn once, here, so every method of this object uses the
-        same intervals. By default a fresh, unseeded generator.
+        same intervals. By default a fresh, unseeded generator: two objects
+        built from the same data without a seed give different KS values.
+        Pass a seed, e.g. ``rng=0``, to reproduce a result.
 
     Notes
     -----
     With the correction, the test checks whether each bin has a spike, not
     how many: within-bin count dispersion is not tested, so check counts with
-    `point_process_residuals`. See `uniform_rescaled_ISIs`.
+    `point_process_residuals`. For a Bernoulli (e.g. logistic) model with
+    spike probability ``p`` per bin, pass ``-np.log1p(-p)`` as the expected
+    count, not ``p``. See `uniform_rescaled_ISIs`.
 
     References
     ----------
@@ -649,6 +653,9 @@ def _uniform_rescaled_ISIs(
             time_edges=time_edges,
         )
         is_spike = np.asarray(is_spike)
+        if q.ndim != 1:
+            msg = "conditional_intensity must be one-dimensional, shape (n_time,)"
+            raise ValueError(msg)
         if is_spike.shape != q.shape:
             msg = "is_spike must match conditional_intensity rows"
             raise ValueError(msg)
@@ -742,7 +749,8 @@ def uniform_rescaled_ISIs(
     rng : numpy.random.Generator or int, optional
         Generator, or seed for one, that places each spike within its bin
         for the correction. By default a fresh, unseeded generator, so
-        repeated calls differ slightly; pass a seed to reproduce a result.
+        repeated calls give different intervals and KS values; pass a seed,
+        e.g. ``rng=0``, to reproduce a result.
 
     Returns
     -------
@@ -755,7 +763,7 @@ def uniform_rescaled_ISIs(
     Binned spikes have no exact time within their bin. Placing each one at
     its bin's closing edge makes every interval too long, so a correct
     model fails the KS test once the rate times the bin width is not small
-    (at 2 ms bins and a 40 Hz peak, KS 0.040 against a 95% band of 0.0095).
+    (at 2 ms bins and a 40 Hz peak, KS 0.040 against a 95% band of 0.0096).
 
     The correction follows [1]_ (their Eqs. 36-39). With ``q_k`` the
     model's integrated intensity over bin ``k`` (expected counts as given,
@@ -769,6 +777,11 @@ def uniform_rescaled_ISIs(
     `adjust_for_short_trials`, ``1 - exp(-xi_i)`` is divided by
     ``1 - exp(-sum_{k > k_{i-1}} q_k)``, the probability of a next spike
     before the end of the trial.
+
+    For a Bernoulli (e.g. logistic) model with spike probability ``p_k``
+    per bin, pass ``q_k = -np.log1p(-p_k)`` as the expected count, not
+    ``p_k``. Refractoriness at or below the bin width cannot be detected
+    after binning: the within-bin draw follows the model, not the data.
 
     The correction tests whether each bin has a spike. A count above one
     is one spike: a Poisson model with expected count ``q_k`` also gives
@@ -793,6 +806,11 @@ def uniform_rescaled_ISIs(
            Computation 15, 2565-2576.
     """
     if discrete_time_correction:
+        # As TimeRescaling does, so (n_time, 1) columns are one recording.
+        conditional_intensity = np.atleast_1d(
+            np.asarray(conditional_intensity).squeeze()
+        )
+        is_spike = np.atleast_1d(np.asarray(is_spike).squeeze())
         _warn_counts_above_one(is_spike)
     within_bin_uniforms = (
         _within_bin_uniforms(is_spike, rng) if discrete_time_correction else None

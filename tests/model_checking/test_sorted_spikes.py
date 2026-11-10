@@ -356,6 +356,15 @@ class TestDiscreteTimeCorrection:
             warnings.simplefilter("error", DataQualityWarning)
             TimeRescaling(expected_counts, counts, rng=18).uniform_rescaled_ISIs()
 
+    def test_column_inputs_give_the_one_dimensional_result(self):
+        """(n_time, 1) inputs are the same recording as (n_time,) inputs."""
+        expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
+        is_spike = _spikes_from_model(expected_counts, seed=0)
+        np.testing.assert_array_equal(
+            uniform_rescaled_ISIs(expected_counts[:, None], is_spike[:, None], rng=20),
+            uniform_rescaled_ISIs(expected_counts, is_spike, rng=20),
+        )
+
     def test_seed_determines_result(self):
         expected_counts = _sinusoid_expected_counts(10.0)[:20_000]
         is_spike = _spikes_from_model(expected_counts, seed=0)
