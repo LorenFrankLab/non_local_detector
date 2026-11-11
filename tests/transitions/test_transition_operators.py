@@ -399,22 +399,46 @@ def test_cross_environment_discrete_with_multibin_local_is_rejected():
         build_transition_operator(transitions, [env1, env2], (5, 5), observations, 2.0)
 
 
+def assert_within(actual, desired, rtol, atol):
+    """``|actual - desired| <= atol + rtol * |desired|`` entrywise; ``atol`` may be an array."""
+    actual = np.asarray(actual, dtype=np.float64)
+    desired = np.asarray(desired, dtype=np.float64)
+    error = np.abs(actual - desired)
+    bound = atol + rtol * np.abs(desired)
+    worst = int(np.argmax(error - bound))
+    assert np.all(error <= bound), (
+        f"{int((error > bound).sum())} of {error.size} entries exceed the tolerance; "
+        f"worst at {worst}: |{actual.flat[worst]} - {desired.flat[worst]}| = "
+        f"{error.flat[worst]:.3g} > {np.broadcast_to(bound, error.shape).flat[worst]:.3g}"
+    )
+
+
 def assert_products(operator, dense, dtype):
     rng = np.random.default_rng(20261006)
     left = rng.uniform(0.01, 1.0, dense.shape[0]).astype(dtype)
     right = rng.normal(size=dense.shape[1]).astype(dtype)
+    if dtype == np.float32:
+        # A float32 sum rounds in proportion to its terms, not its result: the
+        # backward product's signed values cancel, so an entry near 0.01 can
+        # sum terms of size 2. Allow twice float32 epsilon times each entry's
+        # summed |terms|, the dot-product rounding scale, on top of rtol.
+        eps = np.finfo(np.float32).eps
+        magnitude = np.abs(np.asarray(dense, dtype=np.float64))
+        forward_tolerance = {
+            "rtol": 1e-6,
+            "atol": 2 * eps * (np.abs(left.astype(np.float64)) @ magnitude),
+        }
+        backward_tolerance = {
+            "rtol": 1e-6,
+            "atol": 2 * eps * (magnitude @ np.abs(right.astype(np.float64))),
+        }
+    else:
+        forward_tolerance = backward_tolerance = {"rtol": 1e-12, "atol": 1e-14}
     dense = jnp.asarray(dense, dtype=dtype)
     left, right = jnp.asarray(left), jnp.asarray(right)
-    tolerance = (
-        {"rtol": 1e-6, "atol": 1e-7}
-        if dtype == np.float32
-        else {"rtol": 1e-12, "atol": 1e-14}
-    )
-    np.testing.assert_allclose(
-        jax.jit(operator.forward)(left), left @ dense, **tolerance
-    )
-    np.testing.assert_allclose(
-        jax.jit(operator.backward)(right), dense @ right, **tolerance
+    assert_within(jax.jit(operator.forward)(left), left @ dense, **forward_tolerance)
+    assert_within(
+        jax.jit(operator.backward)(right), dense @ right, **backward_tolerance
     )
     assert operator.forward(left).dtype == left.dtype
 
