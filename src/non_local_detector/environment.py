@@ -1675,36 +1675,14 @@ class Environment:
         # Raises NotFittedError (a ConfigurationError) without a current fit.
         grid = self.place_grid_
 
-        # remove outer boundary edge
-        edges = [e[1:-1] for e in grid.edges]
-
         try:
             # Sample is an ND-array.
-            _N, D = sample.shape
+            _n, _d = sample.shape
         except (AttributeError, ValueError):
             # Sample is a sequence of 1D arrays.
             sample = np.atleast_2d(sample).T
-            _N, D = sample.shape
 
-        nbin = np.empty(D, np.intp)
-        for i in range(D):
-            nbin[i] = len(edges[i]) + 1  # includes an outlier on each end
-
-        # Compute the bin number each sample falls into.
-        Ncount = tuple(
-            np.searchsorted(edges[i], sample[:, i], side="right") for i in range(D)
-        )
-
-        # Using digitize, values that fall on an edge are put in the right bin.
-        # For the rightmost bin, we want values equal to the right edge to be
-        # counted in the last bin, and not as an outlier.
-        for i in range(D):
-            # Find which points are on the rightmost edge.
-            on_edge = sample[:, i] == edges[i][-1]
-            # Shift these points one bin to the left.
-            Ncount[i][on_edge] -= 1
-
-        bin_inds = np.ravel_multi_index(Ncount, nbin)
+        bin_inds = _bin_ind_before_snap(grid.edges, sample)
 
         # Snap gap-bin assignments to nearest interior bin. Gap bins exist
         # as structural indexing artifacts (edge_spacing > 0 on a linearized
@@ -2223,6 +2201,51 @@ def _grid_from_edges(
     return place_bin_edges, place_bin_centers, centers_shape
 
 
+def _bin_ind_before_snap(edges: Sequence[np.ndarray], sample: np.ndarray) -> np.ndarray:
+    """Flat index of the grid bin each sample falls in, before snapping.
+
+    The bin assignment of ``Environment.get_bin_ind``, before it moves samples
+    in non-interior bins to the nearest interior bin, and of the occupancy
+    that ``get_track_interior`` counts.
+
+    Parameters
+    ----------
+    edges : sequence of np.ndarray
+        Bin edges of each dimension, as ``Environment.edges_``: with more than
+        one dimension each is padded with one bin at both ends (`get_grid`).
+    sample : np.ndarray, shape (n_samples, n_dims)
+        Positions, finite.
+
+    Returns
+    -------
+    bin_ind : np.ndarray, shape (n_samples,)
+        Flat (C-order) index into the grid of ``len(edges[i]) - 1`` bins per
+        dimension.
+
+    Notes
+    -----
+    A value on an edge goes in the bin to its right, except the data maximum,
+    which goes in the last real bin. Values outside the edges go in the
+    outermost bin of their dimension: the padding bin of a padded grid, the
+    first or last bin of a 1-D grid.
+    """
+    # Without the outer edges, the outermost bins also take values beyond them.
+    inner = [edge[1:-1] for edge in edges]
+    n_bins = [len(edge) + 1 for edge in inner]
+    bin_per_dim = tuple(
+        np.searchsorted(edge, sample[:, dim], side="right")
+        for dim, edge in enumerate(inner)
+    )
+    # On a padded grid the inner edges end at the data maximum, and values
+    # equal to it belong in the last real bin, not the trailing padding bin.
+    # A 1-D grid is not padded: its last inner edge is an interior one, and
+    # values on it already land in the last bin.
+    if len(edges) > 1:
+        for dim, edge in enumerate(inner):
+            bin_per_dim[dim][sample[:, dim] == edge[-1]] -= 1
+    return np.ravel_multi_index(bin_per_dim, n_bins)
+
+
 def get_track_interior(
     position: np.ndarray,
     bins: int | Sequence[int] | Sequence[np.ndarray],
@@ -2243,6 +2266,13 @@ def get_track_interior(
         * A sequence of arrays describing the bin edges along each dimension.
         * The number of bins for each dimension (nx, ny, ... =bins)
         * The number of bins for all dimensions (nx=ny=...=bins).
+
+        With more than one dimension, the first and last bin of every
+        dimension are taken to be the padding bins that `get_grid` adds, and
+        are never interior. Samples are counted in the bins
+        `Environment.get_bin_ind` assigns them before snapping, so a sample at
+        the data maximum counts in the last real bin; samples outside the
+        edges are not counted.
     fill_holes : bool, optional
         Fill any holes in the extracted track interior bins, by default False.
     dilate : bool, optional
@@ -2257,9 +2287,23 @@ def get_track_interior(
         Boolean array, True for bins in the track interior as inferred from
         position.
     """
-    bin_counts, _ = np.histogramdd(position, bins=bins)
-    is_track_interior = (bin_counts > bin_count_threshold).astype(int)
+    # Resolve the bin specification to edges, then count occupancy with the
+    # bin assignment of Environment.get_bin_ind. Samples outside the edges, or
+    # with a NaN coordinate, are not counted.
+    position = position[~np.any(np.isnan(position), axis=1)]
+    _, bin_edges = np.histogramdd(position, bins=bins)
     n_position_dims = position.shape[1]
+    in_grid = np.all(
+        (position >= np.array([edges[0] for edges in bin_edges]))
+        & (position <= np.array([edges[-1] for edges in bin_edges])),
+        axis=1,
+    )
+    grid_shape = tuple(len(edges) - 1 for edges in bin_edges)
+    bin_counts = np.bincount(
+        _bin_ind_before_snap(bin_edges, position[in_grid]),
+        minlength=int(np.prod(grid_shape)),
+    ).reshape(grid_shape)
+    is_track_interior = (bin_counts > bin_count_threshold).astype(int)
     if n_position_dims > 1:
         structure = ndimage.generate_binary_structure(n_position_dims, 1)
         is_track_interior = ndimage.binary_closing(
@@ -2270,15 +2314,15 @@ def get_track_interior(
 
         if dilate:
             is_track_interior = ndimage.binary_dilation(is_track_interior)
-        # Zero the trailing "padding" bin along every spatial axis. get_grid
+        # Zero the "padding" bins at both ends of every spatial axis. get_grid
         # inserts an extra bin on each end so that binary_closing/dilation has
-        # room to operate without bleeding past the actual data range; this
-        # loop cleans those padding bins back out and generalizes to N-D
-        # (previous code only handled the first two axes).
+        # room to operate; they lie outside the grid's range, so they are
+        # never interior.
         for axis in range(n_position_dims):
-            idx: list[slice | int] = [slice(None)] * n_position_dims
-            idx[axis] = -1
-            is_track_interior[tuple(idx)] = False
+            for end in (0, -1):
+                idx: list[slice | int] = [slice(None)] * n_position_dims
+                idx[axis] = end
+                is_track_interior[tuple(idx)] = False
     return is_track_interior.astype(bool)
 
 
