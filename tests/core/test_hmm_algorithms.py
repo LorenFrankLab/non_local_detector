@@ -278,6 +278,84 @@ class TestSmoother:
 
 
 @pytest.mark.unit
+class TestSmootherRatioRange:
+    """The backward ratio ``smoothed_{t+1} / predicted_{t+1}`` must not overflow.
+
+    The ratio is the largest when a later row puts mass where the prediction
+    has almost none. Its scale does not matter (each smoothed row is
+    normalized), so a pass that is not finite runs again with the ratio
+    scaled down by a power of two, and the pair statistics, which do keep
+    its scale, scaled back up.
+    """
+
+    # One row whose prediction for state 1 is 2**-21; with ``following``
+    # 2**119 on it, the unscaled ratio is 2**140, beyond float32 (~2**128).
+    transition = np.array([[1.0, 0.0], [0.5, 0.5]], np.float32)
+    filtered = np.array([[0.5, 0.5], [0.5, 0.5], [1 - 2.0**-20, 2.0**-20]], np.float32)
+    initial = np.array([0.5, 0.5], np.float32)
+    big = np.float32(2.0**120)
+
+    def test_smoothed_rows_do_not_depend_on_the_scale_of_initial(self):
+        """``initial`` is the next smoothed row up to scale; any scale gives one answer."""
+        ind, n_time = np.arange(3), 4
+        expected = smoother(self.transition, self.filtered, self.initial, ind, n_time)
+        scaled = smoother(
+            self.transition, self.filtered, self.initial * self.big, ind, n_time
+        )
+
+        assert np.all(np.isfinite(scaled))
+        # Scaling by a power of two is exact: measured difference 0.
+        np.testing.assert_array_equal(scaled, expected)
+
+    def test_pair_statistics_keep_the_scale_of_the_following_row(self):
+        """Expected transitions are proportional to the following row's mass."""
+        ind, n_time = np.arange(3), 4
+        discrete = np.broadcast_to(self.transition, (3, 2, 2))
+        continuous = np.ones((2, 2), np.float32)  # one bin per state
+        state_ind = np.array([0, 1])
+
+        def run(initial):
+            return core_module._smoother_covariate_dependent_impl(
+                discrete,
+                continuous,
+                state_ind,
+                self.filtered,
+                initial,
+                ind,
+                n_time,
+                pair_statistics=True,
+            )
+
+        smoothed, pairs = run(self.initial)
+        scaled_smoothed, scaled_pairs = run(self.initial * self.big)
+
+        assert np.all(np.isfinite(scaled_pairs))
+        np.testing.assert_array_equal(scaled_smoothed, smoothed)
+        # Only the last row's pairs see ``initial``; exact powers of two.
+        np.testing.assert_array_equal(scaled_pairs[:2], pairs[:2])
+        np.testing.assert_array_equal(scaled_pairs[2], pairs[2] * self.big)
+
+    def test_subnormal_prediction_does_not_turn_the_smoother_nan(self):
+        """A later row in a bin predicted at 2**-140 gives a ratio of 2**140.
+
+        CPU backends flush subnormal values to zero, which hides the overflow
+        (and drops the bin's mass); GPUs keep them, and the overflowed ratio
+        turned every earlier smoothed row into NaN.
+        """
+        if jax.default_backend() == "cpu":
+            pytest.skip("CPU flushes subnormal predictions to zero")
+        delta = np.float32(2.0**-140)
+        transition = np.array([[1 - delta, delta], [0.5, 0.5]], np.float32)
+        filtered = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]], np.float32)
+
+        smoothed = np.asarray(smoother(transition, filtered))
+
+        assert np.all(np.isfinite(smoothed))
+        # Only state 0 is possible at rows 0 and 1, so it gets all the mass.
+        np.testing.assert_array_equal(smoothed[:2], [[1.0, 0.0], [1.0, 0.0]])
+
+
+@pytest.mark.unit
 class TestViterbi:
     """Test Viterbi algorithm for most likely state sequence.
 
