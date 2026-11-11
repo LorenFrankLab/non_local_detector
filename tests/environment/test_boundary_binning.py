@@ -23,8 +23,9 @@ def test_samples_on_bin_edges_bin_to_the_right_except_at_the_maximum(n_dims):
         position = edges[:, np.newaxis]
     else:
         position = np.column_stack([edges, np.linspace(0.0, 20.0, edges.size)])
-    env = Environment(place_bin_size=10.0, infer_track_interior=False).fit_place_grid(
-        position
+    # Every bin interior, so no sample is snapped: the bins are the raw rule's.
+    env = Environment(place_bin_size=10.0).fit_place_grid(
+        position, infer_track_interior=False
     )
 
     bins = env.get_bin_ind(position)
