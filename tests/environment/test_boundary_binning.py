@@ -7,10 +7,12 @@ tests pin down where such samples are binned and counted.
 
 import numpy as np
 import pytest
+from track_linearization import make_track_graph
 
 from non_local_detector.environment import Environment
 
 pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize("n_dims", [1, 2])
 def test_samples_on_bin_edges_bin_to_the_right_except_at_the_maximum(n_dims):
@@ -30,6 +32,26 @@ def test_samples_on_bin_edges_bin_to_the_right_except_at_the_maximum(n_dims):
     expected_x_bin = np.minimum(np.searchsorted(edges, edges, side="right") - 1, 9)
     x_centers = env.place_bin_centers_[bins, 0]
     np.testing.assert_array_equal(x_centers, edges[expected_x_bin] + 5.0)
+
+
+def test_track_graph_positions_on_bin_edges_bin_to_the_right_except_at_the_end():
+    """A linear position on a bin edge goes to the bin it starts, including
+    the edge before the last bin; the track's end goes to the last bin."""
+    track_graph = make_track_graph([(0, 0), (10, 0), (20, 0)], [(0, 1), (1, 2)])
+    env = Environment(
+        track_graph=track_graph,
+        edge_order=[(0, 1), (1, 2)],
+        edge_spacing=0.0,
+        place_bin_size=2.0,
+    ).fit_place_grid()
+    edges = env.edges_[0]
+
+    bins = env.get_bin_ind(edges[:, np.newaxis])
+
+    n_bins = edges.size - 1
+    np.testing.assert_array_equal(
+        bins, np.minimum(np.searchsorted(edges, edges, side="right") - 1, n_bins - 1)
+    )
 
 
 def test_max_wall_samples_count_toward_the_interior_like_min_wall_samples():
