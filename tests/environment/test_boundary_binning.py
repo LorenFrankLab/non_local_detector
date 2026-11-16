@@ -9,7 +9,13 @@ import numpy as np
 import pytest
 from track_linearization import make_track_graph
 
-from non_local_detector.environment import Environment
+from non_local_detector.analysis.distance2D import get_2D_distance
+from non_local_detector.environment import (
+    Environment,
+    get_track_interior,
+    make_nD_track_graph_from_environment,
+)
+from non_local_detector.exceptions import ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -91,3 +97,49 @@ def test_dilated_interior_excludes_padding_bins_on_both_sides():
         assert not interior.take(0, axis=axis).any()
         assert not interior.take(-1, axis=axis).any()
     assert interior[1:-1, 1:-1].all()
+
+
+@pytest.mark.parametrize("bins", [10, [10, 5]])
+def test_track_interior_refuses_bin_counts_in_2d(bins):
+    """In 2-D the first and last bin of every dimension are taken to be
+    padding, which a grid built from bin counts does not have."""
+    position = np.random.default_rng(2).uniform([0.0, 0.0], [100.0, 50.0], (500, 2))
+
+    with pytest.raises(ValidationError, match="bin edges"):
+        get_track_interior(position, bins)
+
+
+def test_track_interior_accepts_bin_counts_in_1d():
+    """A 1-D grid is not padded, so a bin count gives every occupied bin."""
+    position = np.linspace(0.0, 100.0, 1000)[:, np.newaxis]
+
+    assert get_track_interior(position, 10).all()
+
+
+def test_graph_distance_bins_wall_positions_like_the_environment():
+    """``get_2D_distance`` along the bin graph puts positions on the walls and
+    on interior edges in the bins ``Environment.get_bin_ind`` assigns."""
+    rng = np.random.default_rng(3)
+    position = rng.uniform([0.0, 0.0], [100.0, 50.0], (5000, 2))
+    env = Environment(place_bin_size=10.0).fit_place_grid(position)
+    track_graph = make_nD_track_graph_from_environment(env)
+    # The walls (data minimum and maximum) and an interior edge of each axis.
+    (x_min, x_edge, x_max), (y_min, y_edge, y_max) = (
+        edges[[1, 4, -2]] for edges in env.edges_
+    )
+    y_mid, x_mid = 25.0, 55.0
+    on_edges = np.array(
+        [
+            [x_min, y_mid],
+            [x_max, y_mid],
+            [x_mid, y_min],
+            [x_mid, y_max],
+            [x_edge, y_edge],
+            [x_max, y_max],
+        ]
+    )
+    centers = env.place_bin_centers_[env.get_bin_ind(on_edges)]
+
+    distance = get_2D_distance(on_edges, centers, track_graph, env.edges_)
+
+    np.testing.assert_array_equal(distance, 0.0)
