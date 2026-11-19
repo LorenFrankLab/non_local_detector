@@ -51,7 +51,6 @@ unfitted; `save_environment` pickles a fitted one, and
 `load_environment(filename, allow_pickle=True)` unpickles it.
 """
 
-import contextlib
 import copy
 import dataclasses
 import functools
@@ -236,6 +235,66 @@ def _same_configuration(current: Any, fitted: Any) -> bool:
         return bool(current == fitted)
     except (TypeError, ValueError):
         return False
+
+
+def _is_real_scalar(value: Any) -> bool:
+    """Whether ``value`` is a real number: Python, NumPy or a 0-d array, not a bool."""
+    if isinstance(value, np.ndarray):
+        return value.ndim == 0 and value.dtype.kind in "iuf"
+    # numbers.Real covers NumPy scalars (np.float32, np.int64, ...), not np.bool_.
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _is_pair(value: Any) -> bool:
+    """Whether ``value`` is a two-item sequence or 1-D array (not a string)."""
+    if isinstance(value, np.ndarray):
+        return bool(value.shape == (2,))
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and len(value) == 2
+    )
+
+
+def _is_sequence(value: Any) -> bool:
+    """Whether ``value`` is a sequence or an array of at least one dimension."""
+    if isinstance(value, np.ndarray):
+        return value.ndim >= 1
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _edge_order_tuples(edge_order: Any) -> list[tuple[Any, ...]]:
+    """Return ``edge_order`` as a list of 2-tuples.
+
+    Parameters
+    ----------
+    edge_order : sequence of 2-sequences, or np.ndarray, shape (n_edges, 2)
+        Edges of the track graph in their linear order.
+
+    Returns
+    -------
+    edge_order : list of tuple, length n_edges
+        The rows of an array become tuples of Python scalars.
+    """
+    rows = edge_order.tolist() if isinstance(edge_order, np.ndarray) else edge_order
+    return [tuple(edge) for edge in rows]
+
+
+def _edge_spacing_values(edge_spacing: Any) -> float | list[float]:
+    """Return ``edge_spacing`` as a Python float, or a list of one per gap.
+
+    Parameters
+    ----------
+    edge_spacing : real scalar, or sequence or np.ndarray, shape (n_edges - 1,)
+        Spacing between consecutive edges.
+
+    Returns
+    -------
+    edge_spacing : float or list of float
+    """
+    if np.ndim(edge_spacing) == 0:
+        return float(edge_spacing)
+    return [float(spacing) for spacing in edge_spacing]
 
 
 def _graph_distances(
@@ -429,12 +488,9 @@ def _legacy_place_grid(
         # configuration field.
         fitted.setdefault("infer_track_interior", environment.infer_track_interior)
     elif "distance_between_nodes" not in fitted:
-        assert environment.edge_order is not None  # required with a track graph
-        assert environment.edge_spacing is not None
         fitted["distance_between_nodes"] = get_track_grid(
             environment.track_graph,
-            environment.edge_order,
-            environment.edge_spacing,
+            *environment._linearization_arguments(),
             cast("float", environment.place_bin_size),
         )[3]
     return PlaceGrid(
@@ -460,16 +516,21 @@ class Environment:
         Approximate size of the position bins in each dimension. Defaults to 2.0.
     track_graph : networkx.Graph, optional
         Graph representing the 1D spatial topology. If provided, 1D methods are used.
-    edge_order : tuple of 2-tuples, optional
-        Required if `track_graph` is provided. The order of the edges in 1D space.
-    edge_spacing : float or list, optional
-        Required if `track_graph` is provided. Spacing between edges. Defaults to 0.
+    edge_order : sequence of 2-tuples, optional
+        Required if `track_graph` is provided. The order of the edges in 1D
+        space: a list or tuple of ``(node1, node2)`` pairs, or an array of
+        shape (n_edges, 2).
+    edge_spacing : float or sequence of float, optional
+        Required if `track_graph` is provided. Spacing between edges: one
+        non-negative number, or one per gap (length n_edges - 1) in a list,
+        tuple or array. NumPy numbers are accepted. Defaults to 0.
     is_track_interior : np.ndarray or None, optional
         Boolean array defining valid track areas. If None and `infer_track_interior`
         is True, it will be inferred from position data.
-    position_range : Sequence[tuple[float, float]], optional
-        Outer bin edges for each dimension [(min_dim1, max_dim1), ...].
-        If None, range is determined from position data.
+    position_range : sequence of (float, float), optional
+        Outer bin edges for each dimension [(min_dim1, max_dim1), ...], as a
+        list or tuple of pairs or an array of shape (n_dims, 2). If None,
+        range is determined from position data.
     infer_track_interior : bool, optional
         If True and `is_track_interior` is None, infer track geometry from position data.
         Defaults to True. Ignored if `track_graph` is provided. The
@@ -541,6 +602,11 @@ class Environment:
     rebuilds an unfitted environment with the same configuration. Environments
     pickled by earlier releases, which stored the fitted attributes
     themselves, unpickle into the same form.
+
+    Arguments are stored as given (a tuple stays a tuple, a NumPy number a
+    NumPy number), so parameter rows, pickles and saved models hold what was
+    passed; every accepted form of ``edge_order``, ``edge_spacing`` and
+    ``position_range`` fits the same grid.
 
     Without a ``track_graph``, 1-D position is a 1-D open field. For a linear
     track or a maze, pass the raw 2-D ``(x, y)`` position with ``track_graph``,
@@ -882,6 +948,26 @@ class Environment:
         """Drop all cached derived data."""
         self._cache = {}
 
+    def _linearization_arguments(
+        self,
+    ) -> tuple[list[tuple[Any, ...]], float | list[float]]:
+        """Return ``edge_order`` and ``edge_spacing`` in the form the grid uses.
+
+        The fields keep the form they were given or unpickled with (a list,
+        tuple or array; Python or NumPy numbers). Every use converts them
+        here, so all forms give the same grid and linear positions.
+
+        Returns
+        -------
+        edge_order : list of tuple, length n_edges
+        edge_spacing : float or list of float, length n_edges - 1
+        """
+        assert self.edge_order is not None  # required with a track graph
+        assert self.edge_spacing is not None  # required with a track graph
+        return _edge_order_tuples(self.edge_order), _edge_spacing_values(
+            self.edge_spacing
+        )
+
     def _linear_position(self, points: "np.ndarray | jax.Array") -> np.ndarray:
         """Linear position of points on the track graph, cached by value.
 
@@ -909,13 +995,14 @@ class Environment:
         if key in cache:
             cache.move_to_end(key)
             return cast("np.ndarray", cache[key].copy())
+        edge_order, edge_spacing = self._linearization_arguments()
         # A copy: a view would keep the linearization's other columns alive,
         # outside the bytes counted below.
         result = get_linearized_position(
             points,
             _with_edge_ids_in_edges_order(self.track_graph),
-            edge_order=self.edge_order,
-            edge_spacing=self.edge_spacing,
+            edge_order=edge_order,
+            edge_spacing=edge_spacing,
         ).linear_position.to_numpy(copy=True)
         cache[key] = result
         while (
@@ -1022,29 +1109,34 @@ class Environment:
                 hint="When using track_graph, you must provide edge_spacing to define bin size along edges. Example: env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
             )
 
-        # Validate edge_order structure
-        if not isinstance(self.edge_order, list):
-            msg = "edge_order must be a list of tuples"  # type: ignore[unreachable]  # runtime check of user input
+        # Validate edge_order structure: a sequence (list, tuple or array) of
+        # 2-sequences, as parameter rows may hold any of them.
+        if not _is_sequence(self.edge_order):
+            msg = "edge_order must be a sequence of 2-tuples"
             raise ValidationError(
                 msg,
-                expected="list of 2-tuples",
+                expected="list, tuple or (n_edges, 2) array of 2-tuples",
                 got=f"{type(self.edge_order).__name__}",
                 hint="edge_order should be a list like [(0, 1), (1, 2), ...]",
                 example="    edge_order = [(0, 1), (1, 2), (2, 3)]",
             )
-
-        # Validate each edge in edge_order
         for i, edge in enumerate(self.edge_order):
-            if not isinstance(edge, tuple) or len(edge) != 2:  # type: ignore[redundant-expr]  # runtime check of user input
+            if not _is_pair(edge):
                 msg = f"edge_order[{i}] must be a 2-tuple"
                 raise ValidationError(
                     msg,
-                    expected="tuple of length 2",
-                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, tuple | list) else 'N/A'}",  # type: ignore[redundant-expr]  # runtime check of user input
-                    hint="Each edge should be a 2-tuple like (node1, node2)",
-                    example=f"    edge_order[{i}] = (0, 1)  # Not {edge}",
+                    expected="(node1, node2)",
+                    got=f"{type(edge).__name__} {edge!r}",
+                    hint=(
+                        "Each edge should be a 2-tuple like (node1, node2), in a "
+                        "list like [(0, 1), (1, 2)]"
+                    ),
+                    example=f"    edge_order[{i}] = (0, 1)",
                 )
+        edge_order = _edge_order_tuples(self.edge_order)
 
+        # Validate each edge in edge_order
+        for i, edge in enumerate(edge_order):
             # Check that edge exists in graph
             if edge not in self.track_graph.edges():
                 # Try reversed edge (undirected graph)
@@ -1060,33 +1152,56 @@ class Environment:
                         example=f"    # Check track_graph.edges(): {list(self.track_graph.edges())[:3]}",
                     )
 
-        # Validate edge_spacing
-        if isinstance(self.edge_spacing, int | float):
+        # Validate edge_spacing: one real number, or one per gap in a list,
+        # tuple or 1-D array; NumPy scalars count as numbers.
+        edge_spacing: Any = self.edge_spacing
+        if _is_real_scalar(edge_spacing):
             val.ensure_positive_scalar(
-                self.edge_spacing,
+                float(edge_spacing),
                 "edge_spacing",
                 minimum=0.0,
                 strict=False,
             )
-        elif isinstance(self.edge_spacing, list):
-            expected_len = len(self.edge_order) - 1
-            if len(self.edge_spacing) != expected_len:
+        elif _is_sequence(edge_spacing) and not (
+            isinstance(edge_spacing, np.ndarray) and edge_spacing.ndim != 1
+        ):
+            expected_len = len(edge_order) - 1
+            if len(edge_spacing) != expected_len:
                 msg = "edge_spacing list has wrong length"
                 raise ValidationError(
                     msg,
                     expected=f"length {expected_len} (one less than edge_order)",
-                    got=f"length {len(self.edge_spacing)}",
+                    got=f"length {len(edge_spacing)}",
                     hint="edge_spacing should have one entry for each gap between consecutive edges",
-                    example=f"    # For {len(self.edge_order)} edges:\n    edge_spacing = [{', '.join(['15.0'] * expected_len)}]",
+                    example=f"    # For {len(edge_order)} edges:\n    edge_spacing = [{', '.join(['15.0'] * expected_len)}]",
                 )
 
-            for i, spacing in enumerate(self.edge_spacing):
+            for i, spacing in enumerate(edge_spacing):
+                if not _is_real_scalar(spacing):
+                    msg = f"edge_spacing[{i}] must be a number"
+                    raise ValidationError(
+                        msg,
+                        expected="a non-negative real number",
+                        got=f"{type(spacing).__name__} {spacing!r}",
+                        example=f"    edge_spacing[{i}] = 15.0",
+                    )
                 val.ensure_positive_scalar(
-                    spacing,
+                    float(spacing),
                     f"edge_spacing[{i}]",
                     minimum=0.0,
                     strict=False,
                 )
+        else:
+            msg = "edge_spacing must be a number or one number per gap"
+            raise ValidationError(
+                msg,
+                expected=(
+                    f"a non-negative real number, or a sequence of "
+                    f"{len(edge_order) - 1} of them"
+                ),
+                got=f"{type(edge_spacing).__name__} {edge_spacing!r}",
+                example="    edge_spacing = 15.0",
+            )
 
     def _validate_position_range(self) -> None:
         """Validate position_range parameter.
@@ -1096,34 +1211,32 @@ class Environment:
         ValidationError
             If position_range is invalid
         """
-        if not isinstance(self.position_range, Sequence):
+        # A list, tuple or (n_dims, 2) array of (min, max) pairs, as parameter
+        # rows may hold any of them.
+        if not _is_sequence(self.position_range):
             msg = "position_range must be a sequence"
             raise ValidationError(
                 msg,
-                expected="list or tuple of (min, max) tuples",
+                expected="list, tuple or (n_dims, 2) array of (min, max) tuples",
                 got=f"{type(self.position_range).__name__}",
                 hint="position_range should be like [(xmin, xmax), (ymin, ymax)]",
                 example="    position_range = [(0, 100), (0, 100)]",
             )
 
-        for i, dim_range in enumerate(self.position_range):
-            if not isinstance(dim_range, tuple) or len(dim_range) != 2:  # type: ignore[redundant-expr]  # runtime check of user input
-                msg = f"position_range[{i}] must be a 2-tuple"  # type: ignore[unreachable]  # runtime check of user input
+        for i, dim_range in enumerate(self.position_range):  # type: ignore[arg-type]  # checked by _is_sequence
+            if not _is_pair(dim_range):
+                msg = f"position_range[{i}] must be a 2-tuple"
                 raise ValidationError(
                     msg,
                     expected="(min, max) tuple",
-                    got=f"{type(dim_range).__name__}",
+                    got=f"{type(dim_range).__name__} {dim_range!r}",
                     hint="Each dimension range should be (min_value, max_value)",
                     example=f"    position_range[{i}] = (0.0, 100.0)",
                 )
 
             min_val, max_val = dim_range
-            # numbers.Real covers NumPy scalars (np.float32, np.int64, ...).
-            if not all(
-                isinstance(value, numbers.Real) and not isinstance(value, bool)
-                for value in (min_val, max_val)
-            ):
-                msg = f"position_range[{i}] must contain numeric values"  # type: ignore[unreachable]  # runtime check of user input
+            if not (_is_real_scalar(min_val) and _is_real_scalar(max_val)):
+                msg = f"position_range[{i}] must contain numeric values"
                 raise ValidationError(
                     msg,
                     expected="(float, float)",
@@ -1358,10 +1471,17 @@ class Environment:
         -------
         PlaceGrid
         """
+        # As float64 whatever form the range was given in, so a list, a tuple
+        # or an array, and Python or NumPy endpoints, give one grid.
+        position_range = (
+            None
+            if self.position_range is None
+            else np.asarray(self.position_range, dtype=np.float64)
+        )
         edges, place_bin_edges, place_bin_centers, centers_shape = get_grid(
             position,
             self.place_bin_size,
-            self.position_range,
+            position_range,  # type: ignore[arg-type]  # an (n_dims, 2) array
         )
 
         if self.is_track_interior is not None:
@@ -1494,8 +1614,7 @@ class Environment:
                 ),
                 example="place_bin_size=2.0",
             )
-        assert self.edge_order is not None  # required by _validate_track_graph
-        assert self.edge_spacing is not None  # required by _validate_track_graph
+        edge_order, edge_spacing = self._linearization_arguments()
         (
             place_bin_centers,
             place_bin_edges,
@@ -1510,8 +1629,8 @@ class Environment:
             nodes_df,
         ) = get_track_grid(
             self.track_graph,
-            self.edge_order,
-            self.edge_spacing,
+            edge_order,
+            edge_spacing,
             self.place_bin_size,
         )
         return PlaceGrid(
@@ -1546,9 +1665,7 @@ class Environment:
             if ax is None:
                 _, ax = plt.subplots(figsize=(15, 2))
 
-            plot_graph_as_1D(
-                self.track_graph, self.edge_order, self.edge_spacing, ax=ax
-            )
+            plot_graph_as_1D(self.track_graph, *self._linearization_arguments(), ax=ax)
             # Before fit_place_grid there are no bin edges to draw.
             if self._is_fitted:
                 for edge in self.edges_[0]:
@@ -1768,9 +1885,10 @@ class Environment:
         """
         if self.track_graph is None or self.edge_spacing is None:
             return 0.0
-        if isinstance(self.edge_spacing, (list, tuple)):
-            return float(max(self.edge_spacing)) if len(self.edge_spacing) else 0.0
-        return float(self.edge_spacing)
+        edge_spacing = _edge_spacing_values(self.edge_spacing)
+        if isinstance(edge_spacing, list):
+            return max(edge_spacing) if edge_spacing else 0.0
+        return edge_spacing
 
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray
@@ -2496,8 +2614,8 @@ def _calculate_linear_position(
 
     for ind, edge in enumerate(edge_order):
         start_node_linear_position.append(counter)
-
-        with contextlib.suppress(IndexError):
+        # No gap follows the last edge.
+        if ind < n_edges - 1:
             counter += track_graph.edges[edge]["distance"] + edge_spacing[ind]
 
     start_node_linear_position = np.asarray(start_node_linear_position)

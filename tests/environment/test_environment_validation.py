@@ -165,7 +165,7 @@ class TestEdgeOrderValidation:
         g.add_node(1, pos=(1, 1))
         g.add_edge(0, 1, distance=1.0, edge_id=0)
         with pytest.raises(ValidationError) as exc_info:
-            Environment(track_graph=g, edge_order=[[0, 1]], edge_spacing=0.0)
+            Environment(track_graph=g, edge_order=[(0, 1, 2)], edge_spacing=0.0)
         assert "edge_order[0]" in str(exc_info.value)
         assert "2-tuple" in str(exc_info.value)
 
@@ -272,7 +272,7 @@ class TestPositionRangeValidation:
     def test_position_range_elements_must_be_tuples(self):
         """Test that position_range elements must be 2-tuples."""
         with pytest.raises(ValidationError) as exc_info:
-            Environment(position_range=[[0, 100]])
+            Environment(position_range=[(0, 50, 100)])
         assert "position_range[0]" in str(exc_info.value)
         assert "2-tuple" in str(exc_info.value)
 

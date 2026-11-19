@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Spatial input checks
 
 - **Fixed:** `position_range` accepts NumPy scalar endpoints (`np.float32`, `np.int64`, ...), which it rejected as not numeric.
+- **Fixed:** `Environment` accepts `edge_order`, `edge_spacing` and `position_range` as a list, a tuple or an array, with Python or NumPy numbers, and every form fits the same grid. A tuple `edge_order` (the documented type, and what release 0.6.9 took), an array or list-of-lists `position_range`, and a list-of-lists `edge_order` raised `ValidationError`, so parameter rows holding them could not be rebuilt with `Environment(**row)`; a tuple or array `edge_spacing` constructed but failed in `decoding_position` (and so in every detector fit) with `TypeError`. `position_range` with `np.float32` endpoints fits a float64 grid, as Python numbers do. Fields keep the form they were given, so parameter rows, `get_params`, pickles and saved models hold what was passed; environments pickled holding tuples work without a refit.
+- **Fixed (changes results):** `edge_spacing` as a NumPy integer, a `np.float32` or a 0-d array skipped validation and laid every edge of the linearized track on top of the first: two 10 cm edges with spacing `np.int64(15)` got bin edges 0..10 and 0..10 instead of 0..10 and 25..35, with no error or warning. An `edge_spacing` tuple that was too short or negative did the same or overlapped the edges. Every form is now validated the same way (non-negative, one value or one per gap) and gives the grid of the same Python value. Affected: `Environment.fit_place_grid` called directly; a detector fit with these values raised `TypeError` before.
 
 ### Default initial conditions without zero-probability states
 
