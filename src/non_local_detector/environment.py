@@ -237,6 +237,10 @@ def _same_configuration(current: Any, fitted: Any) -> bool:
         return False
 
 
+# A real number as the Environment fields accept it: Python or NumPy.
+_RealNumber = float | np.integer[Any] | np.floating[Any]
+
+
 def _is_real_scalar(value: Any) -> bool:
     """Whether ``value`` is a real number: Python, NumPy or a 0-d array, not a bool."""
     if isinstance(value, np.ndarray):
@@ -618,10 +622,10 @@ class Environment:
     environment_name: str = ""
     place_bin_size: float | tuple[float, ...] = 2.0
     track_graph: nx.Graph | None = None
-    edge_order: list[tuple[Any, ...]] | None = None
-    edge_spacing: float | list[float] | None = 0.0
+    edge_order: Sequence[Sequence[Any]] | np.ndarray | None = None
+    edge_spacing: _RealNumber | Sequence[_RealNumber] | np.ndarray | None = 0.0
     is_track_interior: np.ndarray | None = None
-    position_range: Sequence[tuple[float, float]] | None = None
+    position_range: Sequence[Sequence[_RealNumber]] | np.ndarray | None = None
     infer_track_interior: bool = True
     fill_holes: bool = False
     dilate: bool = False
