@@ -214,6 +214,22 @@ def test_track_graph_argument_forms_save_the_same_grid(sorted_recording, tmp_pat
         np.testing.assert_array_equal(grid.edges[0], reference.edges[0])
 
 
+@pytest.mark.parametrize("flag", [np.True_, np.False_], ids=["np.True_", "np.False_"])
+def test_numpy_bool_infer_track_interior(flag, sorted_recording, tmp_path):
+    time, position, spike_times = sorted_recording
+    detector = nld.SortedSpikesDecoder(
+        infer_track_interior=flag,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
+    )
+    detector.fit(time, position, spike_times)
+
+    loaded = _assert_round_trip(
+        detector, tmp_path, time, position, {"spike_times": spike_times}
+    )
+    assert loaded.environments_[0].infer_track_interior_ == flag
+
+
 def test_empirical_movement_block_is_stored(sorted_recording, tmp_path):
     time, position, spike_times = sorted_recording
     detector = nld.SortedSpikesDecoder(
