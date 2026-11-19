@@ -49,7 +49,6 @@ from non_local_detector.likelihoods.common import (
     drop_zero_weight_samples,
     environment_grid_fingerprint,
     get_position_at_time,
-    interpolate_weights_at_spike_times,
     kde_log_densities,
     kde_log_density,
     kde_model_with_block_size,
@@ -64,6 +63,7 @@ from non_local_detector.likelihoods.common import (
     padded_occupancy_count,
     padded_samples,
     padded_spike_count,
+    place_encoding_spikes,
     prepare_decode_rows,
     prepare_kde_local_inputs,
     prepared_kde_log_density,
@@ -1560,8 +1560,12 @@ def fit_clusterless_kde_encoding_model(
     weights : array_like, shape (n_time_position,), optional
         Per-position-sample weights (e.g. the EM posterior for this encoding
         group), by default None (uniform). They weight the occupancy KDE, the
-        per-electrode ground-process KDE, and the mean rate, and are interpolated
-        onto each spike's time to form the ``encoding_weights`` used at decode time.
+        per-electrode ground-process KDE, and the mean rate, and give each
+        encoding spike its ``encoding_weights`` entry used at decode time: the
+        weight interpolated to its spike time at its interpolated position, or,
+        where its two bracketing samples differ in weight, its share of each
+        weighted sample's weight at that sample's position, as occupancy is
+        placed (two entries when both samples are weighted).
     position_std : float, optional
         Gaussian smoothing standard deviation for position, by default sqrt(12.5).
     waveform_std : float, optional
@@ -1686,28 +1690,24 @@ def fit_clusterless_kde_encoding_model(
         # discarded here anyway and must not abort fitting.
         bounded_features = electrode_spike_waveform_features[is_in_bounds]
         validate_finite(bounded_features, "spike_waveform_features")
-        bounded_spike_waveform_features.append(bounded_features)
-        # Weight each encoding spike by the posterior weight at its spike time.
-        electrode_weights_host = interpolate_weights_at_spike_times(
-            electrode_spike_times,
+        # Each encoding spike sits where its weighted samples' exposure does,
+        # weighted by the posterior weight at its spike time; a spike between
+        # two weighted samples of different weight is two entries.
+        entry_spike, entry_positions, electrode_weights_host = place_encoding_spikes(
             position_time,
-            np.asarray(weights),
-            encoding_support=support,
+            position,
+            electrode_spike_times,
+            weights,
+            environment,
+            support,
         )
+        bounded_spike_waveform_features.append(bounded_features[entry_spike])
         electrode_weights = jnp.asarray(electrode_weights_host)
         encoding_weights.append(electrode_weights)
         # Weighted mean rate: weighted spike count / weighted occupancy time. Sum on the
         # host array (as the GMM fit does) to avoid a device->host sync per electrode.
         mean_rates.append(weighted_mean_rate(electrode_weights_host, weight_sum))
-        encoding_positions.append(
-            get_position_at_time(
-                position_time,
-                position,
-                electrode_spike_times,
-                environment,
-                encoding_support=support,
-            )
-        )
+        encoding_positions.append(entry_positions)
 
         gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
             encoding_positions[-1], weights=electrode_weights
@@ -1814,10 +1814,12 @@ def predict_clusterless_kde_log_likelihood(
     gpi_models : list[KDEModel]
         KDE models for the ground process intensity.
     encoding_spike_waveform_features : list[jax.Array]
-        Spike waveform features for each electrode used for encoding.
+        Spike waveform features for each electrode used for encoding, one row
+        per encoding entry; a spike between two weighted samples of different
+        weight has two entries.
     encoding_positions : list[jax.Array]
         Per-electrode encoding positions, each of shape
-        (n_encoding_spikes, n_position_dims).
+        (n_encoding_spikes, n_position_dims), one row per encoding entry.
     environment : Environment
         The spatial environment.
     mean_rates : np.ndarray, shape (n_electrodes,)

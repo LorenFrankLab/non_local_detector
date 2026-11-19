@@ -79,7 +79,6 @@ from non_local_detector.likelihoods.common import (
     concatenate_row_blocks,
     drop_zero_weight_samples,
     environment_grid_fingerprint,
-    get_position_at_time,
     kde_log_densities,
     kde_log_density,
     log_density_intensity,
@@ -87,6 +86,7 @@ from non_local_detector.likelihoods.common import (
     pad_rows,
     padded_index,
     padded_sample_count,
+    place_encoding_spikes,
     prepare_decode_rows,
     prepare_kde_local_inputs,
     require_position,
@@ -355,7 +355,10 @@ def fit_sorted_spikes_kde_encoding_model(
         The spatial environment.
     weights : array_like, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
-        If None, uniform weights are used.
+        If None, uniform weights are used. A spike between samples of equal
+        weight takes the weight interpolated to its time at its interpolated
+        position; where the two differ, its share of each weighted sample's
+        weight sits at that sample's position, as occupancy is placed.
     position_std : float, optional
         Gaussian kernel standard deviation for position, by default sqrt(12.5).
     block_size : int, optional
@@ -442,21 +445,21 @@ def fit_sorted_spikes_kde_encoding_model(
         disable=disable_progress_bar,
     ):
         neuron_spike_times = neuron_spike_times[support.contains(neuron_spike_times)]
-        weights_at_spike_times = support.interpolate(
-            weights, neuron_spike_times, fill_value=0.0
+        # Each spike sits where its weighted samples' exposure does (see
+        # place_encoding_spikes), weighted by the weight at its spike time.
+        _, spike_positions, weights_at_spike_times = place_encoding_spikes(
+            position_time,
+            position,
+            neuron_spike_times,
+            weights,
+            environment,
+            support,
         )
 
         weight_sum = exposure_weights.sum()
         mean_rates.append(weighted_mean_rate(weights_at_spike_times, weight_sum))
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
-            get_position_at_time(
-                position_time,
-                position,
-                neuron_spike_times,
-                environment,
-                encoding_support=support,
-            ),
-            weights=weights_at_spike_times,
+            spike_positions, weights=weights_at_spike_times
         )
         marginal_models.append(neuron_marginal_model)
 
