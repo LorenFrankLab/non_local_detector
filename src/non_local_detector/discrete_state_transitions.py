@@ -1260,7 +1260,7 @@ class DiscreteNonStationaryDiagonal:
 
     Attributes
     ----------
-    diagonal_values : np.ndarray, shape (n_states,)
+    diagonal_values : array_like, shape (n_states,)
         Initial diagonal probabilities, each in [0, 1], used to set intercept
         coefficients.
     formula : str, optional
@@ -1326,7 +1326,7 @@ class DiscreteNonStationaryDiagonal:
             formula and covariate data.
         """
         return _initial_nonstationary_transition(
-            make_transition_from_diag(self.diagonal_values),
+            make_transition_from_diag(np.asarray(self.diagonal_values)),
             self.formula,
             covariate_data,
             self.smoothness,
@@ -1341,7 +1341,7 @@ class DiscreteNonStationaryCustom:
 
     Attributes
     ----------
-    values : np.ndarray, shape (n_states, n_states)
+    values : array_like, shape (n_states, n_states)
         Initial stationary transition matrix used to set intercept coefficients:
         non-negative, and each row sums to 1.
     formula : str, optional
@@ -1405,7 +1405,7 @@ class DiscreteNonStationaryCustom:
             formula and covariate data.
         """
         return _initial_nonstationary_transition(
-            self.values, self.formula, covariate_data, self.smoothness
+            np.asarray(self.values), self.formula, covariate_data, self.smoothness
         )
 
 
