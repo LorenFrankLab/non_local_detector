@@ -568,6 +568,32 @@ def test_any_real_scalar_stickiness_is_accepted(stickiness):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    "stickiness",
+    ["abc", "ab", "0.5", np.asarray("1"), 1j, True, {}],
+    ids=[
+        "str",
+        "str-of-n-states",
+        "numeric-str",
+        "0-d-str-array",
+        "complex",
+        "bool",
+        "dict",
+    ],
+)
+def test_scalar_stickiness_that_is_not_a_real_number_is_refused(stickiness):
+    """A scalar stickiness that is not a real number is refused when the
+    detector is built, naming the value given, not later when it is fitted."""
+    with pytest.raises(ValidationError, match="real number") as error:
+        ContFragSortedSpikesClassifier(discrete_transition_stickiness=stickiness)
+    assert repr(stickiness) in str(error.value)
+    with pytest.raises(ValidationError, match="real number"):
+        ContFragSortedSpikesClassifier().set_params(
+            discrete_transition_stickiness=stickiness
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     "position",
     [np.linspace(0, 100, 50), np.linspace(0, 100, 50)[:, np.newaxis]],
     ids=["1-D", "column"],

@@ -2466,8 +2466,10 @@ class _InputValidationMixin:
             If the number of discrete initial conditions does not match the
             number of continuous initial conditions or transition types, a
             row of ``continuous_transition_types`` does not hold one
-            transition per state, or a stickiness that is not a scalar does
-            not hold one value per state.
+            transition per state, a scalar stickiness is not a real number
+            (an integer or floating value, Python or NumPy; a string, bool
+            or complex value is refused), or a stickiness that is not a
+            scalar does not hold one value per state.
         """
         n_discrete = len(discrete_initial_conditions)
         n_continuous_init = len(continuous_initial_conditions_types)
@@ -2522,9 +2524,22 @@ class _InputValidationMixin:
                 "    ]",
             )
 
-        if np.ndim(discrete_transition_stickiness) != 0 and len(
-            discrete_initial_conditions
-        ) != len(discrete_transition_stickiness):
+        if np.ndim(discrete_transition_stickiness) == 0:
+            dtype = np.asarray(discrete_transition_stickiness).dtype
+            if not (
+                np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.floating)
+            ):
+                msg = "A scalar discrete_transition_stickiness must be a real number"
+                raise ValidationError(
+                    msg,
+                    expected="a Python int or float, a NumPy integer or floating "
+                    f"scalar, or an array of {n_discrete} such values (one per state)",
+                    got=f"{discrete_transition_stickiness!r} "
+                    f"({type(discrete_transition_stickiness).__name__})",
+                    hint="Pass the stickiness as a number, not a string or other object",
+                    example="    discrete_transition_stickiness=0.0",
+                )
+        elif len(discrete_initial_conditions) != len(discrete_transition_stickiness):
             msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single number"
             raise ValidationError(
                 msg,
