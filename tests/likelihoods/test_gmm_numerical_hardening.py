@@ -11,8 +11,10 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _estimate_gaussian_covariances_diag,
+    _estimate_gaussian_covariances_full,
     _estimate_gaussian_covariances_spherical,
     _estimate_gaussian_covariances_tied,
+    _estimate_gaussian_parameters,
     estimate_log_gaussian_prob,
 )
 
@@ -89,7 +91,7 @@ def test_gaussian_evaluation_rejects_mismatched_precision_shape(covariance_type)
         )
 
 
-@pytest.mark.parametrize("covariance_type", ["diag", "spherical", "tied"])
+@pytest.mark.parametrize("covariance_type", ["full", "diag", "spherical", "tied"])
 def test_covariance_updates_are_exact_for_tight_distant_components(covariance_type):
     """Two components at +-1e3 with standard deviation 0.1. Centering on one
     shared point (e.g. the global mean) still leaves |mu - c| / sigma = 1e4,
@@ -107,7 +109,9 @@ def test_covariance_updates_are_exact_for_tight_distant_components(covariance_ty
     per_component = np.stack(
         [((X64[resp[:, k] > 0] - means64[k]) ** 2).mean(axis=0) for k in range(2)]
     )
+    centered = [X64[resp[:, k] > 0] - means64[k] for k in range(2)]
     expected = {
+        "full": np.stack([d.T @ d / len(d) for d in centered]),
         "diag": per_component,
         "spherical": per_component.mean(axis=1),
         "tied": sum(
@@ -117,6 +121,7 @@ def test_covariance_updates_are_exact_for_tight_distant_components(covariance_ty
         / 400,
     }[covariance_type]
     function = {
+        "full": _estimate_gaussian_covariances_full,
         "diag": _estimate_gaussian_covariances_diag,
         "spherical": _estimate_gaussian_covariances_spherical,
         "tied": _estimate_gaussian_covariances_tied,
@@ -127,7 +132,7 @@ def test_covariance_updates_are_exact_for_tight_distant_components(covariance_ty
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-6)
 
 
-@pytest.mark.parametrize("covariance_type", ["diag", "spherical", "tied"])
+@pytest.mark.parametrize("covariance_type", ["full", "diag", "spherical", "tied"])
 @pytest.mark.parametrize("offset", [0.0, 1e5])
 def test_covariance_updates_match_centered_reference(covariance_type, offset):
     X = jnp.array(
@@ -137,17 +142,60 @@ def test_covariance_updates_match_centered_reference(covariance_type, offset):
     resp = jnp.ones((2, 1), dtype=jnp.float32)
     nk = jnp.array([2.0], dtype=jnp.float32)
     functions = {
+        "full": _estimate_gaussian_covariances_full,
         "diag": _estimate_gaussian_covariances_diag,
         "spherical": _estimate_gaussian_covariances_spherical,
         "tied": _estimate_gaussian_covariances_tied,
     }
     expected = {
+        "full": [[[1.01, -2], [-2, 4.01]]],
         "diag": [[1.01, 4.01]],
         "spherical": [2.51],
         "tied": [[1.01, -2], [-2, 4.01]],
     }
     actual = functions[covariance_type](resp, X, nk, means, 0.01)
     np.testing.assert_allclose(actual, expected[covariance_type], rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("offset", [0.0, 1e3])
+def test_weighted_full_covariance_m_step_matches_float64_reference(offset):
+    """Correlated 3-D marks, soft responsibilities and unequal sample weights:
+    each full covariance equals the weighted, centered second moment computed
+    in float64 from the definition, plus ``reg_covar`` on the diagonal."""
+    rng = np.random.default_rng(0)
+    n_samples, n_features, n_components, reg_covar = 600, 3, 3, 0.01
+    mixing = rng.normal(size=(n_components, n_features, n_features))
+    labels = rng.integers(n_components, size=n_samples)
+    X = (
+        offset * (labels[:, None] - 1)
+        + np.einsum(
+            "nd,nde->ne", rng.normal(size=(n_samples, n_features)), mixing[labels]
+        )
+    ).astype(np.float32)
+    resp = rng.dirichlet(np.full(n_components, 0.3), size=n_samples)
+    resp = (0.2 * resp + 0.8 * np.eye(n_components)[labels]).astype(np.float32)
+    sample_weight = rng.uniform(0.2, 3.0, n_samples).astype(np.float32)
+
+    _, _, covariances = _estimate_gaussian_parameters(
+        jnp.asarray(X),
+        jnp.asarray(resp),
+        reg_covar,
+        "full",
+        jnp.asarray(sample_weight),
+    )
+
+    weights = resp.astype(float) * sample_weight.astype(float)[:, None]
+    expected = np.empty((n_components, n_features, n_features))
+    for k in range(n_components):
+        w = weights[:, k]
+        centered = X.astype(float) - w @ X / w.sum()
+        expected[k] = (centered * w[:, None]).T @ centered / w.sum()
+        expected[k] += reg_covar * np.eye(n_features)
+    # Observed float32 difference relative to the largest entry: 3.8e-7 at
+    # offset 0, 6.6e-7 at offset 1e3.
+    np.testing.assert_allclose(
+        covariances, expected, rtol=0, atol=5e-6 * np.abs(expected).max()
+    )
 
 
 @pytest.mark.parametrize("covariance_type", ["diag", "spherical"])
