@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2-D ahead/behind distances
+
+- **Fixed:** with a track graph, `get_2D_distance`, `get_map_estimate_direction_from_track_graph`, `head_direction_similarity` and `get_ahead_behind_distance2D` return NaN for a row whose head or MAP position has a NaN or infinite coordinate, as they already did without a track graph. Such a position was binned into the grid's last bin, so the distance was measured from that corner: 61.54 cm instead of NaN on a 50 × 50 cm arena in 5 cm bins, 0 between two NaN positions, and `inf` (with a "No path" warning) when the corner bin is off the track. Rows with finite positions are unchanged. `maximum_a_posteriori_estimate` gives NaN MAP positions for time bins with no posterior mass, so this reached package output called directly with a track graph.
+
 ### Spatial input checks
 
 - **Fixed:** `position_range` accepts NumPy scalar endpoints (`np.float32`, `np.int64`, ...), which it rejected as not numeric.

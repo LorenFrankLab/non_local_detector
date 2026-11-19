@@ -729,6 +729,69 @@ class TestAheadBehindDistance2DTrackGraph:
             f"got {direction}"
         )
 
+    @pytest.mark.parametrize(
+        "precomputed_distance", [True, False], ids=["precomputed", "nonprecomputed"]
+    )
+    def test_nan_position_gives_nan(self, env_2d, precomputed_distance):
+        """A row with a NaN head or MAP position gives NaN, as the Euclidean
+        branch does, not a distance from the last grid bin; other rows keep
+        the values they have alone."""
+        env = env_2d
+        nan = np.nan
+        # Row 1: NaN head; row 2: NaN MAP; row 3: one NaN coordinate;
+        # row 4: both NaN; rows 0 and 5 are finite.
+        head = np.array(
+            [
+                [10.0, 10.0],
+                [nan, nan],
+                [50.0, 60.0],
+                [80.0, nan],
+                [nan, nan],
+                [80.0, 20.0],
+            ]
+        )
+        map_pos = np.array(
+            [
+                [90.0, 90.0],
+                [20.0, 30.0],
+                [nan, nan],
+                [40.0, 70.0],
+                [nan, nan],
+                [40.0, 70.0],
+            ]
+        )
+        head_dir = np.array([0.3, 0.0, -1.0, 0.0, 0.0, 2.0])
+        nan_rows = np.array([False, True, True, True, True, False])
+        keep = np.flatnonzero(~nan_rows)
+        kw = {
+            "track_graph": env.track_graphDD,
+            "edges": env.edges_,
+            "precomputed_distance": precomputed_distance,
+        }
+
+        distance = get_2D_distance(head, map_pos, **kw)
+        ahead_behind = get_ahead_behind_distance2D(head, head_dir, map_pos, **kw)
+        direction = get_map_estimate_direction_from_track_graph(
+            head,
+            map_pos,
+            env.track_graphDD,
+            env.edges_,
+            precomputed_distance=precomputed_distance,
+        )
+
+        assert np.isnan(distance[nan_rows]).all(), distance
+        assert np.isnan(ahead_behind[nan_rows]).all(), ahead_behind
+        assert np.isnan(direction[nan_rows]).all(), direction
+        np.testing.assert_array_equal(
+            distance[keep], get_2D_distance(head[keep], map_pos[keep], **kw)
+        )
+        np.testing.assert_array_equal(
+            ahead_behind[keep],
+            get_ahead_behind_distance2D(
+                head[keep], head_dir[keep], map_pos[keep], **kw
+            ),
+        )
+
     def test_precomputed_distance_dict_branch_matches_generator(
         self, env_2d, monkeypatch
     ):

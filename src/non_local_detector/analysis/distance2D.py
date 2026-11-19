@@ -141,9 +141,19 @@ def get_map_estimate_direction_from_track_graph(
         Direction in radians of the first step along the shortest path from the
         head position to the MAP estimate. 0 where the head position and the MAP
         estimate are in the same bin. NaN where the track graph has no path
-        between their bins (a warning is logged).
+        between their bins (a warning is logged), and where either position
+        has a non-finite coordinate.
     """
     node_positions = nx.get_node_attributes(track_graph, "pos")
+
+    # A non-finite position has no bin (searchsorted would put NaN in the last
+    # one), so its rows stay NaN.
+    is_finite = np.all(np.isfinite(head_position), axis=1) & np.all(
+        np.isfinite(map_estimate), axis=1
+    )
+    direction = np.full(is_finite.shape, np.nan)
+    time_ind = np.flatnonzero(is_finite)
+    head_position, map_estimate = head_position[is_finite], map_estimate[is_finite]
 
     map_estimate_direction = np.zeros((head_position.shape[0],))
 
@@ -223,7 +233,7 @@ def get_map_estimate_direction_from_track_graph(
                     "Time point %d has no path between the head-position bin "
                     "and the MAP bin (disconnected track graph); its "
                     "map-estimate direction is set to NaN.",
-                    i,
+                    time_ind[i],
                 )
                 map_estimate_direction[i] = np.nan
                 continue
@@ -236,7 +246,8 @@ def get_map_estimate_direction_from_track_graph(
                 first_node_on_path_pos[0] - head_position_node_pos[0],
             )
 
-    return map_estimate_direction
+    direction[is_finite] = map_estimate_direction
+    return direction
 
 
 def get_2D_distance(
@@ -271,7 +282,8 @@ def get_2D_distance(
     distance : np.ndarray, shape (n_time,)
         Distance between the two positions at each time point. Euclidean if
         `track_graph` is None, otherwise the shortest path length along the
-        graph (``inf`` if no path exists).
+        graph (``inf`` if no path exists). NaN where either position has a
+        non-finite coordinate.
     """
     position1 = np.asarray(position1)
     position2 = np.asarray(position2)
@@ -294,25 +306,33 @@ def get_2D_distance(
         # remove outer boundary edge
         bin_edges = [e[1:-1] for e in edges]
 
+        # A non-finite position has no bin (searchsorted would put NaN in the
+        # last one), so its rows stay NaN.
+        is_finite = np.all(np.isfinite(position1), axis=1) & np.all(
+            np.isfinite(position2), axis=1
+        )
+        distance = np.full(is_finite.shape, np.nan)
+        position1, position2 = position1[is_finite], position2[is_finite]
+
         if precomputed_distance:
             bin_ind1 = get_bin_ind(position1, bin_edges)
             bin_ind2 = get_bin_ind(position2, bin_edges)
-            distance = np.full((len(node_ids), len(node_ids)), np.inf)
+            all_pairs = np.full((len(node_ids), len(node_ids)), np.inf)
             for to_node_id, from_node_id in nx.shortest_path_length(
                 track_graph,
                 weight="distance",
             ):
-                distance[to_node_id, list(from_node_id.keys())] = list(
+                all_pairs[to_node_id, list(from_node_id.keys())] = list(
                     from_node_id.values()
                 )
-            distance = distance[bin_ind1, bin_ind2]
+            distance[is_finite] = all_pairs[bin_ind1, bin_ind2]
         else:
             node_ids1 = node_ids[get_bin_ind(position1, bin_edges)]
             node_ids2 = node_ids[get_bin_ind(position2, bin_edges)]
-            distance = np.full((position1.shape[0]), np.inf)
+            finite_distance = np.full((position1.shape[0]), np.inf)
             for i in range(position1.shape[0]):
                 try:
-                    distance[i] = nx.shortest_path_length(
+                    finite_distance[i] = nx.shortest_path_length(
                         track_graph,
                         source=node_ids1[i],
                         target=node_ids2[i],
@@ -322,6 +342,7 @@ def get_2D_distance(
                     logger.warning(
                         "No path between %s and %s", node_ids1[i], node_ids2[i]
                     )
+            distance[is_finite] = finite_distance
 
     return cast("np.ndarray", distance)
 
@@ -435,7 +456,8 @@ def get_ahead_behind_distance2D(
     -------
     ahead_behind_distance : np.ndarray, shape (n_time,)
         Signed distance (positive ahead of the head, negative behind), in the
-        units of the position.
+        units of the position. NaN where either position has a non-finite
+        coordinate.
     """
     distance = get_2D_distance(
         head_position,
