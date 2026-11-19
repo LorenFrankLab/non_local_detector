@@ -2421,7 +2421,8 @@ class _InputValidationMixin:
             Types of continuous state transitions, an n_states by n_states
             grid.
         discrete_transition_stickiness : Stickiness
-            Stickiness parameter for discrete state transitions.
+            Stickiness parameter for discrete state transitions: a real
+            scalar for every state, or one value per state.
 
         Raises
         ------
@@ -2429,8 +2430,8 @@ class _InputValidationMixin:
             If the number of discrete initial conditions does not match the
             number of continuous initial conditions or transition types, a
             row of ``continuous_transition_types`` does not hold one
-            transition per state, or the stickiness is not a float or one
-            value per state.
+            transition per state, or a stickiness that is not a scalar does
+            not hold one value per state.
         """
         n_discrete = len(discrete_initial_conditions)
         n_continuous_init = len(continuous_initial_conditions_types)
@@ -2485,15 +2486,15 @@ class _InputValidationMixin:
                 "    ]",
             )
 
-        if not isinstance(discrete_transition_stickiness, float) and len(
+        if np.ndim(discrete_transition_stickiness) != 0 and len(
             discrete_initial_conditions
         ) != len(discrete_transition_stickiness):
-            msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single float"
+            msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single number"
             raise ValidationError(
                 msg,
-                expected=f"Either a float or array of length {n_discrete}",
+                expected=f"Either a number or array of length {n_discrete}",
                 got=f"Array of length {len(discrete_transition_stickiness)}",
-                hint="Use a float for uniform stickiness across all states, or an array with one value per state",
+                hint="Use a number for uniform stickiness across all states, or an array with one value per state",
                 example=f"    discrete_transition_stickiness=0.0  # uniform\n    # OR\n    discrete_transition_stickiness=np.array([{', '.join(['0.0'] * n_discrete)}])  # per-state",
             )
 

@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Detector configuration checks
 
 - **Fixed (now raises):** a `continuous_transition_types` grid that is not n_states by n_states raises `ValidationError` at construction and in `set_params`, giving the row lengths. Before, a short row decoded on the default dense path with the missing block left at zero, so the joint transition lost mass: on a simulated `ContFragSortedSpikesClassifier` (8 cells, 6,000 bins) with the Continuous-to-Fragmented entry left out, the rows from Continuous summed to 0.98 and mean P(Fragmented) was 0.0057 against 0.4338 with the square grid, with no warning. The structured representation, and so `estimate_parameters`, refused such a grid with a bare `ValueError`, and a row that was too long raised `IndexError` at `fit`. Square grids, every default among them, are unaffected.
+- **Fixed:** `discrete_transition_stickiness` may be any real scalar, such as `0`, `np.float32(0.5)`, `np.int64(3)` or a 0-d array, in the constructors and `set_params`; only a Python or NumPy `float64` was taken as a scalar, and the others raised a bare `TypeError` (`object of type 'int' has no len()`). The value is stored as given, and `estimate_parameters` gives the same transitions as for the equal float.
 
 ### Numerical fixes
 

@@ -488,6 +488,21 @@ class TestContinuousTransitionGridShape:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    "stickiness",
+    [0, 1, np.int64(3), np.float32(0.5), np.float64(2.0), np.asarray(1.5)],
+    ids=["int-0", "int-1", "int64", "float32", "float64", "0-d-array"],
+)
+def test_any_real_scalar_stickiness_is_accepted(stickiness):
+    """A scalar stickiness applies to every state, whatever its numeric type."""
+    detector = ContFragSortedSpikesClassifier(discrete_transition_stickiness=stickiness)
+    assert detector.discrete_transition_stickiness is stickiness
+    other = ContFragSortedSpikesClassifier()
+    other.set_params(discrete_transition_stickiness=stickiness)
+    assert other.discrete_transition_stickiness is stickiness
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     "position",
     [np.linspace(0, 100, 50), np.linspace(0, 100, 50)[:, np.newaxis]],
     ids=["1-D", "column"],
