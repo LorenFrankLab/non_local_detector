@@ -35,6 +35,7 @@ class _FittedDetector(Protocol):
     """
 
     state_names: list[str]
+    sampling_frequency: float
     discrete_transition_type: Any
     initial_conditions_: np.ndarray
     discrete_state_transitions_: np.ndarray
@@ -52,7 +53,7 @@ class _PlottingMixin:
         ax: mpl.axes.Axes | None = None,
         *,
         convert_to_seconds: bool = False,
-        sampling_frequency: int = 1,
+        sampling_frequency: float | None = None,
         covariate_data: pd.DataFrame | dict[str, Any] | None = None,
     ) -> None:
         """
@@ -65,9 +66,14 @@ class _PlottingMixin:
         ax : matplotlib.axes.Axes, optional
             Plotting axis, by default plots to current axis.
         convert_to_seconds : bool, optional
-            Convert the probabilities of state to expected duration of state, by default False.
-        sampling_frequency : int, optional
-            Number of samples per second, by default 1.
+            Show each state's expected dwell time, ``1 / (1 - p_ii)`` bins
+            divided by ``sampling_frequency``, in seconds on the diagonal
+            instead of the probabilities, by default False. A state with
+            ``p_ii = 1`` shows ``inf``. The cells off the diagonal are not
+            durations and are left blank.
+        sampling_frequency : float, optional
+            Rate in Hz of the decode bins, used by ``convert_to_seconds``. By
+            default the detector's ``sampling_frequency``.
         covariate_data : dict or pd.DataFrame, optional
             Dictionary or DataFrame of covariate data, by default None.
             Keys are covariate names and values are 1D arrays.
@@ -90,11 +96,21 @@ class _PlottingMixin:
                 ax = plt.gca()
 
             if convert_to_seconds:
-                discrete_state_transition = (
-                    1 / (1 - self.discrete_state_transitions_)
-                ) / sampling_frequency
-                vmin, vmax = 0.0, None
-                label = "Seconds"
+                if sampling_frequency is None:
+                    sampling_frequency = self.sampling_frequency
+                # A state left with probability 1 - p_ii per bin stays for
+                # 1 / (1 - p_ii) bins on average, infinitely when p_ii is 1.
+                # An off-diagonal cell has no duration and is left blank.
+                stay = np.diag(self.discrete_state_transitions_)
+                with np.errstate(divide="ignore"):
+                    dwell = 1.0 / (1.0 - stay) / sampling_frequency
+                discrete_state_transition = np.ma.masked_array(
+                    np.diag(dwell), mask=~np.eye(stay.size, dtype=bool)
+                )
+                finite_dwell = dwell[np.isfinite(dwell)]
+                vmin = 0.0
+                vmax = finite_dwell.max() if finite_dwell.size else None
+                label = "Expected dwell time (s)"
             else:
                 discrete_state_transition = self.discrete_state_transitions_
                 vmin, vmax = 0.0, 1.0
@@ -123,11 +139,14 @@ class _PlottingMixin:
                 boxes = [label.get_window_extent() for label in axis.get_ticklabels()]
                 if any(a.overlaps(b) for a, b in pairwise(boxes)):
                     plt.setp(axis.get_ticklabels(), rotation="vertical")
-            # Dark text on light cells, white text on dark cells.
+            # Dark text on light cells, white text on dark cells; blank cells
+            # have no text.
+            is_drawn = ~np.ma.getmaskarray(discrete_state_transition)
+            values = np.ma.getdata(discrete_state_transition)[is_drawn]
             for (row, col), value, rgba in zip(
-                np.ndindex(discrete_state_transition.shape),
-                discrete_state_transition.ravel(),
-                mesh.to_rgba(discrete_state_transition.ravel()),
+                np.argwhere(is_drawn),
+                values,
+                mesh.to_rgba(values),
                 strict=True,
             ):
                 luminance = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]

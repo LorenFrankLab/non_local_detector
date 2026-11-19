@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Plots and movies
+
+- **Fixed:** `plot_discrete_state_transition(convert_to_seconds=True)` shows each state's expected dwell time in seconds, `1 / (1 - p_ii)` bins divided by the rate of the decode bins, which is now the detector's `sampling_frequency` unless `sampling_frequency` is passed. The rate defaulted to 1, so the default 500 Hz `NonLocalSortedSpikesDetector` showed dwell times in bins under a "Seconds" label: 100, 50, 25 and 25 where the dwell times are 0.2, 0.1, 0.05 and 0.05 s. The cells off the diagonal showed `1 / (1 - p_ij)`, which is not a duration (1.005 "Seconds" for Local to No-Spike); they are now left blank, and the colorbar reads "Expected dwell time (s)". A state with `p_ii = 1` shows `inf` at the top of the color scale, without a divide-by-zero warning. Decoded results do not change.
+
 ### Default initial conditions without zero-probability states
 
 - **Changed:** `NonLocalSortedSpikesDetector` and `NonLocalClusterlessDetector` start one transition after Local: their default `discrete_initial_conditions` are the Local row of the default transition matrix, `[0.99, 0.005, 0.0025, 0.0025]`, instead of `[1, 0, 0, 0]`. `MultiEnvironment*Classifier` start one transition after env1, `[0.999, 0.001]` instead of `[1, 0]`. A state that starts at exactly zero stays there: EM sets the initial conditions to the posterior at the first bin, which is zero wherever the prior is. So on a simulated recording, EM returned exactly `[1, 0, 0, 0]` after 5 iterations, and `get_conditional_non_local_posterior` was NaN at the first bin.
