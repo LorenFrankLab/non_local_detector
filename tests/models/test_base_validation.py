@@ -12,6 +12,7 @@ import warnings
 import numpy as np
 import pytest
 
+from non_local_detector import ContFragSortedSpikesClassifier, RandomWalk, Uniform
 from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
@@ -36,7 +37,10 @@ def _two_state_decoder(environments, **overrides):
             "uniform_on_track",
             "uniform_on_track",
         ],
-        "continuous_transition_types": ["random_walk", "random_walk"],
+        "continuous_transition_types": [
+            [RandomWalk(), Uniform()],
+            [Uniform(), RandomWalk()],
+        ],
         "discrete_transition_type": DiscreteStationaryDiagonal(np.array([0.9, 0.9])),
         # Float is always valid, so stickiness validation never fires
         "discrete_transition_stickiness": 0.0,
@@ -106,7 +110,10 @@ class TestValidateInitialConditions:
                     "uniform_on_track",
                     "uniform_on_track",
                 ],
-                continuous_transition_types=["random_walk", "random_walk"],
+                continuous_transition_types=[
+                    [RandomWalk(), Uniform()],
+                    [Uniform(), RandomWalk()],
+                ],
                 discrete_transition_stickiness=np.array(
                     [0.0, 0.5, 1.0]
                 ),  # 3 values - WRONG!
@@ -445,6 +452,38 @@ class TestValidateDiscreteTransitionType:
         )
         with pytest.raises(ValidationError, match="is_stationary"):
             decoder._initialize_discrete_state_transition()
+
+
+@pytest.mark.unit
+class TestContinuousTransitionGridShape:
+    """The continuous transition grid has one row of n_states entries per state.
+
+    The dense builder fills only the blocks a row lists, so a short row would
+    leave a block of zeros and decode with transitions that lose mass.
+    """
+
+    @pytest.mark.parametrize(
+        ("grid", "row_lengths"),
+        [
+            ([[RandomWalk()], [Uniform(), Uniform()]], "[1, 2]"),
+            ([[RandomWalk(), Uniform()], [Uniform()]], "[2, 1]"),
+            ([[RandomWalk(), Uniform(), Uniform()], [Uniform(), Uniform()]], "[3, 2]"),
+        ],
+        ids=["short-first-row", "short-last-row", "long-row"],
+    )
+    def test_non_square_grid_is_refused_at_construction(self, grid, row_lengths):
+        with pytest.raises(ValidationError, match="2 by 2") as error:
+            ContFragSortedSpikesClassifier(continuous_transition_types=grid)
+        assert row_lengths in str(error.value)
+
+    def test_set_params_refuses_a_non_square_grid(self):
+        detector = ContFragSortedSpikesClassifier()
+        grid = detector.continuous_transition_types
+        with pytest.raises(ValidationError, match="2 by 2"):
+            detector.set_params(
+                continuous_transition_types=[[RandomWalk()], [Uniform(), Uniform()]]
+            )
+        assert detector.continuous_transition_types is grid
 
 
 @pytest.mark.unit

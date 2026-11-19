@@ -2418,14 +2418,19 @@ class _InputValidationMixin:
         continuous_initial_conditions_types : ContinuousInitialConditions
             Types of continuous initial conditions.
         continuous_transition_types : ContinuousTransitions
-            Types of continuous state transitions.
+            Types of continuous state transitions, an n_states by n_states
+            grid.
         discrete_transition_stickiness : Stickiness
             Stickiness parameter for discrete state transitions.
 
         Raises
         ------
         ValidationError
-            If the number of discrete initial conditions does not match the number of continuous initial conditions or transition types.
+            If the number of discrete initial conditions does not match the
+            number of continuous initial conditions or transition types, a
+            row of ``continuous_transition_types`` does not hold one
+            transition per state, or the stickiness is not a float or one
+            value per state.
         """
         n_discrete = len(discrete_initial_conditions)
         n_continuous_init = len(continuous_initial_conditions_types)
@@ -2454,6 +2459,30 @@ class _InputValidationMixin:
                 got=f"{n_discrete} discrete initial condition(s)",
                 hint="Each state needs an initial probability. Check that your discrete_initial_conditions array has the same length as continuous_transition_types list.",
                 example=f"    # For {n_continuous_trans} states:\n    discrete_initial_conditions=np.array([{', '.join(['1.0/' + str(n_continuous_trans)] * n_continuous_trans)}])",
+            )
+
+        # The dense builder fills only the blocks a row lists, so a short row
+        # would leave a block of zeros instead of failing.
+        row_lengths = [
+            len(row) if hasattr(row, "__len__") else None
+            for row in continuous_transition_types
+        ]
+        if any(length != n_continuous_trans for length in row_lengths):
+            msg = (
+                "continuous_transition_types must be an n_states by n_states "
+                f"grid, here {n_continuous_trans} by {n_continuous_trans}"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"{n_continuous_trans} rows (one per source state), each "
+                f"a list of {n_continuous_trans} transitions (one per destination state)",
+                got=f"row lengths {row_lengths}",
+                hint="Row i, entry j is the transition from state i to state j; "
+                "give every pair of states a transition.",
+                example="    continuous_transition_types=[\n"
+                "        [RandomWalk(), Uniform()],\n"
+                "        [Uniform(), Uniform()],\n"
+                "    ]",
             )
 
         if not isinstance(discrete_transition_stickiness, float) and len(
