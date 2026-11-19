@@ -112,6 +112,87 @@ class TestGetHighestPosteriorThreshold:
         assert threshold.shape == (5,)
 
 
+def _reference_region_fraction(row: np.ndarray, threshold: float) -> float:
+    """Float64 fraction of a row's mass held by the bins at or above `threshold`."""
+    row = np.asarray(row, dtype=np.float64)
+    return float(row[row >= threshold].sum() / row.sum())
+
+
+@pytest.mark.unit
+class TestHPDThresholdOnUnnormalisedRows:
+    """Rows that do not sum to one, such as one state's slice of a posterior.
+
+    The threshold must be the boundary bin's own value, so the comparison
+    ``posterior >= threshold`` keeps that bin and the region holds at least
+    `coverage` of the row's mass.
+    """
+
+    @pytest.mark.parametrize(
+        ("row", "coverage", "expected"),
+        [
+            # 1.5234375 alone holds 87% of the row, so both bins are needed.
+            ([1.5234375, 0.2265625], 0.95, 0.2265625),
+            # The two tied bins enter together.
+            ([0.25, 0.056640625, 0.056640625, 0.07421875], 0.8, 0.056640625),
+            # A flat row (row sum about 0.30): every bin is tied.
+            ([0.006074353054532741] * 50, 0.95, 0.006074353054532741),
+        ],
+    )
+    def test_threshold_is_the_boundary_bin(self, row, coverage, expected):
+        posterior = np.array([row])
+
+        threshold = get_highest_posterior_threshold(posterior, coverage=coverage)
+
+        assert threshold[0] == expected
+        assert np.all(posterior >= threshold[:, None])
+
+    def test_float32_region_keeps_the_boundary_bin(self):
+        """Both 1 cm bins are needed for 95% of this float32 row."""
+        posterior = xr.DataArray(
+            np.array([[1.52734375, 0.22265625]], dtype=np.float32),
+            dims=("time", "position"),
+            coords={"position": [0.5, 1.5]},
+        )
+
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+
+        assert threshold[0] == np.float32(0.22265625)
+        np.testing.assert_array_equal(
+            get_HPD_spatial_coverage(posterior, threshold), [2.0]
+        )
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    @pytest.mark.parametrize("rows", ["uniform", "state_slice"])
+    def test_threshold_is_a_row_value_and_region_holds_coverage(self, dtype, rows):
+        """Over random unnormalised rows, no region falls short of `coverage`.
+
+        The cumulative sum is taken in the input dtype, so the region may
+        fall short by its rounding, at most ``n_bins`` machine epsilons. A
+        threshold just above the boundary bin drops that bin and left these
+        rows holding as little as 94%.
+        """
+        n_time, n_bins, coverage = 2000, 50, 0.95
+        rng = np.random.default_rng(0)
+        if rows == "uniform":
+            posterior = rng.random((n_time, n_bins)) * 0.3
+        else:
+            posterior = rng.dirichlet(np.ones(n_bins), n_time) * rng.uniform(
+                0.1, 0.9, (n_time, 1)
+            )
+        posterior = posterior.astype(dtype)
+
+        threshold = get_highest_posterior_threshold(posterior, coverage=coverage)
+
+        assert np.all(np.any(posterior == threshold[:, None], axis=1))
+        held = np.array(
+            [
+                _reference_region_fraction(row, row_threshold)
+                for row, row_threshold in zip(posterior, threshold, strict=True)
+            ]
+        )
+        assert held.min() >= coverage - n_bins * np.finfo(dtype).eps
+
+
 @pytest.mark.integration
 def test_default_detector_conditional_nonlocal_posterior():
     """Every frame of the default detector's conditional non-local posterior

@@ -35,15 +35,18 @@ def get_highest_posterior_threshold(
     Returns
     -------
     threshold : np.ndarray, shape (n_time,)
-        Threshold values for each time point. Posterior values at or above
-        this threshold define the HPD region with the specified coverage.
-        Rows without any posterior mass have a NaN threshold. Missing bins
-        are ignored independently in each row.
+        Threshold values for each time point: the posterior value of the
+        region's boundary bin. Posterior values at or above this threshold
+        define the HPD region, which holds at least `coverage` of the row's
+        mass, whether or not the row sums to one. Rows without any posterior
+        mass have a NaN threshold. Missing bins are ignored independently in
+        each row.
 
     Notes
     -----
     The algorithm sorts posterior values in descending order and finds the
-    threshold where the cumulative probability first exceeds the desired coverage.
+    threshold where the cumulative probability first reaches the desired
+    coverage.
     For reference see: https://stats.stackexchange.com/questions/240749/how-to-find-95-credible-interval
 
     Bins are ranked by mass, which is the highest-density region only when
@@ -54,35 +57,8 @@ def get_highest_posterior_threshold(
     # Reshape non-time dimensions into a single dimension
     n_time = posterior.shape[0]
     posterior_array = np.asarray(posterior).reshape((n_time, -1))
-    # Missing bins in one frame must not remove those bins from other frames.
-    posterior_array = np.where(np.isnan(posterior_array), 0.0, posterior_array)
-    threshold = np.full(n_time, np.nan)
-    const = np.sum(posterior_array, axis=1, keepdims=True)
-    has_mass = np.isfinite(const[:, 0]) & (const[:, 0] > 0.0)
-    if not np.any(has_mass):
-        return threshold
-
-    # Sort the posterior values in descending order
-    sorted_norm_posterior = (
-        np.sort(posterior_array[has_mass], axis=1)[:, ::-1] / const[has_mass]
-    )
-
-    # Find the threshold that corresponds to the coverage
-    # by finding the first index where the cumulative sum is greater than the coverage
-    posterior_less_than_coverage = np.cumsum(sorted_norm_posterior, axis=1) >= coverage
-    crit_ind = np.argmax(posterior_less_than_coverage, axis=1)
-
-    # Rounding can leave the full cumulative mass just below one. Fall back
-    # to the last positive bin, so missing/zero-mass bins stay outside the HPD.
-    no_cutoff = ~posterior_less_than_coverage.any(axis=1)
-    last_positive = np.count_nonzero(sorted_norm_posterior > 0.0, axis=1) - 1
-    crit_ind[no_cutoff] = last_positive[no_cutoff]
-
-    threshold[has_mass] = (
-        sorted_norm_posterior[np.arange(np.count_nonzero(has_mass)), crit_ind]
-        * const[has_mass, 0]
-    )
-    return threshold
+    # Mass is density at unit widths, so both rankings share one rule.
+    return _highest_density_threshold(posterior_array, coverage)
 
 
 def _check_density_coverage(coverage: float) -> None:
@@ -93,41 +69,48 @@ def _check_density_coverage(coverage: float) -> None:
 
 
 def _highest_density_threshold(
-    posterior: np.ndarray, coverage: float, bin_width: np.ndarray
+    posterior: np.ndarray, coverage: float, bin_width: np.ndarray | None = None
 ) -> np.ndarray:
     """Density threshold of the highest-density region holding `coverage`.
 
     Parameters
     ----------
     posterior : np.ndarray, shape (n_time, n_position_bins)
-        Posterior mass; NaN bins are ignored.
+        Posterior mass; NaN bins are ignored. Rows need not sum to one.
     coverage : float
-        Mass the region must reach.
-    bin_width : np.ndarray, shape (n_position_bins,)
-        Positive width of each bin.
+        Fraction of each row's mass the region must reach.
+    bin_width : np.ndarray, shape (n_position_bins,), optional
+        Positive width of each bin. None means unit widths, which rank the
+        bins by mass.
 
     Returns
     -------
     threshold : np.ndarray, shape (n_time,)
-        Density ``posterior / bin_width`` at the region's boundary; NaN for
-        rows without mass.
+        Density ``posterior / bin_width`` of the region's boundary bin (its
+        mass when `bin_width` is None); NaN for rows without mass.
     """
+    # Missing bins in one frame must not remove those bins from other frames.
     posterior = np.where(np.isnan(posterior), 0.0, posterior)
     threshold = np.full(posterior.shape[0], np.nan)
     const = np.sum(posterior, axis=1, keepdims=True)
     has_mass = np.isfinite(const[:, 0]) & (const[:, 0] > 0.0)
     if not np.any(has_mass):
         return threshold
-    # The same division as the membership test in get_HPD_spatial_coverage,
-    # so the boundary bin compares equal to the threshold.
-    density = posterior[has_mass] / bin_width
-    order = np.argsort(-density, axis=1, kind="stable")
-    sorted_density = np.take_along_axis(density, order, axis=1)
-    sorted_mass = np.take_along_axis(posterior[has_mass], order, axis=1)
+    if bin_width is None:
+        # At unit widths density is mass: a plain sort ranks the bins.
+        sorted_density = sorted_mass = np.sort(posterior[has_mass], axis=1)[:, ::-1]
+    else:
+        # The same division as the membership test in get_HPD_spatial_coverage,
+        # so the boundary bin compares equal to the threshold.
+        mass = posterior[has_mass]
+        density = mass / bin_width
+        order = np.argsort(-density, axis=1, kind="stable")
+        sorted_density = np.take_along_axis(density, order, axis=1)
+        sorted_mass = np.take_along_axis(mass, order, axis=1)
     reached = np.cumsum(sorted_mass / const[has_mass], axis=1) >= coverage
     crit_ind = np.argmax(reached, axis=1)
-    # As for mass: if rounding leaves the total just below one, stop at the
-    # last bin with mass.
+    # Rounding can leave the full cumulative mass just below one. Fall back
+    # to the last positive bin, so missing/zero-mass bins stay outside the HPD.
     no_cutoff = ~reached.any(axis=1)
     last_positive = np.count_nonzero(sorted_density > 0.0, axis=1) - 1
     crit_ind[no_cutoff] = last_positive[no_cutoff]
