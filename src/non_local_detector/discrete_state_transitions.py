@@ -494,7 +494,9 @@ def jax_centered_log_softmax_forward(y: jax.Array) -> jax.Array:
 
 
 def get_transition_prior(
-    concentration: float, stickiness: float | np.ndarray, n_states: int
+    concentration: float,
+    stickiness: float | np.integer | np.floating | np.ndarray,
+    n_states: int,
 ) -> np.ndarray:
     """Create a Dirichlet prior for the transition matrix rows.
 
@@ -505,9 +507,10 @@ def get_transition_prior(
     ----------
     concentration : float
         Base concentration parameter for the Dirichlet prior.
-    stickiness : float or np.ndarray, shape (n_states,)
-        Stickiness parameter(s) for diagonal entries. If float, same value
-        is applied to all states. If array, per-state stickiness values.
+    stickiness : float, NumPy integer or floating scalar, or np.ndarray, shape (n_states,)
+        Stickiness parameter(s) for diagonal entries. A scalar (including a
+        0-d array) is applied to all states; an array of shape (n_states,)
+        gives per-state stickiness values.
     n_states : int
         Number of discrete states.
 

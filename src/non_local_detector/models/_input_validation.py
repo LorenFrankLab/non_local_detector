@@ -2524,10 +2524,12 @@ class _InputValidationMixin:
                 "    ]",
             )
 
-        if np.ndim(discrete_transition_stickiness) == 0:
-            dtype = np.asarray(discrete_transition_stickiness).dtype
+        # Converted only to inspect it; the value is stored as given.
+        stickiness = np.asarray(discrete_transition_stickiness)
+        if stickiness.ndim == 0:
             if not (
-                np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.floating)
+                np.issubdtype(stickiness.dtype, np.integer)
+                or np.issubdtype(stickiness.dtype, np.floating)
             ):
                 msg = "A scalar discrete_transition_stickiness must be a real number"
                 raise ValidationError(
@@ -2539,12 +2541,12 @@ class _InputValidationMixin:
                     hint="Pass the stickiness as a number, not a string or other object",
                     example="    discrete_transition_stickiness=0.0",
                 )
-        elif len(discrete_initial_conditions) != len(discrete_transition_stickiness):
+        elif len(discrete_initial_conditions) != len(stickiness):
             msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single number"
             raise ValidationError(
                 msg,
                 expected=f"Either a number or array of length {n_discrete}",
-                got=f"Array of length {len(discrete_transition_stickiness)}",
+                got=f"Array of length {len(stickiness)}",
                 hint="Use a number for uniform stickiness across all states, or an array with one value per state",
                 example=f"    discrete_transition_stickiness=0.0  # uniform\n    # OR\n    discrete_transition_stickiness=np.array([{', '.join(['0.0'] * n_discrete)}])  # per-state",
             )
