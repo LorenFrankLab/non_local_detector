@@ -132,6 +132,15 @@ def test_track_argument_forms_survive_the_parameter_round_trip(
     unpickled = pickle.loads(pickle.dumps(environment.fit_place_grid()))
 
     for copy in (rebuilt, unpickled):
+        assert type(copy.edge_order) is type(edge_order)
+        if isinstance(edge_order, np.ndarray):
+            assert copy.edge_order.dtype == edge_order.dtype
+            np.testing.assert_array_equal(copy.edge_order, edge_order)
+        else:
+            # A tuple never equals a list, so this also compares the edges' type.
+            assert copy.edge_order == edge_order
+        assert type(copy.edge_spacing) is tuple
+        assert copy.edge_spacing == (15.0,)
         _assert_same_grid(copy, reference_track)
         np.testing.assert_array_equal(
             copy.decoding_position(POINTS), reference_track.decoding_position(POINTS)
