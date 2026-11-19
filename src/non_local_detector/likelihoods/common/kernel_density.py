@@ -890,6 +890,10 @@ def _repair_in_log_space(
 ) -> jax.Array:
     """Replace the flagged points of a scaled pass with log-space values.
 
+    The flagged points are gathered and written back through an index padded
+    to few sizes (see ``padded_index``), so repairs of different numbers of
+    points share compiled kernels; the padding's writes are dropped.
+
     Parameters
     ----------
     values : jax.Array, shape (n_points,)
@@ -906,10 +910,13 @@ def _repair_in_log_space(
     if not needs_log_space.any():
         return values
     index = np.flatnonzero(needs_log_space)
+    gather = padded_index(index)
     exact = _compiled_log_space_kde_log_density(
-        points[padded_index(index)], samples, std, block_size, weights
+        points[gather], samples, std, block_size, weights
     )
-    return values.at[index].set(exact[: index.size])
+    # Out-of-range targets drop the padding's writes.
+    scatter = np.where(np.arange(gather.size) < index.size, gather, values.shape[0])
+    return values.at[scatter].set(exact, mode="drop")
 
 
 def kde_log_densities(
