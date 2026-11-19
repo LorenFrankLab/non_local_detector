@@ -1313,7 +1313,8 @@ def _add_electrode_local_terms(
     position_std, waveform_stds : jax.Array
         Position and waveform-feature kernel bandwidths.
     log_occupancy_at_spikes : jax.Array, shape (n_padded_spikes,)
-        True log occupancy density at ``spike_positions``.
+        True log occupancy density at ``spike_positions``; padding rows hold
+        unrepaired values, possibly ``-inf``.
     log_gpi_density : jax.Array, shape (n_rows,)
         This electrode's ground-process log density at the animal's position
         in each row.
@@ -2283,6 +2284,9 @@ def compute_local_log_likelihood(
                 occupancy_std,
                 occupancy_model.block_size or n_padded,
                 occupancy_weights,
+                # Zero padding rows can lie far from every occupancy sample;
+                # their values are dropped, so they are not repaired.
+                n_valid=position_at_spike_time.shape[0],
             ),
             prepared_kde_log_density(
                 electrode_gpi_model, interpolated_position, rows.spike_time_order

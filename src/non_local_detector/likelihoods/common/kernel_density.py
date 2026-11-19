@@ -835,6 +835,8 @@ def true_kde_log_density(
     block_size: int,
     weights: jax.Array,
     keys: jax.Array | None = None,
+    *,
+    n_valid: int | None = None,
 ) -> jax.Array:
     """Return the true log density of fitted KDE leaves, outside jit.
 
@@ -856,6 +858,11 @@ def true_kde_log_density(
         Sample weights.
     keys : jax.Array, shape (n_samples,), optional
         From :func:`_sorted_sample_keys`.
+    n_valid : int, optional
+        Number of leading rows of ``points`` that are evaluation points. The
+        rows after them are padding: they keep their scaled-pass values,
+        which may be wrong or ``-inf``, and are never re-evaluated in log
+        space. By default every row is an evaluation point.
 
     Returns
     -------
@@ -864,8 +871,11 @@ def true_kde_log_density(
     values, needs_log_space = _compiled_scaled_kde_log_density(
         points, samples, std, block_size, weights, keys
     )
+    needs_log_space = np.asarray(needs_log_space)
+    if n_valid is not None:
+        needs_log_space = needs_log_space & (np.arange(needs_log_space.size) < n_valid)
     return _repair_in_log_space(
-        values, np.asarray(needs_log_space), points, samples, std, block_size, weights
+        values, needs_log_space, points, samples, std, block_size, weights
     )
 
 

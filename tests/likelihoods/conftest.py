@@ -6,6 +6,7 @@ Import the helpers explicitly, as the root ``conftest`` is imported elsewhere:
 """
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 import jax
 import jax.numpy as jnp
@@ -137,6 +138,36 @@ def reduction_path(request, monkeypatch):
         monkeypatch.setattr(reductions, "_reduces_sequentially", lambda values: False)
         _retrace_under(_SEGMENTED_SCAN)
     return request.param
+
+
+_LOWERING_EVENT = "/jax/core/compile/jaxpr_to_mlir_module_duration"
+
+
+@contextmanager
+def count_compilations() -> Iterator[list[str]]:
+    """Names of the programs JAX lowers inside the block, eager ops included.
+
+    Every in-memory cache miss lowers a program, whether or not the
+    persistent compilation cache then supplies the executable, so the count
+    is the same on a warm or cold persistent cache. A program first compiled
+    by an earlier test is not counted; compare calls that share shapes.
+    """
+    lowered: list[str] = []
+
+    def listener(event: str, duration_secs: float, **kwargs: object) -> None:
+        if event == _LOWERING_EVENT:
+            lowered.append(str(kwargs.get("fun_name", "")))
+
+    jax.monitoring.register_event_duration_secs_listener(listener)
+    try:
+        # A new function always lowers: an empty count then means nothing
+        # compiled, not that the event was renamed.
+        jax.jit(lambda x: x + 1)(np.float32(0.0))
+        assert lowered, f"JAX no longer records {_LOWERING_EVENT}"
+        lowered.clear()
+        yield lowered
+    finally:
+        jax.monitoring.unregister_event_duration_listener(listener)
 
 
 def tolerance(
