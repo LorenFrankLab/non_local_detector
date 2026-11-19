@@ -262,6 +262,19 @@ def test_movie_refuses_position_rows_that_differ_from_result_times(monkeypatch):
         _movie_frame_data(monkeypatch, 500, 1000, slice(250, 500))
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "time_slice",
+    [slice(250, 250), slice(600, 700), slice(300, 200)],
+    ids=["empty", "past the end", "stop before start"],
+)
+def test_movie_refuses_a_time_slice_that_selects_no_rows(monkeypatch, time_slice):
+    from non_local_detector.exceptions import ValidationError
+
+    with pytest.raises(ValidationError, match="time_slice selects no rows"):
+        _movie_frame_data(monkeypatch, 500, 500, time_slice)
+
+
 def test_movie_posterior_has_no_false_peak_at_last_bin():
     """Local's mass must not be placed on the last x/y bin of the movie posterior."""
     import pandas as pd

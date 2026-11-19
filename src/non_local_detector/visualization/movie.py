@@ -85,7 +85,8 @@ def make_single_environment_movie(
     Raises
     ------
     ValidationError
-        If ``position_info`` does not have one row per time of ``results``.
+        If ``position_info`` does not have one row per time of ``results``, or
+        ``time_slice`` selects no rows.
     """
     position_name = (
         ["head_position_x", "head_position_y"]
@@ -103,6 +104,15 @@ def make_single_environment_movie(
             got=f"position_info with {n_rows} rows",
             hint="Interpolate the tracking to the decode bin centers first, "
             "e.g. with non_local_detector.analysis.align_tracking_to_results.",
+        )
+    frame_rows = np.arange(n_rows)[time_slice]
+    if frame_rows.size == 0:
+        msg = "make_single_environment_movie: time_slice selects no rows"
+        raise ValidationError(
+            msg,
+            expected=f"a slice selecting at least one of the {n_rows} rows",
+            got=f"{time_slice!r}",
+            hint="Give the rows to render, e.g. slice(0, 500).",
         )
 
     multiunit_firing_rate = pd.DataFrame(
@@ -126,7 +136,6 @@ def make_single_environment_movie(
     # and end of the recording, and each frame's row in it.
     window_size = 501
     window_ind = np.arange(window_size) - window_size // 2
-    frame_rows = np.arange(n_rows)[time_slice]
     rate_start = max(frame_rows.min() + window_ind[0], 0)
     rate_stop = min(frame_rows.max() + window_ind[-1] + 1, n_rows)
     rate = multiunit_firing_rate.iloc[rate_start:rate_stop]
