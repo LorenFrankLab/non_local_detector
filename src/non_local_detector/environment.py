@@ -1152,6 +1152,24 @@ class Environment:
                         example=f"    # Check track_graph.edges(): {list(self.track_graph.edges())[:3]}",
                     )
 
+        # Every graph edge gets bins, so each needs a place in the linear order.
+        listed = {frozenset(edge) for edge in edge_order}
+        missing = [
+            edge for edge in self.track_graph.edges() if frozenset(edge) not in listed
+        ]
+        if missing:
+            msg = f"edge_order omits track_graph edges {missing}"
+            raise ValidationError(
+                msg,
+                expected="every edge of track_graph in edge_order",
+                got=f"{len(missing)} of {self.track_graph.number_of_edges()} edges missing",
+                hint=(
+                    "Every edge of the track graph is binned; add the missing "
+                    "edges to edge_order, or remove them from the graph"
+                ),
+                example=f"    edge_order = [*edge_order, {missing[0]}]",
+            )
+
         # Validate edge_spacing: one real number, or one per gap in a list,
         # tuple or 1-D array; NumPy scalars count as numbers.
         edge_spacing: Any = self.edge_spacing

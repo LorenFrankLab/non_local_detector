@@ -222,6 +222,15 @@ def test_invalid_edge_order_is_refused_in_every_form(edge_order):
         _track_environment(edge_order, 0.0)
 
 
+def test_edge_order_that_omits_a_graph_edge_is_refused_naming_it():
+    graph = make_track_graph(
+        [(0, 0), (10, 0), (20, 0), (10, 10)], [(0, 1), (1, 2), (1, 3)]
+    )
+
+    with pytest.raises(ValidationError, match=r"\(1, 3\)"):
+        Environment(track_graph=graph, edge_order=[(0, 1), (1, 2)], edge_spacing=0.0)
+
+
 @pytest.fixture(scope="module")
 def reference_open_field() -> Environment:
     return Environment(
