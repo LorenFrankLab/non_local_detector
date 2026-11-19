@@ -88,7 +88,11 @@ def test_a_detector_fitted_without_an_intercept_still_restores_and_decodes(
             detector_base, "_require_transition_intercept", lambda *args: None
         )
         model.fit(**fit, discrete_transition_covariate_data=_speed(61))
-        expected = model.predict(**predict).acausal_posterior.to_numpy()
+        # Decoding before saving warns about nothing, so a warning below
+        # comes from restoring the detector.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            expected = model.predict(**predict).acausal_posterior.to_numpy()
         model.save_model(path)
         pickled = pickle.dumps(model)
 
@@ -99,6 +103,6 @@ def test_a_detector_fitted_without_an_intercept_still_restores_and_decodes(
             if route == "saved model"
             else pickle.loads(pickled)
         )
-    actual = restored.predict(**predict).acausal_posterior.to_numpy()
+        actual = restored.predict(**predict).acausal_posterior.to_numpy()
 
     np.testing.assert_array_equal(actual, expected)
