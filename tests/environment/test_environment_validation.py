@@ -147,16 +147,15 @@ class TestTrackGraphValidation:
 class TestEdgeOrderValidation:
     """Test validation of edge_order parameter."""
 
-    def test_edge_order_must_be_list(self):
-        """Test that edge_order must be a list."""
+    def test_edge_order_of_bare_nodes_is_rejected_at_its_first_edge(self):
+        """A flat ``(0, 1)`` is a tuple of nodes: its first edge is not a 2-tuple."""
         g = nx.Graph()
         g.add_node(0, pos=(0, 0))
         g.add_node(1, pos=(1, 1))
         g.add_edge(0, 1, distance=1.0, edge_id=0)
         with pytest.raises(ValidationError) as exc_info:
             Environment(track_graph=g, edge_order=(0, 1), edge_spacing=0.0)
-        assert "edge_order" in str(exc_info.value)
-        assert "list" in str(exc_info.value).lower()
+        assert "edge_order[0] must be a 2-tuple" in str(exc_info.value)
 
     def test_edge_order_elements_must_be_tuples(self):
         """Test that edge_order elements must be 2-tuples."""
