@@ -61,7 +61,7 @@ import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from itertools import compress
+from itertools import compress, count, islice
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -2693,10 +2693,18 @@ def make_track_graph_with_bin_centers_edges(
     track_graph_with_bin_centers_edges : networkx.Graph
         Copy of the track graph in which each original edge is replaced by a
         path through the added nodes. Added nodes have ``pos``, ``edge_id`` and
-        ``is_bin_edge`` attributes.
+        ``is_bin_edge`` attributes, and integer ids that are not labels of
+        ``track_graph``.
     """
     track_graph_with_bin_centers_edges = track_graph.copy()
-    n_nodes = len(track_graph.nodes)
+    # Added nodes are numbered on from the number of original nodes, skipping
+    # any number that is an original label. Graphs labelled 0..N-1, and those
+    # with non-integer labels, skip none.
+    new_ids = (
+        node_id
+        for node_id in count(len(track_graph.nodes))
+        if node_id not in track_graph
+    )
 
     for edge_ind, (node1, node2) in enumerate(track_graph.edges):
         # Preserve the user-assigned edge_id if present, otherwise fall back to
@@ -2721,7 +2729,7 @@ def make_track_graph_with_bin_centers_edges(
             xy = np.stack((xnew, ynew), axis=1)
         dist_between_nodes = np.linalg.norm(np.diff(xy, axis=0), axis=1)
 
-        new_node_ids = n_nodes + np.arange(len(dist_between_nodes) + 1)
+        new_node_ids = np.array(list(islice(new_ids, len(dist_between_nodes) + 1)))
         nx.add_path(
             track_graph_with_bin_centers_edges,
             [*new_node_ids],
@@ -2745,7 +2753,6 @@ def make_track_graph_with_bin_centers_edges(
         track_graph_with_bin_centers_edges.nodes[node2]["edge_id"] = edge_id
         track_graph_with_bin_centers_edges.nodes[node1]["is_bin_edge"] = True
         track_graph_with_bin_centers_edges.nodes[node2]["is_bin_edge"] = True
-        n_nodes = len(track_graph_with_bin_centers_edges.nodes)
 
     return track_graph_with_bin_centers_edges
 
