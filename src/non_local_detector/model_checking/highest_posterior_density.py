@@ -29,7 +29,7 @@ def get_highest_posterior_threshold(
         Posterior probability distributions over position at each time point.
         The non-time dimensions are flattened for processing.
     coverage : float, optional
-        Desired coverage probability for the HPD region. Must be between 0 and 1.
+        Desired coverage probability for the HPD region, in ``(0, 1]``.
         Default is 0.95 for 95% coverage.
 
     Returns
@@ -41,6 +41,11 @@ def get_highest_posterior_threshold(
         mass, whether or not the row sums to one. Rows without any posterior
         mass have a NaN threshold. Missing bins are ignored independently in
         each row.
+
+    Raises
+    ------
+    ValueError
+        If `coverage` is not in ``(0, 1]`` (NaN included).
 
     Notes
     -----
@@ -61,13 +66,6 @@ def get_highest_posterior_threshold(
     return _highest_density_threshold(posterior_array, coverage)
 
 
-def _check_density_coverage(coverage: float) -> None:
-    """Raise unless ``0 < coverage <= 1`` (NaN fails too)."""
-    if not 0.0 < coverage <= 1.0:
-        msg = f"coverage must be in (0, 1]; got {coverage}."
-        raise ValueError(msg)
-
-
 def _highest_density_threshold(
     posterior: np.ndarray, coverage: float, bin_width: np.ndarray | None = None
 ) -> np.ndarray:
@@ -78,7 +76,7 @@ def _highest_density_threshold(
     posterior : np.ndarray, shape (n_time, n_position_bins)
         Posterior mass; NaN bins are ignored. Rows need not sum to one.
     coverage : float
-        Fraction of each row's mass the region must reach.
+        Fraction of each row's mass the region must reach, in ``(0, 1]``.
     bin_width : np.ndarray, shape (n_position_bins,), optional
         Positive width of each bin. None means unit widths, which rank the
         bins by mass.
@@ -88,7 +86,15 @@ def _highest_density_threshold(
     threshold : np.ndarray, shape (n_time,)
         Density ``posterior / bin_width`` of the region's boundary bin (its
         mass when `bin_width` is None); NaN for rows without mass.
+
+    Raises
+    ------
+    ValueError
+        If `coverage` is not in ``(0, 1]`` (NaN included).
     """
+    if not 0.0 < coverage <= 1.0:
+        msg = f"coverage must be in (0, 1]; got {coverage}."
+        raise ValueError(msg)
     # Missing bins in one frame must not remove those bins from other frames.
     posterior = np.where(np.isnan(posterior), 0.0, posterior)
     threshold = np.full(posterior.shape[0], np.nan)
@@ -239,7 +245,6 @@ def get_HPD_spatial_coverage(
             row_threshold = cast(np.ndarray, hpd_threshold)
             isin_values = np.asarray(isin_hpd.values)
         else:
-            _check_density_coverage(coverage)
             if not np.all(np.isfinite(bin_width) & (bin_width > 0)):
                 msg = "bin_width must be finite and positive to rank by density."
                 raise ValueError(msg)

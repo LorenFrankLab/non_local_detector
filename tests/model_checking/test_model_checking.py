@@ -13,6 +13,9 @@ from non_local_detector.model_checking.posterior_consistency import (
     posterior_consistency_kl_divergence,
 )
 
+# A percentage, above one, negative, zero and NaN.
+OUT_OF_RANGE_COVERAGE = [95.0, 1.5, -0.1, 0.0, np.nan]
+
 # ---------------------------------------------------------------------------
 # HPD threshold tests
 # ---------------------------------------------------------------------------
@@ -110,6 +113,15 @@ class TestGetHighestPosteriorThreshold:
         threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
 
         assert threshold.shape == (5,)
+
+    @pytest.mark.parametrize("coverage", OUT_OF_RANGE_COVERAGE)
+    def test_rejects_coverage_outside_unit_interval(self, coverage):
+        """A percentage or NaN must raise, not return the whole support."""
+        p = np.array([[0.5, 0.25, 0.125, 0.125]])
+        with pytest.raises(ValueError, match="coverage"):
+            get_highest_posterior_threshold(p, coverage=coverage)
+        with pytest.raises(ValueError, match="coverage"):
+            posterior_consistency_hpd_overlap(p, p[:, ::-1], coverage=coverage)
 
 
 def _reference_region_fraction(row: np.ndarray, threshold: float) -> float:
@@ -600,7 +612,7 @@ class TestHPDUnequalBinWidths:
         with pytest.raises(ValueError, match=message):
             get_HPD_spatial_coverage(posterior, **kwargs)
 
-    @pytest.mark.parametrize("coverage", [1.5, -0.1, 0.0, np.nan])
+    @pytest.mark.parametrize("coverage", OUT_OF_RANGE_COVERAGE)
     def test_rejects_coverage_outside_unit_interval(self, coverage):
         posterior, widths = _two_arm_posterior(within_arm_slope=0.0)
         with pytest.raises(ValueError, match="coverage"):
