@@ -76,7 +76,10 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
     environments : Environments, optional
         The two spatial environments, by default
         ``Environment(environment_name="env1")`` and
-        ``Environment(environment_name="env2")``.
+        ``Environment(environment_name="env2")``. Both must decode in
+        the same number of dimensions (a track graph decodes in 1-D, an
+        open field in its positions' dimensions); ``fit`` raises
+        ``ValidationError`` otherwise.
     sorted_spikes_algorithm : str, optional
         Sorted-spikes likelihood algorithm, a key of
         ``_SORTED_SPIKES_ALGORITHMS``, by default "sorted_spikes_kde".
@@ -237,7 +240,10 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
     environments : Environments, optional
         The two spatial environments, by default
         ``Environment(environment_name="env1")`` and
-        ``Environment(environment_name="env2")``.
+        ``Environment(environment_name="env2")``. Both must decode in
+        the same number of dimensions (a track graph decodes in 1-D, an
+        open field in its positions' dimensions); ``fit`` raises
+        ``ValidationError`` otherwise.
     clusterless_algorithm : str, optional
         Clusterless likelihood algorithm, a key of ``_CLUSTERLESS_ALGORITHMS``,
         by default "clusterless_kde".

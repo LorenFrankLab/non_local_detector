@@ -9,10 +9,17 @@ These tests cover the validation methods that ensure proper model configuration:
 
 import warnings
 
+import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector import ContFragSortedSpikesClassifier, RandomWalk, Uniform
+from non_local_detector import (
+    ContFragSortedSpikesClassifier,
+    Environment,
+    MultiEnvironmentSortedSpikesClassifier,
+    RandomWalk,
+    Uniform,
+)
 from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
@@ -484,6 +491,64 @@ class TestContinuousTransitionGridShape:
                 continuous_transition_types=[[RandomWalk()], [Uniform(), Uniform()]]
             )
         assert detector.continuous_transition_types is grid
+
+
+@pytest.mark.unit
+def test_environments_of_different_dimensionality_are_refused_at_fit(monkeypatch):
+    """A track graph decodes in 1-D and an open field in 2-D; the results hold
+    one position axis for every state, so fit refuses the pair before it fits
+    any encoding model."""
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 0.0))
+    graph.add_node(1, pos=(100.0, 0.0))
+    graph.add_edge(0, 1, distance=100.0, edge_id=0)
+    detector = MultiEnvironmentSortedSpikesClassifier(
+        environments=[
+            Environment(
+                environment_name="track",
+                place_bin_size=5.0,
+                track_graph=graph,
+                edge_order=[(0, 1)],
+                edge_spacing=0.0,
+            ),
+            Environment(environment_name="field", place_bin_size=5.0),
+        ],
+        observation_models=[
+            ObservationModel(environment_name="track"),
+            ObservationModel(environment_name="field"),
+        ],
+        continuous_transition_types=[
+            [
+                RandomWalk(environment_name="track"),
+                Uniform(environment_name="track", environment2_name="field"),
+            ],
+            [
+                Uniform(environment_name="field", environment2_name="track"),
+                RandomWalk(environment_name="field"),
+            ],
+        ],
+        sampling_frequency=100.0,
+    )
+    n_samples = 200
+    time = np.arange(2 * n_samples) / 100.0
+    phase = np.linspace(0.0, 4.0 * np.pi, n_samples)
+    position = np.vstack(
+        [
+            np.column_stack([50.0 + 45.0 * np.sin(phase), np.zeros(n_samples)]),
+            np.column_stack([20.0 + 18.0 * np.sin(phase), 20.0 + 18.0 * np.cos(phase)]),
+        ]
+    )
+    labels = np.repeat(["track", "field"], n_samples)
+
+    def fail(*args, **kwargs):
+        pytest.fail("an encoding model was fitted")
+
+    monkeypatch.setattr(detector, "fit_encoding_model", fail)
+    with pytest.raises(ValidationError, match="dimension") as error:
+        detector.fit(time, position, [time[::7]], environment_labels=labels)
+    message = str(error.value)
+    assert "'track' (1-D)" in message
+    assert "'field' (2-D)" in message
 
 
 @pytest.mark.unit

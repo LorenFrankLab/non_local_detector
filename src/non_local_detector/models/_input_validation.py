@@ -305,6 +305,42 @@ def _sample_labels(
     return labels
 
 
+def _require_one_decoding_dimensionality(environments: Sequence[Environment]) -> None:
+    """Require every fitted environment to decode in the same number of dimensions.
+
+    The results hold one set of position coordinates for the bins of every
+    state, so a track graph (1-D bins) cannot sit beside an open field (2-D
+    bins) in one detector.
+
+    Parameters
+    ----------
+    environments : sequence of Environment
+        Fitted environments.
+
+    Raises
+    ------
+    ValidationError
+        If the environments' place bin centers differ in dimension.
+    """
+    dimensions = [
+        (environment.environment_name, environment.place_bin_centers_.shape[1])
+        for environment in environments
+    ]
+    if len({n_dims for _, n_dims in dimensions}) <= 1:
+        return
+    described = ", ".join(f"{name!r} ({n_dims}-D)" for name, n_dims in dimensions)
+    msg = f"The environments decode in different numbers of dimensions: {described}"
+    raise ValidationError(
+        msg,
+        expected="environments whose place bins have the same number of dimensions",
+        got=described,
+        hint="A track graph decodes along its linearized position (1-D) and "
+        "an open field in the position's dimensions. Use environments of "
+        "one kind, such as a track graph for each, or decode each "
+        "environment with its own detector.",
+    )
+
+
 def _require_labeled_environments(
     environment_labels: np.ndarray, names: Sequence[str]
 ) -> None:
