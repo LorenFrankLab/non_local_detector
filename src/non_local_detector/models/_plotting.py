@@ -104,7 +104,7 @@ class _PlottingMixin:
                 stay = np.diag(self.discrete_state_transitions_)
                 with np.errstate(divide="ignore"):
                     dwell = 1.0 / (1.0 - stay) / sampling_frequency
-                discrete_state_transition = np.ma.masked_array(
+                discrete_state_transition: np.ndarray = np.ma.masked_array(
                     np.diag(dwell), mask=~np.eye(stay.size, dtype=bool)
                 )
                 finite_dwell = dwell[np.isfinite(dwell)]
