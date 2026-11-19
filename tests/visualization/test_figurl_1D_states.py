@@ -125,3 +125,51 @@ def test_probability_panel_shows_the_one_state_of_a_decoder(monkeypatch):
 
     (state,) = [entry for entry in series if entry["name"] == "Continuous"]
     np.testing.assert_array_equal(state["y"], np.ones(n_time))
+
+
+def test_decode_view_is_the_sparse_encoding_of_the_posterior(monkeypatch):
+    """Values, bin indices and per-frame counts equal ``np.nonzero`` of the
+    uint8 posterior, on bins with a gap between two arms."""
+    import xarray as xr
+
+    figurl_1D = _load_figurl_1d_with_stub_sortingview(monkeypatch)
+
+    class _KeepArguments:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        sys.modules["sortingview.views.franklab"],
+        "DecodedLinearPositionData",
+        _KeepArguments,
+    )
+    rng = np.random.default_rng(0)
+    n_time, n_position = 6, 5
+    probs = np.zeros((n_time, n_position))
+    for frame in range(n_time):
+        n_bins = rng.integers(0, 4)
+        chosen = rng.choice(n_position, size=n_bins, replace=False)
+        probs[frame, chosen] = rng.dirichlet(np.ones(n_bins)) if n_bins else []
+    probs[2] = 0.0  # a frame with no mass
+    posterior = xr.DataArray(
+        probs,
+        dims=["time", "position"],
+        coords={
+            "time": 3.0 + np.arange(n_time) / 500.0,
+            "position": [1.0, 3.0, 5.0, 20.0, 22.0],
+        },
+    )
+
+    view = figurl_1D.create_1D_decode_view(posterior)
+
+    discrete = (probs * 255).astype(np.uint8)
+    frame, position_bin = np.nonzero(discrete)
+    np.testing.assert_array_equal(view.kwargs["values"], discrete[frame, position_bin])
+    np.testing.assert_array_equal(
+        view.kwargs["positions"], position_bin.astype(np.uint16)
+    )
+    np.testing.assert_array_equal(
+        view.kwargs["frame_bounds"],
+        np.bincount(frame, minlength=n_time).astype(np.uint8),
+    )
+    assert view.kwargs["frame_bounds"][2] == 0
