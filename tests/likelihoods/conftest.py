@@ -142,6 +142,19 @@ def reduction_path(request, monkeypatch):
 
 _LOWERING_EVENT = "/jax/core/compile/jaxpr_to_mlir_module_duration"
 
+# The list that ``count_compilations`` is filling, or None outside it.
+_lowered: list[str] | None = None
+
+
+def _record_lowering(event: str, duration_secs: float, **kwargs: object) -> None:
+    if _lowered is not None and event == _LOWERING_EVENT:
+        _lowered.append(str(kwargs.get("fun_name", "")))
+
+
+# Registered once for the session: JAX before 0.8.2 cannot unregister a
+# listener.
+jax.monitoring.register_event_duration_secs_listener(_record_lowering)
+
 
 @contextmanager
 def count_compilations() -> Iterator[list[str]]:
@@ -152,13 +165,9 @@ def count_compilations() -> Iterator[list[str]]:
     is the same on a warm or cold persistent cache. A program first compiled
     by an earlier test is not counted; compare calls that share shapes.
     """
+    global _lowered
     lowered: list[str] = []
-
-    def listener(event: str, duration_secs: float, **kwargs: object) -> None:
-        if event == _LOWERING_EVENT:
-            lowered.append(str(kwargs.get("fun_name", "")))
-
-    jax.monitoring.register_event_duration_secs_listener(listener)
+    _lowered = lowered
     try:
         # A new function always lowers: an empty count then means nothing
         # compiled, not that the event was renamed.
@@ -167,7 +176,7 @@ def count_compilations() -> Iterator[list[str]]:
         lowered.clear()
         yield lowered
     finally:
-        jax.monitoring.unregister_event_duration_listener(listener)
+        _lowered = None
 
 
 def tolerance(
