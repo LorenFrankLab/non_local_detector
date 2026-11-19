@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Plots and movies
 
 - **Fixed:** `plot_discrete_state_transition(convert_to_seconds=True)` shows each state's expected dwell time in seconds, `1 / (1 - p_ii)` bins divided by the rate of the decode bins, which is now the detector's `sampling_frequency` unless `sampling_frequency` is passed. The rate defaulted to 1, so the default 500 Hz `NonLocalSortedSpikesDetector` showed dwell times in bins under a "Seconds" label: 100, 50, 25 and 25 where the dwell times are 0.2, 0.1, 0.05 and 0.05 s. The cells off the diagonal showed `1 / (1 - p_ij)`, which is not a duration (1.005 "Seconds" for Local to No-Spike); they are now left blank, and the colorbar reads "Expected dwell time (s)". A state with `p_ii = 1` shows `inf` at the top of the color scale, without a divide-by-zero warning. Decoded results do not change.
+- **Fixed:** `make_single_environment_movie` draws each frame's own posterior. The movie renders in 4 worker processes, each on a fresh figure, and the first frame each worker drew showed the posterior of frame 0 under its own time, position and MAP dot, so frames at one quarter, one half and three quarters of every movie of four or more frames were wrong (frames 1000, 2000 and 3000 of a 4,000-frame movie).
 
 ### Default initial conditions without zero-probability states
 

@@ -269,10 +269,11 @@ def _render_single_env_frame(
 
     # Update posterior mesh
     if axes["mesh"] is None:
-        # First frame: create mesh and set axis limits
+        # First frame this worker renders: create the mesh from it and set
+        # the axis limits.
         axes["mesh"] = (
             data["posterior"]
-            .isel(time=0)
+            .isel(time=frame_idx)
             .plot(
                 x="x_position",
                 y="y_position",

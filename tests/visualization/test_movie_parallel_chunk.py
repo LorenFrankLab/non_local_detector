@@ -89,6 +89,47 @@ def test_bottom_axis_limits_set_on_worker_first_frame_not_global_frame_zero():
 
 
 @pytest.mark.unit
+def test_worker_first_frame_draws_its_own_posterior():
+    """The mesh a worker builds on its first frame shows that frame's posterior.
+
+    Every chunk after the first starts on a fresh figure at a frame other than
+    0, so a mesh built from frame 0 would show the wrong posterior there.
+    """
+    fig, axes = _setup_single_env_figure()
+    try:
+        data = _make_frame_data()
+        # Unequal grid sides, so a transposed mesh would not match either.
+        probs = np.random.default_rng(1).random((data["posterior"].sizes["time"], 5, 7))
+        data["posterior"] = xr.DataArray(
+            probs,
+            dims=["time", "x_position", "y_position"],
+            coords={
+                "time": data["posterior"].time,
+                "x_position": np.linspace(0.0, 40.0, 5),
+                "y_position": np.linspace(0.0, 40.0, 7),
+            },
+        )
+        frame_idx = 50
+
+        _render_single_env_frame(fig, axes, frame_idx, data)
+
+        # pcolormesh(x="x_position", y="y_position") draws the (y, x) array.
+        np.testing.assert_array_equal(
+            np.ma.getdata(axes["mesh"].get_array()).reshape(7, 5),
+            probs[frame_idx].T,
+        )
+        assert axes["title"].get_text() == f"time = {frame_idx / 500.0:0.2f}"
+
+        _render_single_env_frame(fig, axes, frame_idx + 1, data)
+        np.testing.assert_array_equal(
+            np.ma.getdata(axes["mesh"].get_array()).reshape(7, 5),
+            probs[frame_idx + 1].T,
+        )
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.unit
 def test_ax1_limits_initialized_even_when_rate_update_raises():
     """A boundary chunk whose first frame overruns the rate array still sets limits.
 
