@@ -2268,7 +2268,8 @@ def get_grid(
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
         Position data used to determine the grid extent if `position_range`
-        is not provided. NaNs are ignored.
+        is not provided. NaNs are ignored. Any real dtype; the grid is
+        computed in float64.
     bin_size : float or tuple of float, optional
         The desired approximate size of the bins in each dimension (one value
         per dimension if a tuple). The actual size may vary slightly to evenly
@@ -2282,9 +2283,9 @@ def get_grid(
     -------
     edges : tuple[np.ndarray, ...]
         A tuple containing the bin edges for each position dimension. Each
-        element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
-        the number of bins in that dimension `d`. Includes the boundary bins
-        for grids with more than one dimension.
+        element is a float64 1D array of shape (n_bins_d + 1,), where
+        n_bins_d is the number of bins in that dimension `d`. Includes the
+        boundary bins for grids with more than one dimension.
     place_bin_edges_flat : np.ndarray, shape (n_total_edges, n_position_dims)
         The meshgrid of the bin edges, flattened so each row is one edge-grid
         point.
@@ -2295,6 +2296,9 @@ def get_grid(
         The shape of the grid in terms of the number of bins in each dimension
         (e.g., (n_bins_x, n_bins_y)).
     """
+    # In float64 whatever the position dtype, so the grid is the one a saved
+    # model rebuilds from its (float64) edges.
+    position = np.asarray(position, dtype=np.float64)
     position = position if position.ndim > 1 else position[:, np.newaxis]
     is_nan = np.any(np.isnan(position), axis=1)
     position = position[~is_nan]
