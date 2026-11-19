@@ -52,6 +52,7 @@ from non_local_detector.core import (
 from non_local_detector.discrete_state_transitions import (
     _check_initial_discrete_transition,
     _refuse_untrusted_transition,
+    _require_transition_intercept,
     _smoothness_matrix,
     _transition_intervals,
     predict_discrete_state_transitions,
@@ -1352,6 +1353,8 @@ class _DetectorBase(
         transition_type = self.discrete_transition_type
         initial = transition_type.make_state_transition(covariate_data)
         _check_initial_discrete_transition(initial, transition_type)
+        if not transition_type.is_stationary:
+            _require_transition_intercept(initial.design_matrix, transition_type)
         self.discrete_state_transitions_ = initial.transition_matrix
         self.discrete_transition_coefficients_ = initial.coefficients
         self.discrete_transition_design_matrix_ = initial.design_matrix

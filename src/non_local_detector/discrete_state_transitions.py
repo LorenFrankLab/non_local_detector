@@ -1041,6 +1041,41 @@ def _check_initial_discrete_transition(
     val.ensure_stochastic_matrix(matrix.reshape(-1, n_states), label)
 
 
+def _require_transition_intercept(
+    design_matrix: DesignMatrix, transition: DiscreteTransition
+) -> None:
+    """Check that a covariate transition a detector fits has an intercept.
+
+    The initial coefficients put the configured matrix's logits in their
+    first row, which reproduces that matrix only when the first design column
+    is the intercept, and EM's L2 penalty leaves the first column
+    unpenalized as the intercept. Only fitting checks this, so a detector
+    fitted with another formula still restores.
+
+    Parameters
+    ----------
+    design_matrix : patsy.DesignMatrix
+        Design matrix ``transition.make_state_transition`` returned.
+    transition : DiscreteTransition
+        The covariate-dependent transition being fitted, named in the error.
+
+    Raises
+    ------
+    ValueError
+        If the design's first column is not ``"Intercept"``.
+    """
+    column_names = design_matrix.design_info.column_names
+    if column_names[0] != "Intercept":
+        msg = (
+            f"{type(transition).__name__}: a covariate-dependent transition needs "
+            "an intercept as the first column of its formula, e.g. '1 + speed' or "
+            f"'1 + quantile_bs(speed)', got columns {column_names}. The configured "
+            "matrix sets the intercept; without one, the transitions decoded "
+            "would not be the configured matrix."
+        )
+        raise ValueError(msg)
+
+
 def _validate_diagonal_values(diagonal_values: npt.ArrayLike, name: str) -> None:
     """Check that diagonal values are one probability per state.
 
@@ -1271,7 +1306,10 @@ class DiscreteNonStationaryDiagonal:
         boundary's value. Pass explicit knots with e.g.
         ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``. patsy evaluates the
         formula as Python; ``load_model`` checks a formula read from a saved
-        model file before evaluating it (see its ``trust_formulas``).
+        model file before evaluating it (see its ``trust_formulas``). A
+        detector's ``fit`` needs an intercept as the formula's first column
+        (``"1 + ..."``), which the initial coefficients set, and raises
+        ``ValueError`` for a formula without one.
     smoothness : float or "reml", optional
         Strength of a penalty on the curvature of every ``quantile_bs`` and
         ``cyclic_bs`` term, ``integral f''(u)^2 du`` with the covariate
@@ -1352,7 +1390,10 @@ class DiscreteNonStationaryCustom:
         boundary's value. Pass explicit knots with e.g.
         ``"1 + bs(speed, knots=[1.0, 4.0, 16.0])"``. patsy evaluates the
         formula as Python; ``load_model`` checks a formula read from a saved
-        model file before evaluating it (see its ``trust_formulas``).
+        model file before evaluating it (see its ``trust_formulas``). A
+        detector's ``fit`` needs an intercept as the formula's first column
+        (``"1 + ..."``), which the initial coefficients set, and raises
+        ``ValueError`` for a formula without one.
     smoothness : float or "reml", optional
         Strength of a penalty on the curvature of every ``quantile_bs`` and
         ``cyclic_bs`` term, ``integral f''(u)^2 du`` with the covariate
