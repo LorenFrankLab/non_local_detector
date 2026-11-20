@@ -982,7 +982,7 @@ _GLM_MAX_STEP_HALVINGS = 30
 _GLM_BLOCK_BYTES = 256 * 2**20
 
 
-@partial(jax.jit, static_argnames=("block_rows", "derivatives"))
+@partial(jax.jit, static_argnames=("block_rows",))
 def _poisson_regression_sums(
     design_matrix: jax.Array,
     spikes: jax.Array,
@@ -991,8 +991,7 @@ def _poisson_regression_sums(
     rate_floor: float | jax.Array,
     *,
     block_rows: int,
-    derivatives: bool,
-) -> tuple[jax.Array, ...]:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Per-cell sums over rows of the Poisson data term and its derivatives.
 
     Parameters
@@ -1010,8 +1009,6 @@ def _poisson_regression_sums(
         Lower bound applied to the rate ``exp(design_matrix @ coefficients)``.
     block_rows : int
         Number of rows processed per block.
-    derivatives : bool
-        Also return the gradient and Hessian of the data term.
 
     Returns
     -------
@@ -1019,17 +1016,17 @@ def _poisson_regression_sums(
         ``sum_i [spikes_i * log(rate_i) - weights_i * rate_i]`` with
         ``rate = max(exp(design_matrix @ coefficients), rate_floor)``.
     gradient : jax.Array, shape (n_cells, n_coefficients)
-        Only if ``derivatives``.
+        Gradient of the data term.
     hessian : jax.Array, shape (n_cells, n_coefficients, n_coefficients)
-        Only if ``derivatives``: ``sum_i weights_i * rate_i * x_i x_i^T`` over
-        unfloored rows, the negated Hessian of the data term.
+        ``sum_i weights_i * rate_i * x_i x_i^T`` over unfloored rows, the
+        negated Hessian of the data term.
     """
     highest = jax.lax.Precision.HIGHEST
     n_cells, n_coefficients = coefficients.shape
 
     def add_block(
-        block: jax.Array, sums: tuple[jax.Array, ...]
-    ) -> tuple[jax.Array, ...]:
+        block: jax.Array, sums: tuple[jax.Array, jax.Array, jax.Array]
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         start = block * block_rows
         X = jax.lax.dynamic_slice_in_dim(design_matrix, start, block_rows)
         y = jax.lax.dynamic_slice_in_dim(spikes, start, block_rows, axis=1)
@@ -1038,8 +1035,6 @@ def _poisson_regression_sums(
         above_floor = unfloored > rate_floor
         rate = jnp.where(above_floor, unfloored, rate_floor)
         data = jnp.sum(jax.scipy.special.xlogy(y, rate) - w * rate, axis=1)
-        if not derivatives:
-            return (sums[0] + data,)
         residual = jnp.where(above_floor, y - w * rate, 0.0)
         curvature = jnp.where(above_floor, w * rate, 0.0)
         return (
@@ -1049,15 +1044,99 @@ def _poisson_regression_sums(
         )
 
     dtype = design_matrix.dtype
-    sums: tuple[jax.Array, ...] = (jnp.zeros(n_cells, dtype),)
-    if derivatives:
-        sums += (
-            jnp.zeros((n_cells, n_coefficients), dtype),
-            jnp.zeros((n_cells, n_coefficients, n_coefficients), dtype),
-        )
+    sums = (
+        jnp.zeros(n_cells, dtype),
+        jnp.zeros((n_cells, n_coefficients), dtype),
+        jnp.zeros((n_cells, n_coefficients, n_coefficients), dtype),
+    )
     return cast(
-        tuple[jax.Array, ...],
+        tuple[jax.Array, jax.Array, jax.Array],
         jax.lax.fori_loop(0, design_matrix.shape[0] // block_rows, add_block, sums),
+    )
+
+
+@partial(jax.jit, static_argnames=("block_rows",))
+def _poisson_data_change_sums(
+    design_matrix: jax.Array,
+    spikes: jax.Array,
+    weights: jax.Array,
+    coefficients: jax.Array,
+    step: jax.Array,
+    rate_floor: float | jax.Array,
+    *,
+    block_rows: int,
+) -> jax.Array:
+    """Per-cell sums over rows of the change in the Poisson data term.
+
+    Each row's change is computed from ``design_matrix @ step`` directly, not
+    as the difference of two log-likelihood terms, so the float32 rounding of
+    the sum scales with the change rather than with the data term itself.
+
+    Parameters
+    ----------
+    design_matrix : jax.Array, shape (n_rows, n_coefficients)
+        ``n_rows`` is a multiple of ``block_rows``; padding rows have zero
+        weight and spikes.
+    spikes : jax.Array, shape (n_cells, n_rows)
+        Event count of each cell in each row.
+    weights : jax.Array, shape (n_rows,)
+        Exposure of each row, which multiplies the rate.
+    coefficients : jax.Array, shape (n_cells, n_coefficients)
+        GLM coefficients of each cell before the step.
+    step : jax.Array, shape (n_cells, n_coefficients)
+        Change of each cell's coefficients.
+    rate_floor : float
+        Lower bound applied to both rates, before and after the step.
+    block_rows : int
+        Number of rows processed per block.
+
+    Returns
+    -------
+    data_change : jax.Array, shape (n_cells,)
+        ``sum_i [spikes_i * (log(new_rate_i) - log(rate_i)) - weights_i *
+        (new_rate_i - rate_i)]``, the data term of
+        ``_poisson_regression_sums`` at ``coefficients + step`` minus that at
+        ``coefficients``. Where both rates are above the floor, the log-rate
+        change is ``x_i @ step`` and the rate change is
+        ``rate_i * expm1(x_i @ step)``.
+    """
+    highest = jax.lax.Precision.HIGHEST
+    log_floor = jnp.log(rate_floor)
+
+    def add_block(block: jax.Array, total: jax.Array) -> jax.Array:
+        start = block * block_rows
+        X = jax.lax.dynamic_slice_in_dim(design_matrix, start, block_rows)
+        y = jax.lax.dynamic_slice_in_dim(spikes, start, block_rows, axis=1)
+        w = jax.lax.dynamic_slice_in_dim(weights, start, block_rows)
+        log_rate = jnp.matmul(coefficients, X.T, precision=highest)
+        log_rate_change = jnp.matmul(step, X.T, precision=highest)
+        unfloored = jnp.exp(log_rate)
+        new_unfloored = jnp.exp(log_rate + log_rate_change)
+        above_floor = unfloored > rate_floor
+        new_above_floor = new_unfloored > rate_floor
+        rate = jnp.where(above_floor, unfloored, rate_floor)
+        both_above = above_floor & new_above_floor
+        log_change = jnp.where(
+            both_above,
+            log_rate_change,
+            jnp.where(new_above_floor, log_rate + log_rate_change, log_floor)
+            - jnp.where(above_floor, log_rate, log_floor),
+        )
+        rate_change = jnp.where(
+            both_above,
+            rate * jnp.expm1(log_rate_change),
+            jnp.where(new_above_floor, new_unfloored, rate_floor) - rate,
+        )
+        return total + jnp.sum(y * log_change - w * rate_change, axis=1)
+
+    return cast(
+        jax.Array,
+        jax.lax.fori_loop(
+            0,
+            design_matrix.shape[0] // block_rows,
+            add_block,
+            jnp.zeros(coefficients.shape[0], design_matrix.dtype),
+        ),
     )
 
 
@@ -1088,7 +1167,11 @@ def fit_poisson_regressions(
     penalized objective divided by ``sum(weights)``, so the gradient
     tolerances are per second of exposure. A cell stops once that gradient's
     inf-norm is below ``GLM_GRADIENT_TOL`` or no step halving lowers its
-    objective.
+    objective. Whether a step lowers the objective is judged on its change
+    summed row by row, with each row's log-rate change computed from the
+    step directly, so the float32 rounding scales with the change: near the
+    optimum a step's decrease is smaller than the rounding of the objective's
+    float32 sum itself, which could not tell it apart from an increase.
 
     Parameters
     ----------
@@ -1142,46 +1225,87 @@ def fit_poisson_regressions(
     penalized = np.ones(n_coefficients)
     penalized[0] = 0.0
 
-    def evaluate(coefficients: np.ndarray, *, derivatives: bool) -> list[np.ndarray]:
+    def evaluate(
+        coefficients: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate the penalized negative log likelihood and its derivatives.
 
         Parameters
         ----------
         coefficients : np.ndarray, shape (n_cells, n_coefficients)
             Coefficients at which to evaluate.
-        derivatives : bool
-            Whether to also return the gradient and Hessian.
 
         Returns
         -------
-        sums : list[np.ndarray]
-            The loss, shape (n_cells,), per unit of total weight; with
-            ``derivatives`` also the gradient and the Hessian.
+        loss : np.ndarray, shape (n_cells,)
+            Penalized negative log likelihood per unit of total weight.
+        gradient : np.ndarray, shape (n_cells, n_coefficients)
+            Its gradient, per unit of total weight.
+        hessian : np.ndarray, shape (n_cells, n_coefficients, n_coefficients)
+            Its Hessian, per unit of total weight.
         """
-        sums: Any = _poisson_regression_sums(
-            design,
-            counts,
-            exposure,
-            jnp.asarray(coefficients, dtype=jnp.float32),
-            rate_floor,
-            block_rows=block_rows,
-            derivatives=derivatives,
+        data, data_gradient, data_hessian = (
+            np.asarray(value, dtype=np.float64)
+            for value in _poisson_regression_sums(
+                design,
+                counts,
+                exposure,
+                jnp.asarray(coefficients, dtype=jnp.float32),
+                rate_floor,
+                block_rows=block_rows,
+            )
         )
         # The penalty is on the total log likelihood, so its weight against the
         # data does not grow with the exposure. Dividing both by the exposure
         # keeps the gradient tolerances per second of exposure.
-        sums = [np.asarray(value, dtype=np.float64) for value in sums]
-        sums[0] = (
-            -sums[0] + l2_penalty * np.sum(penalized * coefficients**2, axis=1)
+        loss = (
+            -data + l2_penalty * np.sum(penalized * coefficients**2, axis=1)
         ) / weight_sum
-        if derivatives:
-            sums[1] = (
-                -sums[1] + 2 * l2_penalty * penalized * coefficients
-            ) / weight_sum
-            sums[2] = (sums[2] + 2 * l2_penalty * np.diag(penalized)) / weight_sum
-        return cast(list[np.ndarray], sums)
+        gradient = (
+            -data_gradient + 2 * l2_penalty * penalized * coefficients
+        ) / weight_sum
+        hessian = (data_hessian + 2 * l2_penalty * np.diag(penalized)) / weight_sum
+        return loss, gradient, hessian
 
-    loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+    def loss_change(coefficients: np.ndarray, step: np.ndarray) -> np.ndarray:
+        """Change of the loss from ``coefficients`` to ``coefficients + step``.
+
+        Near the optimum a Newton step lowers the loss by less than the float32
+        rounding of the loss's sum over rows, so the difference of two loss
+        evaluations cannot tell whether it decreased. The data term's change
+        is summed row by row instead, and the penalty's change is exact in
+        float64.
+
+        Parameters
+        ----------
+        coefficients : np.ndarray, shape (n_cells, n_coefficients)
+            Coefficients before the step.
+        step : np.ndarray, shape (n_cells, n_coefficients)
+            Change of each cell's coefficients; zero for cells not tried.
+
+        Returns
+        -------
+        loss_change : np.ndarray, shape (n_cells,)
+            Per unit of total weight, as ``evaluate``'s loss.
+        """
+        data_change = np.asarray(
+            _poisson_data_change_sums(
+                design,
+                counts,
+                exposure,
+                jnp.asarray(coefficients, dtype=jnp.float32),
+                jnp.asarray(step, dtype=jnp.float32),
+                rate_floor,
+                block_rows=block_rows,
+            ),
+            dtype=np.float64,
+        )
+        penalty_change = l2_penalty * np.sum(
+            penalized * step * (2 * coefficients + step), axis=1
+        )
+        return cast(np.ndarray, (-data_change + penalty_change) / weight_sum)
+
+    loss, gradient, hessian = evaluate(coefficients)
     active = np.ones(n_cells, dtype=bool)
     singular_cells: set[int] = set()
     for _ in range(GLM_MAX_NEWTON_STEPS):
@@ -1213,24 +1337,23 @@ def fit_poisson_regressions(
         step = np.ones(direction.shape[0])
         accepted = np.zeros(direction.shape[0], dtype=bool)
         for _ in range(_GLM_MAX_STEP_HALVINGS):
-            candidate = coefficients.copy()
+            trial = np.zeros_like(coefficients)
             pending = ~accepted
             rows = np.flatnonzero(active)[pending]
-            candidate[rows] += step[pending, None] * direction[pending]
-            (candidate_loss,) = evaluate(candidate, derivatives=False)
+            trial[rows] = step[pending, None] * direction[pending]
+            change = loss_change(coefficients, trial)[rows]
             # Armijo sufficient decrease, per cell.
-            decreased = np.isfinite(candidate_loss[rows]) & (
-                candidate_loss[rows]
-                <= loss[rows] + 1e-4 * step[pending] * slope[pending]
+            decreased = np.isfinite(change) & (
+                change <= 1e-4 * step[pending] * slope[pending]
             )
-            coefficients[rows[decreased]] = candidate[rows[decreased]]
+            coefficients[rows[decreased]] += trial[rows[decreased]]
             accepted[np.flatnonzero(pending)[decreased]] = True
             if accepted.all():
                 break
             step[~accepted] *= 0.5
         # A cell no step can improve has reached the precision limit.
         active[np.flatnonzero(active)[~accepted]] = False
-        loss, gradient, hessian = evaluate(coefficients, derivatives=True)
+        loss, gradient, hessian = evaluate(coefficients)
 
     if singular_cells:
         cells = sorted(singular_cells)
