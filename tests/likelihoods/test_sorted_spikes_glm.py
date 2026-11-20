@@ -441,6 +441,69 @@ def test_fit_stops_where_no_float32_step_lowers_the_objective(monkeypatch):
 
 
 @pytest.mark.unit
+def test_step_change_of_the_data_term_applies_the_rate_floor():
+    """The step test's change of the data term is the difference of the two
+    floored terms, ``rate = max(exp(x @ b), rate_floor)`` before and after the
+    step, computed here in float64. A row that crosses the floor changes its
+    log rate by less than ``x @ step``, and a row floored on both sides not at
+    all: here the crossing rows contribute 8.0, -10.3 and 2.4 nats to the three
+    cells' changes (0.06, 0.13 and 0.02 of that through the rate), and a change
+    that ignored the floor would be 81.6, -69.9 and 160.9 instead of -36.7,
+    -87.2 and -31.3.
+    """
+    rng = np.random.default_rng(0)
+    n_rows, rate_floor = 512, 1e-3
+    design_matrix = np.column_stack(
+        [np.ones(n_rows), rng.normal(size=(n_rows, 2))]
+    ).astype(np.float32)
+    # Log rates on both sides of log(rate_floor) = -6.9, before and after.
+    coefficients = np.array(
+        [[-7.0, 1.5, -1.0], [-6.5, -2.0, 0.5], [-8.0, 0.5, 2.0]], dtype=np.float32
+    )
+    step = np.array(
+        [[0.4, -1.0, 0.8], [-0.6, 1.2, -0.3], [1.0, -0.4, -1.5]], dtype=np.float32
+    )
+    spikes = rng.poisson(0.3, (3, n_rows)).astype(np.float32)
+    weights = rng.uniform(0.0, 5.0, n_rows).astype(np.float32)
+
+    change = sorted_spikes_glm._poisson_data_change_sums(
+        jnp.asarray(design_matrix),
+        jnp.asarray(spikes),
+        jnp.asarray(weights),
+        jnp.asarray(coefficients),
+        jnp.asarray(step),
+        rate_floor,
+        block_rows=128,
+    )
+
+    X, y, w, b, s = (
+        np.asarray(value, dtype=np.float64)
+        for value in (design_matrix, spikes, weights, coefficients, step)
+    )
+    unfloored = np.exp(b @ X.T)
+    new_unfloored = np.exp((b + s) @ X.T)
+    floored_before = unfloored <= rate_floor
+    floored_after = new_unfloored <= rate_floor
+    # Rows above the floor on both sides, floored on both, and crossing it in
+    # each direction, with spikes in each kind.
+    for before in (False, True):
+        for after in (False, True):
+            kind = (floored_before == before) & (floored_after == after)
+            assert np.sum(kind) >= 50
+            assert np.sum(y * kind) >= 20
+    rate = np.maximum(unfloored, rate_floor)
+    new_rate = np.maximum(new_unfloored, rate_floor)
+    terms = y * (np.log(new_rate) - np.log(rate)) - w * (new_rate - rate)
+    # A float32 sum of n terms, in whatever order, rounds by about
+    # sqrt(n) * eps times the summed |terms|; allow twice that (2.2e-4 to
+    # 7.2e-4 here). Observed: 5.7e-6.
+    summation_rounding = (
+        2 * np.finfo(np.float32).eps * np.sqrt(n_rows) * np.abs(terms).sum(axis=1)
+    )
+    assert np.all(np.abs(np.asarray(change) - terms.sum(axis=1)) <= summation_rounding)
+
+
+@pytest.mark.unit
 class TestBatchedPoissonRegression:
     """All cells share the design matrix and exposure; one solve fits them all."""
 

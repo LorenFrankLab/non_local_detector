@@ -1209,11 +1209,9 @@ def test_spyglass_2d_ahead_behind_call_with_a_stored_model(version, artifact):
         atol=0,
     )
     assert np.isnan(distance[~valid]).all()
-    # In the non-local artifact every valid MAP is the last grid bin, off the
-    # track: unstacking puts the Local and No-Spike mass, which has no
-    # position, there. So only the continuous/fragmented artifact has paths.
-    if artifact.startswith("contfrag"):
-        assert np.isfinite(distance[valid]).sum() >= 10
+    # The MAP comes from the states that have a position, so it is a bin on
+    # the track; in both artifacts every valid time has a path to it.
+    assert np.isfinite(distance[valid]).sum() >= 10
     with pytest.raises(ValueError, match="edges"):
         analysis.get_ahead_behind_distance2D(
             head, aligned.loc[valid, orientation].to_numpy(), map_position, graph

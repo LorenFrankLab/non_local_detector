@@ -116,6 +116,31 @@ def test_track_interior_accepts_bin_counts_in_1d():
     assert get_track_interior(position, 10).all()
 
 
+def test_samples_outside_the_position_range_do_not_count_toward_the_interior():
+    """A 1-D grid is not padded, so its first and last bins are real bins.
+
+    Before snapping, samples beyond a ``position_range`` narrower than the
+    data are assigned to those bins, but they are not occupancy of them: the
+    interior counts the samples inside the range only, as ``np.histogram``
+    does.
+    """
+    in_range = [1.5, 2.5, 3.5]
+    outside = [-3.0, -0.5, 5.5, 9.0]
+    position = np.array(in_range + outside)[:, np.newaxis]
+    env = Environment(place_bin_size=1.0, position_range=((0.0, 5.0),)).fit_place_grid(
+        position
+    )
+
+    (edges,) = env.edges_
+    np.testing.assert_array_equal(edges, np.arange(6.0))
+    np.testing.assert_array_equal(
+        env.is_track_interior_, np.histogram(position, bins=edges)[0] > 0
+    )
+    np.testing.assert_array_equal(
+        env.is_track_interior_, [False, True, True, True, False]
+    )
+
+
 def test_graph_distance_bins_wall_positions_like_the_environment():
     """``get_2D_distance`` along the bin graph puts positions on the walls and
     on interior edges in the bins ``Environment.get_bin_ind`` assigns."""
