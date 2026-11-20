@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 import matplotlib.font_manager as fm
@@ -16,6 +15,7 @@ from non_local_detector.analysis.posterior import (
     get_position_posterior,
     maximum_a_posteriori_estimate,
 )
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.visualization._parallel_video_writer import (
     VideoConfig,
     create_parallel_video,
@@ -30,9 +30,6 @@ if TYPE_CHECKING:
 __all__ = [
     "make_single_environment_movie",
 ]
-
-
-logger = logging.getLogger(__name__)
 
 
 def make_single_environment_movie(
@@ -53,13 +50,17 @@ def make_single_environment_movie(
     Parameters
     ----------
     time_slice : slice
-        Time slice to render in the movie.
+        Rows of ``results`` and ``position_info`` to render, one frame per
+        row. Any slice works, e.g. ``slice(None, 500)``. The firing-rate panel
+        shows the 250 rows on either side of each frame's row, cut at the
+        start and end of the recording.
     classifier : _DetectorBase
         Fitted detector/classifier with environment information.
     results : xr.Dataset
         Decoding results from predict() or estimate_parameters().
     position_info : pd.DataFrame
-        Position data indexed by time, with columns for position and direction.
+        Position data indexed by time, with columns for position and direction,
+        one row per time of ``results``.
     spike_times : list[np.ndarray]
         Spike times per neuron/electrode.
     movie_name : str, optional
@@ -80,12 +81,39 @@ def make_single_environment_movie(
     -------
     str
         Path to the output movie file.
+
+    Raises
+    ------
+    ValidationError
+        If ``position_info`` does not have one row per time of ``results``, or
+        ``time_slice`` selects no rows.
     """
     position_name = (
         ["head_position_x", "head_position_y"]
         if position_name is None
         else position_name
     )
+    n_rows = len(position_info)
+    if results.sizes["time"] != n_rows:
+        msg = (
+            "make_single_environment_movie needs one position_info row per result time"
+        )
+        raise ValidationError(
+            msg,
+            expected=f"position_info with {results.sizes['time']} rows",
+            got=f"position_info with {n_rows} rows",
+            hint="Interpolate the tracking to the decode bin centers first, "
+            "e.g. with non_local_detector.analysis.align_tracking_to_results.",
+        )
+    frame_rows = np.arange(n_rows)[time_slice]
+    if frame_rows.size == 0:
+        msg = "make_single_environment_movie: time_slice selects no rows"
+        raise ValidationError(
+            msg,
+            expected=f"a slice selecting at least one of the {n_rows} rows",
+            got=f"{time_slice!r}",
+            hint="Give the rows to render, e.g. slice(0, 500).",
+        )
 
     multiunit_firing_rate = pd.DataFrame(
         get_multiunit_firing_rate(
@@ -104,11 +132,13 @@ def make_single_environment_movie(
     position = np.asarray(position_info.iloc[time_slice][position_name])
     direction = np.asarray(position_info.iloc[time_slice][direction_name])
 
+    # The firing rate within 250 rows of every frame's row, cut at the start
+    # and end of the recording, and each frame's row in it.
     window_size = 501
     window_ind = np.arange(window_size) - window_size // 2
-    rate = multiunit_firing_rate.iloc[
-        slice(time_slice.start + window_ind[0], time_slice.stop + window_ind[-1])
-    ]
+    rate_start = max(frame_rows.min() + window_ind[0], 0)
+    rate_stop = min(frame_rows.max() + window_ind[-1] + 1, n_rows)
+    rate = multiunit_firing_rate.iloc[rate_start:rate_stop]
     x_min = float(position_info[position_name[0]].min()) - 10
     x_max = float(position_info[position_name[0]].max()) + 10
     y_min = float(position_info[position_name[1]].min()) - 10
@@ -122,9 +152,9 @@ def make_single_environment_movie(
         "map_position": map_position,
         "window_ind": window_ind,
         "rate": np.asarray(rate).squeeze(),  # Convert to numpy for pickle
+        "rate_center": frame_rows - rate_start,
         "xy_limits": (x_min, x_max, y_min, y_max),
         "sampling_frequency": sampling_frequency,
-        "window_size": window_size,
         "position_info": position_info,
         "position_name": position_name,
         "vmax": vmax,
@@ -269,10 +299,11 @@ def _render_single_env_frame(
 
     # Update posterior mesh
     if axes["mesh"] is None:
-        # First frame: create mesh and set axis limits
+        # First frame this worker renders: create the mesh from it and set
+        # the axis limits.
         axes["mesh"] = (
             data["posterior"]
-            .isel(time=0)
+            .isel(time=frame_idx)
             .plot(
                 x="x_position",
                 y="y_position",
@@ -299,43 +330,29 @@ def _render_single_env_frame(
     )
 
     # Update multiunit firing rate
-    try:
-        window_ind = data["window_ind"]
-        window_size = data["window_size"]
-        sampling_frequency = data["sampling_frequency"]
+    window_ind = data["window_ind"]
+    sampling_frequency = data["sampling_frequency"]
+    rate = data["rate"]
 
-        # Set the bottom-axis limits once per worker, *before* the boundary-
-        # sensitive rate indexing below. create_parallel_video renders
-        # contiguous frame chunks in separate processes, each of which calls the
-        # setup function once and then renders its own (global) frame range. Only
-        # the worker owning the first chunk ever sees frame_idx == 0, so gating
-        # on that left every later chunk's ax1 at default limits and the
-        # firing-rate line drawn off-screen. Mirror the mesh pattern and
-        # initialize on the first frame each worker renders. Doing it ahead of
-        # set_data means a worker whose opening frames land in the recording's
-        # edge region (where the rate window index can overflow and raise
-        # IndexError below) still gets correct axis limits — the limits depend
-        # only on window_ind and rate.max(), not on the current frame.
-        if not axes.get("_ax1_init", False):
-            axes["ax1"].set_ylim((0.0, data["rate"].max()))
-            axes["ax1"].set_xlim(
-                (
-                    window_ind[0] / sampling_frequency,
-                    window_ind[-1] / sampling_frequency,
-                )
+    # Set the bottom-axis limits once per worker. create_parallel_video
+    # renders contiguous frame chunks in separate processes, each of which
+    # calls the setup function once and then renders its own (global) frame
+    # range, so the limits are set on the first frame each worker renders, as
+    # the mesh is.
+    if not axes.get("_ax1_init", False):
+        axes["ax1"].set_ylim((0.0, rate.max()))
+        axes["ax1"].set_xlim(
+            (
+                window_ind[0] / sampling_frequency,
+                window_ind[-1] / sampling_frequency,
             )
-            axes["_ax1_init"] = True
+        )
+        axes["_ax1_init"] = True
 
-        axes["multiunit_line"].set_data(
-            window_ind / sampling_frequency,
-            data["rate"][frame_idx + (window_size // 2) + window_ind],
-        )
-    except IndexError:
-        # Near the recording boundary the rate window index can run past the
-        # rate array; skip updating the firing-rate line for this frame rather
-        # than crashing the render. Axis limits are already set above.
-        logger.debug(
-            "Skipping multiunit firing-rate update for frame %d: rate window "
-            "index out of bounds (recording boundary).",
-            frame_idx,
-        )
+    # The window around this frame's row, without the part past the start or
+    # end of the recording.
+    rate_ind = data["rate_center"][frame_idx] + window_ind
+    is_inside = (rate_ind >= 0) & (rate_ind < rate.size)
+    axes["multiunit_line"].set_data(
+        window_ind[is_inside] / sampling_frequency, rate[rate_ind[is_inside]]
+    )
