@@ -147,16 +147,15 @@ class TestTrackGraphValidation:
 class TestEdgeOrderValidation:
     """Test validation of edge_order parameter."""
 
-    def test_edge_order_must_be_list(self):
-        """Test that edge_order must be a list."""
+    def test_edge_order_of_bare_nodes_is_rejected_at_its_first_edge(self):
+        """A flat ``(0, 1)`` is a tuple of nodes: its first edge is not a 2-tuple."""
         g = nx.Graph()
         g.add_node(0, pos=(0, 0))
         g.add_node(1, pos=(1, 1))
         g.add_edge(0, 1, distance=1.0, edge_id=0)
         with pytest.raises(ValidationError) as exc_info:
             Environment(track_graph=g, edge_order=(0, 1), edge_spacing=0.0)
-        assert "edge_order" in str(exc_info.value)
-        assert "list" in str(exc_info.value).lower()
+        assert "edge_order[0] must be a 2-tuple" in str(exc_info.value)
 
     def test_edge_order_elements_must_be_tuples(self):
         """Test that edge_order elements must be 2-tuples."""
@@ -165,7 +164,7 @@ class TestEdgeOrderValidation:
         g.add_node(1, pos=(1, 1))
         g.add_edge(0, 1, distance=1.0, edge_id=0)
         with pytest.raises(ValidationError) as exc_info:
-            Environment(track_graph=g, edge_order=[[0, 1]], edge_spacing=0.0)
+            Environment(track_graph=g, edge_order=[(0, 1, 2)], edge_spacing=0.0)
         assert "edge_order[0]" in str(exc_info.value)
         assert "2-tuple" in str(exc_info.value)
 
@@ -272,7 +271,7 @@ class TestPositionRangeValidation:
     def test_position_range_elements_must_be_tuples(self):
         """Test that position_range elements must be 2-tuples."""
         with pytest.raises(ValidationError) as exc_info:
-            Environment(position_range=[[0, 100]])
+            Environment(position_range=[(0, 50, 100)])
         assert "position_range[0]" in str(exc_info.value)
         assert "2-tuple" in str(exc_info.value)
 
@@ -415,3 +414,17 @@ class TestIsTrackInteriorValidation:
         is_interior = np.array([True, False, True, False])
         env = Environment(is_track_interior=is_interior)
         assert np.array_equal(env.is_track_interior, is_interior)
+
+
+@pytest.mark.unit
+class TestPositionRangeEndpointTypes:
+    """position_range endpoints may be any real scalar, NumPy ones included."""
+
+    @pytest.mark.parametrize("endpoint_type", [np.float32, np.int64])
+    def test_position_range_accepts_numpy_scalars(self, endpoint_type):
+        env = Environment(
+            place_bin_size=10.0,
+            position_range=[(endpoint_type(0), endpoint_type(100))],
+        )
+        env.fit_place_grid(np.linspace(0.0, 100.0, 11)[:, np.newaxis])
+        assert env.place_bin_centers_.shape == (10, 1)

@@ -19,6 +19,35 @@ from tests.models._helpers import make_two_arm_track
 class TestNonLocalPenaltyTopology:
     """Verify penalty uses topology-aware distances."""
 
+    def test_penalty_is_a_gaussian_of_graph_distance(self):
+        """Along the animal's arm the penalty is
+        ``-A * exp(-0.5 * d**2 / sigma**2)``; it is zero on the other arm."""
+        env = make_two_arm_track()
+        amplitude, sigma = 10.0, 8.0
+        detector = NonLocalSortedSpikesDetector(
+            environments=[env],
+            non_local_position_penalty=amplitude,
+            non_local_penalty_std=sigma,
+        )
+        animal_bin_center = 27.5
+
+        penalty = np.asarray(
+            detector._compute_non_local_position_penalty(
+                jnp.array([0.5]),
+                jnp.array([0.0, 1.0]),
+                jnp.full((2, 1), animal_bin_center),
+                env,
+            )
+        )[0]
+
+        centers = env.place_bin_centers_[env.is_track_interior_.ravel(), 0]
+        on_arm = centers < 50.0
+        distance = centers[on_arm] - animal_bin_center
+        expected = -amplitude * np.exp(-0.5 * distance**2 / sigma**2)
+        # Observed float32 difference: 2.4e-7 (values from -10 to -0.08).
+        np.testing.assert_allclose(penalty[on_arm], expected, rtol=0, atol=3e-6)
+        np.testing.assert_array_equal(penalty[~on_arm], 0.0)
+
     def test_penalty_shape(self):
         """Penalty returns (n_time, n_interior_bins)."""
         env = make_two_arm_track()
