@@ -2414,9 +2414,9 @@ def get_track_interior(
         * The number of bins for each dimension (nx, ny, ... =bins)
         * The number of bins for all dimensions (nx=ny=...=bins).
 
-        With more than one dimension, the first and last bin of every
-        dimension are taken to be the padding bins that `get_grid` adds, and
-        are never interior. Samples are counted in the bins
+        With more than one dimension, ``bins`` must be bin edges, and the
+        first and last bin of every dimension are taken to be the padding bins
+        that `get_grid` adds, which are never interior. Samples are counted in the bins
         `Environment.get_bin_ind` assigns them before snapping, so a sample at
         the data maximum counts in the last real bin; samples outside the
         edges are not counted.
@@ -2438,8 +2438,19 @@ def get_track_interior(
     # bin assignment of Environment.get_bin_ind. Samples outside the edges, or
     # with a NaN coordinate, are not counted.
     position = position[~np.any(np.isnan(position), axis=1)]
-    _, bin_edges = np.histogramdd(position, bins=bins)
     n_position_dims = position.shape[1]
+    if n_position_dims > 1 and (
+        isinstance(bins, int | np.integer)
+        or any(np.ndim(dim_bins) == 0 for dim_bins in bins)
+    ):
+        msg = "get_track_interior needs bin edges with more than one dimension"
+        raise ValidationError(
+            msg,
+            expected="one array of bin edges per dimension, padded as get_grid pads them",
+            got=f"bin counts {bins!r}",
+            hint="Pass the edges that get_grid returns.",
+        )
+    _, bin_edges = np.histogramdd(position, bins=bins)
     in_grid = np.all(
         (position >= np.array([edges[0] for edges in bin_edges]))
         & (position <= np.array([edges[-1] for edges in bin_edges])),

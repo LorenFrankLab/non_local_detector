@@ -11,6 +11,7 @@ import numpy as np
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.environment import (
     Environment,
+    _bin_ind_before_snap,
     make_nD_track_graph_from_environment,
 )
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
@@ -53,61 +54,6 @@ def make_2D_track_graph_from_environment(
         attributes.
     """
     return make_nD_track_graph_from_environment(environment)
-
-
-def get_bin_ind(sample: np.ndarray, edges: Sequence[np.ndarray]) -> np.ndarray:
-    """Find the bin indices for multidimensional sample points.
-
-    Determines which bin each sample point belongs to in a multidimensional
-    histogram, similar to numpy's digitize but for multiple dimensions.
-    Handles edge cases where points fall exactly on bin edges.
-
-    Parameters
-    ----------
-    sample : np.ndarray, shape (n_time, n_dim)
-        Sample points to bin. Each row is a point, each column is a dimension.
-    edges : list of np.ndarray
-        List of bin edge arrays, one per dimension. Each array has shape
-        (n_bins + 1,) defining the bin boundaries.
-
-    Returns
-    -------
-    bin_ind : np.ndarray, shape (n_time,)
-        Flattened bin indices for each sample point. Uses row-major ordering
-        to convert multidimensional bin coordinates to linear indices.
-    """
-    try:
-        # Sample is an ND-array.
-        _N, D = sample.shape
-    except (AttributeError, ValueError):
-        # Sample is a sequence of 1D arrays.
-        sample = np.atleast_2d(sample).T
-        _N, D = sample.shape
-
-    nbin = np.empty(D, np.intp)
-    for i in range(D):
-        nbin[i] = len(edges[i]) + 1  # includes an outlier on each end
-
-    # Compute the bin number each sample falls into.
-    Ncount = tuple(
-        # avoid np.digitize to work around gh-11022
-        np.searchsorted(edges[i], sample[:, i], side="right")
-        for i in range(D)
-    )
-
-    # Using digitize, values that fall on an edge are put in the right bin.
-    # For the rightmost bin, we want values equal to the right edge to be
-    # counted in the last bin, and not as an outlier.
-    for i in range(D):
-        # Find which points are on the rightmost edge.
-        on_edge = sample[:, i] == edges[i][-1]
-        # Shift these points one bin to the left.
-        Ncount[i][on_edge] -= 1
-
-    return np.ravel_multi_index(
-        Ncount,
-        nbin,
-    )
 
 
 def _warn_precomputed_distance(*, precomputed_distance: bool | None) -> None:
@@ -322,13 +268,12 @@ def _graph_distance_and_direction(
     if not np.any(is_finite):
         return distance, direction
 
-    # remove outer boundary edge
-    bin_edges = [e[1:-1] for e in edges]
-    # Bins of the grid that get_bin_ind indexes, so each pair has its own code.
-    n_bins = int(np.prod([len(edge) + 1 for edge in bin_edges]))
+    # Bins of the grid that _bin_ind_before_snap indexes, so each pair has its
+    # own code.
+    n_bins = int(np.prod([len(edge) - 1 for edge in edges]))
     pairs, pair_ind = np.unique(
-        get_bin_ind(position1[is_finite], bin_edges) * n_bins
-        + get_bin_ind(position2[is_finite], bin_edges),
+        _bin_ind_before_snap(edges, position1[is_finite]) * n_bins
+        + _bin_ind_before_snap(edges, position2[is_finite]),
         return_inverse=True,
     )
     start_bin, target_bin = np.divmod(pairs, n_bins)

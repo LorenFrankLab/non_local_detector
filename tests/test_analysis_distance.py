@@ -17,7 +17,6 @@ from non_local_detector.analysis.distance1D import get_map_speed
 from non_local_detector.analysis.distance2D import (
     get_2D_distance,
     get_ahead_behind_distance2D,
-    get_bin_ind,
     get_map_estimate_direction_from_track_graph,
     get_speed,
     get_velocity,
@@ -311,31 +310,6 @@ class TestGetAheadBehindDistance2D:
         dist = get_ahead_behind_distance2D(pos, head_dir, pos)
 
         assert dist[0] == pytest.approx(0.0, abs=1e-10)
-
-
-@pytest.mark.unit
-class TestGetBinInd:
-    """Test bin index computation."""
-
-    def test_center_of_bin(self):
-        """Points at bin centers should map to sequential indices."""
-        edges = [np.array([0.0, 1.0, 2.0, 3.0])]  # 3 bins
-        sample = np.array([[0.5], [1.5], [2.5]])
-
-        indices = get_bin_ind(sample, edges)
-
-        # get_bin_ind uses np.digitize-style 1-based indexing
-        np.testing.assert_array_equal(indices, [1, 2, 3])
-
-    def test_right_edge(self):
-        """Point on rightmost edge should map to last bin, not overflow."""
-        edges = [np.array([0.0, 1.0, 2.0])]  # 2 bins
-        sample = np.array([[2.0]])  # exactly on right edge
-
-        indices = get_bin_ind(sample, edges)
-
-        # Right edge is clamped to last bin (index n_bins, i.e., 2)
-        assert indices[0] == 2
 
 
 @pytest.fixture

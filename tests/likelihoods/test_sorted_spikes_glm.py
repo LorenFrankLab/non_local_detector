@@ -274,6 +274,172 @@ def _poisson_objective64(design_matrix, spikes, weights, coefficients, l2_penalt
     return (-data.sum(axis=1) + penalty) / weights.sum()
 
 
+def _poisson_optimum64(design_matrix, spikes, weights, l2_penalty):
+    """Each cell's optimum of the fitted objective, by Newton steps in float64.
+
+    The rate floor is left out, so use it only where the optimum's rates are
+    far above the floor. The objective is convex: far from the optimum the
+    steps are halved until the loss decreases, and near it (gradient below
+    1e-4) full Newton steps converge quadratically to a gradient of 1e-12.
+
+    Returns
+    -------
+    optimum : np.ndarray, shape (n_cells, n_coefficients)
+    """
+    penalized = np.ones(design_matrix.shape[1])
+    penalized[0] = 0.0
+    total = weights.sum()
+
+    def loss(beta, y):
+        log_rate = design_matrix @ beta
+        data = y @ log_rate - weights @ np.exp(log_rate)
+        return (-data + l2_penalty * np.sum(penalized * beta**2)) / total
+
+    optimum = []
+    for y in spikes:
+        beta = np.zeros(design_matrix.shape[1])
+        beta[0] = np.log(y.sum() / total)
+        for _ in range(100):
+            rate = np.exp(design_matrix @ beta)
+            gradient = (
+                -(y - weights * rate) @ design_matrix
+                + 2 * l2_penalty * penalized * beta
+            ) / total
+            if np.max(np.abs(gradient)) < 1e-12:
+                break
+            hessian = (
+                (design_matrix.T * (weights * rate)) @ design_matrix
+                + 2 * l2_penalty * np.diag(penalized)
+            ) / total
+            step = -np.linalg.solve(hessian, gradient)
+            size = 1.0
+            if np.max(np.abs(gradient)) > 1e-4:
+                while not loss(beta + size * step, y) < loss(beta, y):
+                    size /= 2
+                    if size < 1e-10:
+                        msg = "the float64 reference found no descent step"
+                        raise AssertionError(msg)
+            beta = beta + size * step
+        else:
+            msg = "the float64 reference did not converge"
+            raise AssertionError(msg)
+        optimum.append(beta)
+    return np.array(optimum)
+
+
+@pytest.mark.unit
+def test_fit_converges_whatever_order_float32_sums_the_rows(
+    monkeypatch, line_env_100cm, simple_spike_data
+):
+    """Near the optimum a Newton step lowers the loss by less than the float32
+    rounding of the loss's total over the rows (here 8e-7 against a float32
+    spacing of 4e-6, per second of exposure). A step test that compares two
+    such totals then rejects every step in some summation orders, and the fit
+    stops with its gradient above ``GLM_GRADIENT_TOL``; above
+    ``GLM_CONVERGENCE_GRAD_TOL`` it also warns. Which orders stall depends on
+    the CPU. Permuting the rows changes only how float32 rounds the sums, and
+    in every order the fit must converge, without a warning, to the float64
+    optimum.
+
+    A fit stopped at ``GLM_GRADIENT_TOL`` is within about 1.7e-4 nats of the
+    optimum here (to first order, gradient in the worst direction). With the
+    step test on two totals, 13 of these 20 orders warned and 15 were more
+    than 3e-4 nats off (up to 1.1e-3).
+    """
+    problem = {}
+
+    def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
+        problem.setdefault("args", (design_matrix, spikes, weights, l2_penalty))
+        problem.setdefault("kwargs", kwargs)
+        return fit_poisson_regressions(
+            design_matrix, spikes, weights, l2_penalty, **kwargs
+        )
+
+    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regressions", spy)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _fit_encoding(line_env_100cm, simple_spike_data, emission_knot_spacing=5.0)
+    design_matrix, spikes, weights, l2_penalty = problem["args"]
+    design_matrix, spikes, weights = (
+        np.asarray(value, dtype=np.float64)
+        for value in (design_matrix, spikes, weights)
+    )
+    optimum_log_rate = (
+        design_matrix @ _poisson_optimum64(design_matrix, spikes, weights, l2_penalty).T
+    )
+    # Far above the rate floor, which the float64 reference leaves out.
+    assert np.min(optimum_log_rate) > np.log(problem["kwargs"]["rate_floor"]) + 20
+
+    for seed in range(20):
+        order = np.random.default_rng(seed).permutation(weights.size)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fitted = np.asarray(
+                fit_poisson_regressions(
+                    design_matrix[order],
+                    spikes[:, order],
+                    weights[order],
+                    l2_penalty,
+                    **problem["kwargs"],
+                ),
+                dtype=np.float64,
+            )
+        np.testing.assert_allclose(
+            design_matrix @ fitted.T,
+            optimum_log_rate,
+            rtol=0,
+            atol=3e-4,
+            err_msg=f"row order seed {seed}",
+        )
+
+
+@pytest.mark.unit
+def test_fit_stops_where_no_float32_step_lowers_the_objective(monkeypatch):
+    """The fitted coefficients are float32, and at a high rate even the
+    float32 coefficients nearest the optimum have a gradient above
+    ``GLM_GRADIENT_TOL``. Here a 1000 Hz cell's optimum log rate, 6.9, where
+    float32 values are 4.8e-7 apart, lies a quarter spacing from the nearest
+    one, whose gradient is about 1000 * 1.2e-7 = 1.2e-4 per second. No step
+    in float32 lowers the objective from there, so the fit must stop instead
+    of taking Newton steps up to ``GLM_MAX_NEWTON_STEPS``. A step test that
+    judged each step before rounding the coefficients to float32 accepted
+    steps smaller than that spacing, and the fit took all 50.
+    """
+    rate, n_rows = 1000.0, 400
+    spikes = np.random.default_rng(0).poisson(0.25 * rate, n_rows).astype(float)
+    below = np.float32(np.log(rate))
+    above = np.nextafter(below, np.float32(np.inf))
+    spacing = float(above) - float(below)
+    # The exposure per row that puts the optimum a quarter spacing above `below`.
+    weights = np.full(
+        n_rows, np.float32(spikes.mean() / np.exp(float(below) + spacing / 4))
+    )
+    mean_rate = spikes.sum() / weights.sum(dtype=np.float64)
+    assert float(below) < np.log(mean_rate) < float(above)
+    # The gradient per second of an intercept-only model is exp(b) - mean_rate.
+    for intercept in (below, above):
+        assert (
+            abs(np.exp(float(intercept)) - mean_rate)
+            > 5 * sorted_spikes_glm.GLM_GRADIENT_TOL
+        )
+
+    passes = []
+    sums = sorted_spikes_glm._poisson_regression_sums
+
+    def counted(*args, **kwargs):
+        passes.append(1)
+        return sums(*args, **kwargs)
+
+    monkeypatch.setattr(sorted_spikes_glm, "_poisson_regression_sums", counted)
+    fitted = fit_poisson_regression(np.ones((n_rows, 1)), spikes, weights)
+
+    # One gradient pass to start, then one after each Newton step.
+    newton_steps = len(passes) - 1
+    assert newton_steps < sorted_spikes_glm.GLM_MAX_NEWTON_STEPS
+    # The float32 intercept nearest the optimum.
+    assert float(np.asarray(fitted)[0]) == float(below)
+
+
 @pytest.mark.unit
 class TestBatchedPoissonRegression:
     """All cells share the design matrix and exposure; one solve fits them all."""
