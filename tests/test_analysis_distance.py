@@ -955,6 +955,22 @@ class TestAheadBehindDistance2DTrackGraph:
         assert len(block_rows) > 5 * len(calls)
         assert max(block_rows) == 3
 
+    def test_track_graph_smaller_than_the_grid_raises(self, env_2d):
+        """A track graph without a node for every bin of the grid of
+        ``edges`` raises IndexError at a missing bin, instead of reading the
+        distance of another pair of bins."""
+        graph = env_2d.track_graphDD
+        truncated = graph.subgraph(range(100)).copy()
+        # Head in bin 13, which the truncated graph has; MAP in bin 130,
+        # which it lacks.
+        head = np.array([graph.nodes[13]["pos"]])
+        map_position = np.array([graph.nodes[130]["pos"]])
+
+        with pytest.raises(IndexError):
+            get_2D_distance(
+                head, map_position, track_graph=truncated, edges=env_2d.edges_
+            )
+
     @pytest.mark.parametrize("table", ["all_pairs", "deferred"])
     def test_environment_runs_no_networkx_or_all_pairs_search(self, table):
         """With an environment, distances come from its table: no networkx

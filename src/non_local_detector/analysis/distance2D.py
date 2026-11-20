@@ -324,7 +324,8 @@ def _graph_distance_and_direction(
 
     # remove outer boundary edge
     bin_edges = [e[1:-1] for e in edges]
-    n_bins = len(track_graph)
+    # Bins of the grid that get_bin_ind indexes, so each pair has its own code.
+    n_bins = int(np.prod([len(edge) + 1 for edge in bin_edges]))
     pairs, pair_ind = np.unique(
         get_bin_ind(position1[is_finite], bin_edges) * n_bins
         + get_bin_ind(position2[is_finite], bin_edges),
