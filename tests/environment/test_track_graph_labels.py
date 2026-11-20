@@ -19,6 +19,7 @@ LABELLINGS = {
     "skips 2": lambda i: i if i < 2 else i + 1,
     "offset 100": lambda i: i + 100,
     "strings": lambda i: f"node{i}",
+    "tuples": lambda i: (i, "a"),
 }
 
 
