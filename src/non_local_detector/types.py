@@ -70,12 +70,14 @@ Each entry is any object satisfying the ``ContinuousInitialCondition``
 protocol (e.g., UniformInitialConditions or a user-defined class).
 """
 
-Stickiness = float | np.ndarray
+Stickiness = float | np.integer | np.floating | np.ndarray
 """Type alias for discrete state transition stickiness parameters.
 
-Can be a single float value applied to all states, or an array with
-per-state stickiness values controlling the tendency to remain in
-the current state.
+Either a real scalar applied to every state (a Python int or float, a
+NumPy integer or floating scalar, or a 0-d array of one), or an array of
+shape (n_states,) with one value per state. The values are pseudo-counts
+added to the diagonal of the Dirichlet prior on the transition matrix
+rows, controlling the tendency to remain in the current state.
 """
 
 DiscreteTransitions = DiscreteTransition

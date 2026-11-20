@@ -584,6 +584,37 @@ class TestComputeLocalPositionKernel:
             f"log-probability, got: {arm_b_log_kernel}"
         )
 
+    def test_gaussian_kernel_falls_off_as_a_gaussian_of_graph_distance(self):
+        """Relative to its peak the log kernel is ``-0.5 * d**2 / sigma**2``,
+        with ``d`` the distance along the animal's arm."""
+        import jax.numpy as jnp
+
+        env = make_two_arm_track()
+        sigma = 8.0
+        detector = NonLocalSortedSpikesDetector(local_position_std=sigma)
+        detector.environments_ = (env,)
+        animal_bin_center = 27.5
+
+        log_kernel = np.asarray(
+            detector._compute_local_position_kernel(
+                jnp.array([0.5]),
+                jnp.array([0.0, 1.0]),
+                jnp.full((2, 1), animal_bin_center),
+                env,
+                sigma,
+            )
+        )[0]
+
+        centers = env.place_bin_centers_[env.is_track_interior_.ravel(), 0]
+        on_arm = centers < 50.0
+        peak = int(np.flatnonzero(centers == animal_bin_center)[0])
+        expected = -0.5 * (centers[on_arm] - animal_bin_center) ** 2 / sigma**2
+        # Observed float32 difference: 2.4e-7 (values down to -4.9).
+        np.testing.assert_allclose(
+            log_kernel[on_arm] - log_kernel[peak], expected, rtol=0, atol=3e-6
+        )
+        assert np.all(np.isneginf(log_kernel[~on_arm]))
+
 
 @pytest.mark.unit
 class TestDeltaKernel:

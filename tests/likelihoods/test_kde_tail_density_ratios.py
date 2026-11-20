@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.special import logsumexp
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -32,6 +33,7 @@ from non_local_detector.likelihoods.common import (
     true_kde_log_density,
 )
 from tests.likelihoods.conftest import (
+    count_compilations,
     realistic_log_background,
     training_mark_references,
 )
@@ -301,6 +303,44 @@ def test_one_dimensional_pass_scales_distant_tails_without_log_space():
     expected = log_space_kde_log_density(points, samples, std, 64, weights)
     assert not np.asarray(needs_log_space).any()
     np.testing.assert_allclose(values, expected, rtol=1e-6, atol=2e-5)
+
+
+def _float64_log_kde(points, samples, std, weights):
+    """Weighted Gaussian KDE log density in float64 NumPy."""
+    points, samples = np.asarray(points, float), np.asarray(samples, float)
+    std, weights = np.asarray(std, float), np.asarray(weights, float)
+    log_kernel = -0.5 * np.sum(
+        ((points[:, None, :] - samples[None, :, :]) / std) ** 2, axis=-1
+    ) - np.sum(np.log(np.sqrt(2.0 * np.pi) * std))
+    return logsumexp(log_kernel, b=weights[None, :], axis=1) - np.log(weights.sum())
+
+
+def test_repairs_of_different_counts_share_compiled_kernels():
+    """Flagged counts that pad to one size share every compiled repair kernel.
+
+    Each call flags a different number of the 45 points (1 to 16, which pad
+    to one index size), so only the first repair may compile.
+    """
+    rng = np.random.default_rng(41)
+    samples = rng.normal(0.0, 5.0, (333, 2)).astype(np.float32)
+    weights = rng.uniform(0.5, 1.0, 333).astype(np.float32)
+    std = np.full(2, 2.0, np.float32)
+    near = rng.normal(0.0, 5.0, (45, 2))
+    far = 300.0 + rng.normal(0.0, 5.0, (45, 2))
+    cases = {
+        n_far: jnp.asarray(np.concatenate([far[:n_far], near[n_far:]]), jnp.float32)
+        for n_far in (1, 2, 5, 9, 16)
+    }
+    arguments = (jnp.asarray(samples), jnp.asarray(std), 64, jnp.asarray(weights))
+    actual = {1: true_kde_log_density(cases[1], *arguments)}
+    with count_compilations() as compiled:
+        for n_far in (2, 5, 9, 16):
+            actual[n_far] = true_kde_log_density(cases[n_far], *arguments)
+    assert compiled == []
+    for n_far, points in cases.items():
+        expected = _float64_log_kde(points, samples, std, weights)
+        assert (expected[:n_far] < -10_000).all()
+        np.testing.assert_allclose(actual[n_far], expected, rtol=1e-6, atol=2e-5)
 
 
 def test_true_log_density_matches_log_space_for_extremely_light_neighbors():
