@@ -25,6 +25,7 @@ from non_local_detector.analysis.distance2D import (
 )
 from non_local_detector.analysis.posterior import get_spatial_posterior
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import CompatibilityWarning
 from non_local_detector.models.base import ClusterlessDetector
 
 
@@ -1002,7 +1003,7 @@ class TestAheadBehindDistance2DTrackGraph:
         self, env_2d, call, path, value
     ):
         """``precomputed_distance`` is deprecated: any value gives one
-        ``FutureWarning``, attributed to the caller, and the same result."""
+        ``CompatibilityWarning``, attributed to the caller, and the same result."""
         functions = {
             "distance": lambda **kw: get_2D_distance(head, map_position, **kw),
             "direction": lambda **kw: get_map_estimate_direction_from_track_graph(
@@ -1023,7 +1024,7 @@ class TestAheadBehindDistance2DTrackGraph:
             warnings.simplefilter("always")
             result = functions[call](precomputed_distance=value, **kw)
 
-        assert [warning.category for warning in caught] == [FutureWarning]
+        assert [warning.category for warning in caught] == [CompatibilityWarning]
         assert "precomputed_distance" in str(caught[0].message)
         assert caught[0].filename == __file__
         np.testing.assert_array_equal(result, expected)
