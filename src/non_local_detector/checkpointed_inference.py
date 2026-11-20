@@ -252,10 +252,9 @@ def _sum_state_rows(values: jax.Array, columns: jax.Array) -> jax.Array:
 class CheckpointedResult:
     """A compact in-memory or lazy disk result plus whole-recording diagnostics.
 
-    ``first_smoothed`` is the smoothed posterior of the first recording row,
-    shape (n_bins,). ``transition_statistics`` holds the requested expected
-    discrete transition counts, shape (n_states, n_states), or per-row
-    responses, shape (n_time - 1, n_states, n_states).
+    ``transition_statistics`` holds the requested expected discrete
+    transition counts, shape (n_states, n_states), or per-row responses,
+    shape (n_time - 1, n_states, n_states).
 
     Attributes
     ----------
@@ -269,8 +268,6 @@ class CheckpointedResult:
         rows and the number of likelihood evaluations.
     result_path : Path or None
         Directory of the disk result store, or None for an in-memory result.
-    first_smoothed : np.ndarray or None
-        Smoothed posterior of the first recording row, shape (n_bins,).
     transition_statistics : np.ndarray or None
         Expected discrete transition counts, shape (n_states, n_states), or
         per-row responses, shape (n_time - 1, n_states, n_states); None unless
@@ -281,7 +278,6 @@ class CheckpointedResult:
     marginal_log_likelihood: float
     diagnostics: dict[str, Any]
     result_path: Path | None = None
-    first_smoothed: np.ndarray | None = None
     transition_statistics: np.ndarray | None = None
 
 
@@ -1194,7 +1190,6 @@ def checkpointed_forward_backward(
             marginal,
             diagnostics,
             None if result_path is None else Path(result_path),
-            first_smoothed=np.asarray(next_smoothed),
             transition_statistics=statistics,
         )
     finally:
