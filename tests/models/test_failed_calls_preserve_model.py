@@ -212,10 +212,9 @@ def test_fit_failing_after_rebuilding_state_restores_detector(
     ("step", "failing_call"),
     [
         ("_em_update_encoding_model", 2),
-        ("_em_update_initial_conditions", 2),
         ("_em_final_e_step", 1),
     ],
-    ids=["encoding-m-step", "initial-conditions-m-step", "final-e-step"],
+    ids=["encoding-m-step", "final-e-step"],
 )
 def test_estimation_failing_during_em_restores_detector(
     family_data, fitted, monkeypatch, step, failing_call

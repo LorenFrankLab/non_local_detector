@@ -81,7 +81,7 @@ def test_uniform_initial_conditions_without_interior_bins_raises(
 
 
 def _one_em_step(discrete_initial_conditions):
-    """A detector after one EM step that estimates the initial conditions.
+    """A detector with these discrete initial probabilities after one EM step.
 
     Any ``RuntimeWarning`` is raised.
     """
@@ -109,7 +109,6 @@ def _one_em_step(discrete_initial_conditions):
             time_edges=time_edges_from_centers(time),
             max_iter=1,
             estimate_encoding_model=False,
-            estimate_initial_conditions=True,
         )
     return detector
 
@@ -117,16 +116,15 @@ def _one_em_step(discrete_initial_conditions):
 @pytest.fixture(scope="module")
 def em_fit_with_unreachable_states():
     """Zero discrete initial mass on the No-Spike (1) and Fragmented (3)
-    states, so their smoothed probability at the first time bin is exactly
-    zero."""
+    states."""
     return _one_em_step(np.array([0.5, 0.0, 0.5, 0.0]))
 
 
 @pytest.mark.integration
 class TestContinuousICUpdate:
-    """The EM update of the initial conditions keeps each state's
-    ``continuous_initial_conditions_`` as configured and weights it by the
-    smoothed discrete-state probability at the first time bin."""
+    """After EM each state's ``continuous_initial_conditions_`` is as
+    configured, and the joint initial conditions are it times the state's
+    configured discrete probability."""
 
     def test_zero_probability_states_keep_their_configured_distribution(
         self, em_fit_with_unreachable_states

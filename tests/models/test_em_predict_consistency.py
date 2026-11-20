@@ -17,6 +17,7 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
     time_edges_from_centers,
 )
+from non_local_detector.exceptions import CompatibilityWarning
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import CLUSTERLESS_SIM_RATE
@@ -196,7 +197,7 @@ def small_clusterless_sim():
     )
 
 
-def _fit_cont_frag(sim, estimate_initial_conditions, max_iter):
+def _fit_cont_frag(sim, max_iter, **kwargs):
     """Fit a two-state classifier whose user-specified discrete initial
     conditions are ``USER_DISCRETE_INITIAL_CONDITIONS``."""
     classifier = ContFragClusterlessClassifier(
@@ -213,73 +214,68 @@ def _fit_cont_frag(sim, estimate_initial_conditions, max_iter):
             time_edges=time_edges_from_centers(sim.position_time),
             max_iter=max_iter,
             estimate_encoding_model=False,
-            estimate_initial_conditions=estimate_initial_conditions,
+            **kwargs,
         )
     return classifier
 
 
 @pytest.fixture(scope="module")
 def ic_estimated_classifier(small_clusterless_sim):
-    """Two EM iterations that re-estimate the discrete initial conditions.
+    """A classifier after two EM iterations.
 
     Shared read-only across tests: none of them mutate the classifier.
     """
-    return _fit_cont_frag(
-        small_clusterless_sim, estimate_initial_conditions=True, max_iter=2
-    )
+    return _fit_cont_frag(small_clusterless_sim, max_iter=2)
 
 
 @pytest.mark.integration
 class TestDiscreteInitialConditionsSpecPreserved:
-    """Fitting stores estimated discrete initial conditions on
-    ``discrete_initial_conditions_`` and leaves the constructor argument (the
-    sklearn ``get_params`` spec) unchanged. A two-state classifier with a
-    non-trivial spec makes the fitted and user values distinguishable."""
+    """EM leaves the constructor argument (the sklearn ``get_params`` spec)
+    unchanged and reports the same values on
+    ``discrete_initial_conditions_``. A two-state classifier with a
+    non-trivial spec would show any re-estimate."""
 
-    def test_constructor_attribute_preserved_after_fit(self, ic_estimated_classifier):
-        """The user-supplied ``discrete_initial_conditions`` must not be mutated
-        by fitting; the fitted value must live on ``discrete_initial_conditions_``.
+    def test_em_keeps_the_user_discrete_initial_conditions(
+        self, ic_estimated_classifier
+    ):
+        """After EM both the constructor argument and
+        ``discrete_initial_conditions_`` hold the user's values.
 
-        Mutating the constructor-set attribute violates sklearn's
-        ``BaseEstimator`` contract: ``get_params()`` would return the fitted
-        value rather than the user's spec, and a second call to
-        ``estimate_parameters`` would start from the previous fit rather than
-        the user's input.
+        EM used to replace ``discrete_initial_conditions_`` with the first
+        bin's smoothed state probabilities, which moved it more than 0.1 from
+        this spec in two iterations.
         """
         classifier = ic_estimated_classifier
         np.testing.assert_array_equal(
             classifier.discrete_initial_conditions, USER_DISCRETE_INITIAL_CONDITIONS
         )
-        fitted_ic = np.asarray(classifier.discrete_initial_conditions_)
-        assert fitted_ic.shape == USER_DISCRETE_INITIAL_CONDITIONS.shape
-        assert np.all(np.isfinite(fitted_ic))
-        np.testing.assert_allclose(fitted_ic.sum(), 1.0, rtol=1e-5)
-        # EM moved the estimate away from the spec, so the check above could
-        # tell the two apart.
-        assert np.max(np.abs(fitted_ic - USER_DISCRETE_INITIAL_CONDITIONS)) > 0.1
-
-    def test_discrete_initial_conditions_fitted_when_estimate_disabled(
-        self, small_clusterless_sim
-    ):
-        """With ``estimate_initial_conditions=False`` the fitted attribute is
-        set to the user's value, not left unset or re-estimated.
-
-        ``discrete_initial_conditions_`` is initialized in the unified
-        post-validation block to ``np.asarray(self.discrete_initial_conditions)``
-        and only overwritten with the fitted distribution when
-        ``estimate_initial_conditions=True``. The disabled branch is a distinct
-        code path: a refactor that set the attribute only inside the estimate
-        branch would leave it unset here.
-        """
-        classifier = _fit_cont_frag(
-            small_clusterless_sim, estimate_initial_conditions=False, max_iter=1
+        np.testing.assert_array_equal(
+            classifier.discrete_initial_conditions_, USER_DISCRETE_INITIAL_CONDITIONS
         )
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_estimate_initial_conditions_warns_and_changes_nothing(
+        self, small_clusterless_sim, ic_estimated_classifier, value
+    ):
+        """The clusterless ``estimate_parameters`` accepts the old argument,
+        warns once and ignores it."""
+        with pytest.warns(
+            CompatibilityWarning, match="estimate_initial_conditions has no effect"
+        ) as caught:
+            classifier = _fit_cont_frag(
+                small_clusterless_sim, max_iter=2, estimate_initial_conditions=value
+            )
+
+        assert len(caught) == 1
         np.testing.assert_array_equal(
             classifier.discrete_initial_conditions_, USER_DISCRETE_INITIAL_CONDITIONS
         )
         np.testing.assert_array_equal(
-            classifier.discrete_initial_conditions, USER_DISCRETE_INITIAL_CONDITIONS
+            classifier.initial_conditions_, ic_estimated_classifier.initial_conditions_
+        )
+        np.testing.assert_array_equal(
+            classifier.discrete_state_transitions_,
+            ic_estimated_classifier.discrete_state_transitions_,
         )
 
     def test_sklearn_clone_works_after_fit(self, ic_estimated_classifier):

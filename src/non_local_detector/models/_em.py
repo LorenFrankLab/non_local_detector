@@ -2,8 +2,8 @@
 
 The Expectation-Maximization engine behind ``estimate_parameters``: the
 internal fit's choice of dense or structured EM, the option checks, the
-E-steps, the M-steps for the encoding model, discrete transitions and
-initial conditions, the convergence and monotonicity checks, and the final
+E-steps, the M-steps for the encoding model and discrete transitions, the
+convergence and monotonicity checks, and the final
 E-step and results. ``_DetectorBase`` inherits the methods of ``_EMMixin``;
 the detectors' ``estimate_parameters`` validate and fit the data, then call
 ``_run_em``.
@@ -478,7 +478,6 @@ class _EMSettings:
     result_path: str | Path | None
     requested_outputs: set[str]
     em_attrs: dict[str, Any]
-    estimate_initial_conditions: bool
     estimate_discrete_transition: bool
     estimate_encoding_model: bool
     max_iter: int
@@ -831,7 +830,6 @@ class _EMMixin:
         log_likelihood_args: tuple[Any, ...] | None = None,
         is_missing: np.ndarray | None = None,
         *,
-        estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
         max_iter: int = 100,
@@ -851,8 +849,9 @@ class _EMMixin:
 
         The detectors' ``estimate_parameters`` validate and fit the data, then
         call this with the ``compute_log_likelihood`` arguments. It estimates
-        the initial conditions, the discrete transitions and, optionally, the
-        encoding model with the Expectation-Maximization algorithm.
+        the discrete transitions and, optionally, the encoding model with the
+        Expectation-Maximization algorithm. The initial conditions stay as
+        ``fit`` built them.
 
         Parameters
         ----------
@@ -864,10 +863,6 @@ class _EMMixin:
             Arguments for the log likelihood function, by default None.
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
-        estimate_initial_conditions : bool, optional
-            Whether to estimate the discrete initial probabilities, by default
-            True. Each state's initial distribution over its bins stays as
-            configured.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
@@ -985,7 +980,6 @@ class _EMMixin:
             time_edges,
             log_likelihood_args,
             is_missing,
-            estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
             max_iter=max_iter,
@@ -1017,8 +1011,6 @@ class _EMMixin:
                 )
             else:
                 log_prior_before = log_prior_after = 0.0
-            if settings.estimate_initial_conditions:
-                self._em_update_initial_conditions(e_step)
 
             self._em_record_iteration(
                 settings,
@@ -1071,7 +1063,6 @@ class _EMMixin:
         log_likelihood_args: tuple[Any, ...] | None,
         is_missing: np.ndarray | None,
         *,
-        estimate_initial_conditions: bool,
         estimate_discrete_transition: bool,
         estimate_encoding_model: bool,
         max_iter: int,
@@ -1237,7 +1228,6 @@ class _EMMixin:
             result_path=result_path,
             requested_outputs=requested_outputs,
             em_attrs=em_attrs,
-            estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
             max_iter=max_iter,
@@ -1260,15 +1250,14 @@ class _EMMixin:
     def _em_reset_fitted_attributes(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",
     ) -> None:
-        """Drop an earlier run's likelihood and start the initial conditions."""
+        """Drop an earlier run's likelihood and set the discrete initial probabilities."""
         # Any likelihood stored by an EARLIER run describes that run's data and
         # encoding model, not this one's. Drop it now, and reuse within this run
         # only a likelihood computed inside this run
         # (``_EMState.run_log_likelihoods``).
         self._invalidate_stored_log_likelihood()
-        # Fitted initial-condition distribution starts at the user-supplied
-        # constructor argument; overwritten with the fitted distribution in
-        # each M-step when ``estimate_initial_conditions`` is True.
+        # EM does not estimate the initial conditions: the discrete initial
+        # probabilities are the constructor argument.
         self.discrete_initial_conditions_ = np.asarray(self.discrete_initial_conditions)
 
     def _em_transition_log_prior(  # type: ignore[misc]
@@ -1528,36 +1517,6 @@ class _EMMixin:
             moved = self.discrete_state_transitions_ - transitions_before
             state.transition_change = float(np.max(np.abs(moved)))
         return log_prior_before, log_prior_after
-
-    def _em_update_initial_conditions(  # type: ignore[misc]
-        self: "non_local_detector.models.base._DetectorBase", e_step: _EMEStep
-    ) -> None:
-        """Initial-condition M-step: the first bin's smoothed state probabilities.
-
-        Only the discrete initial probabilities are estimated. Each state's
-        distribution over its own bins, ``continuous_initial_conditions_``,
-        stays as ``fit`` set it, and the joint initial conditions are it
-        times the state's estimated probability, as at fit. With those
-        distributions fixed, the first bin's smoothed probability of each
-        state maximizes the expected complete-data log-likelihood, so the
-        step cannot lower it.
-
-        Estimating the distributions too would tie the detector to the fitted
-        recording's first position, which a decode of another window would
-        start from, and would undo the multi-bin Local state's position
-        kernel, which is scaled against that state's uniform distribution.
-        """
-        self.discrete_initial_conditions_ = np.asarray(
-            e_step.acausal_state_probabilities[0]
-        )
-        # In place, in the dtype fit gave it: the internal fit has just
-        # rebuilt this array (see _restore_state_on_error).
-        np.multiply(
-            self.continuous_initial_conditions_,
-            self.discrete_initial_conditions_[self.state_space_.state_ind],
-            out=self.initial_conditions_,
-            dtype=self.initial_conditions_.dtype,
-        )
 
     def _em_record_iteration(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase",

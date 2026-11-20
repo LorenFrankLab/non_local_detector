@@ -1,9 +1,15 @@
-"""EM estimates the discrete initial probabilities only.
+"""EM leaves the initial conditions as configured.
 
-Each state's distribution over its own bins stays as configured at fit, so a
-detector after ``estimate_parameters`` starts any recording the way a fitted
-one does, apart from how probable each state is at the first bin.
+One recording holds one observation of how a recording starts. The
+initial distribution that maximizes its likelihood puts all its mass on the
+fitted recording's first state, so a detector estimated that way started
+every later decode there. ``estimate_parameters`` estimates the discrete
+transitions and the encoding model; ``discrete_initial_conditions_``,
+``continuous_initial_conditions_`` and ``initial_conditions_`` are what
+``fit`` builds from the configuration.
 """
+
+import warnings
 
 import numpy as np
 import pytest
@@ -14,14 +20,12 @@ from non_local_detector import (
     SortedSpikesDecoder,
     time_edges_from_centers,
 )
-from non_local_detector.core import EM_MONOTONICITY_SLACK
+from non_local_detector.exceptions import CompatibilityWarning
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from tests.conftest import em_stops_at_max_iter
 
-# EM that estimates only the initial conditions, so a detector after it
-# differs from the fitted one in nothing else.
-IC_ONLY = {
-    "estimate_initial_conditions": True,
+# EM that estimates nothing, so a detector after it must equal the fitted one.
+NOTHING_ESTIMATED = {
     "estimate_discrete_transition": False,
     "estimate_encoding_model": False,
 }
@@ -71,126 +75,15 @@ def _edges(window):
     return time_edges_from_centers(window["position_time"])
 
 
-def _assert_objective_non_decreasing(results):
-    """Each EM step raises the penalized log-likelihood, up to float32 noise.
-
-    The noise allowed is the package's monotonicity slack, 10 float32 epsilons
-    relative to the objective.
-    """
-    objectives = np.asarray(results.attrs["em_objectives"], dtype=np.float64)
-    previous = np.asarray(results.attrs["em_previous_objectives"], dtype=np.float64)
-    steps = objectives[1 : len(previous) + 1] - previous
-    assert steps.size > 0
-    slack = EM_MONOTONICITY_SLACK * np.abs(previous)
-    assert np.all(steps >= -slack), steps
-
-
-def _local_probability(detector, window):
-    results = detector.predict(**window, time_edges=_edges(window))
-    return results.acausal_state_probabilities.sel(states="Local").values
-
-
-@pytest.mark.integration
-@em_stops_at_max_iter
-@pytest.mark.parametrize("local_position_std", [0.0, 5.0])
-def test_multi_bin_local_state_keeps_its_probability_on_another_window(
-    recording, local_position_std
-):
-    """After EM, a window that starts with the animal in another bin starts
-    in the Local state, as it does after ``fit``.
-
-    The Local state's uniform initial distribution is what its position
-    kernel, scaled to sum to the number of bins, is built against. An initial
-    distribution peaked at the fitted recording's first position gave Local
-    probability 0 (delta kernel) or 6e-18 (5 cm kernel) at the window's
-    first bin, and 0.12 at its fifth.
-    """
-    fitted, other, fs = recording
-    fit = _make(
-        NonLocalSortedSpikesDetector, fs, local_position_std=local_position_std
-    ).fit(**fitted)
-    em = _make(NonLocalSortedSpikesDetector, fs, local_position_std=local_position_std)
-    results = em.estimate_parameters(
-        **fitted, time_edges=_edges(fitted), **IC_ONLY, max_iter=3
+def _assert_initial_conditions_as_fitted(em, fit):
+    """The three initial-condition attributes of ``em`` are those ``fit`` built."""
+    np.testing.assert_array_equal(
+        em.discrete_initial_conditions_, np.asarray(em.discrete_initial_conditions)
     )
-    _assert_objective_non_decreasing(results)
-
-    p_fit = _local_probability(fit, other)
-    p_em = _local_probability(em, other)
-    assert p_fit[0] > 0.99
-    assert p_em[0] > 0.99, p_em[:5]
-    # Only the discrete initial probabilities differ between the two.
-    np.testing.assert_allclose(p_em[:50], p_fit[:50], atol=0.01)
-
-
-@pytest.mark.integration
-@em_stops_at_max_iter
-@pytest.mark.parametrize("local_position_std", [0.0, 5.0])
-def test_em_gain_in_marginal_likelihood_is_that_of_the_discrete_update(
-    recording, local_position_std
-):
-    """One initial-condition M-step raises the marginal log-likelihood by
-    log(sum_s g_s**2 / p_s), with p the configured and g the estimated
-    discrete initial probabilities.
-
-    With each state's distribution over its bins held fixed, the marginal
-    likelihood is sum_s p_s E_s, where E_s is the evidence of the recording
-    started in state s, and the first bin's smoothed state probability is
-    g_s = p_s E_s / sum_r p_r E_r. Replacing p by g multiplies the marginal
-    likelihood by sum_s g_s E_s / sum_r p_r E_r = sum_s g_s**2 / p_s.
-    Estimating the multi-bin Local state's distribution over its bins as well
-    added 2.5 nats (delta kernel) and 1.7 nats (5 cm kernel) on top, out of
-    at most log(35), the log of its number of bins. EM starts from equal
-    discrete probabilities, so the gain (about 0.01 nats) is well above
-    float32 noise.
-    """
-    fitted, _, fs = recording
-    em = _make(
-        NonLocalSortedSpikesDetector,
-        fs,
-        local_position_std=local_position_std,
-        discrete_initial_conditions=np.full(4, 0.25),
+    np.testing.assert_array_equal(
+        em.continuous_initial_conditions_, fit.continuous_initial_conditions_
     )
-    results = em.estimate_parameters(
-        **fitted, time_edges=_edges(fitted), **IC_ONLY, max_iter=1
-    )
-    _assert_objective_non_decreasing(results)
-
-    configured = np.asarray(em.discrete_initial_conditions, dtype=np.float64)
-    estimated = np.asarray(em.discrete_initial_conditions_, dtype=np.float64)
-    expected_gain = np.log(np.sum(estimated**2 / configured))
-    marginal = np.asarray(results.attrs["marginal_log_likelihoods"], dtype=np.float64)
-    assert marginal.shape == (2,)
-    # Float32 noise on the marginal log-likelihood, about 2e-4 nats here; the
-    # gain matched within 5e-6 on macOS arm64.
-    tolerance = EM_MONOTONICITY_SLACK * abs(marginal[0])
-    assert expected_gain > 10 * tolerance
-    np.testing.assert_allclose(marginal[1] - marginal[0], expected_gain, atol=tolerance)
-
-
-@pytest.mark.integration
-@em_stops_at_max_iter
-def test_decoder_after_em_decodes_another_window_as_after_fit(recording):
-    """A one-state decoder's only initial condition EM estimates is its
-    discrete one, which is 1, so after EM it decodes any window as the
-    fitted decoder does.
-
-    Its distribution over position bins used to become the fitted
-    recording's first-bin posterior, which the decoder then carried to every
-    window it decoded: on this one the posteriors differed by up to 0.23 in
-    a position bin.
-    """
-    fitted, other, fs = recording
-    fit = _make(SortedSpikesDecoder, fs).fit(**fitted)
-    em = _make(SortedSpikesDecoder, fs)
-    results = em.estimate_parameters(
-        **fitted, time_edges=_edges(fitted), **IC_ONLY, max_iter=3
-    )
-    _assert_objective_non_decreasing(results)
-
-    expected = fit.predict(**other, time_edges=_edges(other)).acausal_posterior
-    actual = em.predict(**other, time_edges=_edges(other)).acausal_posterior
-    np.testing.assert_allclose(actual.values, expected.values, atol=1e-6)
+    np.testing.assert_array_equal(em.initial_conditions_, fit.initial_conditions_)
 
 
 @pytest.mark.integration
@@ -203,33 +96,124 @@ def test_decoder_after_em_decodes_another_window_as_after_fit(recording):
     ],
     ids=["dense", "dense-row-chunks", "structured"],
 )
-def test_every_em_path_keeps_the_configured_state_distributions(
+def test_every_em_path_leaves_the_initial_conditions_as_fit_set_them(
     recording, representation
 ):
-    """Default EM, on each E-step driver, leaves ``continuous_initial_conditions_``
-    as ``fit`` set it and weights it by the estimated discrete probabilities.
+    """Default EM, on each E-step driver, changes none of the initial
+    conditions: the discrete probabilities are the configured ones, and each
+    state's distribution over its bins and the joint vector are bit for bit
+    what ``fit`` built.
+
+    EM used to replace the discrete probabilities with the first bin's
+    smoothed state probabilities: after these 20 iterations they were
+    ``[1, 2.9e-9, 0, 0]`` against a configured ``[0.99, 0.005, 0.0025,
+    0.0025]``.
     """
     fitted, _, fs = recording
-    configured = (
-        _make(NonLocalSortedSpikesDetector, fs, local_position_std=0.0)
-        .fit(**fitted)
-        .continuous_initial_conditions_
-    )
+    fit = _make(NonLocalSortedSpikesDetector, fs, local_position_std=0.0).fit(**fitted)
     em = _make(NonLocalSortedSpikesDetector, fs, local_position_std=0.0)
-    results = em.estimate_parameters(
+    em.estimate_parameters(
         **fitted, time_edges=_edges(fitted), max_iter=20, **representation
     )
-    _assert_objective_non_decreasing(results)
 
-    np.testing.assert_array_equal(em.continuous_initial_conditions_, configured)
-    discrete = np.asarray(em.discrete_initial_conditions_, dtype=np.float64)
-    np.testing.assert_allclose(discrete.sum(), 1.0, rtol=1e-6)
-    np.testing.assert_allclose(
-        em.initial_conditions_,
-        configured * discrete[em.state_ind_],
-        rtol=1e-6,
-        atol=0.0,
-    )
+    _assert_initial_conditions_as_fitted(em, fit)
     initial = em.initial_conditions_[em.is_track_interior_state_bins_]
-    assert np.all(np.isfinite(em.initial_conditions_))
     np.testing.assert_allclose(initial.sum(dtype=np.float64), 1.0, rtol=1e-6)
+
+
+@pytest.mark.integration
+def test_non_local_states_stay_reachable_at_the_start_of_a_decode(recording):
+    """After a long EM every state can still start a decode, so the posterior
+    given a non-local state is defined from the first bin of any window.
+
+    The estimated discrete initial probabilities reached exactly zero in
+    float32 for both non-local states here (EM then took 14 iterations to
+    converge; it takes 9 now), and the conditional non-local posterior was
+    NaN in the first row of every decode.
+    """
+    fitted, other, fs = recording
+    em = _make(NonLocalSortedSpikesDetector, fs)
+    em.estimate_parameters(
+        **fitted, time_edges=_edges(fitted), max_iter=20, tolerance=1e-12
+    )
+    assert em.n_iter_ > 5
+
+    assert np.all(em.discrete_initial_conditions_ > 0)
+    for window in (fitted, other):
+        results = em.predict(**window, time_edges=_edges(window))
+        conditional = em.get_conditional_non_local_posterior(results).values
+        assert np.all(np.isfinite(conditional))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("cls", "kwargs"),
+    [
+        (NonLocalSortedSpikesDetector, {"local_position_std": 0.0}),
+        (NonLocalSortedSpikesDetector, {"local_position_std": 5.0}),
+        (SortedSpikesDecoder, {}),
+    ],
+    ids=["delta-local", "multi-bin-local", "decoder"],
+)
+def test_detector_after_em_decodes_another_window_as_after_fit(recording, cls, kwargs):
+    """With nothing else estimated, a detector after EM is the fitted
+    detector: it decodes a window that starts elsewhere on the track
+    identically.
+
+    The estimated initial conditions were carried to every window decoded
+    afterwards. The Local probability at this window's first 50 bins differed
+    from the fitted detector's by up to 0.01, and before each state's
+    distribution over its bins was held fixed, a decoder's posterior differed
+    by up to 0.23 in a position bin.
+    """
+    fitted, other, fs = recording
+    fit = _make(cls, fs, **kwargs).fit(**fitted)
+    em = _make(cls, fs, **kwargs)
+    em.estimate_parameters(**fitted, time_edges=_edges(fitted), **NOTHING_ESTIMATED)
+
+    _assert_initial_conditions_as_fitted(em, fit)
+    expected = fit.predict(**other, time_edges=_edges(other)).acausal_posterior
+    actual = em.predict(**other, time_edges=_edges(other)).acausal_posterior
+    np.testing.assert_allclose(actual.values, expected.values, rtol=0, atol=1e-6)
+
+
+@pytest.mark.integration
+@em_stops_at_max_iter
+@pytest.mark.parametrize("value", [True, False])
+def test_estimate_initial_conditions_warns_and_changes_nothing(recording, value):
+    """``estimate_initial_conditions`` is still accepted, because stored
+    decoding parameters may pass it, but it has no effect: either value gives
+    one ``CompatibilityWarning``, attributed to the caller, and the result of
+    leaving it out.
+    """
+    fitted, _, fs = recording
+    reference = _make(NonLocalSortedSpikesDetector, fs)
+    expected = reference.estimate_parameters(
+        **fitted, time_edges=_edges(fitted), max_iter=2
+    )
+
+    detector = _make(NonLocalSortedSpikesDetector, fs)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.filterwarnings(
+            "ignore",
+            message="EM did not converge after max_iter=",
+            category=UserWarning,
+        )
+        results = detector.estimate_parameters(
+            **fitted,
+            time_edges=_edges(fitted),
+            max_iter=2,
+            estimate_initial_conditions=value,
+        )
+
+    assert [warning.category for warning in caught] == [CompatibilityWarning]
+    assert "estimate_initial_conditions" in str(caught[0].message)
+    assert caught[0].filename == __file__
+    _assert_initial_conditions_as_fitted(detector, reference)
+    np.testing.assert_array_equal(
+        results.acausal_posterior.values, expected.acausal_posterior.values
+    )
+    np.testing.assert_array_equal(
+        detector.discrete_state_transitions_, reference.discrete_state_transitions_
+    )

@@ -1,9 +1,9 @@
 """Default discrete initial conditions give every state a positive probability.
 
-A state that starts at exactly zero stays at zero through EM (the update sets
-the initial conditions to the posterior at the first bin, which is zero
-wherever the prior is), and its conditional posterior is undefined at the
-first bin. Models with a nominal start state start one transition after it.
+A state that starts at exactly zero cannot be the state a decode starts in,
+and its conditional posterior is undefined at the first bin. Models with a
+nominal start state start one transition after it. EM does not estimate the
+starting probabilities, so they stay positive.
 """
 
 import numpy as np
@@ -88,8 +88,9 @@ def test_default_conditional_non_local_posterior_is_finite(sorted_sim):
 
 @pytest.mark.integration
 @em_stops_at_max_iter
-def test_em_can_move_default_start_off_local(sorted_sim):
-    """EM re-estimates every state's initial probability, which stays positive."""
+def test_em_keeps_the_default_start(sorted_sim):
+    """EM does not estimate the starting probabilities, so every state keeps
+    its positive default."""
     time, position, spike_times = sorted_sim
     detector = NonLocalSortedSpikesDetector(sampling_frequency=SORTED_SIM_RATE)
     initial = detector.discrete_initial_conditions.copy()
@@ -100,8 +101,6 @@ def test_em_can_move_default_start_off_local(sorted_sim):
         time_edges=time_edges_from_centers(time),
         max_iter=2,
         estimate_encoding_model=False,
-        estimate_initial_conditions=True,
     )
-    learned = detector.discrete_initial_conditions_
-    assert np.all(learned > 0)
-    assert not np.allclose(learned, initial, rtol=1e-3, atol=0)
+    assert np.all(initial > 0)
+    np.testing.assert_array_equal(detector.discrete_initial_conditions_, initial)

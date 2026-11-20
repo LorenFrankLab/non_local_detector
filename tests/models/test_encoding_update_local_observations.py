@@ -64,7 +64,6 @@ def test_encoding_update_uses_local_observation_posterior(
         time_edges=edges,
         estimate_encoding_model=True,
         estimate_discrete_transition=False,
-        estimate_initial_conditions=False,
         max_iter=1,
         min_encoding_local_mass=0,
         min_encoding_local_ess=0,
@@ -101,7 +100,6 @@ def test_encoding_update_skips_models_without_local_observations(monkeypatch):
         time_edges=np.linspace(0, 1, 51),
         estimate_encoding_model=True,
         estimate_discrete_transition=False,
-        estimate_initial_conditions=False,
         max_iter=1,
     )
 
