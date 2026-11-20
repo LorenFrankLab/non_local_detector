@@ -381,14 +381,15 @@ class _DetectorBase(
         ``discrete_initial_conditions`` constructor argument, and cleared by
         ``fit``.
     continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
-        Each state's initial distribution over its own bins. ``fit`` sets
-        what ``continuous_initial_conditions_types`` give, for every state.
-        ``estimate_parameters`` replaces it with each state's share of the
-        first bin's smoothed posterior, normalized within the state; a state
-        whose fitted discrete initial probability is exactly zero has no such
-        distribution and holds zeros. Such a state adds nothing to the joint
-        ``initial_conditions_`` either way, so decoding does not depend on
-        what it holds.
+        Each state's initial distribution over its own bins: what
+        ``continuous_initial_conditions_types`` give, for every state, set by
+        ``fit``. ``estimate_parameters`` keeps it and estimates only
+        ``discrete_initial_conditions_``, so a decode of any recording starts
+        each state where the configuration does, not where the fitted
+        recording did. ``initial_conditions_`` is it times each state's
+        discrete initial probability. A detector estimated by an earlier
+        version holds each state's share of the fitted recording's first-bin
+        posterior here instead, and still decodes from what it stored.
     state_space_ : StateSpace
         The fit's state bins and continuous transition, with the
         ``state_names``, ``observation_models``,
@@ -3855,7 +3856,9 @@ class ClusterlessDetector(_DetectorBase):
             center. EM estimates the transitions on them, and they place the
             formula's spline knots. By default None.
         estimate_initial_conditions : bool, optional
-            Whether to estimate the initial conditions, by default True.
+            Whether to estimate the discrete initial probabilities, by default
+            True. Each state's initial distribution over its bins stays as
+            configured.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
@@ -4770,7 +4773,8 @@ class SortedSpikesDetector(_DetectorBase):
             center. EM estimates the transitions on them, and they place the
             formula's spline knots. By default None.
         estimate_initial_conditions : bool, optional
-            Estimate the initial conditions, by default True.
+            Estimate the discrete initial probabilities, by default True. Each
+            state's initial distribution over its bins stays as configured.
         estimate_discrete_transition : bool, optional
             Estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
