@@ -10,6 +10,7 @@ import numpy as np
 
 from non_local_detector.environment import (
     Environment,
+    _bin_ind_before_snap,
     make_nD_track_graph_from_environment,
 )
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
@@ -53,61 +54,6 @@ def make_2D_track_graph_from_environment(
     return make_nD_track_graph_from_environment(environment)
 
 
-def get_bin_ind(sample: np.ndarray, edges: Sequence[np.ndarray]) -> np.ndarray:
-    """Find the bin indices for multidimensional sample points.
-
-    Determines which bin each sample point belongs to in a multidimensional
-    histogram, similar to numpy's digitize but for multiple dimensions.
-    Handles edge cases where points fall exactly on bin edges.
-
-    Parameters
-    ----------
-    sample : np.ndarray, shape (n_time, n_dim)
-        Sample points to bin. Each row is a point, each column is a dimension.
-    edges : list of np.ndarray
-        List of bin edge arrays, one per dimension. Each array has shape
-        (n_bins + 1,) defining the bin boundaries.
-
-    Returns
-    -------
-    bin_ind : np.ndarray, shape (n_time,)
-        Flattened bin indices for each sample point. Uses row-major ordering
-        to convert multidimensional bin coordinates to linear indices.
-    """
-    try:
-        # Sample is an ND-array.
-        _N, D = sample.shape
-    except (AttributeError, ValueError):
-        # Sample is a sequence of 1D arrays.
-        sample = np.atleast_2d(sample).T
-        _N, D = sample.shape
-
-    nbin = np.empty(D, np.intp)
-    for i in range(D):
-        nbin[i] = len(edges[i]) + 1  # includes an outlier on each end
-
-    # Compute the bin number each sample falls into.
-    Ncount = tuple(
-        # avoid np.digitize to work around gh-11022
-        np.searchsorted(edges[i], sample[:, i], side="right")
-        for i in range(D)
-    )
-
-    # Using digitize, values that fall on an edge are put in the right bin.
-    # For the rightmost bin, we want values equal to the right edge to be
-    # counted in the last bin, and not as an outlier.
-    for i in range(D):
-        # Find which points are on the rightmost edge.
-        on_edge = sample[:, i] == edges[i][-1]
-        # Shift these points one bin to the left.
-        Ncount[i][on_edge] -= 1
-
-    return np.ravel_multi_index(
-        Ncount,
-        nbin,
-    )
-
-
 def get_map_estimate_direction_from_track_graph(
     head_position: np.ndarray,
     map_estimate: np.ndarray,
@@ -147,13 +93,11 @@ def get_map_estimate_direction_from_track_graph(
 
     map_estimate_direction = np.zeros((head_position.shape[0],))
 
-    # remove outer boundary edge
-    bin_edges = [e[1:-1] for e in edges]
     if precomputed_distance:
         node_positions = np.asarray(list(node_positions.values()))
         n_nodes = node_positions.shape[0]
-        bin_ind1 = get_bin_ind(head_position, bin_edges)
-        bin_ind2 = get_bin_ind(map_estimate, bin_edges)
+        bin_ind1 = _bin_ind_before_snap(edges, head_position)
+        bin_ind2 = _bin_ind_before_snap(edges, map_estimate)
 
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
         # The all-pairs nx.shortest_path is a dict {source: {target: path}} in
@@ -198,8 +142,8 @@ def get_map_estimate_direction_from_track_graph(
         map_estimate_direction[unreachable] = np.nan
     else:
         node_ids = np.asarray(list(node_positions.keys()))
-        head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
-        map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
+        head_position_nodes = node_ids[_bin_ind_before_snap(edges, head_position)]
+        map_estimate_nodes = node_ids[_bin_ind_before_snap(edges, map_estimate)]
 
         for i, (head_position_node, map_estimate_node) in enumerate(
             zip(head_position_nodes, map_estimate_nodes, strict=False)
@@ -291,12 +235,9 @@ def get_2D_distance(
         node_ids = np.asarray(list(node_positions.keys()))
         node_positions = np.asarray(list(node_positions.values()))
 
-        # remove outer boundary edge
-        bin_edges = [e[1:-1] for e in edges]
-
         if precomputed_distance:
-            bin_ind1 = get_bin_ind(position1, bin_edges)
-            bin_ind2 = get_bin_ind(position2, bin_edges)
+            bin_ind1 = _bin_ind_before_snap(edges, position1)
+            bin_ind2 = _bin_ind_before_snap(edges, position2)
             distance = np.full((len(node_ids), len(node_ids)), np.inf)
             for to_node_id, from_node_id in nx.shortest_path_length(
                 track_graph,
@@ -307,8 +248,8 @@ def get_2D_distance(
                 )
             distance = distance[bin_ind1, bin_ind2]
         else:
-            node_ids1 = node_ids[get_bin_ind(position1, bin_edges)]
-            node_ids2 = node_ids[get_bin_ind(position2, bin_edges)]
+            node_ids1 = node_ids[_bin_ind_before_snap(edges, position1)]
+            node_ids2 = node_ids[_bin_ind_before_snap(edges, position2)]
             distance = np.full((position1.shape[0]), np.inf)
             for i in range(position1.shape[0]):
                 try:
