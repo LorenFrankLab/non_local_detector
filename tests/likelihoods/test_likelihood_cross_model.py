@@ -97,9 +97,10 @@ def cross_model_data():
     }
     # The GLM fits (sorted and mark GLM, here the same Poisson problem) can
     # stop with a final gradient above the convergence warning's threshold,
-    # depending on the CPU's float32 summation order: near the optimum a
-    # Newton step lowers the loss by less than the float32 loss's rounding,
-    # so the line search rejects it. The stalled fits are accurate (log-rates
+    # depending on the order in which float32 sums the rows (it can differ
+    # between CPUs and library versions): near the optimum a Newton step
+    # lowers the loss by less than the float32 loss's rounding, so the line
+    # search rejects it. The stalled fits are accurate (log-rates
     # at most 1.7e-3 nats from a float64 solve, against a standard error of
     # about 0.2 nats from 20 spikes), so the warning is a false positive
     # here. Remove this filter once the line search resolves such decreases.
