@@ -228,6 +228,48 @@ def _sorted_neighbors(
     return neighbors, edge_distance
 
 
+def _paired_distances(
+    distances: np.ndarray | LazyGraphDistances,
+    rows: np.ndarray,
+    columns: np.ndarray,
+) -> np.ndarray:
+    """Entries ``distances[rows[i], columns[i, j]]`` of a distance table.
+
+    A `LazyGraphDistances` is read with ``cross_distances``, whole rows for a
+    batch of distinct `rows` at a time, as many as its Dijkstra workspace
+    holds. The result belongs to the caller, so the table's dense budget does
+    not limit it.
+
+    Parameters
+    ----------
+    distances : np.ndarray or LazyGraphDistances, shape (n_bins, n_bins)
+        Distance table.
+    rows : np.ndarray of int, shape (n_pairs,)
+        Row (source bin) of each output row.
+    columns : np.ndarray of int, shape (n_pairs, n_columns)
+        Columns (destination bins) read from that row.
+
+    Returns
+    -------
+    entries : np.ndarray, shape (n_pairs, n_columns)
+    """
+    if not isinstance(distances, LazyGraphDistances):
+        return np.asarray(distances[rows[:, np.newaxis], columns])
+    n_bins = distances.shape[1]
+    sources, source_ind = np.unique(rows, return_inverse=True)
+    batch_size = max(1, distances.max_workspace_bytes // (8 * n_bins))
+    entries = np.empty(columns.shape)
+    for start in range(0, len(sources), batch_size):
+        block = distances.cross_distances(
+            sources[start : start + batch_size], np.arange(n_bins)
+        )
+        in_batch = (source_ind >= start) & (source_ind < start + batch_size)
+        entries[in_batch] = block[
+            (source_ind[in_batch] - start)[:, np.newaxis], columns[in_batch]
+        ]
+    return entries
+
+
 def _graph_distance_and_direction(
     position1: np.ndarray,
     position2: np.ndarray,
@@ -293,8 +335,8 @@ def _graph_distance_and_direction(
     neighbors, edge_distance = _sorted_neighbors(track_graph, start_bin)
     # Distances from each target bin to the start bin (column 0) and to the
     # start bin's neighbors: one shortest-path row per distinct target bin.
-    to_target = np.asarray(
-        distances[target_bin[:, np.newaxis], np.column_stack([start_bin, neighbors])]
+    to_target = _paired_distances(
+        distances, target_bin, np.column_stack([start_bin, neighbors])
     )
     pair_distance = to_target[:, 0]
     first_step = neighbors[

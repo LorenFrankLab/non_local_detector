@@ -682,18 +682,21 @@ def _brute_force(graph, head_position, map_position):
     return np.asarray(distances), directions
 
 
-def _u_shaped_environment(*, compute_all_pairs_distances):
+def _u_shaped_environment(*, compute_all_pairs_distances, **fit_kwargs):
     """A U-shaped arena in 10 cm bins: 76 of 144 bins on the track.
 
     Shortest paths between the arms go around the bottom, and the bins in the
     gap between the arms and around the edge are off the track (isolated
-    nodes, unreachable from the track).
+    nodes, unreachable from the track). ``fit_kwargs`` go to
+    ``fit_place_grid``.
     """
     rng = np.random.default_rng(0)
     position = rng.uniform(0, 100, (6000, 2))
     in_gap = (position[:, 0] > 30) & (position[:, 0] < 70) & (position[:, 1] > 30)
     return Environment(place_bin_size=10.0).fit_place_grid(
-        position[~in_gap], compute_all_pairs_distances=compute_all_pairs_distances
+        position[~in_gap],
+        compute_all_pairs_distances=compute_all_pairs_distances,
+        **fit_kwargs,
     )
 
 
@@ -891,6 +894,66 @@ class TestAheadBehindDistance2DTrackGraph:
             head, np.array([-3 * np.pi / 8, -np.pi / 3]), map_position, **kw
         )
         np.testing.assert_allclose(ahead_behind, [1 + np.sqrt(2)] * 2, rtol=1e-15)
+
+    def test_deferred_table_budget_does_not_limit_the_lookup(
+        self, u_environments, monkeypatch
+    ):
+        """A deferred table's dense budget (a detector's
+        ``max_dense_transition_bytes``) does not limit the lookup: 80 time
+        points read 9 distances (the head bin and up to 8 neighbors) for
+        each distinct pair of bins, several kB, past a 1,000-byte budget. Rows
+        come in blocks of at most what the table's workspace holds, here 3
+        rows, and every function returns what the same table without these
+        budgets gives."""
+        small_budget = _u_shaped_environment(
+            compute_all_pairs_distances=False, max_dense_distance_bytes=1_000
+        )
+        table = small_budget.distance_between_nodes_
+        table.max_workspace_bytes = 3 * 8 * table.shape[1]
+        block_rows = []
+        cross_distances = table.cross_distances
+
+        def recording_cross_distances(rows, columns):
+            block_rows.append(len(rows))
+            return cross_distances(rows, columns)
+
+        monkeypatch.setattr(table, "cross_distances", recording_cross_distances)
+        default_budget = u_environments["deferred"]
+        head, heading, map_position = _random_pairs(small_budget, 80, seed=3)
+        # The budget refuses a selection of 14 pairs' 9 distances.
+        with pytest.raises(graph_distances.GraphDistanceBudgetError):
+            table[np.zeros((14, 1), dtype=int), np.zeros((1, 9), dtype=int)]
+        calls = {
+            "distance": lambda **kw: get_2D_distance(head, map_position, **kw),
+            "direction": lambda **kw: get_map_estimate_direction_from_track_graph(
+                head, map_position, **kw
+            ),
+            "similarity": lambda **kw: head_direction_similarity(
+                head, heading, map_position, **kw
+            ),
+            "ahead_behind": lambda **kw: get_ahead_behind_distance2D(
+                head, heading, map_position, **kw
+            ),
+        }
+
+        for name, call in calls.items():
+            np.testing.assert_array_equal(
+                call(environment=small_budget),
+                call(environment=default_budget),
+                err_msg=name,
+            )
+        expected_distance, _ = _brute_force(
+            small_budget.track_graphDD, head, map_position
+        )
+        np.testing.assert_allclose(
+            calls["distance"](environment=small_budget),
+            expected_distance,
+            rtol=1e-12,
+            atol=0,
+        )
+        # Many blocks per call, none above the workspace.
+        assert len(block_rows) > 5 * len(calls)
+        assert max(block_rows) == 3
 
     @pytest.mark.parametrize("table", ["all_pairs", "deferred"])
     def test_environment_runs_no_networkx_or_all_pairs_search(self, table):
