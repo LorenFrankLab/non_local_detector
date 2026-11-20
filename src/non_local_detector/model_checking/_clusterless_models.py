@@ -8,7 +8,10 @@ where ``Lambda(x)`` is the ground intensity in Hz at position ``x`` and
 ``f(m | x)`` is a Gaussian mixture over marks:
 
 - clusterless KDE: one component per encoding spike, centred on its mark,
-  weighted by its encoding weight times the Gaussian position kernel at ``x``;
+  weighted by its encoding weight times the Gaussian position kernel at ``x``
+  around its encoding position (its interpolated position, or the
+  share-weighted mean of its two bracketing samples where their weights
+  differ);
 - clusterless diffusion: the same components, weighted by the decoder's
   spatial kernel ``H[x, b_i]`` from the spike's bin (clipped, cut and
   normalized heat-kernel columns) and zero where the decoder treats the

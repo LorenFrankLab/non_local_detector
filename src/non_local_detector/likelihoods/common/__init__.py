@@ -101,6 +101,7 @@ from non_local_detector.likelihoods.common.position import (
     full_to_local_index,
     get_position_at_time,
     interior_bin_indices,
+    place_encoding_spikes,
     snap_off_track_positions,
 )
 from non_local_detector.likelihoods.common.reductions import (
@@ -248,6 +249,7 @@ __all__ = [
     "padded_sample_count",
     "padded_samples",
     "padded_spike_count",
+    "place_encoding_spikes",
     "poisson_row_log_likelihood",
     "prepare_decode_rows",
     "prepare_kde_local_inputs",
