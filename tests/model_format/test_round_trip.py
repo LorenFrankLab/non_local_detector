@@ -110,3 +110,22 @@ def test_unfitted_detector_round_trips_its_configuration(tmp_path):
     loaded = SORTED_CLASSES[0].load_model(path)
 
     assert_same_fitted_state(detector, loaded)
+
+
+def test_a_fit_on_float32_position_decodes_after_loading(sorted_recording, tmp_path):
+    """The grid a load rebuilds from the stored float64 edges is the fitted
+    grid, so the encoding model's grid fingerprint still matches."""
+    time, position, spike_times = sorted_recording
+    position32 = (position + 0.37).astype(np.float32)
+    detector = make_detector(SORTED_CLASSES[-1], "sorted_spikes_kde")
+    detector.fit(time, position32, spike_times=spike_times)
+    path = tmp_path / "model.nld"
+
+    detector.save_model(path)
+    loaded = SORTED_CLASSES[-1].load_model(path)
+
+    spikes = {"spike_times": spike_times}
+    posterior, states = decode(detector, time, position32, spikes)
+    loaded_posterior, loaded_states = decode(loaded, time, position32, spikes)
+    np.testing.assert_array_equal(loaded_posterior, posterior)
+    np.testing.assert_array_equal(loaded_states, states)
