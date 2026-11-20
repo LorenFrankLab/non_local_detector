@@ -5,12 +5,15 @@ consistent results on the same data: correlated place fields, correlated
 log-likelihoods, and no-spike likelihoods equal to the fitted rates.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 from scipy import stats
 from scipy.stats import norm
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import NumericalWarning
 from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from tests.likelihoods.conftest import (
     ALGORITHMS,
@@ -92,12 +95,27 @@ def cross_model_data():
         "encoding_spike_times": [times.astype(np.float32) for times in spike_times],
         "encoding_features": spike_waveform_features,
     }
-    data["fitted"] = {
-        name: (predict, model, is_clusterless)
-        for name, predict, model, is_clusterless in fit_registered_backends(
-            data, FIT_PARAMS
+    # The GLM fits (sorted and mark GLM, here the same Poisson problem) can
+    # stop with a final gradient above the convergence warning's threshold,
+    # depending on the order in which float32 sums the rows (it can differ
+    # between CPUs and library versions): near the optimum a Newton step
+    # lowers the loss by less than the float32 loss's rounding, so the line
+    # search rejects it. The stalled fits are accurate (log-rates
+    # at most 1.7e-3 nats from a float64 solve, against a standard error of
+    # about 0.2 nats from 20 spikes), so the warning is a false positive
+    # here. Remove this filter once the line search resolves such decreases.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="GLM Poisson regression may not have converged",
+            category=NumericalWarning,
         )
-    }
+        data["fitted"] = {
+            name: (predict, model, is_clusterless)
+            for name, predict, model, is_clusterless in fit_registered_backends(
+                data, FIT_PARAMS
+            )
+        }
     return data
 
 
