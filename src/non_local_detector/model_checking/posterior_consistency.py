@@ -12,7 +12,6 @@ import numpy as np
 from scipy.stats import entropy
 
 from non_local_detector.model_checking.highest_posterior_density import (
-    _check_density_coverage,
     _highest_density_threshold,
     get_highest_posterior_threshold,
 )
@@ -108,8 +107,9 @@ def posterior_consistency_hpd_overlap(
         Likelihood distributions at each time point. Must have the same shape
         as posterior and be properly normalized.
     coverage : float, optional
-        Coverage probability for the HPD regions. Must be between 0 and 1.
-        Default is 0.95 for 95% HPD regions.
+        Coverage probability for the HPD regions, in ``(0, 1]``; other values
+        raise ``ValueError``, with or without `bin_width`. Default is 0.95
+        for 95% HPD regions.
     bin_width : np.ndarray, shape (n_position_bins,), optional
         Width of each position bin, when the widths differ. Both `posterior`
         and `likelihood` must then be masses per bin, each row summing to
@@ -170,7 +170,6 @@ def posterior_consistency_hpd_overlap(
             np.ndarray, (isin_posterior_hpd & isin_likelihood_hpd).sum(axis=1) / denom
         )
 
-    _check_density_coverage(coverage)
     width = np.asarray(bin_width, dtype=float)
     if width.shape != (posterior.shape[1],) or not np.all(
         np.isfinite(width) & (width > 0)
