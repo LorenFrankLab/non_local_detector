@@ -480,8 +480,8 @@ def get_2D_distance(
         without a graph, otherwise the shortest path length along the graph
         between their bins (``inf`` if no path exists): read from the
         environment's table, or with `track_graph` computed once from each
-        distinct bin of `position2`. NaN where either position has a
-        non-finite coordinate.
+        distinct bin of `position2`. With a graph, NaN where either position
+        has a non-finite coordinate.
     """
     _warn_precomputed_distance(precomputed_distance=precomputed_distance)
     position1 = np.asarray(position1)
@@ -623,11 +623,12 @@ def get_ahead_behind_distance2D(
     -------
     ahead_behind_distance : np.ndarray, shape (n_time,)
         Signed distance (positive ahead of the head, negative behind), in the
-        units of the position. NaN where either position has a non-finite
-        coordinate. With a graph, the distance is that of `get_2D_distance`
-        and the sign compares the heading with the first step of a shortest
-        path (see `get_map_estimate_direction_from_track_graph`), both from
-        one lookup; NaN where the graph has no path between the two bins.
+        units of the position. With a graph, the distance is that of
+        `get_2D_distance` and the sign compares the heading with the first
+        step of a shortest path (see
+        `get_map_estimate_direction_from_track_graph`), both from one lookup;
+        NaN where either position has a non-finite coordinate or the graph
+        has no path between the two bins.
     """
     _warn_precomputed_distance(precomputed_distance=precomputed_distance)
     if track_graph is None and environment is None:
