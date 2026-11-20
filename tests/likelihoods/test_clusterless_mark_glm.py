@@ -22,6 +22,7 @@ from non_local_detector.likelihoods import (
     clusterless_mark_glm,
 )
 from non_local_detector.likelihoods.clusterless_mark_glm import (
+    MarkMixture,
     _WeightedBayesianGaussianMixture,
     fit_clusterless_mark_glm_encoding_model,
     fit_mark_mixture,
@@ -183,6 +184,39 @@ def test_single_spike_mixture_is_a_regularized_gaussian_at_its_mark():
         mixture.precisions_cholesky[0] @ mixture.precisions_cholesky[0].T
     )
     np.testing.assert_allclose(covariance, 4.0 * np.eye(4))
+
+
+@pytest.mark.unit
+def test_responsibilities_of_overlapping_components_match_scipy():
+    """Two overlapping, correlated components with unequal weights: each
+    responsibility is ``w_k N(m; mu_k, S_k)`` normalized over components."""
+    weights = np.array([0.85, 0.15])
+    means = np.array([[0.0, 0.0], [2.0, 1.0]])
+    covariances = np.array([[[4.0, 3.0], [3.0, 5.0]], [[9.0, -4.0], [-4.0, 6.0]]])
+    # (m - mu) @ L is standard normal for L = inv(chol(S)).T.
+    precisions_cholesky = np.stack(
+        [np.linalg.inv(np.linalg.cholesky(c)).T for c in covariances]
+    )
+    mixture = MarkMixture(
+        weights=weights, means=means, precisions_cholesky=precisions_cholesky
+    )
+    marks = np.random.default_rng(0).normal(0.0, 3.0, (500, 2))
+
+    log_joint = np.stack(
+        [
+            np.log(w) + multivariate_normal(m, c).logpdf(marks)
+            for w, m, c in zip(weights, means, covariances, strict=True)
+        ],
+        axis=1,
+    )
+    expected = np.exp(log_joint - logsumexp(log_joint, axis=1, keepdims=True))
+    # The components overlap: for 43% of the marks neither responsibility is
+    # below 0.1, so the weights and log-determinants decide them.
+    assert np.mean(expected.min(axis=1) > 0.1) > 0.4
+    # Observed float64 difference: 2.9e-15.
+    np.testing.assert_allclose(
+        mixture.responsibilities(marks), expected, rtol=0, atol=3e-14
+    )
 
 
 @pytest.mark.unit

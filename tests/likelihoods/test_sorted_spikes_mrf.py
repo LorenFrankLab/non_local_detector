@@ -195,8 +195,12 @@ def test_fit_uses_smoothest_eigenmodes_as_basis_and_eigenvalues_as_ridge(env_2d)
         )
 
 
-def test_reml_recovers_smooth_field():
-    """REML selects a sensible lambda whose fitted rate map tracks a simulated field."""
+def _smooth_field_problem():
+    """One neuron with a Gaussian place field on a 60-bin path, rank-25 basis.
+
+    Returns ``(counts, occupancy, basis, penalty_weights, true_log_rate)`` of
+    shapes ``(60, 1)``, ``(60,)``, ``(60, 25)``, ``(25,)`` and ``(60,)``.
+    """
     rng = np.random.default_rng(1)
     n_bins = 60
     penalty_weights, basis = diffusion_eigenbasis(
@@ -206,6 +210,12 @@ def test_reml_recovers_smooth_field():
     true_log_rate = 2.5 * np.exp(-((x - 30.0) ** 2) / (2 * 6.0**2)) - 0.5
     occupancy = rng.uniform(8.0, 20.0, size=n_bins)  # enough dwell for a clear field
     counts = rng.poisson(occupancy * np.exp(true_log_rate)).astype(float)[:, None]
+    return counts, occupancy, basis, penalty_weights, true_log_rate
+
+
+def test_reml_recovers_smooth_field():
+    """REML selects a sensible lambda whose fitted rate map tracks a simulated field."""
+    counts, occupancy, basis, penalty_weights, true_log_rate = _smooth_field_problem()
 
     penalty, _ = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
     assert 0.0 < penalty < np.inf
@@ -215,6 +225,72 @@ def test_reml_recovers_smooth_field():
     )
     corr = np.corrcoef(np.exp(eta[:, 0]), np.exp(true_log_rate))[0, 1]
     assert corr > 0.95
+
+
+def _float64_negative_reml(
+    log_penalty, counts, occupancy, basis, penalty_weights, n_penalized
+):
+    """Negative Laplace REML (Wood 2011) in float64, summed over neurons.
+
+    ``-loglik + (lambda / 2) g' D g - (r / 2) log(lambda) + (1 / 2) log|H|``
+    at each neuron's penalized fit ``g``, with ``H = B' W B + lambda D`` and
+    ``r = n_penalized`` the number of penalized modes.
+    """
+    penalty = np.exp(log_penalty)
+    total = 0.0
+    for neuron_counts in counts.T:
+        gamma = reference_fit_one_neuron(
+            neuron_counts, occupancy, basis, penalty_weights, penalty
+        )
+        eta = basis @ gamma
+        mu = occupancy * np.exp(eta)
+        hessian = basis.T @ (basis * mu[:, None]) + np.diag(penalty * penalty_weights)
+        total += (
+            -(neuron_counts @ eta - mu.sum())
+            + 0.5 * penalty * penalty_weights @ gamma**2
+            - 0.5 * n_penalized * log_penalty
+            + 0.5 * np.linalg.slogdet(hessian)[1]
+        )
+    return total
+
+
+@pytest.mark.unit
+def test_reml_objective_and_selected_penalty_match_a_float64_reference():
+    """The REML score at several ``log(lambda)`` and its minimizer equal a float64
+    computation from the definition."""
+    import scipy.optimize
+
+    counts, occupancy, basis, penalty_weights, _ = _smooth_field_problem()
+    # A connected path graph's Laplacian has one zero eigenvalue: 24 of the 25
+    # modes are penalized.
+    n_penalized = basis.shape[1] - 1
+    log_penalties = [-4.0, 2.0, 6.0, 10.0]
+
+    package = [
+        mrf_reml_objective(log_penalty, counts, occupancy, basis, penalty_weights)
+        for log_penalty in log_penalties
+    ]
+    expected = [
+        _float64_negative_reml(
+            log_penalty, counts, occupancy, basis, penalty_weights, n_penalized
+        )
+        for log_penalty in log_penalties
+    ]
+    # Observed float32 difference: 3.1e-5 here (scores up to 579), 1.0e-4 over
+    # log(lambda) = -8, -6, ..., 20.
+    np.testing.assert_allclose(package, expected, rtol=0, atol=1e-3)
+
+    penalty, _ = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
+    reference = scipy.optimize.minimize_scalar(
+        _float64_negative_reml,
+        bounds=(-8.0, 20.0),
+        method="bounded",
+        args=(counts, occupancy, basis, penalty_weights, n_penalized),
+        options={"xatol": 1e-6},
+    )
+    # Observed: 4e-4 in log(lambda) (2.5488 against 2.5484); the search stops
+    # at xatol = 1e-3.
+    np.testing.assert_allclose(np.log(penalty), reference.x, rtol=0, atol=5e-3)
 
 
 def test_population_recovers_distinct_place_fields():

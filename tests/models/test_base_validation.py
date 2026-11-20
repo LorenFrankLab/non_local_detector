@@ -9,9 +9,17 @@ These tests cover the validation methods that ensure proper model configuration:
 
 import warnings
 
+import networkx as nx
 import numpy as np
 import pytest
 
+from non_local_detector import (
+    ContFragSortedSpikesClassifier,
+    Environment,
+    MultiEnvironmentSortedSpikesClassifier,
+    RandomWalk,
+    Uniform,
+)
 from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
@@ -36,7 +44,10 @@ def _two_state_decoder(environments, **overrides):
             "uniform_on_track",
             "uniform_on_track",
         ],
-        "continuous_transition_types": ["random_walk", "random_walk"],
+        "continuous_transition_types": [
+            [RandomWalk(), Uniform()],
+            [Uniform(), RandomWalk()],
+        ],
         "discrete_transition_type": DiscreteStationaryDiagonal(np.array([0.9, 0.9])),
         # Float is always valid, so stickiness validation never fires
         "discrete_transition_stickiness": 0.0,
@@ -106,7 +117,10 @@ class TestValidateInitialConditions:
                     "uniform_on_track",
                     "uniform_on_track",
                 ],
-                continuous_transition_types=["random_walk", "random_walk"],
+                continuous_transition_types=[
+                    [RandomWalk(), Uniform()],
+                    [Uniform(), RandomWalk()],
+                ],
                 discrete_transition_stickiness=np.array(
                     [0.0, 0.5, 1.0]
                 ),  # 3 values - WRONG!
@@ -445,6 +459,137 @@ class TestValidateDiscreteTransitionType:
         )
         with pytest.raises(ValidationError, match="is_stationary"):
             decoder._initialize_discrete_state_transition()
+
+
+@pytest.mark.unit
+class TestContinuousTransitionGridShape:
+    """The continuous transition grid has one row of n_states entries per state.
+
+    The dense builder fills only the blocks a row lists, so a short row would
+    leave a block of zeros and decode with transitions that lose mass.
+    """
+
+    @pytest.mark.parametrize(
+        ("grid", "row_lengths"),
+        [
+            ([[RandomWalk()], [Uniform(), Uniform()]], "[1, 2]"),
+            ([[RandomWalk(), Uniform()], [Uniform()]], "[2, 1]"),
+            ([[RandomWalk(), Uniform(), Uniform()], [Uniform(), Uniform()]], "[3, 2]"),
+        ],
+        ids=["short-first-row", "short-last-row", "long-row"],
+    )
+    def test_non_square_grid_is_refused_at_construction(self, grid, row_lengths):
+        with pytest.raises(ValidationError, match="2 by 2") as error:
+            ContFragSortedSpikesClassifier(continuous_transition_types=grid)
+        assert row_lengths in str(error.value)
+
+    def test_set_params_refuses_a_non_square_grid(self):
+        detector = ContFragSortedSpikesClassifier()
+        grid = detector.continuous_transition_types
+        with pytest.raises(ValidationError, match="2 by 2"):
+            detector.set_params(
+                continuous_transition_types=[[RandomWalk()], [Uniform(), Uniform()]]
+            )
+        assert detector.continuous_transition_types is grid
+
+
+@pytest.mark.unit
+def test_environments_of_different_dimensionality_are_refused_at_fit(monkeypatch):
+    """A track graph decodes in 1-D and an open field in 2-D; the results hold
+    one position axis for every state, so fit refuses the pair before it fits
+    any encoding model."""
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 0.0))
+    graph.add_node(1, pos=(100.0, 0.0))
+    graph.add_edge(0, 1, distance=100.0, edge_id=0)
+    detector = MultiEnvironmentSortedSpikesClassifier(
+        environments=[
+            Environment(
+                environment_name="track",
+                place_bin_size=5.0,
+                track_graph=graph,
+                edge_order=[(0, 1)],
+                edge_spacing=0.0,
+            ),
+            Environment(environment_name="field", place_bin_size=5.0),
+        ],
+        observation_models=[
+            ObservationModel(environment_name="track"),
+            ObservationModel(environment_name="field"),
+        ],
+        continuous_transition_types=[
+            [
+                RandomWalk(environment_name="track"),
+                Uniform(environment_name="track", environment2_name="field"),
+            ],
+            [
+                Uniform(environment_name="field", environment2_name="track"),
+                RandomWalk(environment_name="field"),
+            ],
+        ],
+        sampling_frequency=100.0,
+    )
+    n_samples = 200
+    time = np.arange(2 * n_samples) / 100.0
+    phase = np.linspace(0.0, 4.0 * np.pi, n_samples)
+    position = np.vstack(
+        [
+            np.column_stack([50.0 + 45.0 * np.sin(phase), np.zeros(n_samples)]),
+            np.column_stack([20.0 + 18.0 * np.sin(phase), 20.0 + 18.0 * np.cos(phase)]),
+        ]
+    )
+    labels = np.repeat(["track", "field"], n_samples)
+
+    def fail(*args, **kwargs):
+        pytest.fail("an encoding model was fitted")
+
+    monkeypatch.setattr(detector, "fit_encoding_model", fail)
+    with pytest.raises(ValidationError, match="dimension") as error:
+        detector.fit(time, position, [time[::7]], environment_labels=labels)
+    message = str(error.value)
+    assert "'track' (1-D)" in message
+    assert "'field' (2-D)" in message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stickiness",
+    [0, 1, np.int64(3), np.float32(0.5), np.float64(2.0), np.asarray(1.5)],
+    ids=["int-0", "int-1", "int64", "float32", "float64", "0-d-array"],
+)
+def test_any_real_scalar_stickiness_is_accepted(stickiness):
+    """A scalar stickiness applies to every state, whatever its numeric type."""
+    detector = ContFragSortedSpikesClassifier(discrete_transition_stickiness=stickiness)
+    assert detector.discrete_transition_stickiness is stickiness
+    other = ContFragSortedSpikesClassifier()
+    other.set_params(discrete_transition_stickiness=stickiness)
+    assert other.discrete_transition_stickiness is stickiness
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stickiness",
+    ["abc", "ab", "0.5", np.asarray("1"), 1j, True, {}],
+    ids=[
+        "str",
+        "str-of-n-states",
+        "numeric-str",
+        "0-d-str-array",
+        "complex",
+        "bool",
+        "dict",
+    ],
+)
+def test_scalar_stickiness_that_is_not_a_real_number_is_refused(stickiness):
+    """A scalar stickiness that is not a real number is refused when the
+    detector is built, naming the value given, not later when it is fitted."""
+    with pytest.raises(ValidationError, match="real number") as error:
+        ContFragSortedSpikesClassifier(discrete_transition_stickiness=stickiness)
+    assert repr(stickiness) in str(error.value)
+    with pytest.raises(ValidationError, match="real number"):
+        ContFragSortedSpikesClassifier().set_params(
+            discrete_transition_stickiness=stickiness
+        )
 
 
 @pytest.mark.unit

@@ -49,7 +49,6 @@ from non_local_detector.likelihoods.common import (
     drop_zero_weight_samples,
     environment_grid_fingerprint,
     get_position_at_time,
-    interpolate_weights_at_spike_times,
     kde_log_densities,
     kde_log_density,
     kde_model_with_block_size,
@@ -64,6 +63,7 @@ from non_local_detector.likelihoods.common import (
     padded_occupancy_count,
     padded_samples,
     padded_spike_count,
+    place_encoding_spikes,
     prepare_decode_rows,
     prepare_kde_local_inputs,
     prepared_kde_log_density,
@@ -1313,7 +1313,8 @@ def _add_electrode_local_terms(
     position_std, waveform_stds : jax.Array
         Position and waveform-feature kernel bandwidths.
     log_occupancy_at_spikes : jax.Array, shape (n_padded_spikes,)
-        True log occupancy density at ``spike_positions``.
+        True log occupancy density at ``spike_positions``; padding rows hold
+        unrepaired values, possibly ``-inf``.
     log_gpi_density : jax.Array, shape (n_rows,)
         This electrode's ground-process log density at the animal's position
         in each row.
@@ -1561,7 +1562,12 @@ def fit_clusterless_kde_encoding_model(
         Per-position-sample weights (e.g. the EM posterior for this encoding
         group), by default None (uniform). They weight the occupancy KDE, the
         per-electrode ground-process KDE, and the mean rate, and are interpolated
-        onto each spike's time to form the ``encoding_weights`` used at decode time.
+        onto each spike's time to form the ``encoding_weights`` used at decode
+        time. A spike sits at its interpolated position, except where its two
+        bracketing samples differ in weight: there it sits at the mean of their
+        positions weighted by its share of each sample's weight, so a spike
+        next to an unweighted sample sits on its weighted sample, where that
+        interval's occupancy is.
     position_std : float, optional
         Gaussian smoothing standard deviation for position, by default sqrt(12.5).
     waveform_std : float, optional
@@ -1687,27 +1693,23 @@ def fit_clusterless_kde_encoding_model(
         bounded_features = electrode_spike_waveform_features[is_in_bounds]
         validate_finite(bounded_features, "spike_waveform_features")
         bounded_spike_waveform_features.append(bounded_features)
-        # Weight each encoding spike by the posterior weight at its spike time.
-        electrode_weights_host = interpolate_weights_at_spike_times(
-            electrode_spike_times,
+        # Each encoding spike, weighted by the posterior weight at its spike
+        # time, sits at its interpolated position or, where its bracketing
+        # samples differ in weight, at their share-weighted mean.
+        spike_positions, electrode_weights_host = place_encoding_spikes(
             position_time,
-            np.asarray(weights),
-            encoding_support=support,
+            position,
+            electrode_spike_times,
+            weights,
+            environment,
+            support,
         )
         electrode_weights = jnp.asarray(electrode_weights_host)
         encoding_weights.append(electrode_weights)
         # Weighted mean rate: weighted spike count / weighted occupancy time. Sum on the
         # host array (as the GMM fit does) to avoid a device->host sync per electrode.
         mean_rates.append(weighted_mean_rate(electrode_weights_host, weight_sum))
-        encoding_positions.append(
-            get_position_at_time(
-                position_time,
-                position,
-                electrode_spike_times,
-                environment,
-                encoding_support=support,
-            )
-        )
+        encoding_positions.append(spike_positions)
 
         gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
             encoding_positions[-1], weights=electrode_weights
@@ -2283,6 +2285,9 @@ def compute_local_log_likelihood(
                 occupancy_std,
                 occupancy_model.block_size or n_padded,
                 occupancy_weights,
+                # Zero padding rows can lie far from every occupancy sample;
+                # their values are dropped, so they are not repaired.
+                n_valid=position_at_spike_time.shape[0],
             ),
             prepared_kde_log_density(
                 electrode_gpi_model, interpolated_position, rows.spike_time_order

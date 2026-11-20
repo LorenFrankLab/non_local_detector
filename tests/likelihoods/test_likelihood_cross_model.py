@@ -83,8 +83,7 @@ def cross_model_data():
         ).astype(np.float32)
         spike_waveform_features.append(feats)
 
-    # Float32 inputs, the working precision; with float64 inputs one cell's
-    # GLM fit stops just short of its gradient tolerance and warns.
+    # Float32 inputs, the working precision.
     data = {
         "position_time": t.astype(np.float32),
         "position": pos.astype(np.float32),

@@ -699,7 +699,7 @@ diff --git a/src/spyglass/decoding/v1/sorted_spikes.py b/src/spyglass/decoding/v
 +                    aligned.loc[valid, columns].to_numpy(),
 +                    aligned.loc[valid, orientation].to_numpy(),
 +                    map_position,
-+                    classifier.environments[0].track_graphDD,
++                    environment=classifier.environments_[0],
 +                )
 +        return distance
 diff --git a/src/spyglass/decoding/v1/clusterless.py b/src/spyglass/decoding/v1/clusterless.py
@@ -1148,7 +1148,7 @@ diff --git a/src/spyglass/decoding/v1/clusterless.py b/src/spyglass/decoding/v1/
 +                    aligned.loc[valid, columns].to_numpy(),
 +                    aligned.loc[valid, orientation].to_numpy(),
 +                    map_position,
-+                    classifier.environments[0].track_graphDD,
++                    environment=classifier.environments_[0],
 +                )
 +        return distance
 diff --git a/tests/decoding/test_time_grid_migration.py b/tests/decoding/test_time_grid_migration.py

@@ -21,8 +21,9 @@ def interpolate_weights_at_spike_times(
     With ``encoding_support``, weights are interpolated within each of its
     segments and a spike outside every segment gets weight 0. Without it, spike
     times are assumed already clipped to ``[position_time[0], position_time[-1]]``
-    and 1-D ``np.interp`` is used (it does not extrapolate). Shared by the
-    clusterless and sorted-spikes encoding fits.
+    and 1-D ``np.interp`` is used (it does not extrapolate). The KDE fits form
+    the same weight as the sum of the bracketing samples' shares (see
+    :func:`place_encoding_spikes`).
 
     Parameters
     ----------

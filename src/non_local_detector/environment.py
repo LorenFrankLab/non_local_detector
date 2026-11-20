@@ -51,17 +51,17 @@ unfitted; `save_environment` pickles a fitted one, and
 `load_environment(filename, allow_pickle=True)` unpickles it.
 """
 
-import contextlib
 import copy
 import dataclasses
 import functools
 import hashlib
+import numbers
 import pickle
 import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from itertools import compress
+from itertools import compress, count, islice
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -235,6 +235,70 @@ def _same_configuration(current: Any, fitted: Any) -> bool:
         return bool(current == fitted)
     except (TypeError, ValueError):
         return False
+
+
+# A real number as the Environment fields accept it: Python or NumPy.
+_RealNumber = float | np.integer[Any] | np.floating[Any]
+
+
+def _is_real_scalar(value: Any) -> bool:
+    """Whether ``value`` is a real number: Python, NumPy or a 0-d array, not a bool."""
+    if isinstance(value, np.ndarray):
+        return value.ndim == 0 and value.dtype.kind in "iuf"
+    # numbers.Real covers NumPy scalars (np.float32, np.int64, ...), not np.bool_.
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _is_pair(value: Any) -> bool:
+    """Whether ``value`` is a two-item sequence or 1-D array (not a string)."""
+    if isinstance(value, np.ndarray):
+        return bool(value.shape == (2,))
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and len(value) == 2
+    )
+
+
+def _is_sequence(value: Any) -> bool:
+    """Whether ``value`` is a sequence or an array of at least one dimension."""
+    if isinstance(value, np.ndarray):
+        return value.ndim >= 1
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _edge_order_tuples(edge_order: Any) -> list[tuple[Any, ...]]:
+    """Return ``edge_order`` as a list of 2-tuples.
+
+    Parameters
+    ----------
+    edge_order : sequence of 2-sequences, or np.ndarray, shape (n_edges, 2)
+        Edges of the track graph in their linear order.
+
+    Returns
+    -------
+    edge_order : list of tuple, length n_edges
+        The rows of an array become tuples of Python scalars.
+    """
+    rows = edge_order.tolist() if isinstance(edge_order, np.ndarray) else edge_order
+    return [tuple(edge) for edge in rows]
+
+
+def _edge_spacing_values(edge_spacing: Any) -> float | list[float]:
+    """Return ``edge_spacing`` as a Python float, or a list of one per gap.
+
+    Parameters
+    ----------
+    edge_spacing : real scalar, or sequence or np.ndarray, shape (n_edges - 1,)
+        Spacing between consecutive edges.
+
+    Returns
+    -------
+    edge_spacing : float or list of float
+    """
+    if np.ndim(edge_spacing) == 0:
+        return float(edge_spacing)
+    return [float(spacing) for spacing in edge_spacing]
 
 
 def _graph_distances(
@@ -428,12 +492,9 @@ def _legacy_place_grid(
         # configuration field.
         fitted.setdefault("infer_track_interior", environment.infer_track_interior)
     elif "distance_between_nodes" not in fitted:
-        assert environment.edge_order is not None  # required with a track graph
-        assert environment.edge_spacing is not None
         fitted["distance_between_nodes"] = get_track_grid(
             environment.track_graph,
-            environment.edge_order,
-            environment.edge_spacing,
+            *environment._linearization_arguments(),
             cast("float", environment.place_bin_size),
         )[3]
     return PlaceGrid(
@@ -459,16 +520,21 @@ class Environment:
         Approximate size of the position bins in each dimension. Defaults to 2.0.
     track_graph : networkx.Graph, optional
         Graph representing the 1D spatial topology. If provided, 1D methods are used.
-    edge_order : tuple of 2-tuples, optional
-        Required if `track_graph` is provided. The order of the edges in 1D space.
-    edge_spacing : float or list, optional
-        Required if `track_graph` is provided. Spacing between edges. Defaults to 0.
+    edge_order : sequence of 2-tuples, optional
+        Required if `track_graph` is provided. The order of the edges in 1D
+        space: a list or tuple of ``(node1, node2)`` pairs, or an array of
+        shape (n_edges, 2).
+    edge_spacing : float or sequence of float, optional
+        Required if `track_graph` is provided. Spacing between edges: one
+        non-negative number, or one per gap (length n_edges - 1) in a list,
+        tuple or array. NumPy numbers are accepted. Defaults to 0.
     is_track_interior : np.ndarray or None, optional
         Boolean array defining valid track areas. If None and `infer_track_interior`
         is True, it will be inferred from position data.
-    position_range : Sequence[tuple[float, float]], optional
-        Outer bin edges for each dimension [(min_dim1, max_dim1), ...].
-        If None, range is determined from position data.
+    position_range : sequence of (float, float), optional
+        Outer bin edges for each dimension [(min_dim1, max_dim1), ...], as a
+        list or tuple of pairs or an array of shape (n_dims, 2). If None,
+        range is determined from position data.
     infer_track_interior : bool, optional
         If True and `is_track_interior` is None, infer track geometry from position data.
         Defaults to True. Ignored if `track_graph` is provided. The
@@ -541,6 +607,11 @@ class Environment:
     pickled by earlier releases, which stored the fitted attributes
     themselves, unpickle into the same form.
 
+    Arguments are stored as given (a tuple stays a tuple, a NumPy number a
+    NumPy number), so parameter rows, pickles and saved models hold what was
+    passed; every accepted form of ``edge_order``, ``edge_spacing`` and
+    ``position_range`` fits the same grid.
+
     Without a ``track_graph``, 1-D position is a 1-D open field. For a linear
     track or a maze, pass the raw 2-D ``(x, y)`` position with ``track_graph``,
     ``edge_order`` and ``edge_spacing``, which linearizes it along the track's
@@ -551,10 +622,10 @@ class Environment:
     environment_name: str = ""
     place_bin_size: float | tuple[float, ...] = 2.0
     track_graph: nx.Graph | None = None
-    edge_order: list[tuple[Any, ...]] | None = None
-    edge_spacing: float | list[float] | None = 0.0
+    edge_order: Sequence[Sequence[Any]] | np.ndarray | None = None
+    edge_spacing: _RealNumber | Sequence[_RealNumber] | np.ndarray | None = 0.0
     is_track_interior: np.ndarray | None = None
-    position_range: Sequence[tuple[float, float]] | None = None
+    position_range: Sequence[Sequence[_RealNumber]] | np.ndarray | None = None
     infer_track_interior: bool = True
     fill_holes: bool = False
     dilate: bool = False
@@ -881,6 +952,26 @@ class Environment:
         """Drop all cached derived data."""
         self._cache = {}
 
+    def _linearization_arguments(
+        self,
+    ) -> tuple[list[tuple[Any, ...]], float | list[float]]:
+        """Return ``edge_order`` and ``edge_spacing`` in the form the grid uses.
+
+        The fields keep the form they were given or unpickled with (a list,
+        tuple or array; Python or NumPy numbers). Every use converts them
+        here, so all forms give the same grid and linear positions.
+
+        Returns
+        -------
+        edge_order : list of tuple, length n_edges
+        edge_spacing : float or list of float, length n_edges - 1
+        """
+        assert self.edge_order is not None  # required with a track graph
+        assert self.edge_spacing is not None  # required with a track graph
+        return _edge_order_tuples(self.edge_order), _edge_spacing_values(
+            self.edge_spacing
+        )
+
     def _linear_position(self, points: "np.ndarray | jax.Array") -> np.ndarray:
         """Linear position of points on the track graph, cached by value.
 
@@ -908,13 +999,14 @@ class Environment:
         if key in cache:
             cache.move_to_end(key)
             return cast("np.ndarray", cache[key].copy())
+        edge_order, edge_spacing = self._linearization_arguments()
         # A copy: a view would keep the linearization's other columns alive,
         # outside the bytes counted below.
         result = get_linearized_position(
             points,
             _with_edge_ids_in_edges_order(self.track_graph),
-            edge_order=self.edge_order,
-            edge_spacing=self.edge_spacing,
+            edge_order=edge_order,
+            edge_spacing=edge_spacing,
         ).linear_position.to_numpy(copy=True)
         cache[key] = result
         while (
@@ -1021,29 +1113,34 @@ class Environment:
                 hint="When using track_graph, you must provide edge_spacing to define bin size along edges. Example: env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
             )
 
-        # Validate edge_order structure
-        if not isinstance(self.edge_order, list):
-            msg = "edge_order must be a list of tuples"  # type: ignore[unreachable]  # runtime check of user input
+        # Validate edge_order structure: a sequence (list, tuple or array) of
+        # 2-sequences, as parameter rows may hold any of them.
+        if not _is_sequence(self.edge_order):
+            msg = "edge_order must be a sequence of 2-tuples"
             raise ValidationError(
                 msg,
-                expected="list of 2-tuples",
+                expected="list, tuple or (n_edges, 2) array of 2-tuples",
                 got=f"{type(self.edge_order).__name__}",
                 hint="edge_order should be a list like [(0, 1), (1, 2), ...]",
                 example="    edge_order = [(0, 1), (1, 2), (2, 3)]",
             )
-
-        # Validate each edge in edge_order
         for i, edge in enumerate(self.edge_order):
-            if not isinstance(edge, tuple) or len(edge) != 2:  # type: ignore[redundant-expr]  # runtime check of user input
+            if not _is_pair(edge):
                 msg = f"edge_order[{i}] must be a 2-tuple"
                 raise ValidationError(
                     msg,
-                    expected="tuple of length 2",
-                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, tuple | list) else 'N/A'}",  # type: ignore[redundant-expr]  # runtime check of user input
-                    hint="Each edge should be a 2-tuple like (node1, node2)",
-                    example=f"    edge_order[{i}] = (0, 1)  # Not {edge}",
+                    expected="(node1, node2)",
+                    got=f"{type(edge).__name__} {edge!r}",
+                    hint=(
+                        "Each edge should be a 2-tuple like (node1, node2), in a "
+                        "list like [(0, 1), (1, 2)]"
+                    ),
+                    example=f"    edge_order[{i}] = (0, 1)",
                 )
+        edge_order = _edge_order_tuples(self.edge_order)
 
+        # Validate each edge in edge_order
+        for i, edge in enumerate(edge_order):
             # Check that edge exists in graph
             if edge not in self.track_graph.edges():
                 # Try reversed edge (undirected graph)
@@ -1059,33 +1156,74 @@ class Environment:
                         example=f"    # Check track_graph.edges(): {list(self.track_graph.edges())[:3]}",
                     )
 
-        # Validate edge_spacing
-        if isinstance(self.edge_spacing, int | float):
+        # Every graph edge gets bins, so each needs a place in the linear order.
+        listed = {frozenset(edge) for edge in edge_order}
+        missing = [
+            edge for edge in self.track_graph.edges() if frozenset(edge) not in listed
+        ]
+        if missing:
+            msg = f"edge_order omits track_graph edges {missing}"
+            raise ValidationError(
+                msg,
+                expected="every edge of track_graph in edge_order",
+                got=f"{len(missing)} of {self.track_graph.number_of_edges()} edges missing",
+                hint=(
+                    "Every edge of the track graph is binned; add the missing "
+                    "edges to edge_order, or remove them from the graph"
+                ),
+                example=f"    edge_order = [*edge_order, {missing[0]}]",
+            )
+
+        # Validate edge_spacing: one real number, or one per gap in a list,
+        # tuple or 1-D array; NumPy scalars count as numbers.
+        edge_spacing: Any = self.edge_spacing
+        if _is_real_scalar(edge_spacing):
             val.ensure_positive_scalar(
-                self.edge_spacing,
+                float(edge_spacing),
                 "edge_spacing",
                 minimum=0.0,
                 strict=False,
             )
-        elif isinstance(self.edge_spacing, list):
-            expected_len = len(self.edge_order) - 1
-            if len(self.edge_spacing) != expected_len:
+        elif _is_sequence(edge_spacing) and not (
+            isinstance(edge_spacing, np.ndarray) and edge_spacing.ndim != 1
+        ):
+            expected_len = len(edge_order) - 1
+            if len(edge_spacing) != expected_len:
                 msg = "edge_spacing list has wrong length"
                 raise ValidationError(
                     msg,
                     expected=f"length {expected_len} (one less than edge_order)",
-                    got=f"length {len(self.edge_spacing)}",
+                    got=f"length {len(edge_spacing)}",
                     hint="edge_spacing should have one entry for each gap between consecutive edges",
-                    example=f"    # For {len(self.edge_order)} edges:\n    edge_spacing = [{', '.join(['15.0'] * expected_len)}]",
+                    example=f"    # For {len(edge_order)} edges:\n    edge_spacing = [{', '.join(['15.0'] * expected_len)}]",
                 )
 
-            for i, spacing in enumerate(self.edge_spacing):
+            for i, spacing in enumerate(edge_spacing):
+                if not _is_real_scalar(spacing):
+                    msg = f"edge_spacing[{i}] must be a number"
+                    raise ValidationError(
+                        msg,
+                        expected="a non-negative real number",
+                        got=f"{type(spacing).__name__} {spacing!r}",
+                        example=f"    edge_spacing[{i}] = 15.0",
+                    )
                 val.ensure_positive_scalar(
-                    spacing,
+                    float(spacing),
                     f"edge_spacing[{i}]",
                     minimum=0.0,
                     strict=False,
                 )
+        else:
+            msg = "edge_spacing must be a number or one number per gap"
+            raise ValidationError(
+                msg,
+                expected=(
+                    f"a non-negative real number, or a sequence of "
+                    f"{len(edge_order) - 1} of them"
+                ),
+                got=f"{type(edge_spacing).__name__} {edge_spacing!r}",
+                example="    edge_spacing = 15.0",
+            )
 
     def _validate_position_range(self) -> None:
         """Validate position_range parameter.
@@ -1095,32 +1233,32 @@ class Environment:
         ValidationError
             If position_range is invalid
         """
-        if not isinstance(self.position_range, Sequence):
+        # A list, tuple or (n_dims, 2) array of (min, max) pairs, as parameter
+        # rows may hold any of them.
+        if not _is_sequence(self.position_range):
             msg = "position_range must be a sequence"
             raise ValidationError(
                 msg,
-                expected="list or tuple of (min, max) tuples",
+                expected="list, tuple or (n_dims, 2) array of (min, max) tuples",
                 got=f"{type(self.position_range).__name__}",
                 hint="position_range should be like [(xmin, xmax), (ymin, ymax)]",
                 example="    position_range = [(0, 100), (0, 100)]",
             )
 
-        for i, dim_range in enumerate(self.position_range):
-            if not isinstance(dim_range, tuple) or len(dim_range) != 2:  # type: ignore[redundant-expr]  # runtime check of user input
-                msg = f"position_range[{i}] must be a 2-tuple"  # type: ignore[unreachable]  # runtime check of user input
+        for i, dim_range in enumerate(self.position_range):  # type: ignore[arg-type]  # checked by _is_sequence
+            if not _is_pair(dim_range):
+                msg = f"position_range[{i}] must be a 2-tuple"
                 raise ValidationError(
                     msg,
                     expected="(min, max) tuple",
-                    got=f"{type(dim_range).__name__}",
+                    got=f"{type(dim_range).__name__} {dim_range!r}",
                     hint="Each dimension range should be (min_value, max_value)",
                     example=f"    position_range[{i}] = (0.0, 100.0)",
                 )
 
             min_val, max_val = dim_range
-            if not isinstance(min_val, int | float) or not isinstance(  # type: ignore[redundant-expr]  # runtime check of user input
-                max_val, int | float
-            ):
-                msg = f"position_range[{i}] must contain numeric values"  # type: ignore[unreachable]  # runtime check of user input
+            if not (_is_real_scalar(min_val) and _is_real_scalar(max_val)):
+                msg = f"position_range[{i}] must contain numeric values"
                 raise ValidationError(
                     msg,
                     expected="(float, float)",
@@ -1355,10 +1493,17 @@ class Environment:
         -------
         PlaceGrid
         """
+        # As float64 whatever form the range was given in, so a list, a tuple
+        # or an array, and Python or NumPy endpoints, give one grid.
+        position_range = (
+            None
+            if self.position_range is None
+            else np.asarray(self.position_range, dtype=np.float64)
+        )
         edges, place_bin_edges, place_bin_centers, centers_shape = get_grid(
             position,
             self.place_bin_size,
-            self.position_range,
+            position_range,  # type: ignore[arg-type]  # an (n_dims, 2) array
         )
 
         if self.is_track_interior is not None:
@@ -1491,8 +1636,7 @@ class Environment:
                 ),
                 example="place_bin_size=2.0",
             )
-        assert self.edge_order is not None  # required by _validate_track_graph
-        assert self.edge_spacing is not None  # required by _validate_track_graph
+        edge_order, edge_spacing = self._linearization_arguments()
         (
             place_bin_centers,
             place_bin_edges,
@@ -1507,8 +1651,8 @@ class Environment:
             nodes_df,
         ) = get_track_grid(
             self.track_graph,
-            self.edge_order,
-            self.edge_spacing,
+            edge_order,
+            edge_spacing,
             self.place_bin_size,
         )
         return PlaceGrid(
@@ -1543,9 +1687,7 @@ class Environment:
             if ax is None:
                 _, ax = plt.subplots(figsize=(15, 2))
 
-            plot_graph_as_1D(
-                self.track_graph, self.edge_order, self.edge_spacing, ax=ax
-            )
+            plot_graph_as_1D(self.track_graph, *self._linearization_arguments(), ax=ax)
             # Before fit_place_grid there are no bin edges to draw.
             if self._is_fitted:
                 for edge in self.edges_[0]:
@@ -1675,36 +1817,14 @@ class Environment:
         # Raises NotFittedError (a ConfigurationError) without a current fit.
         grid = self.place_grid_
 
-        # remove outer boundary edge
-        edges = [e[1:-1] for e in grid.edges]
-
         try:
             # Sample is an ND-array.
-            _N, D = sample.shape
+            _n, _d = sample.shape
         except (AttributeError, ValueError):
             # Sample is a sequence of 1D arrays.
             sample = np.atleast_2d(sample).T
-            _N, D = sample.shape
 
-        nbin = np.empty(D, np.intp)
-        for i in range(D):
-            nbin[i] = len(edges[i]) + 1  # includes an outlier on each end
-
-        # Compute the bin number each sample falls into.
-        Ncount = tuple(
-            np.searchsorted(edges[i], sample[:, i], side="right") for i in range(D)
-        )
-
-        # Using digitize, values that fall on an edge are put in the right bin.
-        # For the rightmost bin, we want values equal to the right edge to be
-        # counted in the last bin, and not as an outlier.
-        for i in range(D):
-            # Find which points are on the rightmost edge.
-            on_edge = sample[:, i] == edges[i][-1]
-            # Shift these points one bin to the left.
-            Ncount[i][on_edge] -= 1
-
-        bin_inds = np.ravel_multi_index(Ncount, nbin)
+        bin_inds = _bin_ind_before_snap(grid.edges, sample)
 
         # Snap gap-bin assignments to nearest interior bin. Gap bins exist
         # as structural indexing artifacts (edge_spacing > 0 on a linearized
@@ -1787,9 +1907,10 @@ class Environment:
         """
         if self.track_graph is None or self.edge_spacing is None:
             return 0.0
-        if isinstance(self.edge_spacing, (list, tuple)):
-            return float(max(self.edge_spacing)) if len(self.edge_spacing) else 0.0
-        return float(self.edge_spacing)
+        edge_spacing = _edge_spacing_values(self.edge_spacing)
+        if isinstance(edge_spacing, list):
+            return max(edge_spacing) if edge_spacing else 0.0
+        return edge_spacing
 
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray
@@ -2151,7 +2272,8 @@ def get_grid(
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
         Position data used to determine the grid extent if `position_range`
-        is not provided. NaNs are ignored.
+        is not provided. NaNs are ignored. Any real dtype; the grid is
+        computed in float64.
     bin_size : float or tuple of float, optional
         The desired approximate size of the bins in each dimension (one value
         per dimension if a tuple). The actual size may vary slightly to evenly
@@ -2165,9 +2287,9 @@ def get_grid(
     -------
     edges : tuple[np.ndarray, ...]
         A tuple containing the bin edges for each position dimension. Each
-        element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
-        the number of bins in that dimension `d`. Includes the boundary bins
-        for grids with more than one dimension.
+        element is a float64 1D array of shape (n_bins_d + 1,), where
+        n_bins_d is the number of bins in that dimension `d`. Includes the
+        boundary bins for grids with more than one dimension.
     place_bin_edges_flat : np.ndarray, shape (n_total_edges, n_position_dims)
         The meshgrid of the bin edges, flattened so each row is one edge-grid
         point.
@@ -2178,6 +2300,9 @@ def get_grid(
         The shape of the grid in terms of the number of bins in each dimension
         (e.g., (n_bins_x, n_bins_y)).
     """
+    # In float64 whatever the position dtype, so the grid is the one a saved
+    # model rebuilds from its (float64) edges.
+    position = np.asarray(position, dtype=np.float64)
     position = position if position.ndim > 1 else position[:, np.newaxis]
     is_nan = np.any(np.isnan(position), axis=1)
     position = position[~is_nan]
@@ -2223,6 +2348,51 @@ def _grid_from_edges(
     return place_bin_edges, place_bin_centers, centers_shape
 
 
+def _bin_ind_before_snap(edges: Sequence[np.ndarray], sample: np.ndarray) -> np.ndarray:
+    """Flat index of the grid bin each sample falls in, before snapping.
+
+    The bin assignment of ``Environment.get_bin_ind``, before it moves samples
+    in non-interior bins to the nearest interior bin, and of the occupancy
+    that ``get_track_interior`` counts.
+
+    Parameters
+    ----------
+    edges : sequence of np.ndarray
+        Bin edges of each dimension, as ``Environment.edges_``: with more than
+        one dimension each is padded with one bin at both ends (`get_grid`).
+    sample : np.ndarray, shape (n_samples, n_dims)
+        Positions, finite.
+
+    Returns
+    -------
+    bin_ind : np.ndarray, shape (n_samples,)
+        Flat (C-order) index into the grid of ``len(edges[i]) - 1`` bins per
+        dimension.
+
+    Notes
+    -----
+    A value on an edge goes in the bin to its right, except the data maximum,
+    which goes in the last real bin. Values outside the edges go in the
+    outermost bin of their dimension: the padding bin of a padded grid, the
+    first or last bin of a 1-D grid.
+    """
+    # Without the outer edges, the outermost bins also take values beyond them.
+    inner = [edge[1:-1] for edge in edges]
+    n_bins = [len(edge) + 1 for edge in inner]
+    bin_per_dim = tuple(
+        np.searchsorted(edge, sample[:, dim], side="right")
+        for dim, edge in enumerate(inner)
+    )
+    # On a padded grid the inner edges end at the data maximum, and values
+    # equal to it belong in the last real bin, not the trailing padding bin.
+    # A 1-D grid is not padded: its last inner edge is an interior one, and
+    # values on it already land in the last bin.
+    if len(edges) > 1:
+        for dim, edge in enumerate(inner):
+            bin_per_dim[dim][sample[:, dim] == edge[-1]] -= 1
+    return np.ravel_multi_index(bin_per_dim, n_bins)
+
+
 def get_track_interior(
     position: np.ndarray,
     bins: int | Sequence[int] | Sequence[np.ndarray],
@@ -2243,6 +2413,13 @@ def get_track_interior(
         * A sequence of arrays describing the bin edges along each dimension.
         * The number of bins for each dimension (nx, ny, ... =bins)
         * The number of bins for all dimensions (nx=ny=...=bins).
+
+        With more than one dimension, ``bins`` must be bin edges, and the
+        first and last bin of every dimension are taken to be the padding bins
+        that `get_grid` adds, which are never interior. Samples are counted in the bins
+        `Environment.get_bin_ind` assigns them before snapping, so a sample at
+        the data maximum counts in the last real bin; samples outside the
+        edges are not counted.
     fill_holes : bool, optional
         Fill any holes in the extracted track interior bins, by default False.
     dilate : bool, optional
@@ -2257,9 +2434,34 @@ def get_track_interior(
         Boolean array, True for bins in the track interior as inferred from
         position.
     """
-    bin_counts, _ = np.histogramdd(position, bins=bins)
-    is_track_interior = (bin_counts > bin_count_threshold).astype(int)
+    # Resolve the bin specification to edges, then count occupancy with the
+    # bin assignment of Environment.get_bin_ind. Samples outside the edges, or
+    # with a NaN coordinate, are not counted.
+    position = position[~np.any(np.isnan(position), axis=1)]
     n_position_dims = position.shape[1]
+    if n_position_dims > 1 and (
+        isinstance(bins, int | np.integer)
+        or any(np.ndim(dim_bins) == 0 for dim_bins in bins)
+    ):
+        msg = "get_track_interior needs bin edges with more than one dimension"
+        raise ValidationError(
+            msg,
+            expected="one array of bin edges per dimension, padded as get_grid pads them",
+            got=f"bin counts {bins!r}",
+            hint="Pass the edges that get_grid returns.",
+        )
+    _, bin_edges = np.histogramdd(position, bins=bins)
+    in_grid = np.all(
+        (position >= np.array([edges[0] for edges in bin_edges]))
+        & (position <= np.array([edges[-1] for edges in bin_edges])),
+        axis=1,
+    )
+    grid_shape = tuple(len(edges) - 1 for edges in bin_edges)
+    bin_counts = np.bincount(
+        _bin_ind_before_snap(bin_edges, position[in_grid]),
+        minlength=int(np.prod(grid_shape)),
+    ).reshape(grid_shape)
+    is_track_interior = (bin_counts > bin_count_threshold).astype(int)
     if n_position_dims > 1:
         structure = ndimage.generate_binary_structure(n_position_dims, 1)
         is_track_interior = ndimage.binary_closing(
@@ -2270,15 +2472,15 @@ def get_track_interior(
 
         if dilate:
             is_track_interior = ndimage.binary_dilation(is_track_interior)
-        # Zero the trailing "padding" bin along every spatial axis. get_grid
+        # Zero the "padding" bins at both ends of every spatial axis. get_grid
         # inserts an extra bin on each end so that binary_closing/dilation has
-        # room to operate without bleeding past the actual data range; this
-        # loop cleans those padding bins back out and generalizes to N-D
-        # (previous code only handled the first two axes).
+        # room to operate; they lie outside the grid's range, so they are
+        # never interior.
         for axis in range(n_position_dims):
-            idx: list[slice | int] = [slice(None)] * n_position_dims
-            idx[axis] = -1
-            is_track_interior[tuple(idx)] = False
+            for end in (0, -1):
+                idx: list[slice | int] = [slice(None)] * n_position_dims
+                idx[axis] = end
+                is_track_interior[tuple(idx)] = False
     return is_track_interior.astype(bool)
 
 
@@ -2449,8 +2651,8 @@ def _calculate_linear_position(
 
     for ind, edge in enumerate(edge_order):
         start_node_linear_position.append(counter)
-
-        with contextlib.suppress(IndexError):
+        # No gap follows the last edge.
+        if ind < n_edges - 1:
             counter += track_graph.edges[edge]["distance"] + edge_spacing[ind]
 
     start_node_linear_position = np.asarray(start_node_linear_position)
@@ -2506,10 +2708,18 @@ def make_track_graph_with_bin_centers_edges(
     track_graph_with_bin_centers_edges : networkx.Graph
         Copy of the track graph in which each original edge is replaced by a
         path through the added nodes. Added nodes have ``pos``, ``edge_id`` and
-        ``is_bin_edge`` attributes.
+        ``is_bin_edge`` attributes, and integer ids that are not labels of
+        ``track_graph``.
     """
     track_graph_with_bin_centers_edges = track_graph.copy()
-    n_nodes = len(track_graph.nodes)
+    # Added nodes are numbered on from the number of original nodes, skipping
+    # any number that is an original label. Graphs labelled 0..N-1, and those
+    # with non-integer labels, skip none.
+    new_ids = (
+        node_id
+        for node_id in count(len(track_graph.nodes))
+        if node_id not in track_graph
+    )
 
     for edge_ind, (node1, node2) in enumerate(track_graph.edges):
         # Preserve the user-assigned edge_id if present, otherwise fall back to
@@ -2534,7 +2744,7 @@ def make_track_graph_with_bin_centers_edges(
             xy = np.stack((xnew, ynew), axis=1)
         dist_between_nodes = np.linalg.norm(np.diff(xy, axis=0), axis=1)
 
-        new_node_ids = n_nodes + np.arange(len(dist_between_nodes) + 1)
+        new_node_ids = np.array(list(islice(new_ids, len(dist_between_nodes) + 1)))
         nx.add_path(
             track_graph_with_bin_centers_edges,
             [*new_node_ids],
@@ -2558,7 +2768,6 @@ def make_track_graph_with_bin_centers_edges(
         track_graph_with_bin_centers_edges.nodes[node2]["edge_id"] = edge_id
         track_graph_with_bin_centers_edges.nodes[node1]["is_bin_edge"] = True
         track_graph_with_bin_centers_edges.nodes[node2]["is_bin_edge"] = True
-        n_nodes = len(track_graph_with_bin_centers_edges.nodes)
 
     return track_graph_with_bin_centers_edges
 

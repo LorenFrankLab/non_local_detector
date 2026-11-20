@@ -556,8 +556,11 @@ def make_simulated_data(
         several Poisson spikes repeats its time.
     time : np.ndarray, shape (n_time,)
         Time in seconds.
-    event_times : np.ndarray, shape (n_events, 2)
-        Start and end time, in seconds, of each simulated event.
+    event_times : np.ndarray, shape (5, 2)
+        Start and end time, in seconds, of each simulated event. Event ``i``
+        starts about halfway through pause ``i`` of the five at the track
+        end. In order: continuous outbound replay, fragmented replay,
+        continuous inbound replay, no spikes, and local (zero length).
     sampling_frequency : int
         Samples per second (echo of the input).
     is_event : np.ndarray, shape (n_time,)
@@ -573,12 +576,10 @@ def make_simulated_data(
     time = simulate_time(n_samples, sampling_frequency)
 
     # Simulate position
-    linear_distance = (
-        simulate_linear_distance_with_pauses(
-            time, track_height, sampling_frequency=sampling_frequency, pause=3
-        )
-        + rng.standard_normal(time.shape) * 1e-4
+    noise_free_distance = simulate_linear_distance_with_pauses(
+        time, track_height, sampling_frequency=sampling_frequency, pause=3
     )
+    linear_distance = noise_free_distance + rng.standard_normal(time.shape) * 1e-4
 
     # Simulate speed
     speed = np.abs(np.diff(linear_distance) / np.diff(time))
@@ -598,11 +599,25 @@ def make_simulated_data(
 
     # Create events
     # 5 events: non-local continuous outbound, non-local fragmented, non-local continuous inbound, no-spike, local
-    pause_ind = (
-        np.nonzero(np.diff(np.isclose(linear_distance, track_height, atol=1e-5)))[0] + 1
+    # A pause is a run of samples near the track end, from its first sample to
+    # the first sample after it. The isclose band (about 1.7e-3 at 170 cm) is
+    # wider than the noise, so next to a pause the noise can split off a run of
+    # one or two running samples. Keep only the runs that hold a noise-free
+    # pause sample: one run per pause.
+    run_bounds = np.reshape(
+        np.nonzero(np.diff(np.isclose(linear_distance, track_height, atol=1e-5)))[0]
+        + 1,
+        (-1, 2),
+    )
+    n_pause_samples_before = np.insert(
+        np.cumsum(noise_free_distance == track_height), 0, 0
+    )
+    holds_pause = (
+        n_pause_samples_before[run_bounds[:, 1]]
+        > n_pause_samples_before[run_bounds[:, 0]]
     )
 
-    pause_times = time[np.reshape(pause_ind, (-1, 2))]
+    pause_times = time[run_bounds[holds_pause]]
     pause_width = np.diff(pause_times)[0]
 
     event_starts = pause_times[:, 0] + pause_width / 2
