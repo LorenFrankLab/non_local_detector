@@ -102,8 +102,8 @@ def test_multi_bin_local_state_keeps_its_probability_on_another_window(
     The Local state's uniform initial distribution is what its position
     kernel, scaled to sum to the number of bins, is built against. An initial
     distribution peaked at the fitted recording's first position gave Local
-    probability 0 (delta kernel) or about 1e-17 (5 cm kernel) at the
-    window's first bin, and below 0.5 for its first 17 or so bins.
+    probability 0 (delta kernel) or 6e-18 (5 cm kernel) at the window's
+    first bin, and 0.12 at its fifth.
     """
     fitted, other, fs = recording
     fit = _make(
@@ -139,9 +139,10 @@ def test_em_gain_in_marginal_likelihood_is_that_of_the_discrete_update(
     g_s = p_s E_s / sum_r p_r E_r. Replacing p by g multiplies the marginal
     likelihood by sum_s g_s E_s / sum_r p_r E_r = sum_s g_s**2 / p_s.
     Estimating the multi-bin Local state's distribution over its bins as well
-    added about log(35), the log of its number of bins, on top. EM starts
-    from equal discrete probabilities, so the gain (about 0.01 nats) is well
-    above float32 noise.
+    added 2.5 nats (delta kernel) and 1.7 nats (5 cm kernel) on top, out of
+    at most log(35), the log of its number of bins. EM starts from equal
+    discrete probabilities, so the gain (about 0.01 nats) is well above
+    float32 noise.
     """
     fitted, _, fs = recording
     em = _make(
@@ -176,8 +177,8 @@ def test_decoder_after_em_decodes_another_window_as_after_fit(recording):
 
     Its distribution over position bins used to become the fitted
     recording's first-bin posterior, which the decoder then carried to every
-    window it decoded: on this one the posteriors differed by a summed 1.8
-    at the first bin.
+    window it decoded: on this one the posteriors differed by up to 0.23 in
+    a position bin.
     """
     fitted, other, fs = recording
     fit = _make(SortedSpikesDecoder, fs).fit(**fitted)
