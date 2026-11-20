@@ -255,10 +255,13 @@ def _group_spike_mask(
     A spike belongs to a group exactly when the group's per-sample weights,
     linearly interpolated to the spike time on the full position timeline, are
     positive. Selection does not set the spike's weight: the encoding fit
-    re-interpolates the same weights and applies each one once, so a spike near
-    a mask transition keeps its fractional weight and complementary groups
-    partition every spike. Spikes outside the position timeline are not
-    selected, matching the encoding fits' own bounds.
+    computes it again from the same weights and applies it once. It is the
+    weight interpolated to the spike time (the KDE fits form it as the sum of
+    the two bracketing samples' shares, ``(1 - f) * w_left + f * w_right``,
+    and place a spike whose samples differ in weight at their share-weighted
+    mean), so a spike near a mask transition keeps its fractional weight and
+    complementary groups partition every spike. Spikes outside the position
+    timeline are not selected, matching the encoding fits' own bounds.
 
     Parameters
     ----------
