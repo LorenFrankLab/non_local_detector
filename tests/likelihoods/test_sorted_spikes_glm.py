@@ -394,6 +394,53 @@ def test_fit_converges_whatever_order_float32_sums_the_rows(
 
 
 @pytest.mark.unit
+def test_fit_stops_where_no_float32_step_lowers_the_objective(monkeypatch):
+    """The fitted coefficients are float32, and at a high rate even the
+    float32 coefficients nearest the optimum have a gradient above
+    ``GLM_GRADIENT_TOL``. Here a 1000 Hz cell's optimum log rate, 6.9, where
+    float32 values are 4.8e-7 apart, lies a quarter spacing from the nearest
+    one, whose gradient is about 1000 * 1.2e-7 = 1.2e-4 per second. No step
+    in float32 lowers the objective from there, so the fit must stop instead
+    of taking Newton steps up to ``GLM_MAX_NEWTON_STEPS``. A step test that
+    judged each step before rounding the coefficients to float32 accepted
+    steps smaller than that spacing, and the fit took all 50.
+    """
+    rate, n_rows = 1000.0, 400
+    spikes = np.random.default_rng(0).poisson(0.25 * rate, n_rows).astype(float)
+    below = np.float32(np.log(rate))
+    above = np.nextafter(below, np.float32(np.inf))
+    spacing = float(above) - float(below)
+    # The exposure per row that puts the optimum a quarter spacing above `below`.
+    weights = np.full(
+        n_rows, np.float32(spikes.mean() / np.exp(float(below) + spacing / 4))
+    )
+    mean_rate = spikes.sum() / weights.sum(dtype=np.float64)
+    assert float(below) < np.log(mean_rate) < float(above)
+    # The gradient per second of an intercept-only model is exp(b) - mean_rate.
+    for intercept in (below, above):
+        assert (
+            abs(np.exp(float(intercept)) - mean_rate)
+            > 5 * sorted_spikes_glm.GLM_GRADIENT_TOL
+        )
+
+    passes = []
+    sums = sorted_spikes_glm._poisson_regression_sums
+
+    def counted(*args, **kwargs):
+        passes.append(1)
+        return sums(*args, **kwargs)
+
+    monkeypatch.setattr(sorted_spikes_glm, "_poisson_regression_sums", counted)
+    fitted = fit_poisson_regression(np.ones((n_rows, 1)), spikes, weights)
+
+    # One gradient pass to start, then one after each Newton step.
+    newton_steps = len(passes) - 1
+    assert newton_steps < sorted_spikes_glm.GLM_MAX_NEWTON_STEPS
+    # The float32 intercept nearest the optimum.
+    assert float(np.asarray(fitted)[0]) == float(below)
+
+
+@pytest.mark.unit
 class TestBatchedPoissonRegression:
     """All cells share the design matrix and exposure; one solve fits them all."""
 

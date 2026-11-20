@@ -1171,7 +1171,12 @@ def fit_poisson_regressions(
     summed row by row, with each row's log-rate change computed from the
     step directly, so the float32 rounding scales with the change: near the
     optimum a step's decrease is smaller than the rounding of the objective's
-    float32 sum itself, which could not tell it apart from an increase.
+    float32 sum itself, which could not tell it apart from an increase. The
+    coefficients are kept as float32 values, the precision of the sums, and
+    each step is judged after rounding to float32, so a cell also stops where
+    no float32 step lowers its objective: at a high rate even the float32
+    coefficients nearest the optimum can have a gradient above
+    ``GLM_GRADIENT_TOL``.
 
     Parameters
     ----------
@@ -1212,7 +1217,7 @@ def fit_poisson_regressions(
         return jnp.asarray(coefficients)
     weight_sum = max(total_exposure, EPS)
     average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
-    coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor))
+    coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor)).astype(np.float32)
 
     block_rows = int(
         np.clip(_GLM_BLOCK_BYTES // (4 * max(n_cells, 1) * n_coefficients), 1, n_time)
@@ -1337,16 +1342,23 @@ def fit_poisson_regressions(
         step = np.ones(direction.shape[0])
         accepted = np.zeros(direction.shape[0], dtype=bool)
         for _ in range(_GLM_MAX_STEP_HALVINGS):
-            trial = np.zeros_like(coefficients)
             pending = ~accepted
             rows = np.flatnonzero(active)[pending]
-            trial[rows] = step[pending, None] * direction[pending]
+            # The coefficients stay float32 values, which the sums use, so the
+            # step tried is what remains of it after rounding to float32.
+            candidate = (
+                (coefficients[rows] + step[pending, None] * direction[pending])
+                .astype(np.float32)
+                .astype(np.float64)
+            )
+            trial = np.zeros_like(coefficients)
+            trial[rows] = candidate - coefficients[rows]
             change = loss_change(coefficients, trial)[rows]
             # Armijo sufficient decrease, per cell.
             decreased = np.isfinite(change) & (
                 change <= 1e-4 * step[pending] * slope[pending]
             )
-            coefficients[rows[decreased]] += trial[rows[decreased]]
+            coefficients[rows[decreased]] = candidate[decreased]
             accepted[np.flatnonzero(pending)[decreased]] = True
             if accepted.all():
                 break
