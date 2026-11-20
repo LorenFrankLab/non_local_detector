@@ -638,7 +638,9 @@ def _environment_state(environment: Environment, encoder: Encoder, where: str) -
     else:
         distances = grid.distance_between_nodes
         state.update(
-            infer_track_interior=grid.infer_track_interior,
+            infer_track_interior=encoder.encode(
+                grid.infer_track_interior, f"{where}/infer_track_interior"
+            ),
             all_pairs_distances=not isinstance(distances, LazyGraphDistances),
             max_dense_distance_bytes=distances.max_dense_bytes
             if isinstance(distances, LazyGraphDistances)
@@ -661,7 +663,7 @@ def _environment_from_state(state: dict[str, Any], decoder: Decoder) -> Environm
         environment.fit_place_grid_from_edges(
             edges,
             decoder.decode(state["is_track_interior"]),
-            infer_track_interior=state["infer_track_interior"],
+            infer_track_interior=decoder.decode(state["infer_track_interior"]),
             **options,
         )
     stored = {

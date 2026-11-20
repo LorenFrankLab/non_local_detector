@@ -172,6 +172,64 @@ def test_two_dimensional_open_field(
     _assert_round_trip(detector, tmp_path, time, position, {"spike_times": spike_times})
 
 
+def test_track_graph_argument_forms_save_the_same_grid(sorted_recording, tmp_path):
+    """Lists, tuples, arrays and NumPy scalars give one saved grid.
+
+    Each form round-trips as given, and the reloaded grids are identical.
+    """
+    time, linear, spike_times = sorted_recording
+    position = _on_track(linear)
+    forms = {
+        "lists": ([(0, 1), (1, 2)], 5.0),
+        "tuples": (((0, 1), (1, 2)), (5.0,)),
+        "arrays": (np.array([[0, 1], [1, 2]]), np.array([5.0])),
+        "numpy scalar": ([[0, 1], [1, 2]], np.int64(5)),
+    }
+    grids = {}
+    for name, (edge_order, edge_spacing) in forms.items():
+        environment = Environment(
+            place_bin_size=2.0,
+            track_graph=_track_graph(),
+            edge_order=edge_order,
+            edge_spacing=edge_spacing,
+        )
+        detector = _sorted_detector(environments=environment)
+        detector.fit(time, position, spike_times)
+
+        loaded = _assert_round_trip(
+            detector, tmp_path, time, position, {"spike_times": spike_times}
+        )
+        grids[name] = loaded.environments_[0].place_grid_
+
+    reference = grids.pop("lists")
+    for name, grid in grids.items():
+        for field in (
+            "place_bin_edges",
+            "place_bin_centers",
+            "is_track_interior",
+        ):
+            np.testing.assert_array_equal(
+                getattr(grid, field), getattr(reference, field), err_msg=name
+            )
+        np.testing.assert_array_equal(grid.edges[0], reference.edges[0])
+
+
+@pytest.mark.parametrize("flag", [np.True_, np.False_], ids=["np.True_", "np.False_"])
+def test_numpy_bool_infer_track_interior(flag, sorted_recording, tmp_path):
+    time, position, spike_times = sorted_recording
+    detector = nld.SortedSpikesDecoder(
+        infer_track_interior=flag,
+        sorted_spikes_algorithm_params=algorithm_params("sorted_spikes_kde"),
+        sampling_frequency=SORTED_RATE,
+    )
+    detector.fit(time, position, spike_times)
+
+    loaded = _assert_round_trip(
+        detector, tmp_path, time, position, {"spike_times": spike_times}
+    )
+    assert loaded.environments_[0].infer_track_interior_ == flag
+
+
 def test_empirical_movement_block_is_stored(sorted_recording, tmp_path):
     time, position, spike_times = sorted_recording
     detector = nld.SortedSpikesDecoder(
