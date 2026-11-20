@@ -83,7 +83,7 @@ def test_uniform_initial_conditions_without_interior_bins_raises(
 def _one_em_step(discrete_initial_conditions):
     """A detector after one EM step that estimates the initial conditions.
 
-    Any ``RuntimeWarning`` (e.g. 0/0 in the continuous IC update) is raised.
+    Any ``RuntimeWarning`` is raised.
     """
     _, position, spike_times, time, _, _, _, _ = make_simulated_data(
         seed=42, n_neurons=5
@@ -124,13 +124,15 @@ def em_fit_with_unreachable_states():
 
 @pytest.mark.integration
 class TestContinuousICUpdate:
-    """The EM update of ``continuous_initial_conditions_`` divides the joint
-    initial conditions by the smoothed discrete-state probability at the
-    first time bin, guarding states whose probability is zero."""
+    """The EM update of the initial conditions keeps each state's
+    ``continuous_initial_conditions_`` as configured and weights it by the
+    smoothed discrete-state probability at the first time bin."""
 
-    def test_zero_probability_states_get_zero_not_nan(
+    def test_zero_probability_states_keep_their_configured_distribution(
         self, em_fit_with_unreachable_states
     ):
+        """A state of zero probability keeps its uniform distribution over
+        its interior bins and adds zero to the joint initial conditions."""
         detector = em_fit_with_unreachable_states
         np.testing.assert_array_equal(
             detector.discrete_initial_conditions_[[1, 3]], 0.0
@@ -138,8 +140,15 @@ class TestContinuousICUpdate:
         continuous_ic = detector.continuous_initial_conditions_
         assert continuous_ic.shape == detector.state_ind_.shape
         assert np.all(np.isfinite(continuous_ic))
+        is_interior = detector.is_track_interior_state_bins_
+        for state in (1, 3):
+            is_state = detector.state_ind_ == state
+            uniform = is_interior[is_state] / is_interior[is_state].sum()
+            np.testing.assert_allclose(
+                continuous_ic[is_state], uniform, rtol=1e-6, err_msg=f"state {state}"
+            )
         is_unreachable = np.isin(detector.state_ind_, [1, 3])
-        np.testing.assert_array_equal(continuous_ic[is_unreachable], 0.0)
+        np.testing.assert_array_equal(detector.initial_conditions_[is_unreachable], 0.0)
 
     def test_nonzero_states_are_joint_ic_over_discrete_ic(
         self, em_fit_with_unreachable_states
@@ -163,8 +172,8 @@ class TestContinuousICUpdate:
             )
 
     def test_tiny_probability_states_keep_a_distribution(self):
-        """Only an exactly zero discrete probability leaves a state without a
-        conditional distribution; a tiny one still has one."""
+        """A tiny discrete probability leaves each state with a distribution
+        over its bins."""
         detector = _one_em_step(np.array([1 - 3e-12, 1e-12, 1e-12, 1e-12]))
         discrete_ic = detector.discrete_initial_conditions_
         assert np.all(discrete_ic[1:] > 0)

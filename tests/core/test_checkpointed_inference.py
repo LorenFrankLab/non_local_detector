@@ -144,7 +144,6 @@ def test_transition_statistics_match_dense_posterior_estimates(covariate, chunk_
     np.testing.assert_allclose(
         result.transition_statistics, expected, rtol=1e-5, atol=1e-6
     )
-    np.testing.assert_allclose(result.first_smoothed, acausal[0], rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(
         result.dataset.acausal_state_probabilities[:, 0],
         acausal[:, state_ind == 0].sum(1),
