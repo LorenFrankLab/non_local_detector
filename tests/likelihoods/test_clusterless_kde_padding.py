@@ -3,7 +3,9 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.special import logsumexp
 
+import non_local_detector.likelihoods.common.kernel_density as kernel_density
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -35,6 +37,7 @@ from non_local_detector.likelihoods.mark_reference import (
 from non_local_detector.time_edges import decode_bin_centers
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
+    count_compilations,
     log_duration_per_spike,
     tolerance,
     training_mark_references,
@@ -513,3 +516,137 @@ def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
     assert kernel._cache_size() == 1
     assert np.all(np.isfinite(first))
     assert np.all(np.isfinite(second))
+
+
+def make_translated_recording(offset, far_spike_time=None):
+    """A 2-D recording whose arena starts ``offset`` cm from the origin.
+
+    The animal circles in the first 60 cm of a 200 x 60 cm arena. With
+    ``far_spike_time``, a decoding spike is added on the first electrode at
+    that position sample, where the decoding position is moved 130 cm (37
+    position bandwidths) from every occupancy sample.
+    """
+    rng = np.random.default_rng(36)
+    env = Environment(
+        place_bin_size=6.0,
+        position_range=((offset, offset + 200.0), (offset, offset + 60.0)),
+    )
+    position_time = np.arange(0, 25.0, 1 / 30)
+    position = offset + np.column_stack(
+        (30 + 20 * np.sin(position_time / 3), 30 + 20 * np.cos(position_time / 5))
+    )
+    env = env.fit_place_grid(position, infer_track_interior=False)
+    encoding_times = [np.sort(rng.uniform(0, 25, n)) for n in (150, 260)]
+    encoding = fit_encoding(
+        position_time=position_time,
+        position=position,
+        spike_times=encoding_times,
+        spike_waveform_features=[
+            rng.normal(0, 30, (len(t), 4)) for t in encoding_times
+        ],
+        environment=env,
+        disable_progress_bar=True,
+    )
+    # 70 and 100 decoding spikes, each padded to 128 rows.
+    decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (70, 100)]
+    decode_marks = [rng.normal(0, 30, (len(t), 4)) for t in decode_times]
+    decode_position = position
+    if far_spike_time is not None:
+        decode_position = position.copy()
+        decode_position[far_spike_time] = offset + np.array([180.0, 30.0])
+        decode_times[0] = np.sort(
+            np.append(decode_times[0], position_time[far_spike_time])
+        )
+        decode_marks[0] = np.concatenate([decode_marks[0], rng.normal(0, 30, (1, 4))])
+    return (
+        env,
+        position_time,
+        decode_position,
+        encoding,
+        decode_times,
+        decode_marks,
+        np.arange(0, 2.0 + 1e-9, 0.002),
+    )
+
+
+@pytest.fixture
+def local_occupancy(monkeypatch):
+    """Each Local occupancy pass at the decoding spikes, one per electrode.
+
+    Records ``(points, log_density, repaired_rows)``: the rows of ``points``
+    that the pass re-evaluated in log space.
+    """
+    passes = []
+    repaired = None
+    true_density = clusterless_kde.true_kde_log_density
+    repair = kernel_density._repair_in_log_space
+
+    def recording_density(points, *args, **kwargs):
+        nonlocal repaired
+        repaired = np.zeros(0, int)
+        try:
+            values = true_density(points, *args, **kwargs)
+            passes.append((np.asarray(points), np.asarray(values), repaired))
+        finally:
+            repaired = None
+        return values
+
+    def recording_repair(values, needs_log_space, points, *args):
+        nonlocal repaired
+        if repaired is not None:
+            repaired = np.flatnonzero(needs_log_space)
+        return repair(values, needs_log_space, points, *args)
+
+    monkeypatch.setattr(clusterless_kde, "true_kde_log_density", recording_density)
+    monkeypatch.setattr(kernel_density, "_repair_in_log_space", recording_repair)
+    return passes
+
+
+def test_padding_rows_far_from_the_origin_are_not_repaired(local_occupancy):
+    """Padding rows of an arena far from the origin cost no log-space pass.
+
+    The arena 105 cm from the origin decodes with the shapes of the arena at
+    the origin, so it compiles nothing that the first decode did not.
+    """
+    origin = make_translated_recording(0.0)
+    translated = make_translated_recording(105.0)
+    predict(origin, True, None)
+    local_occupancy.clear()
+    with count_compilations() as compiled:
+        actual = predict(translated, True, None)
+    assert [rows.size for _, _, rows in local_occupancy] == [0, 0]
+    assert compiled == []
+    expected = reference(translated, True, slice(0, len(translated[-1]) - 1))
+    assert np.all(np.isfinite(actual))
+    np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
+
+
+def test_decoding_spike_far_from_all_occupancy_is_repaired(local_occupancy):
+    """A real spike whose occupancy density underflows is re-evaluated in log space.
+
+    So are spikes whose interpolated position lies toward it, but no padding
+    row.
+    """
+    far_spike_time = 30  # 1 s, inside the 2 s decoding window
+    recording = make_translated_recording(105.0, far_spike_time=far_spike_time)
+    actual = predict(recording, True, None)
+    far_position = recording[2][far_spike_time]
+    n_real = [len(times) for times in recording[4]]
+    assert len(local_occupancy) == len(n_real)
+    for (_, _, rows), n in zip(local_occupancy, n_real, strict=True):
+        assert np.all(rows < n)
+    points, values, rows = local_occupancy[0]
+    (far_row,) = np.flatnonzero(np.all(points == far_position, axis=1))
+    assert far_row in rows
+
+    occupancy_model = recording[3]["occupancy_model"]
+    samples = np.asarray(occupancy_model.samples_, float)
+    weights = np.asarray(occupancy_model.weights_, float)
+    std = np.asarray(as_std_array(occupancy_model.std, 2), float)
+    log_kernel = -0.5 * np.sum(((far_position - samples) / std) ** 2, axis=1) - np.sum(
+        np.log(np.sqrt(2.0 * np.pi) * std)
+    )
+    expected = logsumexp(log_kernel, b=weights) - np.log(weights.sum())
+    assert expected < -500.0
+    np.testing.assert_allclose(values[far_row], expected, rtol=1e-6)
+    assert np.all(np.isfinite(actual))
