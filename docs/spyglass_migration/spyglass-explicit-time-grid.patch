@@ -607,7 +607,7 @@ diff --git a/src/spyglass/decoding/v1/sorted_spikes.py b/src/spyglass/decoding/v
 -        )
 -
 +        results = self.fetch_results().sel(time=time_slice)
-+        posterior = results.acausal_posterior.unstack("state_bins").sum("state")
++        posterior = analysis.get_position_posterior(results.acausal_posterior)
          if track_graph is None:
              track_graph = classifier.environments[0].track_graph
 -
@@ -1054,7 +1054,7 @@ diff --git a/src/spyglass/decoding/v1/clusterless.py b/src/spyglass/decoding/v1/
 -        )
 -
 +        results = self.fetch_results().sel(time=time_slice)
-+        posterior = results.acausal_posterior.unstack("state_bins").sum("state")
++        posterior = analysis.get_position_posterior(results.acausal_posterior)
          if track_graph is None:
              track_graph = classifier.environments[0].track_graph
 -
