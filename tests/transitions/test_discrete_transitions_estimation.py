@@ -398,7 +398,6 @@ def _estimate_simulated_discrete_transition(
     detector._fit(position=np.array([[0.25], [1.25]]))
     results = detector._run_em(
         time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
-        estimate_initial_conditions=False,
         estimate_discrete_transition=True,
         estimate_encoding_model=False,
         max_iter=max_iter,
@@ -474,7 +473,6 @@ def _estimate_simulated_nonstationary_discrete_transition(
     )
     results = detector._run_em(
         time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
-        estimate_initial_conditions=False,
         estimate_discrete_transition=True,
         estimate_encoding_model=False,
         max_iter=max_iter,
@@ -1015,7 +1013,6 @@ class TestExpandedTransitionMstepEndToEnd:
         detector._fit(position=np.array([[0.25], [1.25]]))
         detector._run_em(
             time_edges=time_edges_from_centers(np.array([0.0, 1.0])),
-            estimate_initial_conditions=False,
             estimate_discrete_transition=True,
             estimate_encoding_model=False,
             max_iter=1,
@@ -1276,7 +1273,6 @@ def _estimate_transitions(detector, **kwargs):
     kwargs = {"max_iter": 4, "tolerance": 0.0, **kwargs}
     return detector._run_em(
         time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
-        estimate_initial_conditions=False,
         estimate_discrete_transition=True,
         estimate_encoding_model=False,
         **kwargs,
@@ -1390,7 +1386,6 @@ class TestConvergenceNeedsSettledTransitions:
         n_time = detector._fixed_log_likelihoods.shape[0]
         detector._run_em(
             time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
-            estimate_initial_conditions=True,
             estimate_discrete_transition=False,
             estimate_encoding_model=False,
             max_iter=50,
@@ -1557,7 +1552,6 @@ def _em_estimate(
         time_edges=time_edges_from_centers(
             np.arange(len(log_likelihoods), dtype=float)
         ),
-        estimate_initial_conditions=False,
         estimate_discrete_transition=True,
         estimate_encoding_model=False,
         max_iter=2_000,

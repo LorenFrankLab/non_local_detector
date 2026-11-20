@@ -60,6 +60,7 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import (
+    CompatibilityWarning,
     ConfigurationError,
     DataQualityWarning,
     NotFittedError,
@@ -346,6 +347,30 @@ def _group_weights(
     return group_weights
 
 
+def _warn_estimate_initial_conditions(
+    *, estimate_initial_conditions: bool | None
+) -> None:
+    """Warn that ``estimate_initial_conditions`` was passed: it has no effect.
+
+    Parameters
+    ----------
+    estimate_initial_conditions : bool or None
+        The value the caller passed; None (left out) does not warn.
+    """
+    if estimate_initial_conditions is not None:
+        warnings.warn(
+            "estimate_initial_conditions has no effect and will be removed; "
+            "leave it out. estimate_parameters no longer estimates the initial "
+            "conditions: one recording holds one observation of how a "
+            "recording starts, and the estimate made every later decode start "
+            "in the fitted recording's first state. Set the starting "
+            "probabilities with the discrete_initial_conditions constructor "
+            "argument.",
+            CompatibilityWarning,
+            stacklevel=user_stacklevel(),
+        )
+
+
 class _DetectorBase(
     _InputValidationMixin,
     _CheckpointedPredictionMixin,
@@ -379,20 +404,21 @@ class _DetectorBase(
         the training data; ``predict`` does not refresh it, though it still
         logs a degenerate-timestep warning for the data it is given.
     discrete_initial_conditions_ : np.ndarray, shape (n_states,)
-        Fitted initial-condition distribution over discrete states. Set by
-        ``estimate_parameters``, starting from the user-supplied
-        ``discrete_initial_conditions`` constructor argument, and cleared by
-        ``fit``.
+        Initial probability of each discrete state. Set by
+        ``estimate_parameters`` to the ``discrete_initial_conditions``
+        constructor argument, and cleared by ``fit``. A detector estimated by
+        an earlier version holds the fitted recording's first-bin state
+        probabilities here instead.
     continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
         Each state's initial distribution over its own bins: what
         ``continuous_initial_conditions_types`` give, for every state, set by
-        ``fit``. ``estimate_parameters`` keeps it and estimates only
-        ``discrete_initial_conditions_``, so a decode of any recording starts
-        each state where the configuration does, not where the fitted
-        recording did. ``initial_conditions_`` is it times each state's
-        discrete initial probability. A detector estimated by an earlier
-        version holds each state's share of the fitted recording's first-bin
-        posterior here instead, and still decodes from what it stored.
+        ``fit``. ``initial_conditions_`` is it times each state's discrete
+        initial probability. ``estimate_parameters`` estimates neither: one
+        recording holds one observation of how a recording starts, so a
+        decode of any recording starts where the configuration does, not
+        where the fitted recording did. A detector estimated by an earlier
+        version holds what that version estimated from the fitted
+        recording's first bin, and still decodes from what it stored.
     state_space_ : StateSpace
         The fit's state bins and continuous transition, with the
         ``state_names``, ``observation_models``,
@@ -2274,7 +2300,6 @@ class _DetectorBase(
         encoding_group_labels: ArrayLike | None,
         environment_labels: ArrayLike | None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None,
-        estimate_initial_conditions: bool,
         estimate_discrete_transition: bool,
         estimate_encoding_model: bool,
         max_iter: int,
@@ -2383,7 +2408,6 @@ class _DetectorBase(
                     *spike_data,
                 ),
                 is_missing=is_missing,
-                estimate_initial_conditions=estimate_initial_conditions,
                 estimate_discrete_transition=estimate_discrete_transition,
                 estimate_encoding_model=estimate_encoding_model,
                 max_iter=max_iter,
@@ -3801,7 +3825,7 @@ class ClusterlessDetector(_DetectorBase):
         encoding_group_labels: ArrayLike | None = None,
         environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
-        estimate_initial_conditions: bool = True,
+        estimate_initial_conditions: bool | None = None,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
         max_iter: int = 100,
@@ -3858,10 +3882,11 @@ class ClusterlessDetector(_DetectorBase):
             bin of ``time_edges``, each the covariate's value at the bin
             center. EM estimates the transitions on them, and they place the
             formula's spline knots. By default None.
-        estimate_initial_conditions : bool, optional
-            Whether to estimate the discrete initial probabilities, by default
-            True. Each state's initial distribution over its bins stays as
-            configured.
+        estimate_initial_conditions : bool or None, optional
+            Deprecated, and has no effect: any value other than None warns
+            with a ``CompatibilityWarning``. It will be removed. The initial
+            conditions are not estimated; they stay as configured (see
+            ``discrete_initial_conditions``). By default None.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
@@ -3988,6 +4013,9 @@ class ClusterlessDetector(_DetectorBase):
         so EM holds this second copy; a dense continuous transition has
         ``n_state_bins ** 2`` float64 values.
         """
+        _warn_estimate_initial_conditions(
+            estimate_initial_conditions=estimate_initial_conditions
+        )
         return self._estimate_spike_parameters(
             position_time,
             position,
@@ -3998,7 +4026,6 @@ class ClusterlessDetector(_DetectorBase):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
-            estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
             max_iter=max_iter,
@@ -4720,7 +4747,7 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels: ArrayLike | None = None,
         environment_labels: ArrayLike | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict[str, Any] | None = None,
-        estimate_initial_conditions: bool = True,
+        estimate_initial_conditions: bool | None = None,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = False,
         max_iter: int = 100,
@@ -4775,9 +4802,11 @@ class SortedSpikesDetector(_DetectorBase):
             bin of ``time_edges``, each the covariate's value at the bin
             center. EM estimates the transitions on them, and they place the
             formula's spline knots. By default None.
-        estimate_initial_conditions : bool, optional
-            Estimate the discrete initial probabilities, by default True. Each
-            state's initial distribution over its bins stays as configured.
+        estimate_initial_conditions : bool or None, optional
+            Deprecated, and has no effect: any value other than None warns
+            with a ``CompatibilityWarning``. It will be removed. The initial
+            conditions are not estimated; they stay as configured (see
+            ``discrete_initial_conditions``). By default None.
         estimate_discrete_transition : bool, optional
             Estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
@@ -4905,6 +4934,9 @@ class SortedSpikesDetector(_DetectorBase):
         so EM holds this second copy; a dense continuous transition has
         ``n_state_bins ** 2`` float64 values.
         """
+        _warn_estimate_initial_conditions(
+            estimate_initial_conditions=estimate_initial_conditions
+        )
         return self._estimate_spike_parameters(
             position_time,
             position,
@@ -4915,7 +4947,6 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
-            estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             estimate_encoding_model=estimate_encoding_model,
             max_iter=max_iter,
