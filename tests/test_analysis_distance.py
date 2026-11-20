@@ -1,7 +1,9 @@
 """Tests for analysis/distance2D.py — velocity, speed, distance, similarity."""
 
+import pickle
 import warnings
 from contextlib import contextmanager
+from pathlib import Path
 
 import networkx as nx
 import numpy as np
@@ -10,7 +12,7 @@ import pytest
 import xarray as xr
 from track_linearization import make_track_graph
 
-from non_local_detector import graph_distances
+from non_local_detector import analysis, graph_distances
 from non_local_detector.analysis.distance1D import get_map_speed
 from non_local_detector.analysis.distance2D import (
     get_2D_distance,
@@ -24,6 +26,7 @@ from non_local_detector.analysis.distance2D import (
 )
 from non_local_detector.analysis.posterior import get_spatial_posterior
 from non_local_detector.environment import Environment
+from non_local_detector.models.base import ClusterlessDetector
 
 
 @pytest.mark.unit
@@ -1076,4 +1079,88 @@ class TestAheadBehindDistance2DTrackGraph:
                 head[[1, 4]], head_dir[[1, 4]], head[[1, 4]], **kw
             ),
             [nan, nan],
+        )
+
+
+COMPAT_DATA = Path(__file__).parent / "compat_data"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("version", "artifact"),
+    [
+        ("main-11d9b3de", "contfrag_clusterless_2d_structured"),
+        ("main-d5f85823", "nonlocal_clusterless_2d"),
+    ],
+)
+def test_spyglass_2d_ahead_behind_call_with_a_stored_model(version, artifact):
+    """The 2-D call of Spyglass's ``get_ahead_behind_distance`` in the
+    companion patches (``docs/spyglass_migration``), with its arguments built
+    as the patch builds them from a stored model and its results.
+
+    Spyglass has the loaded model there, so it passes
+    ``environment=classifier.environments_[0]``, the fitted environment: a
+    model fitted by this version keeps only the configuration in
+    ``environments``, as the first artifact does. The track graph without
+    ``edges``, the call the patch made before, is refused.
+    """
+    classifier = ClusterlessDetector.load_model(
+        COMPAT_DATA / version / f"{artifact}_model.pkl"
+    )
+    results = ClusterlessDetector.load_results(
+        COMPAT_DATA / version / f"{artifact}_results.nc"
+    )
+    inputs = pickle.loads((COMPAT_DATA / "inputs.pkl").read_bytes())
+    time = inputs["time"]
+    columns, orientation = ["x", "y"], "head_orientation"
+    tracking = pd.DataFrame(
+        {
+            "x": inputs["field_position"][:, 0],
+            "y": inputs["field_position"][:, 1],
+            orientation: np.random.default_rng(0).uniform(-np.pi, np.pi, time.size),
+        },
+        index=pd.Index(time, name="time"),
+    )
+
+    # As the patch builds the call.
+    posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+    distance = np.full(results.sizes["time"], np.nan)
+    aligned, valid = analysis.align_tracking_to_results(
+        tracking,
+        results,
+        position_columns=columns,
+        valid_position_intervals=[[time[0], time[-1]]],
+        circular_columns=[orientation],
+    )
+    valid &= np.isfinite(aligned[[*columns, orientation]].to_numpy(dtype=float)).all(
+        axis=1
+    )
+    assert valid.any()
+    map_position = analysis.maximum_a_posteriori_estimate(posterior.isel(time=valid))
+    distance[valid] = analysis.get_ahead_behind_distance2D(
+        aligned.loc[valid, columns].to_numpy(),
+        aligned.loc[valid, orientation].to_numpy(),
+        map_position,
+        environment=classifier.environments_[0],
+    )
+
+    graph = classifier.environments_[0].track_graphDD
+    head = aligned.loc[valid, columns].to_numpy()
+    expected, _ = _brute_force(graph, head, map_position)
+    # Without a path there is no direction, so no sign: NaN.
+    np.testing.assert_allclose(
+        np.abs(distance[valid]),
+        np.where(np.isinf(expected), np.nan, expected),
+        rtol=1e-12,
+        atol=0,
+    )
+    assert np.isnan(distance[~valid]).all()
+    # In the non-local artifact every valid MAP is the last grid bin, off the
+    # track: unstacking puts the Local and No-Spike mass, which has no
+    # position, there. So only the continuous/fragmented artifact has paths.
+    if artifact.startswith("contfrag"):
+        assert np.isfinite(distance[valid]).sum() >= 10
+    with pytest.raises(ValueError, match="edges"):
+        analysis.get_ahead_behind_distance2D(
+            head, aligned.loc[valid, orientation].to_numpy(), map_position, graph
         )
