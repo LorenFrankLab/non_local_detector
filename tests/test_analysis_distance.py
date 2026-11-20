@@ -893,7 +893,7 @@ class TestAheadBehindDistance2DTrackGraph:
         np.testing.assert_allclose(ahead_behind, [1 + np.sqrt(2)] * 2, rtol=1e-15)
 
     @pytest.mark.parametrize("table", ["all_pairs", "deferred"])
-    def test_environment_runs_no_graph_search(self, table):
+    def test_environment_runs_no_networkx_or_all_pairs_search(self, table):
         """With an environment, distances come from its table: no networkx
         search, no all-pairs search, and only the distinct MAP bins' rows when
         the table is deferred (none when it holds all pairs)."""
