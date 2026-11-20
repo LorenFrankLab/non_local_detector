@@ -355,10 +355,12 @@ def fit_sorted_spikes_kde_encoding_model(
         The spatial environment.
     weights : array_like, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
-        If None, uniform weights are used. A spike between samples of equal
-        weight takes the weight interpolated to its time at its interpolated
-        position; where the two differ, its share of each weighted sample's
-        weight sits at that sample's position, as occupancy is placed.
+        If None, uniform weights are used. Each spike takes the weight
+        interpolated to its time. It sits at its interpolated position, except
+        where its two bracketing samples differ in weight: there it sits at the
+        mean of their positions weighted by its share of each sample's weight,
+        so a spike next to an unweighted sample sits on its weighted sample,
+        where that interval's occupancy is.
     position_std : float, optional
         Gaussian kernel standard deviation for position, by default sqrt(12.5).
     block_size : int, optional
@@ -445,9 +447,10 @@ def fit_sorted_spikes_kde_encoding_model(
         disable=disable_progress_bar,
     ):
         neuron_spike_times = neuron_spike_times[support.contains(neuron_spike_times)]
-        # Each spike sits where its weighted samples' exposure does (see
-        # place_encoding_spikes), weighted by the weight at its spike time.
-        _, spike_positions, weights_at_spike_times = place_encoding_spikes(
+        # Each spike, weighted by the weight at its spike time, sits at its
+        # interpolated position or, where its bracketing samples differ in
+        # weight, at their share-weighted mean (see place_encoding_spikes).
+        spike_positions, weights_at_spike_times = place_encoding_spikes(
             position_time,
             position,
             neuron_spike_times,

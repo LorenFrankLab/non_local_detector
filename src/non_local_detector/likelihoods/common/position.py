@@ -65,17 +65,19 @@ def place_encoding_spikes(
     weights: np.ndarray,
     environment: Environment,
     encoding_support: "EncodingSupport",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Positions and weights of encoding spikes, placed as occupancy is.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Position and weight of each encoding spike of a weighted KDE fit.
 
     A KDE fit puts each weighted tracking sample's exposure at that sample's
     position. A spike between two samples of equal weight keeps its
     interpolated position and weight. Where the weights differ (a mask edge,
-    or posterior weights), the spike's share of each sample's weight,
-    ``(1 - fraction) * weights[left]`` and ``fraction * weights[right]``, sits
-    at that sample's position, so the spike lands only where exposure does: an
-    unweighted sample takes no entry, and a spike between two weighted samples
-    becomes two entries. Its total weight is the interpolated weight either way.
+    or posterior weights), the spike's weight is split between its samples as
+    its time is, ``(1 - fraction) * weights[left]`` and
+    ``fraction * weights[right]``, and the spike sits at the mean of the two
+    sample positions weighted by those shares, with their sum as its weight.
+    So a spike next to an unweighted sample sits exactly on its weighted
+    sample and never past a mask edge. Either way the spike's weight is the
+    weight interpolated to its time, and each spike is one entry.
 
     Parameters
     ----------
@@ -95,47 +97,44 @@ def place_encoding_spikes(
 
     Returns
     -------
-    entry_spike : np.ndarray of int, shape (n_entries,)
-        Index into ``spike_times`` of each entry, nondecreasing.
-    entry_positions : np.ndarray, shape (n_entries, n_decoding_dims)
-        Position of each entry.
-    entry_weights : np.ndarray, shape (n_entries,)
-        Weight of each entry.
+    spike_positions : np.ndarray, shape (n_spikes, n_decoding_dims)
+        Position of each spike.
+    spike_weights : np.ndarray, shape (n_spikes,)
+        Weight of each spike.
     """
-    entry_positions = get_position_at_time(
+    spike_positions = get_position_at_time(
         position_time,
         position,
         spike_times,
         environment,
         encoding_support=encoding_support,
     )
-    entry_weights = encoding_support.interpolate(weights, spike_times, fill_value=0.0)
+    spike_weights = encoding_support.interpolate(weights, spike_times, fill_value=0.0)
     spike_index, left, right, fraction = encoding_support.event_basis(spike_times)
     is_transition = weights[left] != weights[right]
     if not np.any(is_transition):
-        return np.arange(len(spike_times)), entry_positions, entry_weights
+        return spike_positions, spike_weights
 
     spikes = spike_index[is_transition]
     left, right = left[is_transition], right[is_transition]
     fraction = fraction[is_transition]
     left_share = (1.0 - fraction) * weights[left]
     right_share = fraction * weights[right]
-    # The spike's own entry takes the left sample's share unless that sample
-    # is unweighted; an extra entry takes the right share when both are.
-    on_left = weights[left] > 0
-    has_extra = on_left & (weights[right] > 0)
-    samples = np.concatenate([np.where(on_left, left, right), right[has_extra]])
-    sample_positions = environment.decoding_position(position[samples])
-    entry_positions[spikes] = sample_positions[: spikes.size]
-    entry_weights[spikes] = np.where(on_left, left_share, right_share)
-
-    entry_spike = np.concatenate([np.arange(len(spike_times)), spikes[has_extra]])
-    order = np.argsort(entry_spike, kind="stable")
-    return (
-        entry_spike[order],
-        np.concatenate([entry_positions, sample_positions[spikes.size :]])[order],
-        np.concatenate([entry_weights, right_share[has_extra]])[order],
+    total = left_share + right_share
+    left_position = position[left].astype(float)
+    right_position = position[right].astype(float)
+    # Exactly the weighted sample's position when the other is unweighted;
+    # between two weighted samples, the share-weighted mean of the two.
+    mean_position = np.where(
+        (weights[left] > 0)[:, None], left_position, right_position
     )
+    both = (weights[left] > 0) & (weights[right] > 0)
+    mean_position[both] += (right_share[both] / total[both])[:, None] * (
+        right_position[both] - left_position[both]
+    )
+    spike_positions[spikes] = environment.decoding_position(mean_position)
+    spike_weights[spikes] = total
+    return spike_positions, spike_weights
 
 
 def snap_off_track_positions(
