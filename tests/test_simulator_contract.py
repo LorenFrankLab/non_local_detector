@@ -533,6 +533,38 @@ def test_sorted_simulation_keeps_samples_with_two_spikes() -> None:
     assert any(np.any(np.diff(times) == 0) for times in spike_times)
 
 
+@pytest.mark.parametrize("seed", range(100))
+def test_sorted_simulation_puts_one_event_in_each_pause(seed: int) -> None:
+    """Five events, each within its own pause at the track end.
+
+    A pause sample is one within 1 cm of the track end. The noise-free
+    trajectory has no sample within 24 noise standard deviations of that
+    threshold, so the noise cannot split or join pauses here.
+    """
+    from non_local_detector.simulate.sorted_spikes_simulation import (
+        TRACK_HEIGHT,
+        make_simulated_data,
+    )
+
+    _, linear_distance, _, time, event_times, *_ = make_simulated_data(seed=seed)
+
+    in_pause = np.abs(linear_distance - TRACK_HEIGHT) < 1.0
+    pause_id = np.cumsum(in_pause & ~np.insert(in_pause[:-1], 0, False))
+    assert pause_id[-1] == 5
+
+    assert event_times.shape == (5, 2)
+    assert np.all(event_times[:, 1] >= event_times[:, 0])
+    assert np.all(event_times[1:, 0] > event_times[:-1, 1]), "events overlap"
+    event_pause_ids = []
+    for start, end in event_times:
+        first = np.searchsorted(time, start, side="left")
+        last = np.searchsorted(time, end, side="right") - 1
+        span = slice(min(first, last), max(first, last) + 1)
+        assert np.all(in_pause[span]), f"event {start:.4f}-{end:.4f} s leaves a pause"
+        event_pause_ids.append(np.unique(pause_id[span]).item())
+    assert sorted(set(event_pause_ids)) == [1, 2, 3, 4, 5]
+
+
 def test_run_data_spikes_lie_strictly_inside_their_sample_bins() -> None:
     """Each decode bin is centered on one position sample and holds its spikes.
 
