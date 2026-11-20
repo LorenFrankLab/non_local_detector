@@ -15,6 +15,7 @@ from non_local_detector.environment import (
     make_nD_track_graph_from_environment,
 )
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
+from non_local_detector.exceptions import CompatibilityWarning
 from non_local_detector.graph_distances import LazyGraphDistances
 
 __all__ = [
@@ -69,7 +70,7 @@ def _warn_precomputed_distance(*, precomputed_distance: bool | None) -> None:
             "precomputed_distance has no effect and will be removed; leave it "
             "out. Graph distances come from the environment's distance table, "
             "or from shortest paths computed once per distinct MAP bin.",
-            FutureWarning,
+            CompatibilityWarning,
             stacklevel=user_stacklevel(),
         )
 
@@ -346,7 +347,7 @@ def get_map_estimate_direction_from_track_graph(
         `track_graph`. By default None.
     precomputed_distance : bool or None, optional
         Deprecated, and has no effect: any value other than None warns with a
-        ``FutureWarning``. It will be removed. By default None.
+        ``CompatibilityWarning``. It will be removed. By default None.
     environment : Environment or None, optional
         Fitted N-D environment (fitted without a ``track_graph``). Its bin
         graph, bin edges and distance table (``distance_between_nodes_``) are
@@ -412,7 +413,7 @@ def get_2D_distance(
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool or None, optional
         Deprecated, and has no effect: any value other than None warns with a
-        ``FutureWarning``. It will be removed. By default None.
+        ``CompatibilityWarning``. It will be removed. By default None.
     environment : Environment or None, optional
         Fitted N-D environment (fitted without a ``track_graph``). Its bin
         graph, bin edges and distance table (``distance_between_nodes_``) are
@@ -483,7 +484,7 @@ def head_direction_similarity(
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool or None, optional
         Deprecated, and has no effect: any value other than None warns with a
-        ``FutureWarning``. It will be removed. By default None.
+        ``CompatibilityWarning``. It will be removed. By default None.
     environment : Environment or None, optional
         Fitted N-D environment (fitted without a ``track_graph``). Its bin
         graph, bin edges and distance table (``distance_between_nodes_``) are
@@ -558,7 +559,7 @@ def get_ahead_behind_distance2D(
         ``track_graph`` is given; ignored otherwise.
     precomputed_distance : bool or None, optional
         Deprecated, and has no effect: any value other than None warns with a
-        ``FutureWarning``. It will be removed. By default None.
+        ``CompatibilityWarning``. It will be removed. By default None.
     environment : Environment or None, optional
         Fitted N-D environment (fitted without a ``track_graph``). Its bin
         graph, bin edges and distance table (``distance_between_nodes_``) are
