@@ -1,11 +1,16 @@
 """Tests for analysis/distance2D.py — velocity, speed, distance, similarity."""
 
+import warnings
+from contextlib import contextmanager
+
 import networkx as nx
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from track_linearization import make_track_graph
 
+from non_local_detector import graph_distances
 from non_local_detector.analysis.distance1D import get_map_speed
 from non_local_detector.analysis.distance2D import (
     get_2D_distance,
@@ -18,6 +23,7 @@ from non_local_detector.analysis.distance2D import (
     make_2D_track_graph_from_environment,
 )
 from non_local_detector.analysis.posterior import get_spatial_posterior
+from non_local_detector.environment import Environment
 
 
 @pytest.mark.unit
@@ -577,28 +583,157 @@ class TestGetMapSpeedBoundaryHandling:
         np.testing.assert_allclose(speed[-1], interior[0], atol=1e-10)
 
 
+# networkx functions that search a graph for shortest paths.
+_NETWORKX_SEARCHES = (
+    "shortest_path",
+    "shortest_path_length",
+    "all_pairs_dijkstra",
+    "all_pairs_dijkstra_path",
+    "all_pairs_dijkstra_path_length",
+    "single_source_dijkstra",
+    "single_source_dijkstra_path",
+    "single_source_dijkstra_path_length",
+    "dijkstra_path",
+    "dijkstra_path_length",
+    "bidirectional_dijkstra",
+)
+
+
+@contextmanager
+def _graph_searches_recorded():
+    """Make networkx searches raise; yield the sources scipy Dijkstra runs from.
+
+    Each scipy ``dijkstra`` call made through ``graph_distances`` appends its
+    ``indices`` (None for an all-pairs search) to the yielded list.
+    """
+
+    def refuse(*args, **kwargs):
+        msg = "networkx graph search"
+        raise AssertionError(msg)
+
+    real_dijkstra = graph_distances.dijkstra
+    sources = []
+
+    def recording_dijkstra(graph, *args, indices=None, **kwargs):
+        sources.append(indices)
+        return real_dijkstra(graph, *args, indices=indices, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        for name in _NETWORKX_SEARCHES:
+            patch.setattr(nx, name, refuse)
+        patch.setattr(graph_distances, "dijkstra", recording_dijkstra)
+        yield sources
+
+
+def _graph_arguments(env, path):
+    """Keyword arguments that give the 2-D functions ``env``'s bin graph."""
+    if path == "track_graph":
+        return {"track_graph": env.track_graphDD, "edges": env.edges_}
+    return {"environment": env}
+
+
+def _nearest_bin(graph, position):
+    """Node whose ``pos`` (bin center) is nearest each position, shape (n_time,)."""
+    nodes = np.asarray(sorted(graph.nodes))
+    centers = np.asarray([graph.nodes[node]["pos"] for node in nodes])
+    return nodes[
+        np.argmin(
+            np.linalg.norm(position[:, np.newaxis] - centers[np.newaxis], axis=-1),
+            axis=1,
+        )
+    ]
+
+
+def _brute_force(graph, head_position, map_position):
+    """Graph distance and the directions of all shortest first steps, by networkx.
+
+    Returns the distance from each head bin to its MAP bin (inf without a
+    path) and, per time point, the set of directions (radians) of every
+    neighbor of the head bin that starts a shortest path: {0.0} in the same
+    bin, empty without a path. A neighbor starts a shortest path when its edge
+    plus its distance to the MAP bin is within 1e-9 (relative) of the distance.
+    """
+    head_bins = _nearest_bin(graph, head_position)
+    map_bins = _nearest_bin(graph, map_position)
+    distances, directions = [], []
+    for head_bin, map_bin in zip(head_bins, map_bins, strict=True):
+        from_map = nx.single_source_dijkstra_path_length(
+            graph, int(map_bin), weight="distance"
+        )
+        distance = from_map.get(int(head_bin), np.inf)
+        head = np.asarray(graph.nodes[head_bin]["pos"])
+        if head_bin == map_bin:
+            first_steps = {0.0}
+        elif np.isinf(distance):
+            first_steps = set()
+        else:
+            first_steps = set()
+            # The head bin's neighbors are connected to the MAP bin too.
+            for neighbor in graph[head_bin]:
+                via = graph.edges[head_bin, neighbor]["distance"] + from_map[neighbor]
+                if abs(via - distance) <= 1e-9 * distance:
+                    step = np.asarray(graph.nodes[neighbor]["pos"]) - head
+                    first_steps.add(float(np.arctan2(step[1], step[0])))
+        distances.append(distance)
+        directions.append(first_steps)
+    return np.asarray(distances), directions
+
+
+def _u_shaped_environment(*, compute_all_pairs_distances):
+    """A U-shaped arena in 10 cm bins: 76 of 144 bins on the track.
+
+    Shortest paths between the arms go around the bottom, and the bins in the
+    gap between the arms and around the edge are off the track (isolated
+    nodes, unreachable from the track).
+    """
+    rng = np.random.default_rng(0)
+    position = rng.uniform(0, 100, (6000, 2))
+    in_gap = (position[:, 0] > 30) & (position[:, 0] < 70) & (position[:, 1] > 30)
+    return Environment(place_bin_size=10.0).fit_place_grid(
+        position[~in_gap], compute_all_pairs_distances=compute_all_pairs_distances
+    )
+
+
+def _random_pairs(env, n_time, seed):
+    """Head and MAP positions anywhere on the grid, and headings."""
+    rng = np.random.default_rng(seed)
+    lower = [edge[0] for edge in env.edges_]
+    upper = [edge[-1] for edge in env.edges_]
+    head = rng.uniform(lower, upper, (n_time, 2))
+    map_position = rng.uniform(lower, upper, (n_time, 2))
+    heading = rng.uniform(-np.pi, np.pi, n_time)
+    return head, heading, map_position
+
+
 @pytest.mark.unit
 class TestAheadBehindDistance2DTrackGraph:
-    """The 2D track-graph path of ahead/behind distance and head-direction.
+    """The track-graph path of the 2-D distance, direction and ahead/behind.
 
-    Exercises the ``track_graph`` branch that depends on networkx all-pairs
-    shortest paths, including ``precomputed_distance=True``, and the 1-D
-    heading-angle ``head_direction`` contract.
+    The graph is given as a fitted ``environment`` or as ``track_graph`` and
+    ``edges``. Covers the 1-D heading-angle ``head_direction`` contract.
     """
 
     @pytest.fixture(scope="class")
     @classmethod
     def env_2d(cls):
         """A fitted 2D environment with a connected bin grid (built once)."""
-        from non_local_detector.environment import Environment
-
         rng = np.random.default_rng(0)
         env = Environment(place_bin_size=10.0)
         # Dense, fully-covered square so the bin grid is connected.
         env.fit_place_grid(rng.random((1500, 2)) * 100.0)
         return env
 
-    @pytest.mark.parametrize("precomputed_distance", [True, False])
+    @pytest.fixture(scope="class")
+    @classmethod
+    def u_environments(cls):
+        """The U-shaped arena with an all-pairs and with a deferred table."""
+        return {
+            table: _u_shaped_environment(
+                compute_all_pairs_distances=table == "all_pairs"
+            )
+            for table in ("all_pairs", "deferred")
+        }
+
     @pytest.mark.parametrize(
         "call",
         [
@@ -607,10 +742,18 @@ class TestAheadBehindDistance2DTrackGraph:
                 head, direction, map_pos, **kw
             ),
             get_ahead_behind_distance2D,
+            lambda head, direction, map_pos, **kw: (
+                get_map_estimate_direction_from_track_graph(head, map_pos, **kw)
+            ),
         ],
-        ids=["get_2D_distance", "head_direction_similarity", "ahead_behind"],
+        ids=[
+            "get_2D_distance",
+            "head_direction_similarity",
+            "ahead_behind",
+            "map_estimate_direction",
+        ],
     )
-    def test_track_graph_without_edges_raises(self, env_2d, call, precomputed_distance):
+    def test_track_graph_without_edges_raises(self, env_2d, call):
         """The track graph's nodes are indexed by the environment's bin grid,
         so a track graph without ``edges`` is rejected with a message naming
         the missing argument, not an IndexError or TypeError."""
@@ -621,47 +764,216 @@ class TestAheadBehindDistance2DTrackGraph:
                 np.array([[50.0, 50.0]]),
                 track_graph=env_2d.track_graphDD,
                 edges=None,
-                precomputed_distance=precomputed_distance,
             )
 
-    def test_precomputed_distance_does_not_crash_and_matches_per_point(self, env_2d):
-        """``precomputed_distance=True`` handles networkx>=3.5, where the
-        all-pairs ``nx.shortest_path`` result is a generator, not a dict, and
-        agrees in magnitude with the per-time-point path.
-        """
-        env = env_2d
-        rng = np.random.default_rng(1)
-        n_time = 15
-        head_position = rng.random((n_time, 2)) * 100.0
-        map_position = rng.random((n_time, 2)) * 100.0
-        # head_direction is a 1-D array of heading angles in radians.
-        head_direction = rng.uniform(-np.pi, np.pi, size=n_time)
+    @pytest.mark.parametrize(
+        ("arguments", "match"),
+        [
+            ({}, "track_graph and edges, or environment"),
+            ({"environment": "env", "track_graph": "graph"}, "not both"),
+            ({"environment": "env", "edges": "edges"}, "not both"),
+            ({"environment": "linearized"}, "track_graphDD"),
+        ],
+        ids=["neither", "environment_and_track_graph", "environment_and_edges", "1d"],
+    )
+    def test_graph_arguments_are_checked(self, env_2d, arguments, match):
+        """The direction needs a graph, given one way only, and an
+        environment must have the 2-D bin graph (not a linearized track)."""
+        linearized = Environment(
+            place_bin_size=5.0,
+            track_graph=make_track_graph([(0, 0), (20, 0)], [(0, 1)]),
+            edge_order=[(0, 1)],
+            edge_spacing=0.0,
+        ).fit_place_grid()
+        values = {
+            "env": env_2d,
+            "graph": env_2d.track_graphDD,
+            "edges": env_2d.edges_,
+            "linearized": linearized,
+        }
+        with pytest.raises(ValueError, match=match):
+            get_map_estimate_direction_from_track_graph(
+                np.array([[10.0, 10.0]]),
+                np.array([[50.0, 50.0]]),
+                **{name: values[value] for name, value in arguments.items()},
+            )
 
-        precomputed = get_ahead_behind_distance2D(
-            head_position,
-            head_direction,
-            map_position,
-            track_graph=env.track_graphDD,
-            edges=env.edges_,
-            precomputed_distance=True,
+    @pytest.mark.parametrize(
+        "path", ["environment", "deferred_environment", "track_graph"]
+    )
+    def test_matches_brute_force_networkx(self, u_environments, path):
+        """Distance, direction, similarity and ahead/behind on the U-shaped
+        arena equal a networkx computation from the bin centers: the shortest
+        path length (inf without a path) and the direction of a first step on
+        a shortest path (0 in the same bin, NaN without a path)."""
+        env = u_environments[
+            "deferred" if path == "deferred_environment" else "all_pairs"
+        ]
+        kw = _graph_arguments(env, path)
+        head, heading, map_position = _random_pairs(env, 80, seed=3)
+        map_position[:5] = head[:5]  # same bin
+        expected_distance, first_step_directions = _brute_force(
+            env.track_graphDD, head, map_position
         )
-        per_point = get_ahead_behind_distance2D(
-            head_position,
-            head_direction,
-            map_position,
-            track_graph=env.track_graphDD,
-            edges=env.edges_,
-            precomputed_distance=False,
+        # The draw covers same-bin, unreachable and tied pairs.
+        assert np.sum(expected_distance == 0) >= 5
+        assert np.sum(np.isinf(expected_distance)) >= 5
+        assert sum(len(steps) > 1 for steps in first_step_directions) >= 5
+
+        distance = get_2D_distance(head, map_position, **kw)
+        direction = get_map_estimate_direction_from_track_graph(
+            head, map_position, **kw
+        )
+        similarity = head_direction_similarity(head, heading, map_position, **kw)
+        ahead_behind = get_ahead_behind_distance2D(head, heading, map_position, **kw)
+
+        np.testing.assert_allclose(distance, expected_distance, rtol=1e-12, atol=0)
+        for t, steps in enumerate(first_step_directions):
+            if steps:
+                assert np.isclose(
+                    direction[t], sorted(steps), rtol=0, atol=1e-12
+                ).any(), (
+                    t,
+                    direction[t],
+                    steps,
+                )
+            else:
+                assert np.isnan(direction[t]), (t, direction[t])
+        np.testing.assert_array_equal(similarity, np.cos(heading - direction))
+        sign = np.sign(np.cos(heading - direction))
+        sign[sign == 0] = 1.0
+        np.testing.assert_allclose(
+            ahead_behind, sign * expected_distance, rtol=1e-12, atol=0
         )
 
-        assert precomputed.shape == (n_time,)
-        assert np.all(np.isfinite(precomputed))
-        # |ahead_behind| is the graph distance regardless of the sign, so the
-        # two code paths must agree in magnitude (sign can differ only on
-        # shortest-path ties).
-        np.testing.assert_allclose(np.abs(precomputed), np.abs(per_point), atol=1e-8)
+    @pytest.mark.parametrize(
+        "path", ["environment", "deferred_environment", "track_graph"]
+    )
+    def test_tied_first_steps_take_the_lowest_node_id(self, path):
+        """Of the head bin's neighbors that start a shortest path with exactly
+        the same length, the direction is toward the one with the lowest node
+        id (flat bin index)."""
+        # All 25 bins of 1 cm (centers -0.5 ... 3.5) are on the track, so the
+        # edges are exactly 1 and sqrt(2).
+        env = Environment(
+            place_bin_size=1.0, position_range=[(0, 3), (0, 3)]
+        ).fit_place_grid(
+            np.array([[0.0, 0.0], [3.0, 3.0]]),
+            infer_track_interior=False,
+            compute_all_pairs_distances=path != "deferred_environment",
+        )
+        graph = env.track_graphDD
+        # Head bin 6 (center 0.5, 0.5) to MAP bin 17 (2.5, 1.5): a step to bin
+        # 11 (1.5, 0.5) then a diagonal, or a diagonal to bin 12 (1.5, 1.5)
+        # then a step, both 1 + sqrt(2) exactly. The reverse pair ties bins 11
+        # (diagonal first) and 12.
+        assert graph.nodes[6]["pos"] == (0.5, 0.5)
+        assert graph.nodes[17]["pos"] == (2.5, 1.5)
+        assert (
+            graph.edges[6, 11]["distance"] + graph.edges[11, 17]["distance"]
+            == graph.edges[6, 12]["distance"] + graph.edges[12, 17]["distance"]
+        )
+        head = np.array([[0.5, 0.5], [2.5, 1.5]])
+        map_position = np.array([[2.5, 1.5], [0.5, 0.5]])
+        kw = _graph_arguments(env, path)
 
-    def test_head_direction_angle_contract(self, env_2d):
+        direction = get_map_estimate_direction_from_track_graph(
+            head, map_position, **kw
+        )
+        # Toward bin 11 both times: +x from bin 6, and down-left from bin 17.
+        np.testing.assert_allclose(direction, [0.0, -3 * np.pi / 4], rtol=0, atol=1e-15)
+        # Both headings are ahead of the step toward bin 11 and behind the
+        # step toward bin 12.
+        ahead_behind = get_ahead_behind_distance2D(
+            head, np.array([-3 * np.pi / 8, -np.pi / 3]), map_position, **kw
+        )
+        np.testing.assert_allclose(ahead_behind, [1 + np.sqrt(2)] * 2, rtol=1e-15)
+
+    @pytest.mark.parametrize("table", ["all_pairs", "deferred"])
+    def test_environment_runs_no_graph_search(self, table):
+        """With an environment, distances come from its table: no networkx
+        search, no all-pairs search, and only the distinct MAP bins' rows when
+        the table is deferred (none when it holds all pairs)."""
+        env = _u_shaped_environment(compute_all_pairs_distances=table == "all_pairs")
+        head, heading, map_position = _random_pairs(env, 60, seed=4)
+        map_bins = np.unique(_nearest_bin(env.track_graphDD, map_position))
+
+        with _graph_searches_recorded() as sources:
+            get_2D_distance(head, map_position, environment=env)
+            get_map_estimate_direction_from_track_graph(
+                head, map_position, environment=env
+            )
+            head_direction_similarity(head, heading, map_position, environment=env)
+            get_ahead_behind_distance2D(head, heading, map_position, environment=env)
+
+        if table == "all_pairs":
+            assert sources == []
+        else:
+            assert all(indices is not None for indices in sources)
+            np.testing.assert_array_equal(np.unique(np.concatenate(sources)), map_bins)
+
+    def test_track_graph_and_edges_runs_no_networkx_search(self, u_environments):
+        """With ``track_graph`` and ``edges``, ahead/behind computes the
+        shortest-path row of each distinct MAP bin once, with scipy, and
+        nothing else."""
+        env = u_environments["all_pairs"]
+        head, heading, map_position = _random_pairs(env, 60, seed=5)
+        map_bins = np.unique(_nearest_bin(env.track_graphDD, map_position))
+
+        with _graph_searches_recorded() as sources:
+            get_ahead_behind_distance2D(
+                head,
+                heading,
+                map_position,
+                track_graph=env.track_graphDD,
+                edges=env.edges_,
+            )
+
+        assert all(indices is not None for indices in sources)
+        np.testing.assert_array_equal(np.sort(np.concatenate(sources)), map_bins)
+
+    @pytest.mark.parametrize("value", [True, False])
+    @pytest.mark.parametrize(
+        ("call", "path"),
+        [
+            (call, path)
+            for call in ("distance", "similarity", "ahead_behind")
+            for path in ("euclidean", "environment", "track_graph")
+        ]
+        + [("direction", "environment"), ("direction", "track_graph")],
+    )
+    def test_precomputed_distance_warns_and_changes_nothing(
+        self, env_2d, call, path, value
+    ):
+        """``precomputed_distance`` is deprecated: any value gives one
+        ``FutureWarning``, attributed to the caller, and the same result."""
+        functions = {
+            "distance": lambda **kw: get_2D_distance(head, map_position, **kw),
+            "direction": lambda **kw: get_map_estimate_direction_from_track_graph(
+                head, map_position, **kw
+            ),
+            "similarity": lambda **kw: head_direction_similarity(
+                head, heading, map_position, **kw
+            ),
+            "ahead_behind": lambda **kw: get_ahead_behind_distance2D(
+                head, heading, map_position, **kw
+            ),
+        }
+        head, heading, map_position = _random_pairs(env_2d, 15, seed=1)
+        kw = {} if path == "euclidean" else _graph_arguments(env_2d, path)
+        expected = functions[call](**kw)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = functions[call](precomputed_distance=value, **kw)
+
+        assert [warning.category for warning in caught] == [FutureWarning]
+        assert "precomputed_distance" in str(caught[0].message)
+        assert caught[0].filename == __file__
+        np.testing.assert_array_equal(result, expected)
+
+    @pytest.mark.parametrize("path", ["environment", "track_graph"])
+    def test_head_direction_angle_contract(self, env_2d, path):
         """``head_direction`` is a 1-D angle array; a heading toward the MAP
         position yields a positive (ahead) signed distance.
         """
@@ -676,37 +988,21 @@ class TestAheadBehindDistance2DTrackGraph:
             head_position,
             head_direction,
             map_position,
-            track_graph=env.track_graphDD,
-            edges=env.edges_,
-            precomputed_distance=True,
+            **_graph_arguments(env, path),
         )
         assert ahead_behind.shape == (n_time,)
         assert np.all(ahead_behind > 0)
 
-    @pytest.mark.parametrize(
-        "precomputed_distance", [True, False], ids=["precomputed", "nonprecomputed"]
-    )
-    def test_direction_disconnected_graph_is_nan(self, precomputed_distance):
-        """An unreachable head/MAP pair on a disconnected track graph must give
-        NaN, not a silently-wrong heading or a crash.
-
-        Precomputed: the path initializes ``first_node_on_path`` to ``-1`` and
-        only fills reachable pairs, so an unreachable pair previously indexed
-        ``node_positions[-1]`` (the last node) and produced a plausible but
-        wrong ``arctan2`` direction.
-
-        Non-precomputed: ``nx.shortest_path(source, target)`` raises
-        ``nx.NetworkXNoPath`` for a disconnected head/MAP pair. Pre-fix only
-        ``IndexError`` was caught, so it crashed; it must now warn and return
-        NaN, matching the precomputed branch and ``get_2D_distance``.
+    @pytest.mark.parametrize("path", ["environment", "track_graph"])
+    def test_disconnected_graph_gives_inf_distance_and_nan_direction(self, path):
+        """An unreachable head/MAP pair on a disconnected track graph gives an
+        infinite distance and a NaN direction, not a wrong heading or a crash.
         """
         rng = np.random.default_rng(0)
         # Two dense clusters separated by a wide empty gap -> the bins between
         # them are off-track, so the manifold grid is disconnected.
         cluster_a = rng.random((400, 2)) * 20.0
         cluster_b = rng.random((400, 2)) * 20.0 + 200.0
-        from non_local_detector.environment import Environment
-
         env = Environment(place_bin_size=10.0)
         env.fit_place_grid(np.vstack([cluster_a, cluster_b]))
         assert nx.number_connected_components(env.track_graphDD) > 1, (
@@ -715,24 +1011,17 @@ class TestAheadBehindDistance2DTrackGraph:
 
         head_position = np.array([[10.0, 10.0]])  # in cluster A
         map_estimate = np.array([[210.0, 210.0]])  # in cluster B (unreachable)
+        kw = _graph_arguments(env, path)
 
         direction = get_map_estimate_direction_from_track_graph(
-            head_position,
-            map_estimate,
-            env.track_graphDD,
-            env.edges_,
-            precomputed_distance=precomputed_distance,
+            head_position, map_estimate, **kw
         )
-        assert np.isnan(direction).all(), (
-            "unreachable head/MAP pair must yield NaN direction, not raise or "
-            f"emit a wrong (e.g. node_positions[-1] sentinel) heading; "
-            f"got {direction}"
-        )
+        distance = get_2D_distance(head_position, map_estimate, **kw)
+        np.testing.assert_array_equal(direction, [np.nan])
+        np.testing.assert_array_equal(distance, [np.inf])
 
-    @pytest.mark.parametrize(
-        "precomputed_distance", [True, False], ids=["precomputed", "nonprecomputed"]
-    )
-    def test_nan_position_gives_nan(self, env_2d, precomputed_distance):
+    @pytest.mark.parametrize("path", ["environment", "track_graph"])
+    def test_nan_position_gives_nan(self, env_2d, path):
         """A row with a NaN head or MAP position gives NaN, as the Euclidean
         branch does, not a distance from the last grid bin; other rows keep
         the values they have alone."""
@@ -763,21 +1052,11 @@ class TestAheadBehindDistance2DTrackGraph:
         head_dir = np.array([0.3, 0.0, -1.0, 0.0, 0.0, 2.0])
         nan_rows = np.array([False, True, True, True, True, False])
         keep = np.flatnonzero(~nan_rows)
-        kw = {
-            "track_graph": env.track_graphDD,
-            "edges": env.edges_,
-            "precomputed_distance": precomputed_distance,
-        }
+        kw = _graph_arguments(env, path)
 
         distance = get_2D_distance(head, map_pos, **kw)
         ahead_behind = get_ahead_behind_distance2D(head, head_dir, map_pos, **kw)
-        direction = get_map_estimate_direction_from_track_graph(
-            head,
-            map_pos,
-            env.track_graphDD,
-            env.edges_,
-            precomputed_distance=precomputed_distance,
-        )
+        direction = get_map_estimate_direction_from_track_graph(head, map_pos, **kw)
 
         assert np.isnan(distance[nan_rows]).all(), distance
         assert np.isnan(ahead_behind[nan_rows]).all(), ahead_behind
@@ -791,50 +1070,10 @@ class TestAheadBehindDistance2DTrackGraph:
                 head[keep], head_dir[keep], map_pos[keep], **kw
             ),
         )
-
-    def test_precomputed_distance_dict_branch_matches_generator(
-        self, env_2d, monkeypatch
-    ):
-        """The networkx<3.5 dict return shape is handled identically to the
-        >=3.5 generator.
-
-        The local networkx is typically >= 3.5 (all-pairs ``nx.shortest_path``
-        returns a generator), so the ``.items()`` dict branch is otherwise only
-        exercised on the one CI job pinned to networkx < 3.5. Force the dict
-        shape here and assert the result is identical to the generator path.
-        """
-        env = env_2d
-        rng = np.random.default_rng(2)
-        n_time = 12
-        head_position = rng.random((n_time, 2)) * 100.0
-        map_estimate = rng.random((n_time, 2)) * 100.0
-
-        # Reference: real all-pairs form (generator on networkx >= 3.5).
-        reference = get_map_estimate_direction_from_track_graph(
-            head_position,
-            map_estimate,
-            env.track_graphDD,
-            env.edges_,
-            precomputed_distance=True,
+        # All rows NaN: nothing to look up.
+        np.testing.assert_array_equal(
+            get_ahead_behind_distance2D(
+                head[[1, 4]], head_dir[[1, 4]], head[[1, 4]], **kw
+            ),
+            [nan, nan],
         )
-
-        # Force the networkx 3.0-3.4 dict return shape to exercise .items().
-        from non_local_detector.analysis import distance2D
-
-        real_shortest_path = distance2D.nx.shortest_path
-
-        def dict_all_pairs_shortest_path(graph, weight=None):
-            return dict(real_shortest_path(graph, weight=weight))
-
-        monkeypatch.setattr(
-            distance2D.nx, "shortest_path", dict_all_pairs_shortest_path
-        )
-
-        dict_branch = get_map_estimate_direction_from_track_graph(
-            head_position,
-            map_estimate,
-            env.track_graphDD,
-            env.edges_,
-            precomputed_distance=True,
-        )
-        np.testing.assert_allclose(dict_branch, reference, atol=1e-12)

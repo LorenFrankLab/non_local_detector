@@ -8,11 +8,13 @@ from typing import cast
 import networkx as nx
 import numpy as np
 
+from non_local_detector._warnings import user_stacklevel
 from non_local_detector.environment import (
     Environment,
     make_nD_track_graph_from_environment,
 )
 from non_local_detector.environment import gaussian_smooth as _gaussian_smooth
+from non_local_detector.graph_distances import LazyGraphDistances
 
 __all__ = [
     "get_2D_distance",
@@ -108,18 +110,237 @@ def get_bin_ind(sample: np.ndarray, edges: Sequence[np.ndarray]) -> np.ndarray:
     )
 
 
+def _warn_precomputed_distance(*, precomputed_distance: bool | None) -> None:
+    """Warn that ``precomputed_distance`` was passed: it has no effect.
+
+    Parameters
+    ----------
+    precomputed_distance : bool or None
+        The value the caller passed; None (left out) does not warn.
+    """
+    if precomputed_distance is not None:
+        warnings.warn(
+            "precomputed_distance has no effect and will be removed; leave it "
+            "out. Graph distances come from the environment's distance table, "
+            "or from shortest paths computed once per distinct MAP bin.",
+            FutureWarning,
+            stacklevel=user_stacklevel(),
+        )
+
+
+def _graph_and_distances(
+    track_graph: nx.Graph | None,
+    edges: Sequence[np.ndarray] | None,
+    environment: Environment | None,
+) -> tuple[nx.Graph, Sequence[np.ndarray], np.ndarray | LazyGraphDistances]:
+    """Return the bin graph, bin edges and graph-distance table of a 2-D lookup.
+
+    Parameters
+    ----------
+    track_graph : nx.Graph or None
+        Graph of the place bins, with nodes ``0`` through ``n_bins - 1``.
+    edges : list of np.ndarray or None
+        Bin edges for each spatial dimension of the grid of `track_graph`.
+    environment : Environment or None
+        Fitted N-D environment, used in place of `track_graph` and `edges`.
+
+    Returns
+    -------
+    track_graph : nx.Graph
+        Graph of the place bins.
+    edges : list of np.ndarray
+        Bin edges for each spatial dimension.
+    distances : np.ndarray or LazyGraphDistances, shape (n_bins, n_bins)
+        The environment's ``distance_between_nodes_``, or shortest-path
+        lengths of `track_graph` computed for the source rows an index
+        selects.
+
+    Raises
+    ------
+    ValueError
+        If neither or both of `environment` and `track_graph` (or `edges`)
+        are given, `track_graph` comes without `edges`, or `environment` has
+        no N-D bin graph.
+    """
+    if environment is not None:
+        if track_graph is not None or edges is not None:
+            msg = "Pass either environment, or track_graph and edges, not both"
+            raise ValueError(msg)
+        if environment.track_graphDD is None:
+            msg = (
+                "environment has no track_graphDD: pass an N-D environment, "
+                "fitted without a track_graph"
+            )
+            raise ValueError(msg)
+        return (
+            environment.track_graphDD,
+            environment.edges_,
+            cast(
+                "np.ndarray | LazyGraphDistances", environment.distance_between_nodes_
+            ),
+        )
+    if track_graph is None:
+        msg = "Pass track_graph and edges, or environment"
+        raise ValueError(msg)
+    if edges is None:
+        msg = "edges parameter is required when track_graph is provided"
+        raise ValueError(msg)
+    # A query computes each source row once, so a row cache would only hold
+    # copies until this call returns.
+    return (
+        track_graph,
+        edges,
+        LazyGraphDistances.from_graph(track_graph, max_cache_bytes=0),
+    )
+
+
+def _sorted_neighbors(
+    track_graph: nx.Graph, nodes: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each node's neighbors in ascending node id, and the edges' distances.
+
+    Parameters
+    ----------
+    track_graph : nx.Graph
+        Graph whose edges have a ``distance`` attribute.
+    nodes : np.ndarray of int, shape (n_nodes,)
+        Nodes of `track_graph`.
+
+    Returns
+    -------
+    neighbors : np.ndarray of int, shape (n_nodes, max_degree)
+        The neighbors of ``nodes[i]`` in row ``i``, padded with ``nodes[i]``.
+        ``max_degree`` is the largest number of neighbors, at least 1.
+    edge_distance : np.ndarray, shape (n_nodes, max_degree)
+        Distance of the edge to each neighbor; inf in the padding.
+    """
+    adjacency = [sorted(track_graph.adj[node].items()) for node in nodes.tolist()]
+    degree = np.array([len(items) for items in adjacency], dtype=np.intp)
+    neighbors = np.repeat(
+        nodes[:, np.newaxis], max(1, int(degree.max(initial=0))), axis=1
+    )
+    edge_distance = np.full(neighbors.shape, np.inf)
+    is_neighbor = np.arange(neighbors.shape[1]) < degree[:, np.newaxis]
+    neighbors[is_neighbor] = [node for items in adjacency for node, _ in items]
+    edge_distance[is_neighbor] = [
+        data["distance"] for items in adjacency for _, data in items
+    ]
+    return neighbors, edge_distance
+
+
+def _graph_distance_and_direction(
+    position1: np.ndarray,
+    position2: np.ndarray,
+    track_graph: nx.Graph | None,
+    edges: Sequence[np.ndarray] | None,
+    environment: Environment | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Graph distance and first-step direction from `position1` toward `position2`.
+
+    Each distinct pair of bins is looked up once. For start bin ``a`` and
+    target bin ``b`` the distance is ``D[b, a]`` of the distance table ``D``,
+    and the first step is the neighbor ``n`` of ``a`` that minimizes
+    ``w(a, n) + D[b, n]``, ``w`` being the edge's ``distance``: the first
+    exact minimum, with the neighbors in ascending node id.
+
+    Parameters
+    ----------
+    position1 : np.ndarray, shape (n_time, 2)
+        Start positions.
+    position2 : np.ndarray, shape (n_time, 2)
+        Target positions.
+    track_graph : nx.Graph or None
+        Graph of the place bins (see `_graph_and_distances`).
+    edges : list of np.ndarray or None
+        Bin edges for each spatial dimension of the grid of `track_graph`.
+    environment : Environment or None
+        Fitted N-D environment, used in place of `track_graph` and `edges`.
+
+    Returns
+    -------
+    distance : np.ndarray, shape (n_time,)
+        Shortest path length between the two bins; inf without a path.
+    direction : np.ndarray, shape (n_time,)
+        Direction in radians of the first step; 0 in the same bin, NaN
+        without a path. Both outputs are NaN where either position has a
+        non-finite coordinate.
+    """
+    track_graph, edges, distances = _graph_and_distances(
+        track_graph, edges, environment
+    )
+    position1 = np.atleast_2d(position1)
+    position2 = np.atleast_2d(position2)
+    # A non-finite position has no bin (searchsorted would put NaN in the last
+    # one), so its rows stay NaN.
+    is_finite = np.all(np.isfinite(position1), axis=1) & np.all(
+        np.isfinite(position2), axis=1
+    )
+    distance = np.full(is_finite.shape, np.nan)
+    direction = np.full(is_finite.shape, np.nan)
+    if not np.any(is_finite):
+        return distance, direction
+
+    # remove outer boundary edge
+    bin_edges = [e[1:-1] for e in edges]
+    n_bins = len(track_graph)
+    pairs, pair_ind = np.unique(
+        get_bin_ind(position1[is_finite], bin_edges) * n_bins
+        + get_bin_ind(position2[is_finite], bin_edges),
+        return_inverse=True,
+    )
+    start_bin, target_bin = np.divmod(pairs, n_bins)
+
+    neighbors, edge_distance = _sorted_neighbors(track_graph, start_bin)
+    # Distances from each target bin to the start bin (column 0) and to the
+    # start bin's neighbors: one shortest-path row per distinct target bin.
+    to_target = np.asarray(
+        distances[target_bin[:, np.newaxis], np.column_stack([start_bin, neighbors])]
+    )
+    pair_distance = to_target[:, 0]
+    first_step = neighbors[
+        np.arange(len(pairs)), np.argmin(edge_distance + to_target[:, 1:], axis=1)
+    ]
+    is_same_bin = start_bin == target_bin
+    first_step[is_same_bin] = start_bin[is_same_bin]
+
+    is_reachable = np.isfinite(pair_distance)
+    n_unreachable = int(np.sum(~is_reachable[pair_ind]))
+    if n_unreachable:
+        logger.warning(
+            "%d time point(s) have no path on the track graph between their "
+            "two positions' bins (disconnected track graph); their distance "
+            "is inf and their direction NaN.",
+            n_unreachable,
+        )
+
+    nodes, node_ind = np.unique(
+        np.concatenate([start_bin, first_step]), return_inverse=True
+    )
+    node_position = np.asarray(
+        [track_graph.nodes[node]["pos"] for node in nodes.tolist()]
+    )
+    step = node_position[node_ind[len(pairs) :]] - node_position[node_ind[: len(pairs)]]
+    pair_direction = np.where(is_reachable, np.arctan2(step[:, 1], step[:, 0]), np.nan)
+
+    distance[is_finite] = pair_distance[pair_ind]
+    direction[is_finite] = pair_direction[pair_ind]
+    return distance, direction
+
+
 def get_map_estimate_direction_from_track_graph(
     head_position: np.ndarray,
     map_estimate: np.ndarray,
-    track_graph: nx.Graph,
-    edges: Sequence[np.ndarray],
+    track_graph: nx.Graph | None = None,
+    edges: Sequence[np.ndarray] | None = None,
     *,
-    precomputed_distance: bool = False,
+    precomputed_distance: bool | None = None,
+    environment: Environment | None = None,
 ) -> np.ndarray:
     """Get the direction of the MAP estimate from the animal's head position.
 
-    The direction is the heading, along the shortest path on the track graph,
-    from the head position toward the MAP decoded position.
+    The direction is the heading of the first step along a shortest path on
+    the track graph, from the head position's bin toward the MAP estimate's
+    bin.
 
     Parameters
     ----------
@@ -127,13 +348,21 @@ def get_map_estimate_direction_from_track_graph(
         Position of the animal's head.
     map_estimate : np.ndarray, shape (n_time, 2)
         MAP decoded position.
-    track_graph : nx.Graph
-        Graph of the environment's place bins.
-    edges : list of np.ndarray
-        Bin edges for each spatial dimension.
-    precomputed_distance : bool, optional
-        If True, use precomputed distance matrix for graph lookups,
-        by default False.
+    track_graph : nx.Graph or None, optional
+        Graph of the environment's place bins (``Environment.track_graphDD``),
+        whose nodes are the flat bin indices. Give it with `edges`, or give
+        `environment` instead. By default None.
+    edges : list of np.ndarray or None, optional
+        Bin edges for each spatial dimension (``Environment.edges_``) of the
+        grid whose bins are the `track_graph` nodes. Required with
+        `track_graph`. By default None.
+    precomputed_distance : bool or None, optional
+        Deprecated, and has no effect: any value other than None warns with a
+        ``FutureWarning``. It will be removed. By default None.
+    environment : Environment or None, optional
+        Fitted N-D environment (fitted without a ``track_graph``). Its bin
+        graph, bin edges and distance table (``distance_between_nodes_``) are
+        used in place of `track_graph` and `edges`. By default None.
 
     Returns
     -------
@@ -143,111 +372,29 @@ def get_map_estimate_direction_from_track_graph(
         estimate are in the same bin. NaN where the track graph has no path
         between their bins (a warning is logged), and where either position
         has a non-finite coordinate.
+
+    Raises
+    ------
+    ValueError
+        If neither or both of `environment` and `track_graph` are given,
+        `track_graph` comes without `edges`, or `environment` has no N-D bin
+        graph (it was fitted on a track graph).
+
+    Notes
+    -----
+    For head bin ``a`` and MAP bin ``b``, the first step is the neighbor
+    ``n`` of ``a`` that minimizes ``w(a, n) + D(b, n)``, where ``w`` is the
+    edge's ``distance`` and ``D`` the shortest path length. ``D`` is read from
+    the environment's table; with `track_graph`, it is computed once from
+    each distinct MAP bin (scipy Dijkstra). When several neighbors give the
+    same smallest value (two shortest paths), the step goes to the one with
+    the lowest node id: the first exact minimum, with the neighbors in
+    ascending node id.
     """
-    node_positions = nx.get_node_attributes(track_graph, "pos")
-
-    # A non-finite position has no bin (searchsorted would put NaN in the last
-    # one), so its rows stay NaN.
-    is_finite = np.all(np.isfinite(head_position), axis=1) & np.all(
-        np.isfinite(map_estimate), axis=1
-    )
-    direction = np.full(is_finite.shape, np.nan)
-    time_ind = np.flatnonzero(is_finite)
-    head_position, map_estimate = head_position[is_finite], map_estimate[is_finite]
-
-    map_estimate_direction = np.zeros((head_position.shape[0],))
-
-    # remove outer boundary edge
-    bin_edges = [e[1:-1] for e in edges]
-    if precomputed_distance:
-        node_positions = np.asarray(list(node_positions.values()))
-        n_nodes = node_positions.shape[0]
-        bin_ind1 = get_bin_ind(head_position, bin_edges)
-        bin_ind2 = get_bin_ind(map_estimate, bin_edges)
-
-        first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
-        # The all-pairs nx.shortest_path is a dict {source: {target: path}} in
-        # networkx 3.0-3.4 but a generator of (source, {target: path}) pairs in
-        # >= 3.5 (the package supports networkx >= 3.4). Iterate the generator
-        # lazily when available — processing one source at a time avoids holding
-        # all O(n_nodes^2) paths at once — and fall back to .items() for the dict.
-        # networkx 3.4 warns of that change; both shapes are handled below. The
-        # warning text starts with blank lines, hence the leading \s*.
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", r"\s*shortest_path will return an iterator", FutureWarning
-            )
-            all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
-        if isinstance(all_pairs_paths, dict):
-            all_pairs_paths = all_pairs_paths.items()
-        for from_node_id, to_node_data in all_pairs_paths:
-            for to_node_id, path in to_node_data.items():
-                try:
-                    first_node_on_path[from_node_id, to_node_id] = path[1]
-                except IndexError:
-                    first_node_on_path[from_node_id, to_node_id] = path[0]
-        head_position_node_pos = node_positions[bin_ind1]
-        first_node_ind = first_node_on_path[bin_ind1, bin_ind2]
-        # Pairs with no path keep the -1 sentinel; indexing node_positions[-1]
-        # would silently pick the last node and emit a wrong heading, so flag
-        # them and set their direction to NaN (mirrors get_2D_distance, which
-        # warns and stores inf for unreachable pairs).
-        unreachable = first_node_ind < 0
-        if np.any(unreachable):
-            logger.warning(
-                "%d time point(s) have no path between the head-position bin "
-                "and the MAP bin (disconnected track graph); their "
-                "map-estimate direction is set to NaN.",
-                int(np.sum(unreachable)),
-            )
-        first_node_on_path_pos = node_positions[first_node_ind]
-        map_estimate_direction = np.arctan2(
-            first_node_on_path_pos[:, 1] - head_position_node_pos[:, 1],
-            first_node_on_path_pos[:, 0] - head_position_node_pos[:, 0],
-        )
-        map_estimate_direction[unreachable] = np.nan
-    else:
-        node_ids = np.asarray(list(node_positions.keys()))
-        head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
-        map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
-
-        for i, (head_position_node, map_estimate_node) in enumerate(
-            zip(head_position_nodes, map_estimate_nodes, strict=False)
-        ):
-            try:
-                first_node_on_path = nx.shortest_path(
-                    track_graph,
-                    source=head_position_node,
-                    target=map_estimate_node,
-                    weight="distance",
-                )[1]
-            except IndexError:
-                # head_position_node and map_estimate_node are the same
-                first_node_on_path = map_estimate_node
-            except nx.NetworkXNoPath:
-                # Disconnected track graph: no path between the head-position
-                # bin and the MAP bin. Mirror the precomputed branch (and
-                # get_2D_distance) by warning and leaving this time point's
-                # direction as NaN instead of crashing.
-                logger.warning(
-                    "Time point %d has no path between the head-position bin "
-                    "and the MAP bin (disconnected track graph); its "
-                    "map-estimate direction is set to NaN.",
-                    time_ind[i],
-                )
-                map_estimate_direction[i] = np.nan
-                continue
-
-            head_position_node_pos = node_positions[head_position_node]
-            first_node_on_path_pos = node_positions[first_node_on_path]
-
-            map_estimate_direction[i] = np.arctan2(
-                first_node_on_path_pos[1] - head_position_node_pos[1],
-                first_node_on_path_pos[0] - head_position_node_pos[0],
-            )
-
-    direction[is_finite] = map_estimate_direction
-    return direction
+    _warn_precomputed_distance(precomputed_distance=precomputed_distance)
+    return _graph_distance_and_direction(
+        head_position, map_estimate, track_graph, edges, environment
+    )[1]
 
 
 def get_2D_distance(
@@ -256,7 +403,8 @@ def get_2D_distance(
     track_graph: nx.Graph = None,
     edges: Sequence[np.ndarray] | None = None,
     *,
-    precomputed_distance: bool = True,
+    precomputed_distance: bool | None = None,
+    environment: Environment | None = None,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
 
@@ -268,23 +416,31 @@ def get_2D_distance(
         Second set of positions.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
-        ``Environment.track_graphDD``). If None, distances are Euclidean.
+        ``Environment.track_graphDD``). If None, and `environment` is None,
+        distances are Euclidean.
     edges : list of np.ndarray or None
         Bin edges for each spatial dimension (``Environment.edges_``) of the
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
-    precomputed_distance : bool, optional
-        If True, compute all-pairs graph distances once and look them up;
-        otherwise compute one shortest path per time point. By default True.
+    precomputed_distance : bool or None, optional
+        Deprecated, and has no effect: any value other than None warns with a
+        ``FutureWarning``. It will be removed. By default None.
+    environment : Environment or None, optional
+        Fitted N-D environment (fitted without a ``track_graph``). Its bin
+        graph, bin edges and distance table (``distance_between_nodes_``) are
+        used in place of `track_graph` and `edges`. By default None.
 
     Returns
     -------
     distance : np.ndarray, shape (n_time,)
-        Distance between the two positions at each time point. Euclidean if
-        `track_graph` is None, otherwise the shortest path length along the
-        graph (``inf`` if no path exists). NaN where either position has a
+        Distance between the two positions at each time point. Euclidean
+        without a graph, otherwise the shortest path length along the graph
+        between their bins (``inf`` if no path exists): read from the
+        environment's table, or with `track_graph` computed once from each
+        distinct bin of `position2`. NaN where either position has a
         non-finite coordinate.
     """
+    _warn_precomputed_distance(precomputed_distance=precomputed_distance)
     position1 = np.asarray(position1)
     position2 = np.asarray(position2)
 
@@ -293,56 +449,12 @@ def get_2D_distance(
     if position2.ndim < 2:
         position2 = position2[np.newaxis]
 
-    if track_graph is None:
+    if track_graph is None and environment is None:
         distance = np.linalg.norm(position1 - position2, axis=1)
     else:
-        if edges is None:
-            msg = "edges parameter is required when track_graph is provided"
-            raise ValueError(msg)
-        node_positions = nx.get_node_attributes(track_graph, "pos")
-        node_ids = np.asarray(list(node_positions.keys()))
-        node_positions = np.asarray(list(node_positions.values()))
-
-        # remove outer boundary edge
-        bin_edges = [e[1:-1] for e in edges]
-
-        # A non-finite position has no bin (searchsorted would put NaN in the
-        # last one), so its rows stay NaN.
-        is_finite = np.all(np.isfinite(position1), axis=1) & np.all(
-            np.isfinite(position2), axis=1
+        distance, _ = _graph_distance_and_direction(
+            position1, position2, track_graph, edges, environment
         )
-        distance = np.full(is_finite.shape, np.nan)
-        position1, position2 = position1[is_finite], position2[is_finite]
-
-        if precomputed_distance:
-            bin_ind1 = get_bin_ind(position1, bin_edges)
-            bin_ind2 = get_bin_ind(position2, bin_edges)
-            all_pairs = np.full((len(node_ids), len(node_ids)), np.inf)
-            for to_node_id, from_node_id in nx.shortest_path_length(
-                track_graph,
-                weight="distance",
-            ):
-                all_pairs[to_node_id, list(from_node_id.keys())] = list(
-                    from_node_id.values()
-                )
-            distance[is_finite] = all_pairs[bin_ind1, bin_ind2]
-        else:
-            node_ids1 = node_ids[get_bin_ind(position1, bin_edges)]
-            node_ids2 = node_ids[get_bin_ind(position2, bin_edges)]
-            finite_distance = np.full((position1.shape[0]), np.inf)
-            for i in range(position1.shape[0]):
-                try:
-                    finite_distance[i] = nx.shortest_path_length(
-                        track_graph,
-                        source=node_ids1[i],
-                        target=node_ids2[i],
-                        weight="distance",
-                    )
-                except nx.NetworkXNoPath:
-                    logger.warning(
-                        "No path between %s and %s", node_ids1[i], node_ids2[i]
-                    )
-            distance[is_finite] = finite_distance
 
     return cast("np.ndarray", distance)
 
@@ -354,12 +466,15 @@ def head_direction_similarity(
     track_graph: nx.Graph = None,
     edges: Sequence[np.ndarray] | None = None,
     *,
-    precomputed_distance: bool = False,
+    precomputed_distance: bool | None = None,
+    environment: Environment | None = None,
 ) -> np.ndarray:
     """Cosine similarity of the head direction with the direction to the MAP.
 
     Compares the head direction with the vector from the animal's head to the
-    MAP estimate of the decoded position.
+    MAP estimate of the decoded position, or with a graph, with the first
+    step of a shortest path toward it (see
+    `get_map_estimate_direction_from_track_graph`).
 
     Parameters
     ----------
@@ -372,14 +487,19 @@ def head_direction_similarity(
         MAP decoded position.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
-        ``Environment.track_graphDD``). If None, distances are Euclidean.
+        ``Environment.track_graphDD``). If None, and `environment` is None,
+        the direction to the MAP estimate is a straight line.
     edges : list of np.ndarray or None
         Bin edges for each spatial dimension (``Environment.edges_``) of the
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
-    precomputed_distance : bool, optional
-        If True, use a precomputed all-pairs shortest-path table for graph
-        lookups. Only used when `track_graph` is given. By default False.
+    precomputed_distance : bool or None, optional
+        Deprecated, and has no effect: any value other than None warns with a
+        ``FutureWarning``. It will be removed. By default None.
+    environment : Environment or None, optional
+        Fitted N-D environment (fitted without a ``track_graph``). Its bin
+        graph, bin edges and distance table (``distance_between_nodes_``) are
+        used in place of `track_graph` and `edges`. By default None.
 
     Returns
     -------
@@ -387,6 +507,7 @@ def head_direction_similarity(
         Cosine of the angle between the head direction and the direction to the
         MAP estimate; 1 means directly ahead, -1 directly behind.
     """
+    _warn_precomputed_distance(precomputed_distance=precomputed_distance)
     head_position = np.asarray(head_position)
     head_direction = np.asarray(head_direction)
     map_estimate = np.asarray(map_estimate)
@@ -398,21 +519,18 @@ def head_direction_similarity(
     if map_estimate.ndim < 2:
         map_estimate = map_estimate[np.newaxis]
 
-    if track_graph is None:
+    if track_graph is None and environment is None:
         map_estimate_direction = np.arctan2(
             map_estimate[:, 1] - head_position[:, 1],
             map_estimate[:, 0] - head_position[:, 0],
         )
     else:
-        if edges is None:
-            msg = "edges parameter is required when track_graph is provided"
-            raise ValueError(msg)
         map_estimate_direction = get_map_estimate_direction_from_track_graph(
             head_position,
             map_estimate,
             track_graph,
             edges,
-            precomputed_distance=precomputed_distance,
+            environment=environment,
         )
 
     return cast("np.ndarray", np.cos(head_direction - map_estimate_direction))
@@ -425,7 +543,8 @@ def get_ahead_behind_distance2D(
     track_graph: nx.Graph = None,
     edges: Sequence[np.ndarray] | None = None,
     *,
-    precomputed_distance: bool = False,
+    precomputed_distance: bool | None = None,
+    environment: Environment | None = None,
 ) -> np.ndarray:
     """Signed distance of the MAP decoded position from the animal's head.
 
@@ -443,38 +562,47 @@ def get_ahead_behind_distance2D(
         MAP decoded position.
     track_graph : nx.Graph or None
         Graph of the environment's place bins (e.g.
-        ``Environment.track_graphDD``). If None, distances are Euclidean.
+        ``Environment.track_graphDD``). If None, and `environment` is None,
+        distances are Euclidean.
     edges : list of np.ndarray or None
         Bin edges for each spatial dimension (``Environment.edges_``) of the
         grid whose bins are the ``track_graph`` nodes. Required when
         ``track_graph`` is given; ignored otherwise.
-    precomputed_distance : bool, optional
-        If True, use a precomputed all-pairs shortest-path table for graph
-        lookups. Only used when `track_graph` is given. By default False.
+    precomputed_distance : bool or None, optional
+        Deprecated, and has no effect: any value other than None warns with a
+        ``FutureWarning``. It will be removed. By default None.
+    environment : Environment or None, optional
+        Fitted N-D environment (fitted without a ``track_graph``). Its bin
+        graph, bin edges and distance table (``distance_between_nodes_``) are
+        used in place of `track_graph` and `edges`. By default None.
 
     Returns
     -------
     ahead_behind_distance : np.ndarray, shape (n_time,)
         Signed distance (positive ahead of the head, negative behind), in the
         units of the position. NaN where either position has a non-finite
-        coordinate.
+        coordinate. With a graph, the distance is that of `get_2D_distance`
+        and the sign compares the heading with the first step of a shortest
+        path (see `get_map_estimate_direction_from_track_graph`), both from
+        one lookup; NaN where the graph has no path between the two bins.
     """
-    distance = get_2D_distance(
-        head_position,
-        map_position,
-        track_graph,
-        edges,
-        precomputed_distance=precomputed_distance,
-    )
-
-    direction_similarity = head_direction_similarity(
-        head_position,
-        head_direction,
-        map_position,
-        track_graph,
-        edges,
-        precomputed_distance=precomputed_distance,
-    )
+    _warn_precomputed_distance(precomputed_distance=precomputed_distance)
+    if track_graph is None and environment is None:
+        distance = get_2D_distance(head_position, map_position)
+        direction_similarity = head_direction_similarity(
+            head_position, head_direction, map_position
+        )
+    else:
+        distance, map_direction = _graph_distance_and_direction(
+            np.asarray(head_position),
+            np.asarray(map_position),
+            track_graph,
+            edges,
+            environment,
+        )
+        direction_similarity = np.cos(
+            np.asarray(head_direction).squeeze() - map_direction
+        )
     ahead_behind = np.sign(direction_similarity)
 
     # If there is no direction same point, arbitrarily set to positive
