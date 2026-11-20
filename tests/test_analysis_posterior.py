@@ -1,10 +1,15 @@
 """Tests for analysis/posterior.py — MAP estimate and posterior sampling."""
 
+import re
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
+import non_local_detector.analysis as analysis
+from non_local_detector import Environment, NonLocalSortedSpikesDetector
 from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.analysis.posterior import (
     _state_probabilities,
@@ -12,6 +17,13 @@ from non_local_detector.analysis.posterior import (
     get_spatial_posterior,
     maximum_a_posteriori_estimate,
     sample_posterior,
+)
+from tests.conftest import spread_over_sample_bins
+
+MIGRATION_PATCHES = Path(__file__).resolve().parents[1] / "docs" / "spyglass_migration"
+# A line a patch adds that builds the posterior its distance code reads.
+PATCH_POSTERIOR_LINE = re.compile(
+    r"^\+\s+posterior = (?P<expression>.+)$", re.MULTILINE
 )
 
 
@@ -627,3 +639,87 @@ class TestMapWithoutSpatialMass:
         result = maximum_a_posteriori_estimate(posterior)
 
         np.testing.assert_array_equal(result, [[2.0, 1.0], [np.nan, np.nan]])
+
+
+@pytest.fixture(scope="module")
+def local_dominated_2d_results():
+    """A 2-D non-local result mostly in Local, and the animal's position.
+
+    Returns
+    -------
+    results : xr.Dataset
+        ``predict`` output of a ``NonLocalSortedSpikesDetector``.
+    animal_position : np.ndarray, shape (n_time, 2)
+        The animal's position at each decode bin's time.
+    """
+    rng = np.random.default_rng(0)
+    sampling_frequency = 500.0
+    time = np.arange(3_000) / sampling_frequency
+    walk = np.cumsum(rng.normal(scale=0.6, size=(time.size, 2)), axis=0)
+    position = 50 + 40 * np.tanh(walk / 60)  # stays inside about [10, 90] cm
+    field_centers = rng.uniform(15, 85, size=(12, 2))
+    distance_squared = ((position[:, None] - field_centers) ** 2).sum(axis=-1)
+    rates = 20 * np.exp(-distance_squared / (2 * 10.0**2)) + 0.5  # Hz
+    spike_times = [
+        np.sort(
+            spread_over_sample_bins(
+                rng, time, rng.poisson(rate / sampling_frequency), sampling_frequency
+            )
+        )
+        for rate in rates.T
+    ]
+    detector = NonLocalSortedSpikesDetector(
+        environments=Environment(place_bin_size=5.0),
+        sampling_frequency=sampling_frequency,
+    ).fit(position_time=time, position=position, spike_times=spike_times)
+    results = detector.predict(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        time_edges=detector.calculate_time_edges((time[0], time[-1])),
+    )
+    animal_position = np.column_stack(
+        [np.interp(results.time, time, position[:, dim]) for dim in range(2)]
+    )
+    return results, animal_position
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not MIGRATION_PATCHES.is_dir(), reason="docs/ is not part of this installation"
+)
+@pytest.mark.parametrize(
+    "patch_name",
+    ["spyglass-current-explicit-time-grid.patch", "spyglass-explicit-time-grid.patch"],
+)
+def test_spyglass_patch_posterior_map_follows_the_animal(
+    patch_name, local_dominated_2d_results
+):
+    """The posterior the Spyglass migration patches build for their distance
+    code has its MAP near the animal, not on the last grid bin, when Local
+    dominates.
+
+    Local and No-Spike have NaN positions in ``state_bins``. A plain
+    ``unstack("state_bins").sum("state")`` adds their probability to the last
+    x and last y bin, so that bin is the MAP whenever they hold most of it.
+    Each line the patch adds is evaluated as Spyglass runs it.
+    """
+    results, animal_position = local_dominated_2d_results
+    assert results.acausal_state_probabilities.sel(states="Local").mean() > 0.5
+    index = results.indexes["state_bins"]
+    last_bin = [
+        np.nanmax(index.get_level_values(name)) for name in ("x_position", "y_position")
+    ]
+    expressions = PATCH_POSTERIOR_LINE.findall(
+        (MIGRATION_PATCHES / patch_name).read_text()
+    )
+    assert expressions, f"no added 'posterior = ...' line in {patch_name}"
+
+    for expression in sorted(set(expressions)):
+        posterior = eval(expression, {"analysis": analysis, "results": results})
+        map_position = maximum_a_posteriori_estimate(posterior)
+
+        on_last_bin = np.all(np.isclose(map_position, last_bin), axis=1).mean()
+        error = np.linalg.norm(map_position - animal_position, axis=1)
+        assert on_last_bin < 0.05, (expression, on_last_bin)
+        assert np.nanmedian(error) < 15.0, (expression, np.nanmedian(error))
