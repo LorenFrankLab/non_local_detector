@@ -58,6 +58,85 @@ def get_position_at_time(
     return cast(np.ndarray, position_at_spike_times)
 
 
+def place_encoding_spikes(
+    position_time: np.ndarray | jax.Array,
+    position: np.ndarray,
+    spike_times: np.ndarray | jax.Array,
+    weights: np.ndarray,
+    environment: Environment,
+    encoding_support: "EncodingSupport",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Position and weight of each encoding spike of a weighted KDE fit.
+
+    A KDE fit puts each weighted tracking sample's exposure at that sample's
+    position. A spike between two samples of equal weight keeps its
+    interpolated position and weight. Where the weights differ (a mask edge,
+    or posterior weights), the spike's weight is split between its samples as
+    its time is, ``(1 - fraction) * weights[left]`` and
+    ``fraction * weights[right]``, and the spike sits at the mean of the two
+    sample positions weighted by those shares, with their sum as its weight.
+    So a spike next to an unweighted sample sits exactly on its weighted
+    sample and never past a mask edge. Either way the spike's weight is the
+    weight interpolated to its time, and each spike is one entry.
+
+    Parameters
+    ----------
+    position_time : np.ndarray or jax.Array, shape (n_time_position,)
+        Time of each position sample, in seconds.
+    position : np.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : np.ndarray or jax.Array, shape (n_spikes,)
+        Spike times inside ``encoding_support``, in seconds.
+    weights : np.ndarray, shape (n_time_position,)
+        Non-negative weight of each position sample.
+    environment : Environment
+        The spatial environment; positions are returned in its decoding
+        coordinates (see ``Environment.decoding_position``).
+    encoding_support : EncodingSupport
+        Encoding support whose segments bound the interpolation.
+
+    Returns
+    -------
+    spike_positions : np.ndarray, shape (n_spikes, n_decoding_dims)
+        Position of each spike.
+    spike_weights : np.ndarray, shape (n_spikes,)
+        Weight of each spike.
+    """
+    spike_positions = get_position_at_time(
+        position_time,
+        position,
+        spike_times,
+        environment,
+        encoding_support=encoding_support,
+    )
+    spike_weights = encoding_support.interpolate(weights, spike_times, fill_value=0.0)
+    spike_index, left, right, fraction = encoding_support.event_basis(spike_times)
+    is_transition = weights[left] != weights[right]
+    if not np.any(is_transition):
+        return spike_positions, spike_weights
+
+    spikes = spike_index[is_transition]
+    left, right = left[is_transition], right[is_transition]
+    fraction = fraction[is_transition]
+    left_share = (1.0 - fraction) * weights[left]
+    right_share = fraction * weights[right]
+    total = left_share + right_share
+    left_position = position[left].astype(float)
+    right_position = position[right].astype(float)
+    # Exactly the weighted sample's position when the other is unweighted;
+    # between two weighted samples, the share-weighted mean of the two.
+    mean_position = np.where(
+        (weights[left] > 0)[:, None], left_position, right_position
+    )
+    both = (weights[left] > 0) & (weights[right] > 0)
+    mean_position[both] += (right_share[both] / total[both])[:, None] * (
+        right_position[both] - left_position[both]
+    )
+    spike_positions[spikes] = environment.decoding_position(mean_position)
+    spike_weights[spikes] = total
+    return spike_positions, spike_weights
+
+
 def snap_off_track_positions(
     position: np.ndarray, environment: Environment
 ) -> np.ndarray:
