@@ -1176,7 +1176,7 @@ def test_spyglass_2d_ahead_behind_call_with_a_stored_model(version, artifact):
     )
 
     # As the patch builds the call.
-    posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+    posterior = analysis.get_position_posterior(results.acausal_posterior)
     distance = np.full(results.sizes["time"], np.nan)
     aligned, valid = analysis.align_tracking_to_results(
         tracking,
