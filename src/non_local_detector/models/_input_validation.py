@@ -305,6 +305,42 @@ def _sample_labels(
     return labels
 
 
+def _require_one_decoding_dimensionality(environments: Sequence[Environment]) -> None:
+    """Require every fitted environment to decode in the same number of dimensions.
+
+    The results hold one set of position coordinates for the bins of every
+    state, so a track graph (1-D bins) cannot sit beside an open field (2-D
+    bins) in one detector.
+
+    Parameters
+    ----------
+    environments : sequence of Environment
+        Fitted environments.
+
+    Raises
+    ------
+    ValidationError
+        If the environments' place bin centers differ in dimension.
+    """
+    dimensions = [
+        (environment.environment_name, environment.place_bin_centers_.shape[1])
+        for environment in environments
+    ]
+    if len({n_dims for _, n_dims in dimensions}) <= 1:
+        return
+    described = ", ".join(f"{name!r} ({n_dims}-D)" for name, n_dims in dimensions)
+    msg = f"The environments decode in different numbers of dimensions: {described}"
+    raise ValidationError(
+        msg,
+        expected="environments whose place bins have the same number of dimensions",
+        got=described,
+        hint="A track graph decodes along its linearized position (1-D) and "
+        "an open field in the position's dimensions. Use environments of "
+        "one kind, such as a track graph for each, or decode each "
+        "environment with its own detector.",
+    )
+
+
 def _require_labeled_environments(
     environment_labels: np.ndarray, names: Sequence[str]
 ) -> None:
@@ -2418,14 +2454,22 @@ class _InputValidationMixin:
         continuous_initial_conditions_types : ContinuousInitialConditions
             Types of continuous initial conditions.
         continuous_transition_types : ContinuousTransitions
-            Types of continuous state transitions.
+            Types of continuous state transitions, an n_states by n_states
+            grid.
         discrete_transition_stickiness : Stickiness
-            Stickiness parameter for discrete state transitions.
+            Stickiness parameter for discrete state transitions: a real
+            scalar for every state, or one value per state.
 
         Raises
         ------
         ValidationError
-            If the number of discrete initial conditions does not match the number of continuous initial conditions or transition types.
+            If the number of discrete initial conditions does not match the
+            number of continuous initial conditions or transition types, a
+            row of ``continuous_transition_types`` does not hold one
+            transition per state, a scalar stickiness is not a real number
+            (an integer or floating value, Python or NumPy; a string, bool
+            or complex value is refused), or a stickiness that is not a
+            scalar does not hold one value per state.
         """
         n_discrete = len(discrete_initial_conditions)
         n_continuous_init = len(continuous_initial_conditions_types)
@@ -2456,15 +2500,54 @@ class _InputValidationMixin:
                 example=f"    # For {n_continuous_trans} states:\n    discrete_initial_conditions=np.array([{', '.join(['1.0/' + str(n_continuous_trans)] * n_continuous_trans)}])",
             )
 
-        if not isinstance(discrete_transition_stickiness, float) and len(
-            discrete_initial_conditions
-        ) != len(discrete_transition_stickiness):
-            msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single float"
+        # The dense builder fills only the blocks a row lists, so a short row
+        # would leave a block of zeros instead of failing.
+        row_lengths = [
+            len(row) if hasattr(row, "__len__") else None
+            for row in continuous_transition_types
+        ]
+        if any(length != n_continuous_trans for length in row_lengths):
+            msg = (
+                "continuous_transition_types must be an n_states by n_states "
+                f"grid, here {n_continuous_trans} by {n_continuous_trans}"
+            )
             raise ValidationError(
                 msg,
-                expected=f"Either a float or array of length {n_discrete}",
-                got=f"Array of length {len(discrete_transition_stickiness)}",
-                hint="Use a float for uniform stickiness across all states, or an array with one value per state",
+                expected=f"{n_continuous_trans} rows (one per source state), each "
+                f"a list of {n_continuous_trans} transitions (one per destination state)",
+                got=f"row lengths {row_lengths}",
+                hint="Row i, entry j is the transition from state i to state j; "
+                "give every pair of states a transition.",
+                example="    continuous_transition_types=[\n"
+                "        [RandomWalk(), Uniform()],\n"
+                "        [Uniform(), Uniform()],\n"
+                "    ]",
+            )
+
+        # Converted only to inspect it; the value is stored as given.
+        stickiness = np.asarray(discrete_transition_stickiness)
+        if stickiness.ndim == 0:
+            if not (
+                np.issubdtype(stickiness.dtype, np.integer)
+                or np.issubdtype(stickiness.dtype, np.floating)
+            ):
+                msg = "A scalar discrete_transition_stickiness must be a real number"
+                raise ValidationError(
+                    msg,
+                    expected="a Python int or float, a NumPy integer or floating "
+                    f"scalar, or an array of {n_discrete} such values (one per state)",
+                    got=f"{discrete_transition_stickiness!r} "
+                    f"({type(discrete_transition_stickiness).__name__})",
+                    hint="Pass the stickiness as a number, not a string or other object",
+                    example="    discrete_transition_stickiness=0.0",
+                )
+        elif len(discrete_initial_conditions) != len(stickiness):
+            msg = f"Discrete transition stickiness must be set for all {n_discrete} states or be a single number"
+            raise ValidationError(
+                msg,
+                expected=f"Either a number or array of length {n_discrete}",
+                got=f"Array of length {len(stickiness)}",
+                hint="Use a number for uniform stickiness across all states, or an array with one value per state",
                 example=f"    discrete_transition_stickiness=0.0  # uniform\n    # OR\n    discrete_transition_stickiness=np.array([{', '.join(['0.0'] * n_discrete)}])  # per-state",
             )
 

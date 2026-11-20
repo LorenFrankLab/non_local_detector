@@ -578,6 +578,49 @@ def test_ircm_mark_cdfs_equal_the_models_conditional_mixture(
     np.testing.assert_allclose(v, expected, rtol=1e-7, atol=1e-9)
 
 
+def _reference_rescaled_intervals(position_time, ground, spike_times):
+    """``1 - exp(-integral)`` of ``ground``, linear in time, between spikes.
+
+    The first interval starts at the first position sample.
+    """
+    starts = np.concatenate(([position_time[0]], spike_times[:-1]))
+    integrals = []
+    for start, stop in zip(starts, spike_times, strict=True):
+        inside = position_time[(position_time > start) & (position_time < stop)]
+        knots = np.concatenate(([start], inside, [stop]))
+        integrals.append(trapezoid(np.interp(knots, position_time, ground), knots))
+    return -np.expm1(-np.asarray(integrals))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("algorithm", "atol"),
+    [
+        # Observed: 6.8e-6 (float32 KDE against float64).
+        ("clusterless_kde", 7e-5),
+        # Observed: 1.4e-8.
+        ("clusterless_diffusion", 1.5e-7),
+    ],
+)
+def test_ircm_rescaled_intervals_equal_the_integrated_ground_intensity(
+    recording, fitted, algorithm, atol
+):
+    """u is ``1 - exp(-integral)`` of the model's ground intensity, computed
+    independently, over each interspike interval."""
+    environment = recording[0]
+    model = fitted[algorithm]
+    rng = np.random.default_rng(22)
+    position_time, position = _held_out_trajectory(30.0)
+    spike_times = np.sort(rng.uniform(position_time[0], position_time[-1], 120))
+    marks = rng.normal(1.5, 1.5, (120, 2))
+
+    u, _ = ircm_transform(model, 0, position_time, position, spike_times, marks)
+
+    ground = _ground_intensity(algorithm, model, environment, position)
+    expected = _reference_rescaled_intervals(position_time, ground, spike_times)
+    np.testing.assert_allclose(u, expected, rtol=0, atol=atol)
+
+
 def _ground_and_components_at_bins(algorithm, model, environment, bin_centers):
     if algorithm == "clusterless_gmm":
         resp, cond_means, cond_covs = _gmm_conditional(model, bin_centers)

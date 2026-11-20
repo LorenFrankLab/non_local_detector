@@ -12,6 +12,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
+from non_local_detector.continuous_state_transitions import RandomWalk
 from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -32,6 +33,11 @@ from non_local_detector.models.base import (
 )
 
 
+def _transition_grid(n_states):
+    """An n_states by n_states grid of random walks, one per pair of states."""
+    return [[RandomWalk() for _ in range(n_states)] for _ in range(n_states)]
+
+
 @pytest.mark.unit
 class TestInitializeEnvironments:
     """Test _initialize_environments method."""
@@ -42,7 +48,7 @@ class TestInitializeEnvironments:
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([1.0]),
             continuous_initial_conditions_types=["uniform_on_track"],
-            continuous_transition_types=["random_walk"],
+            continuous_transition_types=_transition_grid(1),
             discrete_transition_stickiness=0.0,
             environments=None,
         )
@@ -59,7 +65,7 @@ class TestInitializeEnvironments:
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([1.0]),
             continuous_initial_conditions_types=["uniform_on_track"],
-            continuous_transition_types=["random_walk"],
+            continuous_transition_types=_transition_grid(1),
             discrete_transition_stickiness=0.0,
             environments=simple_1d_environment,
         )
@@ -83,7 +89,7 @@ class TestInitializeEnvironments:
                 "uniform_on_track",
                 "uniform_on_track",
             ],
-            continuous_transition_types=["random_walk", "random_walk"],
+            continuous_transition_types=_transition_grid(2),
             discrete_transition_stickiness=0.0,
             observation_models=ObservationModel(),
             environments=(env1, env2),
@@ -109,7 +115,7 @@ class TestInitializeEnvironments:
                 "uniform_on_track",
                 "uniform_on_track",
             ],
-            continuous_transition_types=["random_walk", "random_walk"],
+            continuous_transition_types=_transition_grid(2),
             discrete_transition_stickiness=0.0,
             observation_models=ObservationModel(),
             environments=[env1, env2],
@@ -168,7 +174,7 @@ class TestInitializeObservationModels:
                 "uniform_on_track",
                 "uniform_on_track",
             ],
-            continuous_transition_types=["random_walk", "random_walk", "random_walk"],
+            continuous_transition_types=_transition_grid(3),
             discrete_transition_stickiness=0.0,
             environments=simple_1d_environment,
             observation_models=obs_model,
@@ -198,7 +204,7 @@ class TestInitializeObservationModels:
                 "uniform_on_track",
                 "uniform_on_track",
             ],
-            continuous_transition_types=["random_walk", "identity"],
+            continuous_transition_types=_transition_grid(2),
             discrete_transition_stickiness=0.0,
             environments=simple_1d_environment,
             observation_models=(obs1, obs2),
@@ -272,7 +278,7 @@ class TestInitializeStateNames:
                 "uniform_on_track",
                 "uniform_on_track",
             ],
-            continuous_transition_types=["random_walk", "random_walk", "random_walk"],
+            continuous_transition_types=_transition_grid(3),
             discrete_transition_stickiness=0.0,
             observation_models=ObservationModel(),
             state_names=custom_names,
@@ -297,11 +303,7 @@ class TestInitializeStateNames:
                     "uniform_on_track",
                     "uniform_on_track",
                 ],
-                continuous_transition_types=[
-                    "random_walk",
-                    "random_walk",
-                    "random_walk",
-                ],
+                continuous_transition_types=_transition_grid(3),
                 discrete_transition_stickiness=0.0,
                 observation_models=ObservationModel(),
                 state_names=["Local", "Non-Local"],  # Only 2 names - WRONG!
@@ -314,7 +316,7 @@ class TestInitializeStateNames:
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([1.0]),  # 1 state
                 continuous_initial_conditions_types=["uniform_on_track"],
-                continuous_transition_types=["random_walk"],
+                continuous_transition_types=_transition_grid(1),
                 discrete_transition_stickiness=0.0,
                 state_names=[],  # Empty - WRONG!
             )
@@ -353,7 +355,7 @@ class TestInitializeEnvironmentsFitting:
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([1.0]),
             continuous_initial_conditions_types=["uniform_on_track"],
-            continuous_transition_types=["random_walk"],
+            continuous_transition_types=_transition_grid(1),
             discrete_transition_stickiness=0.0,
             environments=simple_1d_environment,
         )
@@ -396,7 +398,7 @@ class TestInitializeEnvironmentsFitting:
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([1.0]),
             continuous_initial_conditions_types=["uniform_on_track"],
-            continuous_transition_types=["random_walk"],
+            continuous_transition_types=_transition_grid(1),
             discrete_transition_stickiness=0.0,
             environments=env,
         )
@@ -441,7 +443,7 @@ def _n_state_decoder(environment, discrete_initial_conditions):
             np.full(len(discrete_initial_conditions), 0.9)
         ),
         continuous_initial_conditions_types=["uniform_on_track"] * n_states,
-        continuous_transition_types=["random_walk"] * n_states,
+        continuous_transition_types=_transition_grid(n_states),
         discrete_transition_stickiness=0.0,
         environments=environment,
         observation_models=tuple(

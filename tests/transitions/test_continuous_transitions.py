@@ -199,6 +199,51 @@ def test_random_walk_with_a_direction_is_row_normalized_on_its_steps(direction):
 
 
 @pytest.mark.parametrize(
+    ("direction", "expected_allowed"),
+    [
+        # Inward: a step may end no farther from the center (bin 2) than it
+        # started.
+        (
+            "inward",
+            [
+                [1, 1, 1, 1, 1],
+                [0, 1, 1, 1, 0],
+                [0, 0, 1, 0, 0],
+                [0, 1, 1, 1, 0],
+                [1, 1, 1, 1, 1],
+            ],
+        ),
+        # Outward: a step may end no nearer to the center than it started.
+        (
+            "outward",
+            [
+                [1, 0, 0, 0, 1],
+                [1, 1, 0, 1, 1],
+                [1, 1, 1, 1, 1],
+                [1, 1, 0, 1, 1],
+                [1, 0, 0, 0, 1],
+            ],
+        ),
+    ],
+)
+def test_random_walk_direction_allows_the_steps_toward_or_away_from_the_center(
+    direction, expected_allowed
+):
+    """On a five-bin line the center is the middle bin; inward keeps the steps
+    that end no farther from it, outward the steps that end no nearer."""
+    environment = Environment(
+        place_bin_size=2.0, position_range=((0.0, 10.0),)
+    ).fit_place_grid(np.linspace(0.0, 10.0, 11)[:, None], infer_track_interior=False)
+    assert environment.place_bin_centers_[:, 0].tolist() == [1.0, 3.0, 5.0, 7.0, 9.0]
+
+    transition = RandomWalk(
+        use_manifold_distance=True, direction=direction
+    ).make_state_transition([environment])
+
+    np.testing.assert_array_equal(transition > 0, np.asarray(expected_allowed, bool))
+
+
+@pytest.mark.parametrize(
     "zero",
     [0, -0.0, [0.0, 0.0], np.zeros(2), np.float32(0), (0, 0)],
     ids=["int", "negative_zero", "list", "array", "float32", "tuple"],

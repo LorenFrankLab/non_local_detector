@@ -644,16 +644,12 @@ class _EMEStep:
     ----------
     acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
     marginal_log_likelihood : float
-    first_smoothed : np.ndarray, shape (n_interior_state_bins,), or None
-        Smoothed posterior of the first bin (None when the checkpointed
-        driver did not return it).
     transition_statistics : np.ndarray or None
         Expected discrete-transition statistics, when they are estimated.
     """
 
     acausal_state_probabilities: np.ndarray
     marginal_log_likelihood: float
-    first_smoothed: np.ndarray | None
     transition_statistics: np.ndarray | None
 
 
@@ -869,7 +865,9 @@ class _EMMixin:
         is_missing : np.ndarray, shape (n_bins,), optional
             Boolean array indicating missing data, by default None.
         estimate_initial_conditions : bool, optional
-            Whether to estimate the initial conditions, by default True.
+            Whether to estimate the discrete initial probabilities, by default
+            True. Each state's initial distribution over its bins stays as
+            configured.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
         estimate_encoding_model : bool, optional
@@ -1326,7 +1324,6 @@ class _EMMixin:
                 "acausal_state_probabilities"
             ].values
             marginal_log_likelihood = e_step.marginal_log_likelihood
-            first_smoothed = e_step.first_smoothed
             log_likelihood = None
             transition_statistics = e_step.transition_statistics
         else:
@@ -1345,7 +1342,6 @@ class _EMMixin:
             )
             marginal_log_likelihood = posterior.marginal_log_likelihood
             log_likelihood = posterior.log_likelihood
-            first_smoothed = np.asarray(posterior.acausal_posterior[0])
             # Covariate responses come from the smoother. Stationary counts
             # need only these posteriors, so take them now; the device arrays
             # are released on return, before the M-step (an encoding refit
@@ -1371,7 +1367,6 @@ class _EMMixin:
         return _EMEStep(
             acausal_state_probabilities=acausal_state_probabilities,
             marginal_log_likelihood=marginal_log_likelihood,
-            first_smoothed=first_smoothed,
             transition_statistics=transition_statistics,
         )
 
@@ -1537,29 +1532,31 @@ class _EMMixin:
     def _em_update_initial_conditions(  # type: ignore[misc]
         self: "non_local_detector.models.base._DetectorBase", e_step: _EMEStep
     ) -> None:
-        """Initial-condition M-step: the first bin's smoothed posterior.
+        """Initial-condition M-step: the first bin's smoothed state probabilities.
 
-        Each state's continuous initial conditions are its bins' joint
-        posterior over the state's probability. A state whose probability is
-        exactly zero has no such distribution and gets zeros; any positive
-        probability, however small, gives one.
+        Only the discrete initial probabilities are estimated. Each state's
+        distribution over its own bins, ``continuous_initial_conditions_``,
+        stays as ``fit`` set it, and the joint initial conditions are it
+        times the state's estimated probability, as at fit. With those
+        distributions fixed, the first bin's smoothed probability of each
+        state maximizes the expected complete-data log-likelihood, so the
+        step cannot lower it.
+
+        Estimating the distributions too would tie the detector to the fitted
+        recording's first position, which a decode of another window would
+        start from, and would undo the multi-bin Local state's position
+        kernel, which is scaled against that state's uniform distribution.
         """
-        self.initial_conditions_[self.state_space_.is_track_interior] = (
-            e_step.first_smoothed
-        )
         self.discrete_initial_conditions_ = np.asarray(
             e_step.acausal_state_probabilities[0]
         )
-
-        expanded_discrete_ic = e_step.acausal_state_probabilities[0][
-            self.state_space_.state_ind
-        ]
-        is_zero = expanded_discrete_ic == 0.0
-        safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
-        self.continuous_initial_conditions_ = np.where(
-            is_zero,
-            0.0,
-            self.initial_conditions_ / safe_discrete_ic,
+        # In place, in the dtype fit gave it: the internal fit has just
+        # rebuilt this array (see _restore_state_on_error).
+        np.multiply(
+            self.continuous_initial_conditions_,
+            self.discrete_initial_conditions_[self.state_space_.state_ind],
+            out=self.initial_conditions_,
+            dtype=self.initial_conditions_.dtype,
         )
 
     def _em_record_iteration(  # type: ignore[misc]

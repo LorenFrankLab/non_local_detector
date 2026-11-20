@@ -74,6 +74,29 @@ def test_open_field_rebuilt_from_its_edges_and_mask_matches_the_fit(
     )
 
 
+@pytest.mark.parametrize("n_dims", [1, 2])
+def test_float32_position_fits_the_grid_of_its_float64_values(n_dims):
+    """The grid does not depend on the position dtype, so a saved model's
+    rebuild from the float64 edges reproduces it exactly."""
+    position32 = (0.37 + RNG.uniform(0.0, 47.0, size=(500, n_dims))).astype(np.float32)
+
+    fitted = Environment(place_bin_size=4.0).fit_place_grid(position32)
+    reference = Environment(place_bin_size=4.0).fit_place_grid(
+        position32.astype(np.float64)
+    )
+    rebuilt = Environment(place_bin_size=4.0).fit_place_grid_from_edges(
+        fitted.edges_,
+        fitted.is_track_interior_,
+        infer_track_interior=fitted.infer_track_interior_,
+    )
+
+    for edge in fitted.edges_:
+        assert edge.dtype == np.float64
+    assert fitted.place_bin_centers_.dtype == np.float64
+    _assert_same_grid(fitted, reference)
+    _assert_same_grid(rebuilt, fitted)
+
+
 def test_rebuild_refuses_a_track_graph_environment():
     graph = nx.Graph()
     graph.add_node(0, pos=(0.0, 0.0))

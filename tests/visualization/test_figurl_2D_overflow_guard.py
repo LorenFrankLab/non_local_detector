@@ -12,7 +12,8 @@ These unit tests exercise the guard directly so they run without ``sortingview``
 (the rest of ``figurl_2D`` is import-guarded behind it). The boundary is checked
 against the largest *index* (``n_position_bins - 1`` vs ``uint16`` max), not the
 bin count. The wiring test loads ``figurl_2D`` against a stub ``sortingview`` so
-the rendering path is exercised without the optional dependency.
+the rendering path is exercised without the optional dependency; so do the
+tests that compare the sparse encoding with ``np.nonzero`` of the posterior.
 """
 
 import importlib.util
@@ -226,3 +227,84 @@ def test_probability_panel_shows_the_one_state_of_a_decoder(monkeypatch):
 
     (state,) = [entry for entry in _View.series if entry["name"] == "Continuous"]
     np.testing.assert_array_equal(state["y"], np.ones(n_time))
+
+
+def _nonzero_encoding(posterior):
+    """The sparse encoding from ``np.nonzero`` of the uint8 posterior.
+
+    Frames in time order, bins in (y, x) order within a frame; a bin's
+    location is ``x_count * iy + ix``. Returns ``(values, locations,
+    frame_bounds)``.
+    """
+    array = posterior.transpose("time", "y_position", "x_position").values
+    discrete = (array * 255).astype(np.uint8)
+    frame, iy, ix = np.nonzero(discrete)
+    return (
+        discrete[frame, iy, ix],
+        (posterior.sizes["x_position"] * iy + ix).astype(np.uint16),
+        np.bincount(frame, minlength=len(array)).astype(np.uint8),
+    )
+
+
+def _assert_encoding_equals_nonzero(encoded, posterior):
+    values, locations, frame_bounds = _nonzero_encoding(posterior)
+    np.testing.assert_array_equal(encoded["values"], values)
+    np.testing.assert_array_equal(encoded["locations"], locations)
+    np.testing.assert_array_equal(encoded["frameBounds"], frame_bounds)
+
+
+def test_decoded_data_is_the_sparse_encoding_of_the_posterior(monkeypatch):
+    """Values, linear locations and per-frame counts on a 4 x 3 grid, some
+    frames empty; the grid is not square so swapped x and y would show."""
+    import xarray as xr
+
+    figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
+    rng = np.random.default_rng(0)
+    n_time, n_x, n_y = 7, 4, 3
+    probs = np.zeros((n_time, n_x, n_y))
+    for frame in range(n_time):
+        n_bins = rng.integers(0, 6)
+        chosen = rng.choice(n_x * n_y, size=n_bins, replace=False)
+        probs[frame].flat[chosen] = rng.dirichlet(np.ones(n_bins)) if n_bins else []
+    posterior = xr.DataArray(
+        probs,
+        dims=["time", "x_position", "y_position"],
+        coords={
+            "time": 3.0 + np.arange(n_time) / 500.0,
+            "x_position": 10.0 + 2.0 * np.arange(n_x),
+            "y_position": -3.0 + 5.0 * np.arange(n_y),
+        },
+    )
+
+    encoded = figurl_2D.process_decoded_data(posterior)
+
+    _assert_encoding_equals_nonzero(encoded, posterior)
+    assert np.count_nonzero(encoded["frameBounds"] == 0) > 0
+    assert (encoded["xmin"], encoded["binWidth"], encoded["xcount"]) == (10.0, 2.0, 4)
+    assert (encoded["ymin"], encoded["binHeight"], encoded["ycount"]) == (-3.0, 5.0, 3)
+
+
+def test_decoded_data_spans_an_exact_multiple_of_the_frame_chunk(monkeypatch):
+    """100,000 frames, one chunk exactly: the encoding loop also runs on the
+    empty slice after it, which must add nothing."""
+    import xarray as xr
+
+    figurl_2D = _load_figurl_2d_with_stub_sortingview(monkeypatch)
+    n_time = 100_000
+    probs = np.zeros((n_time, 2, 2))
+    probs.reshape(n_time, 4)[
+        np.arange(n_time), np.random.default_rng(1).integers(0, 4, n_time)
+    ] = 1.0
+    posterior = xr.DataArray(
+        probs,
+        dims=["time", "x_position", "y_position"],
+        coords={
+            "time": np.arange(n_time) / 500.0,
+            "x_position": [0.0, 1.0],
+            "y_position": [0.0, 1.0],
+        },
+    )
+
+    encoded = figurl_2D.process_decoded_data(posterior)
+
+    _assert_encoding_equals_nonzero(encoded, posterior)

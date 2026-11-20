@@ -50,9 +50,8 @@ def _one_transition_after(
     Used as the initial conditions of models that nominally start in one
     state: most of the mass stays there, but every state the transitions
     reach gets a positive probability. A state that starts at exactly zero
-    stays at zero through EM, which sets the initial conditions to the
-    posterior at the first time bin, and its conditional posterior is
-    undefined there.
+    stays at zero through EM, which sets the discrete initial conditions to
+    the state probabilities at the first time bin.
 
     Parameters
     ----------

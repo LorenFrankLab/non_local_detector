@@ -310,12 +310,12 @@ def test_block_log_kde_matches_log_kde():
         assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
 
-def _gaussian_kde_reference(eval_points, samples, std):
-    """float64 product-Gaussian KDE with uniform weights, shape (n_eval,)."""
-    return (
-        norm.pdf(eval_points[:, None, :], samples[None], np.asarray(std))
-        .prod(axis=-1)
-        .mean(axis=-1)
+def _gaussian_kde_reference(eval_points, samples, std, weights=None):
+    """float64 product-Gaussian KDE, uniform weights by default, shape (n_eval,)."""
+    return np.average(
+        norm.pdf(eval_points[:, None, :], samples[None], np.asarray(std)).prod(axis=-1),
+        axis=-1,
+        weights=weights,
     )
 
 
@@ -600,6 +600,47 @@ def test_traced_block_kde_bounds_compiled_workspace(log_space):
     )
 
 
+def assert_kde_within_summation_rounding(
+    actual, desired, points, samples, std, weights, log_space
+):
+    """Entrywise ``|actual - desired| <= 1e-6 |desired| + 2 eps sqrt(n) T``.
+
+    ``actual`` and ``desired`` are float32 KDEs (log KDEs if ``log_space``) of
+    the same inputs, shape (n_points,), whose ``n = n_samples`` weighted kernel
+    terms were summed in different orders. ``T`` is each point's summed
+    |terms| over the total weight: its float64 KDE, or 1 in log space.
+    """
+    # A float32 sum rounds at every addition, by up to half an epsilon of its
+    # running total. Those roundings act like independent errors of either
+    # sign, so they grow like a random walk: a sum of n terms stays within
+    # about sqrt(n) * eps times its summed |terms|, far below the worst case,
+    # which grows with n. The two KDEs sum the same terms in different orders
+    # (a block's shape can select a different dot kernel), so each sum gets
+    # that error, 2 * eps * sqrt(n) * T in all, on top of rtol for the
+    # arithmetic after the sum. A log KDE moves by its mass's relative error,
+    # and the mass's terms are positive, so there T is 1.
+    eps = np.finfo(np.float32).eps
+    n_terms = np.shape(samples)[0]
+    summed_terms = (
+        1.0
+        if log_space
+        else _gaussian_kde_reference(
+            *(np.asarray(x, np.float64) for x in (points, samples, std, weights))
+        )
+    )
+    actual = np.asarray(actual, dtype=np.float64)
+    desired = np.asarray(desired, dtype=np.float64)
+    assert actual.shape == desired.shape
+    error = np.abs(actual - desired)
+    bound = 1e-6 * np.abs(desired) + 2 * eps * np.sqrt(n_terms) * summed_terms
+    worst = int(np.argmax(error / bound))
+    assert np.all(error <= bound), (
+        f"{int((error > bound).sum())} of {error.size} entries exceed the tolerance; "
+        f"worst at {worst}: |{actual[worst]} - {desired[worst]}| = "
+        f"{error[worst]:.3g} > {bound[worst]:.3g}"
+    )
+
+
 @pytest.mark.parametrize("log_space", [False, True])
 def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
     """Eager blocks shrink so one block's kernel matrix fits the byte budget."""
@@ -630,7 +671,9 @@ def test_block_kde_rows_are_bounded_by_kernel_bytes(log_space, monkeypatch):
 
     assert max(rows) == 64
     assert sum(rows) == 300
-    np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
+    assert_kde_within_summation_rounding(
+        blocked, direct, points, samples, std, weights, log_space
+    )
 
 
 @pytest.mark.parametrize("log_space", [False, True])
@@ -747,4 +790,6 @@ def test_block_kde_runs_many_blocks_in_one_compiled_loop(log_space, monkeypatch)
     )
 
     assert len(calls) <= 1  # traced once inside the compiled loop
-    np.testing.assert_allclose(blocked, direct, rtol=1e-6, atol=0)
+    assert_kde_within_summation_rounding(
+        blocked, direct, points, samples, std, weights, log_space
+    )

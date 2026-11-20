@@ -482,7 +482,7 @@ def _covariate_transition_covariance(
     design_matrix: np.ndarray,
     response: np.ndarray,
     concentration: float,
-    stickiness: float | np.ndarray,
+    stickiness: float | np.integer | np.floating | np.ndarray,
     transition_regularization: float,
     smoothness: np.ndarray,
     smoothness_matrix: np.ndarray | None,
@@ -502,8 +502,9 @@ def _covariate_transition_covariance(
         Expected transition counts for each time and transition row.
     concentration : float
         Dirichlet prior concentration parameter (uniform part).
-    stickiness : float or np.ndarray
-        Dirichlet prior stickiness parameter (diagonal enhancement).
+    stickiness : float, NumPy integer or floating scalar, or np.ndarray, shape (n_states,)
+        Dirichlet prior stickiness parameter (diagonal enhancement): one
+        value for every state, or one per state.
     transition_regularization : float
         L2 penalty on coefficients (excluding intercept).
     smoothness_matrix : np.ndarray or None
