@@ -52,6 +52,7 @@ from non_local_detector.core import (
 from non_local_detector.discrete_state_transitions import (
     _check_initial_discrete_transition,
     _refuse_untrusted_transition,
+    _require_transition_intercept,
     _smoothness_matrix,
     _transition_intervals,
     predict_discrete_state_transitions,
@@ -115,6 +116,7 @@ from non_local_detector.models._input_validation import (
     _normalize_frozen_discrete_transition_rows,
     _normalize_return_outputs,
     _require_labeled_environments,
+    _require_one_decoding_dimensionality,
     _require_sampling_frequency_width,
     _sample_mask,
     _validate_covariate_time_length,
@@ -452,7 +454,8 @@ class _DetectorBase(
         observation_models : Observations
             Observation models for the detector.
         environments : Environments
-            Environments in which the detector operates.
+            Environments in which the detector operates, all decoding in the
+            same number of dimensions.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
@@ -1000,7 +1003,8 @@ class _DetectorBase(
         Parameters
         ----------
         environments : Environments
-            Environments in which the detector operates.
+            Environments in which the detector operates, all decoding in the
+            same number of dimensions.
 
         Returns
         -------
@@ -1349,6 +1353,8 @@ class _DetectorBase(
         transition_type = self.discrete_transition_type
         initial = transition_type.make_state_transition(covariate_data)
         _check_initial_discrete_transition(initial, transition_type)
+        if not transition_type.is_stationary:
+            _require_transition_intercept(initial.design_matrix, transition_type)
         self.discrete_state_transitions_ = initial.transition_matrix
         self.discrete_transition_coefficients_ = initial.coefficients
         self.discrete_transition_design_matrix_ = initial.design_matrix
@@ -1524,6 +1530,7 @@ class _DetectorBase(
             compute_all_pairs_distances=transition_representation == "dense",
             max_dense_distance_bytes=max_dense_transition_bytes,
         )
+        _require_one_decoding_dimensionality(self.environments_)
         state_ind, bin_sizes, is_track_interior = state_layout(
             self.observation_models, self.environments_, self.local_position_std
         )
@@ -2965,7 +2972,8 @@ class ClusterlessDetector(_DetectorBase):
         observation_models : Observations
             Observation models for the detector.
         environments : Environments
-            Environments in which the detector operates.
+            Environments in which the detector operates, all decoding in the
+            same number of dimensions.
         clusterless_algorithm : str, optional
             Algorithm for clusterless spikes, by default "clusterless_kde".
         clusterless_algorithm_params : dict or None, optional
@@ -4132,7 +4140,8 @@ class SortedSpikesDetector(_DetectorBase):
         observation_models : Observations
             Observation models for the detector.
         environments : Environments
-            Environments in which the detector operates.
+            Environments in which the detector operates, all decoding in the
+            same number of dimensions.
         sorted_spikes_algorithm : str, optional
             Algorithm for sorted spikes, by default "sorted_spikes_kde".
         sorted_spikes_algorithm_params : dict or None, optional

@@ -588,6 +588,30 @@ class TestDiscreteTransitionValidation:
             make_transition_from_diag(np.array([0.9, 0.8])),
         )
 
+    @pytest.mark.parametrize(
+        "transition",
+        [
+            DiscreteNonStationaryDiagonal([0.9, 0.8], formula="1 + speed"),
+            DiscreteNonStationaryDiagonal((0.9, 0.8), formula="1 + speed"),
+            DiscreteNonStationaryCustom([[0.9, 0.1], [0.2, 0.8]], formula="1 + speed"),
+        ],
+        ids=["diagonal-list", "diagonal-tuple", "custom-nested-list"],
+    )
+    def test_covariate_transition_accepts_sequences(self, transition):
+        """A sequence of numbers builds the matrix an array would."""
+        initial = transition.make_state_transition({"speed": np.linspace(0, 10, 4)})
+        expected = np.array([[0.9, 0.1], [0.2, 0.8]])
+        np.testing.assert_allclose(
+            initial.transition_matrix, np.broadcast_to(expected, (4, 2, 2)), atol=1e-15
+        )
+        np.testing.assert_allclose(
+            softmax(
+                np.append(initial.coefficients[0], np.zeros((2, 1)), axis=1), axis=1
+            ),
+            expected,
+            atol=1e-12,
+        )
+
 
 @pytest.mark.parametrize(
     "transition",
