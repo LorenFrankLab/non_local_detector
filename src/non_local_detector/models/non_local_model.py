@@ -284,6 +284,11 @@ class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):
           standard deviation (units of ``position``, typically cm) on the
           shortest-path track-graph distance, modelling spatial uncertainty.
 
+        With a multi-bin Local state (``0.0`` or ``> 0``), every continuous
+        transition into Local must be ``Discrete()`` or ``Uniform()``, and
+        its initial conditions uniform; ``fit`` raises ``ValidationError``
+        otherwise.
+
     Examples
     --------
     >>> from non_local_detector import (
@@ -475,6 +480,11 @@ class NonLocalClusterlessDetector(_NonLocalMixin, ClusterlessDetector):
         - ``> 0``: Local spans all position bins with a Gaussian kernel of this
           standard deviation (units of ``position``, typically cm) on the
           shortest-path track-graph distance, modelling spatial uncertainty.
+
+        With a multi-bin Local state (``0.0`` or ``> 0``), every continuous
+        transition into Local must be ``Discrete()`` or ``Uniform()``, and
+        its initial conditions uniform; ``fit`` raises ``ValidationError``
+        otherwise.
 
     Examples
     --------

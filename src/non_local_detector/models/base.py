@@ -532,6 +532,11 @@ class _DetectorBase(
               deviation ``local_position_std`` (same units as ``position``,
               typically centimeters) on the shortest-path track-graph
               distance; models spatial uncertainty.
+
+            With a multi-bin Local state (``0.0`` or ``> 0``), every
+            continuous transition into Local must be ``Discrete()`` or
+            ``Uniform()``, and its initial conditions uniform; ``fit`` raises
+            ``ValidationError`` otherwise.
         """
         # A list or tuple is stored as an array, which fitting indexes; an
         # array is stored as given, as ``sklearn.clone`` requires.

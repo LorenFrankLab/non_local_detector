@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Multi-bin Local state
+
+- **Fixed:** with `local_position_std` set, `fit` raises `ValidationError` when a continuous transition into the Local state is not `Discrete()` or `Uniform()`, or the Local state's initial conditions are not uniform over its interior bins. The Local likelihood adds `log(n_interior_bins)` to its position kernel to cancel a 1/n chance of entering each Local bin, so any other entry left the factor uncancelled: the model fit without a warning, the Local evidence was inflated by up to `n_interior_bins` per time bin, and the marginal likelihood was no longer a probability. On a simulated 49-bin track (8 place cells, 2,500 bins of 2 ms), the marginal log-likelihood with `Discrete()` into Local was -763; with `RandomWalk()` from Local to Local it was +4,169 (a positive log-probability of spike counts), with `Identity()` +4,419, and the mean Local probability rose from 0.90 to 1.00. Default detectors are unaffected; transitions out of Local may still be any block.
+
 ### Less device memory for posteriors you did not request
 
 - **Changed:** `predict` and `estimate_parameters` no longer concatenate or hold the (n_time, n_state_bins) filtered and predictive posteriors unless `return_outputs` asks for them (`"filter"`, `"predictive_posterior"` or `"all"`). Before, both were concatenated on the device and held through the backward pass, and `return_outputs` only chose which reached the results. Now each chunk's predicted rows are released once their state probabilities are taken, and each chunk's filtered rows once the smoother has used them (#233).

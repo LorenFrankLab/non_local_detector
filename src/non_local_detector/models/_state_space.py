@@ -28,7 +28,10 @@ from non_local_detector.continuous_state_transitions import (
     _multi_bin_local_transition,
 )
 from non_local_detector.environment import Environment, find_environment_by_name
-from non_local_detector.initial_conditions import _check_state_initial_conditions
+from non_local_detector.initial_conditions import (
+    _check_state_initial_conditions,
+    _check_uniform_local_initial_conditions,
+)
 from non_local_detector.models._input_validation import _validate_transition_arguments
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.transition_operators import (
@@ -406,17 +409,21 @@ def initial_conditions(
         )
     ):
         # Multi-bin local uses full spatial initial conditions
-        effective_obs = obs
-        if obs.is_local and local_position_std is not None:
-            effective_obs = replace(obs, is_local=False)
+        is_multi_bin_local = obs.is_local and local_position_std is not None
+        effective_obs = replace(obs, is_local=False) if is_multi_bin_local else obs
         ic_parts.append(cont_ic.make_initial_conditions(effective_obs, environments))
+        is_interior = is_track_interior[state_ind == state]
         _check_state_initial_conditions(
             ic_parts[-1],
             state_name=state_names[state],
             initial_conditions=cont_ic,
-            is_interior=is_track_interior[state_ind == state],
+            is_interior=is_interior,
             discrete_weight=discrete_initial_conditions[state],
         )
+        if is_multi_bin_local and discrete_initial_conditions[state] > 0:
+            _check_uniform_local_initial_conditions(
+                ic_parts[-1][is_interior], state_names[state], cont_ic
+            )
     continuous_initial_conditions = np.concatenate(ic_parts)
     return (
         continuous_initial_conditions,

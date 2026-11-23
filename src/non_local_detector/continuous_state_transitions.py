@@ -1404,6 +1404,12 @@ def _multi_bin_local_transition(
     state's environment; a (1, 1) ``Discrete`` block would otherwise be
     broadcast over every bin pair. Other transitions are returned unchanged.
 
+    The Local likelihood adds ``log(n_interior_bins)`` to its position
+    kernel, which cancels a 1/n chance of entering each Local bin, so a block
+    into a multi-bin Local state must be ``Discrete`` or ``Uniform``. Any
+    other block leaves the factor uncancelled and inflates the Local evidence
+    by up to ``n_interior_bins`` per time step.
+
     Parameters
     ----------
     transition : ContinuousTransition
@@ -1419,10 +1425,28 @@ def _multi_bin_local_transition(
 
     Raises
     ------
+    ValidationError
+        If a block into a multi-bin Local state is neither ``Discrete`` nor
+        ``Uniform``.
     ValueError
         If the ``Discrete`` block joins states in different environments.
     """
-    if not isinstance(transition, Discrete) or local_position_std is None:
+    if local_position_std is None:
+        return transition
+    if to_observation.is_local and not isinstance(transition, (Discrete, Uniform)):
+        msg = "A block into the multi-bin Local state must be uniform"
+        raise ValidationError(
+            msg,
+            expected="Discrete() or Uniform() into the Local state",
+            got=repr(transition),
+            hint=(
+                "The Local state is placed by its position kernel "
+                "(local_position_std), so entering it cannot depend on the "
+                "previous position. Use Discrete() into Local, or set "
+                "local_position_std=None for a one-bin Local state."
+            ),
+        )
+    if not isinstance(transition, Discrete):
         return transition
     if not (from_observation.is_local or to_observation.is_local):
         return transition
