@@ -2778,7 +2778,10 @@ class FilterSmootherResult(NamedTuple):
         One-step-ahead predicted state probabilities for each state index.
     log_likelihoods : np.ndarray, shape (n_time, n_state_bins), or None
         Log likelihoods for each state bin at each time point; None when they
-        were neither given, cached nor accumulated.
+        were neither given, cached nor accumulated. Given or cached, they are
+        the caller's array or the callback's values as returned, so the rows
+        of bins marked missing keep whatever those held; accumulated, those
+        rows are 0, the neutral values the filter used.
     causal_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins)
         Filtered state probabilities. A JAX array with ``host_outputs=False``.
     predictive_posterior : np.ndarray or jax.Array, shape (n_time, n_state_bins), or None
