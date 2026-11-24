@@ -2857,3 +2857,53 @@ class TestTransitionLogPrior:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.unit
+def test_factorized_counts_keep_a_declared_state_without_bins():
+    """The counts take the number of states from the discrete matrix.
+
+    ``state_ind`` here uses states 0 and 1 of a three-state matrix whose
+    third state cannot be entered. The count came from ``max(state_ind) + 1``,
+    so the (3, 3) matrix was refused as the wrong shape. The counts now cover
+    the declared states, and those between states 0 and 1 are the two-state
+    model's.
+    """
+    from non_local_detector.core import chunked_filter_smoother
+
+    rng = np.random.default_rng(0)
+    n_time = 50
+    state_ind = np.array([0, 0, 1, 1])
+    continuous = rng.random((4, 4))
+    continuous /= continuous.sum(axis=1, keepdims=True)
+    discrete = np.array([[0.9, 0.1], [0.2, 0.8]])
+    result = chunked_filter_smoother(
+        time_edges=np.arange(n_time + 1, dtype=float),
+        state_ind=state_ind,
+        initial_distribution=np.full(4, 0.25),
+        transition_matrix=continuous * discrete[np.ix_(state_ind, state_ind)],
+        log_likelihood_func=None,
+        log_likelihood_args=(),
+        log_likelihoods=rng.normal(size=(n_time, 4)),
+    )
+    posteriors = (
+        result.causal_posterior,
+        result.predictive_posterior,
+        result.acausal_posterior,
+        continuous,
+    )
+    declared = np.zeros((3, 3))
+    declared[:2, :2] = discrete
+    declared[2] = [0.5, 0.5, 0.0]
+
+    counts = estimate_discrete_transition_counts_from_factorized_posteriors(
+        *posteriors, declared, state_ind
+    )
+    expected = estimate_discrete_transition_counts_from_factorized_posteriors(
+        *posteriors, discrete, state_ind
+    )
+
+    assert counts.shape == (3, 3)
+    np.testing.assert_array_equal(counts[2], 0.0)
+    np.testing.assert_array_equal(counts[:, 2], 0.0)
+    np.testing.assert_allclose(counts[:2, :2], expected, rtol=1e-6)

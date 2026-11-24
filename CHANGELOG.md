@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Discrete states without bins
+
+- **Fixed:** `chunked_filter_smoother_covariate_dependent` takes the number of discrete states from its discrete transition matrix, as `checkpointed_forward_backward` does, instead of `max(state_ind) + 1`. With a declared state that has no bins, the covariate smoother returned state probabilities of shape `(n_time, 2)` beside transition responses of shape `(n_time - 1, 3, 3)`; both now cover the three states, the empty one with zeros. `estimate_discrete_transition_counts_from_factorized_posteriors` likewise takes the states from its discrete matrix, which it refused as the wrong shape, and gives a state without bins zero counts. Detectors give every state at least one bin, so only direct calls are affected.
+
 ### 2-D ahead/behind distances
 
 - **Fixed (changes results):** with a track graph, `get_2D_distance`, `get_map_estimate_direction_from_track_graph`, `head_direction_similarity` and `get_ahead_behind_distance2D` return NaN for a row whose head or MAP position has a NaN or infinite coordinate, as they already did for NaN without a track graph. Such a position was binned into the grid's last bin, so the distance was measured from that corner: 61.54 cm instead of NaN on a 50 × 50 cm arena in 5 cm bins, 0 between two NaN positions, and `inf` (with a "No path" warning) when the corner bin is off the track. Rows with finite positions are unchanged. `maximum_a_posteriori_estimate` gives NaN MAP positions for time bins with no posterior mass, so this reached package output called directly with a track graph.
