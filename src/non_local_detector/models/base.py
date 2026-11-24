@@ -846,10 +846,9 @@ class _DetectorBase(
           reachable interior, not straight-line Euclidean).
         - No precomputed distance matrix: Euclidean fallback.
 
-        NaN/inf distances (off-track animal position, unreachable bins)
-        are treated as infinite distance so the penalty at those bins is
-        zero — consistent with the intuition "cannot compute → no
-        penalty applied". ``position`` must be finite: decoding replaces
+        A bin unreachable from the animal's (another component of the
+        track graph or grid) is infinitely far, so its penalty is zero.
+        ``position`` must be finite: decoding replaces
         untracked samples with a finite placeholder and decodes the bins that
         read them as missing.
 
@@ -877,10 +876,8 @@ class _DetectorBase(
         # Topology-aware distance (graph shortest path when available).
         dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
 
-        # NaN (off-track bin-to-bin lookups) and inf (unreachable bins) →
-        # treat as infinitely far so the penalty evaluates to zero at those
-        # cells, avoiding NaN propagation into the log-likelihood.
-        sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
+        # Unreachable bins are inf, so exp(-inf) gives them zero penalty.
+        sq_dist = jnp.asarray(dist) ** 2
 
         return cast(
             "jax.Array",
