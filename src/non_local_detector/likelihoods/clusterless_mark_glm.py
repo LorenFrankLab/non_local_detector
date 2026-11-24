@@ -205,7 +205,11 @@ class _WeightedBayesianGaussianMixture(BayesianGaussianMixture):  # type: ignore
     default mean and covariance priors are the weighted mean and covariance of
     the data (scikit-learn's defaults, weighted), and convergence uses the
     variational bound of the weighted data. With integer weights the fit is
-    that of the replicated samples. Overrides private scikit-learn methods;
+    that of the replicated samples, except that the default covariance prior
+    is the reliability-weighted covariance (``np.cov`` with ``aweights``),
+    which suits fractional weights: it is the replicated samples' covariance
+    times ``(V1 - 1) / (V1 - V2 / V1)``, with ``V1`` and ``V2`` the sums of the
+    weights and of their squares. Overrides private scikit-learn methods;
     ``fit_weighted`` raises unless each override ran, so an incompatible
     scikit-learn cannot silently ignore the weights.
     """
