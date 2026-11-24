@@ -291,7 +291,8 @@ def _penalized_hessian(
     )
 
 
-_NewtonState: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array]
+_NewtonState: TypeAlias = tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]
+_HalvingState: TypeAlias = tuple[jax.Array, int, jax.Array, jax.Array]
 
 
 @partial(jax.jit, static_argnames=("max_iter",))
@@ -315,12 +316,16 @@ def _newton_fit_jax(
         tol, _FIT_TOL_FLOOR
     )  # float32-safe floor on the relative-objective decrease
 
-    def penalized_neg_loglik(
-        coeffs: jax.Array, eta: jax.Array, mu: jax.Array
-    ) -> jax.Array:
-        loglik = jnp.sum(
-            counts * (eta - jnp.log(rate_scale)) - mu, axis=0
-        )  # (n_neurons,)
+    log_rate_scale = jnp.log(rate_scale)
+
+    def clip_eta(eta: jax.Array) -> jax.Array:
+        return jnp.clip(eta, -_ETA_CLIP + log_rate_scale, _ETA_CLIP + log_rate_scale)
+
+    def penalized_neg_loglik(coeffs: jax.Array, clipped_eta: jax.Array) -> jax.Array:
+        # The likelihood of the clipped predictor, the one mu and the returned
+        # rates use: beyond the clip the objective is flat, as its gradient is.
+        mu = occupancy[:, None] * jnp.exp(clipped_eta)
+        loglik = jnp.sum(counts * (clipped_eta - log_rate_scale) - mu, axis=0)
         penalty_term = 0.5 * jnp.sum(penalty_diag[:, None] * coeffs**2, axis=0)
         return -loglik + penalty_term
 
@@ -331,7 +336,7 @@ def _newton_fit_jax(
     coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
     def newton_cond(state: _NewtonState) -> jax.Array:
-        _coeffs, iteration, _max_step, rel_decrease = state
+        _coeffs, iteration, _max_step, rel_decrease, _failed = state
         # Converge on the penalized objective (-loglik + penalty), not the coefficient
         # step. The MRF's eigenmode basis has an unpenalized null mode (a constant
         # log-rate per component); when many bins are empty (an undersampled arena)
@@ -344,51 +349,53 @@ def _newton_fit_jax(
         return (iteration < max_iter) & (rel_decrease >= tol)
 
     def newton_body(state: _NewtonState) -> _NewtonState:
-        coeffs, iteration, _max_step, _rel = state
+        coeffs, iteration, _max_step, _rel, _failed = state
         eta = _matmul(basis, coeffs)
-        mu = occupancy[:, None] * jnp.exp(
-            jnp.clip(
-                eta, -_ETA_CLIP + jnp.log(rate_scale), _ETA_CLIP + jnp.log(rate_scale)
-            )
+        clipped_eta = clip_eta(eta)
+        mu = occupancy[:, None] * jnp.exp(clipped_eta)
+        # A clipped bin's likelihood does not move with eta, so it adds nothing
+        # to the gradient. Its curvature is kept: the Hessian stays positive
+        # definite, so the step still descends to the same optimum, and masking
+        # it as well made a 1600-bin, rank-200 fit 12% slower on CPU.
+        in_range = clipped_eta == eta
+        grad = (
+            _matmul(basis.T, jnp.where(in_range, counts - mu, 0.0))
+            - penalty_diag[:, None] * coeffs
         )
-        grad = _matmul(basis.T, counts - mu) - penalty_diag[:, None] * coeffs
         hessian = _penalized_hessian(basis, mu, penalty_diag)
         step = jnp.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
 
-        objective = penalized_neg_loglik(
-            coeffs, eta, mu
-        )  # (n_neurons,), current coeffs
+        # (n_neurons,), current coeffs
+        objective = penalized_neg_loglik(coeffs, clipped_eta)
 
-        def is_worse(scale: jax.Array) -> jax.Array:
-            trial = coeffs + scale[None, :] * step.T
-            trial_eta = _matmul(basis, trial)
-            trial_mu = occupancy[:, None] * jnp.exp(
-                jnp.clip(
-                    trial_eta,
-                    -_ETA_CLIP + jnp.log(rate_scale),
-                    _ETA_CLIP + jnp.log(rate_scale),
-                )
+        def trial(scale: jax.Array) -> tuple[jax.Array, jax.Array]:
+            """Objective of the scaled step, and whether it is worse."""
+            trial_coeffs = coeffs + scale[None, :] * step.T
+            trial_objective = penalized_neg_loglik(
+                trial_coeffs, clip_eta(_matmul(basis, trial_coeffs))
             )
-            trial_objective = penalized_neg_loglik(trial, trial_eta, trial_mu)
             # NaN or a non-noise increase (float32-safe threshold) -> halve.
-            return ~(
+            is_worse = ~(
                 trial_objective <= objective + _DESCENT_TOL * (1.0 + jnp.abs(objective))
             )
+            return trial_objective, is_worse
 
-        def halving_cond(hstate: tuple[jax.Array, int]) -> jax.Array:
-            scale, halvings = hstate
-            return (halvings < _MAX_STEP_HALVINGS) & jnp.any(is_worse(scale))
+        def halving_cond(hstate: _HalvingState) -> jax.Array:
+            _scale, halvings, _trial_objective, is_worse = hstate
+            return (halvings < _MAX_STEP_HALVINGS) & jnp.any(is_worse)
 
-        def halving_body(
-            hstate: tuple[jax.Array, int],
-        ) -> tuple[jax.Array, int]:
-            scale, halvings = hstate
-            return jnp.where(is_worse(scale), 0.5 * scale, scale), halvings + 1
+        def halving_body(hstate: _HalvingState) -> _HalvingState:
+            scale, halvings, _trial_objective, is_worse = hstate
+            scale = jnp.where(is_worse, 0.5 * scale, scale)
+            return (scale, halvings + 1, *trial(scale))
 
-        scale, _ = lax.while_loop(
-            halving_cond, halving_body, (jnp.ones(n_neurons, basis.dtype), 0)
+        ones = jnp.ones(n_neurons, basis.dtype)
+        scale, _, trial_objective, failed = lax.while_loop(
+            halving_cond, halving_body, (ones, 0, *trial(ones))
         )
-        accepted_step = scale[None, :] * step.T
+        # A neuron whose step still raises the objective after every halving keeps
+        # its coefficients, and the fit is reported as not converged.
+        accepted_step = jnp.where(failed, 0.0, scale)[None, :] * step.T
         # max_step is reported as a diagnostic only (it does not gate convergence).
         # initial=0.0 so an empty neuron axis (n_neurons == 0) reduces to 0.
         max_step = jnp.max(jnp.abs(accepted_step), initial=0.0)
@@ -398,21 +405,13 @@ def _newton_fit_jax(
         # Non-negative up to the step-halving slack; initial=0.0 so an empty neuron axis
         # (n_neurons == 0) reduces to 0 -> converged immediately (keeps REML safe).
         new_coeffs = coeffs + accepted_step
-        new_eta = _matmul(basis, new_coeffs)
-        new_mu = occupancy[:, None] * jnp.exp(
-            jnp.clip(
-                new_eta,
-                -_ETA_CLIP + jnp.log(rate_scale),
-                _ETA_CLIP + jnp.log(rate_scale),
-            )
-        )
-        new_objective = penalized_neg_loglik(new_coeffs, new_eta, new_mu)
+        new_objective = jnp.where(failed, objective, trial_objective)
         rel_decrease = jnp.max(
             (objective - new_objective) / (1.0 + jnp.abs(new_objective)), initial=0.0
         )
-        return new_coeffs, iteration + 1, max_step, rel_decrease
+        return new_coeffs, iteration + 1, max_step, rel_decrease, jnp.any(failed)
 
-    coeffs, n_iter, max_step, rel_decrease = lax.while_loop(
+    coeffs, n_iter, max_step, rel_decrease, failed = lax.while_loop(
         newton_cond,
         newton_body,
         (
@@ -420,17 +419,14 @@ def _newton_fit_jax(
             jnp.array(0),
             jnp.array(jnp.inf, basis.dtype),
             jnp.array(jnp.inf, basis.dtype),
+            jnp.zeros((), bool),
         ),
     )
     # Clip eta so any rate the caller derives via exp(eta) stays finite even if a
     # low-penalty / near-zero-occupancy fit drove eta large (mirrors mgcv).
-    eta = jnp.clip(
-        _matmul(basis, coeffs),
-        -_ETA_CLIP + jnp.log(rate_scale),
-        _ETA_CLIP + jnp.log(rate_scale),
-    )
+    eta = clip_eta(_matmul(basis, coeffs))
     mu = occupancy[:, None] * jnp.exp(eta)
-    return coeffs, eta, mu, n_iter, max_step, rel_decrease < tol
+    return coeffs, eta, mu, n_iter, max_step, (rel_decrease < tol) & ~failed
 
 
 def mrf_penalized_poisson_fit(

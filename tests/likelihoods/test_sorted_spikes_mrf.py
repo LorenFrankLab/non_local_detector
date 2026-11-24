@@ -405,6 +405,62 @@ def test_reml_robust_to_ill_conditioned_hessian():
     assert 0.0 < penalty < np.inf
 
 
+@pytest.mark.unit
+def test_fit_reaches_the_mle_beside_a_bin_at_the_rate_clip():
+    """A bin whose fitted rate reaches the clip must not stop the other bins short.
+
+    Bin 0 has 100 spikes in 1e-12 s, so its log-rate is held at the clip (30).
+    The objective used to score the unclipped predictor there, so it kept
+    falling linearly while the rate stayed fixed: its size (~1e13) swamped the
+    relative-decrease test, which stopped after two iterations with bin 1 (one
+    spike in 1 s, maximum-likelihood log-rate 0) at 2.65 -- a rate 14x too high.
+    """
+    _, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        np.array([[100.0], [1.0]]),
+        np.array([1e-12, 1.0]),
+        np.eye(2),
+        np.array([0.0, 1.0]),
+        penalty=1e-4,
+    )
+    assert diagnostics["converged"]
+    assert eta[0, 0] == pytest.approx(30.0)
+    # The 1e-4 penalty moves the optimum off 0 by ~1e-4.
+    assert eta[1, 0] == pytest.approx(0.0, abs=1e-2)
+
+
+@pytest.mark.unit
+def test_nearly_unpenalized_fit_matches_per_bin_mle_with_tiny_occupancy_bins():
+    """A full-rank, nearly unpenalized fit gives each bin with spikes its own
+    maximum-likelihood log-rate ``log(counts / occupancy)``, including bins of
+    tiny occupancy whose rate is huge but inside the clip.
+
+    A Newton step out of a tiny-occupancy bin (curvature ~1e-13) overshoots the
+    clip; scoring the unclipped predictor rewarded staying there, so those
+    bins ended at the clip (36.2) instead of their MLE (31.0), and the
+    objective's growth stopped the other bins early.
+    """
+    n_bins = 40
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(n_bins)), rank=None
+    )
+    rng = np.random.default_rng(0)
+    occupancy = rng.uniform(0.5, 2.0, n_bins)
+    occupancy[[7, 23]] = 1e-13
+    counts = rng.poisson(2.0, (n_bins, 3)).astype(float)
+    counts[[7, 23], :] = 3.0
+
+    _, eta, _, _ = mrf_penalized_poisson_fit(
+        counts, occupancy, basis, penalty_weights, penalty=1e-6, rate_scale=500.0
+    )
+
+    has_spikes = counts > 0
+    mle = np.log(
+        counts[has_spikes]
+        / np.broadcast_to(occupancy[:, None], counts.shape)[has_spikes]
+    )
+    np.testing.assert_allclose(eta[has_spikes], mle, atol=1e-3)
+
+
 def test_occupancy_offset_gives_finite_rate_at_zero_occupancy():
     """Occupancy enters as an exposure offset, so zero-occupancy bins yield finite
     (unconstrained, smoothly-interpolated) rates — no division blow-up."""

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Sorted-spikes MRF fit
+
+- **Fixed (changes results):** the `sorted_spikes_mrf` Newton fit scored the unclipped log-rate while its rates and gradient used the log-rate clipped to within 30 of `log(rate_scale)`. Once a Newton step out of a bin of tiny occupancy overshot the clip, the objective kept falling linearly with no change in the rate, so the fit held that bin at the clip and its growing size stopped the relative-decrease test before the other bins were fit, while reporting convergence. With an identity basis, one bin of 100 spikes in 1e-12 s and one of 1 spike in 1 s (maximum-likelihood log-rate 0), the second bin ended at 2.65, a rate 14 times too high. On a 40-bin track with a full-rank basis, penalty 1e-6 and two bins of 1e-13 s occupancy, those bins ended at the clip (36.2) instead of their maximum-likelihood 31.0, and the fitted log-rates of bins with spikes were up to 5.2 from it; they now match it within 4e-5. The objective now uses the clipped log-rate and clipped bins add nothing to the gradient. A neuron whose step still raises the objective after every step halving keeps its coefficients and the fit reports `converged=False` (and warns), where it accepted the step and reported convergence. Fits whose rates stay inside the clip are unchanged: bit-identical on REML-selected and reduced-rank problems, no change in fit time.
+
 ### Less device memory for posteriors you did not request
 
 - **Changed:** `predict` and `estimate_parameters` no longer concatenate or hold the (n_time, n_state_bins) filtered and predictive posteriors unless `return_outputs` asks for them (`"filter"`, `"predictive_posterior"` or `"all"`). Before, both were concatenated on the device and held through the backward pass, and `return_outputs` only chose which reached the results. Now each chunk's predicted rows are released once their state probabilities are taken, and each chunk's filtered rows once the smoother has used them (#233).
