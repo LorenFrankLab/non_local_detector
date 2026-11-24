@@ -26,6 +26,7 @@ from non_local_detector._transition_estimation import (
     estimate_non_stationary_state_transition_from_responses,
     estimate_stationary_state_transition_from_counts,
 )
+from non_local_detector.core import chunked_filter_smoother
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
@@ -2855,10 +2856,6 @@ class TestTransitionLogPrior:
         assert uniform_prior == -np.inf
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 @pytest.mark.unit
 def test_factorized_counts_keep_a_declared_state_without_bins():
     """The counts take the number of states from the discrete matrix.
@@ -2869,8 +2866,6 @@ def test_factorized_counts_keep_a_declared_state_without_bins():
     the declared states, and those between states 0 and 1 are the two-state
     model's.
     """
-    from non_local_detector.core import chunked_filter_smoother
-
     rng = np.random.default_rng(0)
     n_time = 50
     state_ind = np.array([0, 0, 1, 1])
@@ -2907,3 +2902,7 @@ def test_factorized_counts_keep_a_declared_state_without_bins():
     np.testing.assert_array_equal(counts[2], 0.0)
     np.testing.assert_array_equal(counts[:, 2], 0.0)
     np.testing.assert_allclose(counts[:2, :2], expected, rtol=1e-6)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
