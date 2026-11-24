@@ -207,8 +207,8 @@ def test_fit_does_not_depend_on_the_position_units():
 
     Occupancy is a density in 1 / length**d, so its values scale with the
     units. Flooring it at the absolute ``EPS`` (1e-15) gave unvisited bins of a
-    1.2 m arena in micrometres (peak density ~1e-11 per um**2) an occupancy
-    above ``FIELD_RESOLUTION`` of the peak, so they passed as resolved and got
+    1.2 m arena in micrometres (peak density ~4e-12 per um**2) an occupancy
+    above ``FIELD_RESOLUTION`` (1e-6) of the peak, so they passed as resolved and got
     intensities; in metres they were unresolved.
     """
     rng = np.random.default_rng(0)
@@ -241,7 +241,7 @@ def test_fit_does_not_depend_on_the_position_units():
     metres, micrometres = fit(1.0), fit(1e6)
     occupancy = np.asarray(metres["occupancy"])
     relative = occupancy / occupancy.max()
-    # The two unit systems round the heat kernel differently (~1e-5 relative),
+    # The two unit systems round the heat kernel differently (~2e-7 of the peak),
     # so a bin within a factor 2 of the resolution threshold may fall either
     # side of it; every other bin must be resolved alike.
     clear = (relative > 2 * FIELD_RESOLUTION) | (relative < FIELD_RESOLUTION / 2)
