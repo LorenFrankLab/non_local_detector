@@ -26,6 +26,7 @@ from non_local_detector._transition_estimation import (
     estimate_non_stationary_state_transition_from_responses,
     estimate_stationary_state_transition_from_counts,
 )
+from non_local_detector.core import chunked_filter_smoother
 from non_local_detector.discrete_state_transitions import (
     DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
@@ -818,6 +819,22 @@ class TestExpandedDiscreteTransitionCounts:
         with pytest.raises(ValueError, match=match):
             estimate_discrete_transition_counts_from_factorized_posteriors(
                 causal, predictive, acausal, *transition_args, state_ind
+            )
+
+    def test_factorized_counts_name_a_state_the_matrix_lacks(self):
+        """A state_ind beyond the discrete matrix is reported as such, not as
+        a non-stationary matrix of the wrong shape."""
+        posterior = np.full((3, 4), 0.25)
+        with pytest.raises(
+            ValueError, match=r"state_ind refers to discrete state 3.*\(2, 2\)"
+        ):
+            estimate_discrete_transition_counts_from_factorized_posteriors(
+                posterior,
+                posterior,
+                posterior,
+                np.full((4, 4), 0.25),
+                np.full((2, 2), 0.5),
+                np.array([0, 1, 2, 3]),
             )
 
     def test_zero_predictive_bins_are_finite(self):
@@ -2853,6 +2870,54 @@ class TestTransitionLogPrior:
             counts, transition, None, None, 2.0, 0.0, 0.0
         )
         assert uniform_prior == -np.inf
+
+
+@pytest.mark.unit
+def test_factorized_counts_keep_a_declared_state_without_bins():
+    """The counts take the number of states from the discrete matrix.
+
+    ``state_ind`` here uses states 0 and 1 of a three-state matrix whose
+    third state cannot be entered. The count came from ``max(state_ind) + 1``,
+    so the (3, 3) matrix was refused as the wrong shape. The counts now cover
+    the declared states, and those between states 0 and 1 are the two-state
+    model's.
+    """
+    rng = np.random.default_rng(0)
+    n_time = 50
+    state_ind = np.array([0, 0, 1, 1])
+    continuous = rng.random((4, 4))
+    continuous /= continuous.sum(axis=1, keepdims=True)
+    discrete = np.array([[0.9, 0.1], [0.2, 0.8]])
+    result = chunked_filter_smoother(
+        time_edges=np.arange(n_time + 1, dtype=float),
+        state_ind=state_ind,
+        initial_distribution=np.full(4, 0.25),
+        transition_matrix=continuous * discrete[np.ix_(state_ind, state_ind)],
+        log_likelihood_func=None,
+        log_likelihood_args=(),
+        log_likelihoods=rng.normal(size=(n_time, 4)),
+    )
+    posteriors = (
+        result.causal_posterior,
+        result.predictive_posterior,
+        result.acausal_posterior,
+        continuous,
+    )
+    declared = np.zeros((3, 3))
+    declared[:2, :2] = discrete
+    declared[2] = [0.5, 0.5, 0.0]
+
+    counts = estimate_discrete_transition_counts_from_factorized_posteriors(
+        *posteriors, declared, state_ind
+    )
+    expected = estimate_discrete_transition_counts_from_factorized_posteriors(
+        *posteriors, discrete, state_ind
+    )
+
+    assert counts.shape == (3, 3)
+    np.testing.assert_array_equal(counts[2], 0.0)
+    np.testing.assert_array_equal(counts[:, 2], 0.0)
+    np.testing.assert_allclose(counts[:2, :2], expected, rtol=1e-6)
 
 
 if __name__ == "__main__":

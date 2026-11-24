@@ -2814,6 +2814,7 @@ def _chunked_filter_smoother(
     *,
     time_edges: ConcreteArray,
     state_ind: np.ndarray,
+    n_states: int,
     initial_distribution: np.ndarray,
     log_likelihood_func: Callable[..., ConcreteArray],
     log_likelihood_args: tuple[Any, ...],
@@ -2853,6 +2854,8 @@ def _chunked_filter_smoother(
         Boundaries of the decoding bins; their number sets the time bins.
     state_ind : np.ndarray, shape (n_state_bins,)
         Connects the discrete states to the state space.
+    n_states : int
+        Number of discrete states, as validated: a state may have no bins.
     initial_distribution : np.ndarray, shape (n_state_bins,)
         Initial probability of each state bin.
     log_likelihood_func : callable
@@ -2920,9 +2923,8 @@ def _chunked_filter_smoother(
     # This is reused across all chunks. In the working dtype, so the state
     # probabilities have the posteriors' dtype: one_hot's default follows
     # JAX's 64-bit mode instead.
-    n_discrete_states = int(jnp.max(state_ind_jax)) + 1
     state_aggregation_matrix = jax.nn.one_hot(
-        state_ind_jax, n_discrete_states, dtype=dtype
+        state_ind_jax, n_states, dtype=dtype
     )  # (n_state_bins, n_states)
 
     # Initialize variables that may be referenced in loop conditionals
@@ -3208,7 +3210,7 @@ def chunked_filter_smoother(
     DataError
         If a log likelihood outside the bins marked missing is NaN or ``+inf``.
     """
-    _validate_hmm_inputs(
+    _, n_states = _validate_hmm_inputs(
         n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
@@ -3253,6 +3255,7 @@ def chunked_filter_smoother(
         smoother_chunk,
         time_edges=time_edges,
         state_ind=state_ind,
+        n_states=cast(int, n_states),
         initial_distribution=initial_distribution,
         log_likelihood_func=log_likelihood_func,
         log_likelihood_args=log_likelihood_args,
@@ -3973,7 +3976,7 @@ def chunked_filter_smoother_covariate_dependent(
     DataError
         If a log likelihood outside the bins marked missing is NaN or ``+inf``.
     """
-    _validate_hmm_inputs(
+    _, n_states = _validate_hmm_inputs(
         n_time=_validate_time_edges(time_edges),
         initial_distribution=initial_distribution,
         dtype=dtype,
@@ -4038,6 +4041,7 @@ def chunked_filter_smoother_covariate_dependent(
         smoother_chunk,
         time_edges=time_edges,
         state_ind=state_ind,
+        n_states=cast(int, n_states),
         initial_distribution=initial_distribution,
         log_likelihood_func=log_likelihood_func,
         log_likelihood_args=log_likelihood_args,

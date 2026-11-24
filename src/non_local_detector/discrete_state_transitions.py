@@ -415,7 +415,8 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
         Stationary continuous transition matrix over expanded state bins.
     discrete_transition_matrix : np.ndarray, shape (n_states, n_states)
-        Stationary discrete transition matrix.
+        Stationary discrete transition matrix. It sets ``n_states``, which may
+        exceed ``max(state_ind) + 1``: a state without bins gets zero counts.
     state_ind : np.ndarray, shape (n_state_bins,)
         Discrete-state index for each expanded state bin.
 
@@ -428,8 +429,9 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     Raises
     ------
     ValueError
-        If ``discrete_transition_matrix`` is not stationary with shape
-        ``(n_states, n_states)``.
+        If ``state_ind`` refers to a state ``discrete_transition_matrix``
+        does not have, or ``discrete_transition_matrix`` is not stationary
+        with shape ``(n_states, n_states)``.
     """
     causal_posterior = _host_or_device(causal_posterior)
     predictive_posterior = _host_or_device(predictive_posterior)
@@ -446,8 +448,19 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
         continuous_transition_matrix,
         n_state_bins,
     )
-    n_states = _n_states_from_state_ind(state_ind)
     discrete_transition_matrix = np.asarray(discrete_transition_matrix)
+    # The matrix declares the states, and a declared state may have no bins;
+    # a matrix with fewer states than ``state_ind`` uses is refused.
+    n_states = max(
+        [_n_states_from_state_ind(state_ind), *discrete_transition_matrix.shape[-1:]]
+    )
+    shape = discrete_transition_matrix.shape
+    if len(shape) == 2 and shape[0] == shape[1] < n_states:
+        msg = (
+            f"state_ind refers to discrete state {n_states - 1}, which the "
+            f"discrete_transition_matrix of shape {shape} does not have"
+        )
+        raise ValueError(msg)
     _validate_stationary_discrete_transition_shape(discrete_transition_matrix, n_states)
     joint_sum = _stationary_counts(
         causal_posterior,
