@@ -321,13 +321,33 @@ def _newton_fit_jax(
     def clip_eta(eta: jax.Array) -> jax.Array:
         return jnp.clip(eta, -_ETA_CLIP + log_rate_scale, _ETA_CLIP + log_rate_scale)
 
-    def penalized_neg_loglik(coeffs: jax.Array, clipped_eta: jax.Array) -> jax.Array:
+    def overshoot_of(eta: jax.Array) -> jax.Array:
+        """Rise of each bin's tangent past the clip, zero inside it."""
+        # Past the clip a bin's term is continued along its tangent where the
+        # tangent rises away from the clip (its optimum is inside), and left
+        # flat where it falls (its optimum is past the clip). That is the
+        # convex envelope of the clipped term: the objective stays convex with
+        # the optimum of the unclipped one inside the clip, so a step that
+        # overshoots the clip is pulled back instead of left on a flat region.
+        # The tangent's slope is mu - counts at the clip, from the clip's
+        # constant mean rather than mu, so fits inside the clip compute mu
+        # exactly as they would without the extension.
+        upper = _ETA_CLIP + log_rate_scale
+        mean_at_clip = occupancy[:, None] * jnp.exp(
+            jnp.where(eta > upper, upper, -_ETA_CLIP + log_rate_scale)
+        )
+        return (mean_at_clip - counts) * (eta - clip_eta(eta))
+
+    def penalized_neg_loglik(coeffs: jax.Array, eta: jax.Array) -> jax.Array:
         # The likelihood of the clipped predictor, the one mu and the returned
-        # rates use: beyond the clip the objective is flat, as its gradient is.
+        # rates use, with the tangent extension past the clip.
+        clipped_eta = clip_eta(eta)
         mu = occupancy[:, None] * jnp.exp(clipped_eta)
         loglik = jnp.sum(counts * (clipped_eta - log_rate_scale) - mu, axis=0)
+        # Summed apart: zero for every bin inside the clip.
+        extension = jnp.sum(jnp.maximum(overshoot_of(eta), 0.0), axis=0)
         penalty_term = 0.5 * jnp.sum(penalty_diag[:, None] * coeffs**2, axis=0)
-        return -loglik + penalty_term
+        return -loglik + extension + penalty_term
 
     # Warm start each neuron from a constant log-rate (fast, convex problem).
     total_occupancy = jnp.maximum(occupancy.sum(), 1e-9 / rate_scale)
@@ -353,26 +373,28 @@ def _newton_fit_jax(
         eta = _matmul(basis, coeffs)
         clipped_eta = clip_eta(eta)
         mu = occupancy[:, None] * jnp.exp(clipped_eta)
-        # A clipped bin's likelihood does not move with eta, so it adds nothing
-        # to the gradient. Its curvature is kept: the Hessian stays positive
-        # definite, so the step still descends to the same optimum, and masking
-        # it as well made a 1600-bin, rank-200 fit 12% slower on CPU.
-        in_range = clipped_eta == eta
+        # A clipped bin on the flat part of its term adds nothing to the
+        # gradient; on the tangent extension it adds the tangent's slope,
+        # counts - mu at the clip. Its curvature is kept: the Hessian stays
+        # positive definite, so the step is a descent direction of the convex
+        # objective, and masking it as well made a 1600-bin, rank-200 fit 12%
+        # slower on CPU.
+        moves = (clipped_eta == eta) | (overshoot_of(eta) > 0)
         grad = (
-            _matmul(basis.T, jnp.where(in_range, counts - mu, 0.0))
+            _matmul(basis.T, jnp.where(moves, counts - mu, 0.0))
             - penalty_diag[:, None] * coeffs
         )
         hessian = _penalized_hessian(basis, mu, penalty_diag)
         step = jnp.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
 
         # (n_neurons,), current coeffs
-        objective = penalized_neg_loglik(coeffs, clipped_eta)
+        objective = penalized_neg_loglik(coeffs, eta)
 
         def trial(scale: jax.Array) -> tuple[jax.Array, jax.Array]:
             """Objective of the scaled step, and whether it is worse."""
             trial_coeffs = coeffs + scale[None, :] * step.T
             trial_objective = penalized_neg_loglik(
-                trial_coeffs, clip_eta(_matmul(basis, trial_coeffs))
+                trial_coeffs, _matmul(basis, trial_coeffs)
             )
             # NaN or a non-noise increase (float32-safe threshold) -> halve.
             is_worse = ~(

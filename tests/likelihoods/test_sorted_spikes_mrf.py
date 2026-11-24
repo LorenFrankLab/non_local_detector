@@ -429,6 +429,30 @@ def test_fit_reaches_the_mle_beside_a_bin_at_the_rate_clip():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("penalty_weights", [[0.0, 1.0], [1.0, 1.0]])
+def test_fit_returns_from_past_the_clip_to_an_mle_inside_it(penalty_weights):
+    """A bin whose maximum-likelihood log-rate is just inside the clip ends there.
+
+    One spike in 2.5e-13 s gives the MLE log(4e12) = 29.02, below the clip
+    (30). A Newton step from such a tiny-occupancy bin overshoots the clip;
+    with the term flat past it and the bin's gradient masked, the bin stayed
+    at 30 (rate 2.7x too high), reported converged when unpenalized and not
+    converged after 100 iterations when penalized.
+    """
+    _, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        np.array([[1.0], [1.0]]),
+        np.array([2.5e-13, 1.0]),
+        np.eye(2),
+        np.array(penalty_weights),
+        penalty=1e-4,
+    )
+    assert diagnostics["converged"]
+    # The 1e-4 penalty moves the optimum by ~3e-3 when bin 0 is penalized.
+    assert eta[0, 0] == pytest.approx(np.log(4e12), abs=5e-3)
+    assert eta[1, 0] == pytest.approx(0.0, abs=1e-2)
+
+
+@pytest.mark.unit
 def test_nearly_unpenalized_fit_matches_per_bin_mle_with_tiny_occupancy_bins():
     """A full-rank, nearly unpenalized fit gives each bin with spikes its own
     maximum-likelihood log-rate ``log(counts / occupancy)``, including bins of
