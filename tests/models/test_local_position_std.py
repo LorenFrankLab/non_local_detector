@@ -849,9 +849,16 @@ def test_uniform_blocks_and_initial_conditions_are_per_bin_on_unequal_track_bins
 @pytest.mark.integration
 @pytest.mark.parametrize("local_position_std", [0.0, 5.0])
 def test_decoding_through_a_tracking_gap_stays_finite(local_position_std):
-    """A NaN tracking gap reaches the Local kernel and the Non-Local penalty
-    only after decoding fills it from finite samples, so both stay finite
-    and the posterior is a distribution in every bin."""
+    """A tracking gap never reaches the Local kernel or the Non-Local penalty.
+
+    Decoding replaces untracked samples with a finite placeholder, so both
+    methods see only finite positions, and decodes the bins that read the
+    placeholder as missing, with log likelihood 0. Both hold here, with a
+    multi-bin Local state and a Non-Local penalty, and the posterior is a
+    distribution in every bin.
+    """
+    from non_local_detector.models.base import _LikelihoodPositionContext
+
     rng = np.random.default_rng(0)
     sampling_frequency = 500
     time = np.arange(0.0, 20.0, 1 / sampling_frequency)
@@ -865,11 +872,27 @@ def test_decoding_through_a_tracking_gap_stays_finite(local_position_std):
 
     gappy = position.copy()
     gappy[1000:1100] = np.nan  # a 0.2 s dropout
+    prepared = _LikelihoodPositionContext.prepare(gappy, reads_position=True)
+    assert np.all(np.isfinite(prepared.position))
+
     edges = time_edges_from_centers(time[:2000])
     results = detector.predict(
-        spike_times, time_edges=edges, position_time=time, position=gappy
+        spike_times,
+        time_edges=edges,
+        position_time=time,
+        position=gappy,
+        return_outputs="all",
     )
 
+    # Bins 999-1100 read a sample of the gap (each bin spans its neighbours).
+    is_missing = np.asarray(results.is_missing)
+    expected_missing = np.zeros(len(edges) - 1, dtype=bool)
+    expected_missing[999:1101] = True
+    np.testing.assert_array_equal(is_missing, expected_missing)
+    log_likelihood = np.asarray(results.log_likelihood)
+    np.testing.assert_array_equal(log_likelihood[is_missing], 0.0)
+    # The delta kernel (sigma 0) is -inf off the animal's bin by design.
+    assert not np.any(np.isnan(log_likelihood) | (log_likelihood == np.inf))
     posterior = results.acausal_posterior.to_numpy()
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=1), 1.0, rtol=1e-4)

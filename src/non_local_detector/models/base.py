@@ -849,8 +849,9 @@ class _DetectorBase(
         NaN/inf distances (off-track animal position, unreachable bins)
         are treated as infinite distance so the penalty at those bins is
         zero — consistent with the intuition "cannot compute → no
-        penalty applied". ``position`` must be finite: decoding fills
-        tracking gaps from finite samples before the likelihood.
+        penalty applied". ``position`` must be finite: decoding replaces
+        untracked samples with a finite placeholder and decodes the bins that
+        read them as missing.
 
         Parameters
         ----------
@@ -912,9 +913,8 @@ class _DetectorBase(
         bin by :meth:`Environment.get_bin_ind`, so the kernel is always
         defined on a real interior bin.
 
-        ``position`` must be finite: decoding fills tracking gaps from finite
-        samples before the likelihood, so the animal's position is defined
-        in every bin.
+        ``position`` must be finite: decoding replaces untracked samples with
+        a finite placeholder and decodes the bins that read them as missing.
 
         Both paths satisfy the invariant ``exp(log_kernel).sum(axis=1)
         == n_bins``. Combined with the multi-bin local state's
