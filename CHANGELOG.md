@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Clusterless diffusion occupancy
+
+- **Fixed (changes results):** `clusterless_diffusion` stores its occupancy floored at 0 instead of at `1e-15`. Occupancy is a density in 1 / length^d, so the absolute floor was resolved or not depending on the position units: once the peak density fell below about 8e-9 (a 1.2 m arena in micrometres, peak ~1e-11 per µm²), unvisited bins floored to 1e-15 passed the resolution test and got intensities where the same arena in metres had none. Fitting that arena in metres and in micrometres now resolves the same bins, with intensities within 1e-4 on bins above 1e-4 of the peak occupancy. In centimetres the fit and decoded log-likelihoods are bit-identical to before; only the stored occupancy of unvisited bins changes, from 1e-15 to 0. Saved models keep their stored occupancy and decode as before.
+
 ### Less device memory for posteriors you did not request
 
 - **Changed:** `predict` and `estimate_parameters` no longer concatenate or hold the (n_time, n_state_bins) filtered and predictive posteriors unless `return_outputs` asks for them (`"filter"`, `"predictive_posterior"` or `"all"`). Before, both were concatenated on the device and held through the backward pass, and `return_outputs` only chose which reached the results. Now each chunk's predicted rows are released once their state probabilities are taken, and each chunk's filtered rows once the smoother has used them (#233).
