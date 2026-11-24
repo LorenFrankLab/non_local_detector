@@ -118,7 +118,7 @@ def oracle_log_background(marks, encoding_marks, waveform_std):
 
 
 def tiled_log_density(points, samples, std, weights):
-    """True log density in row blocks bounded by the shared kernel budget."""
+    """Compute the true log density in row blocks within the shared kernel budget."""
     model = KDEModel(std=jnp.asarray(std), block_size=DENSITY_ROWS).fit(
         jnp.asarray(samples), jnp.asarray(weights)
     )

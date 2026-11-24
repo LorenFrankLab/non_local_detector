@@ -91,7 +91,7 @@ peak_rates = rng.uniform(10.0, 30.0, n_cells)  # Hz
 
 
 def true_rates(position: np.ndarray) -> np.ndarray:
-    """Firing rate (Hz) of every cell at each position, (n_positions, n_cells)."""
+    """Return each cell's firing rate (Hz) at each position, (n_positions, n_cells)."""
     distance = (position[:, np.newaxis] - place_field_centers) / place_field_widths
     return 0.1 + peak_rates * np.exp(-0.5 * distance**2)
 
@@ -280,7 +280,7 @@ axes[-1].legend(frameon=False, fontsize=8)
 
 # %%
 def most_likely_position(results):
-    """The most likely decoded position (cm) in each time bin."""
+    """Return the most likely decoded position (cm) in each time bin."""
     posterior = results.acausal_posterior.sel(state="Continuous")
     return posterior.position.to_numpy()[posterior.argmax("position").to_numpy()]
 
@@ -376,7 +376,7 @@ def time_rescaling(fields_at_test_position):
 
 
 def rates_at_test_position(decoder):
-    """A decoder's place fields at the rat's test positions, (n_test_bins, n_cells)."""
+    """Return a decoder's place fields at the test positions, (n_test_bins, n_cells)."""
     fields = place_fields(decoder)
     return np.stack(
         [np.interp(test_position, bin_centers, field) for field in fields], axis=1

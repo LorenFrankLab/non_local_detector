@@ -148,9 +148,12 @@ convention = "numpy"
     "D",     # test docstrings are not API documentation
     "FBT",   # test helpers and parametrized flags
 ]
-"{scripts,benchmarks}/**" = ["T201"]  # scripts report to stdout
-# Tutorials print, and a bare expression in a cell displays its value.
-"docs/tutorials/**" = ["T201", "B018"]
+# Scripts report to stdout, and their helpers and flags are not API, so they
+# need no docstrings or keyword-only booleans (as for tests).
+"{scripts,benchmarks}/**" = ["T201", "D100", "D101", "D102", "D103", "D106", "FBT"]
+# Tutorials print, a bare expression in a cell displays its value, and a
+# jupytext file opens with its header, not a module docstring.
+"docs/tutorials/**" = ["T201", "B018", "D100"]
 # Compares path strings as frames report them; Path.resolve would follow links.
 "src/non_local_detector/_warnings.py" = ["PTH"]
 

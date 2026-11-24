@@ -74,7 +74,7 @@ def measure(function, arguments, repeats):
 
 
 def recompilation_check(found, n_rows, n_columns, rng):
-    """Executables created and compile time across spike counts 1..64.
+    """Measure executables created and compile time across spike counts 1..64.
 
     ``bucketed_row_sum`` goes through ``deterministic_row_sum`` (which pads
     concrete off-CPU calls to powers of two) and counts the segmented-scan

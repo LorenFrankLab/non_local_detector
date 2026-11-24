@@ -101,7 +101,7 @@ def place_field_rate(
     widths: np.ndarray,
     peak_rates: np.ndarray,
 ) -> np.ndarray:
-    """Firing rates (Hz) of Gaussian place fields, shape (n_neurons, n_position)."""
+    """Compute Gaussian place-field rates (Hz), shape (n_neurons, n_position)."""
     distance = position[np.newaxis, :] - centers[:, np.newaxis]
     return peak_rates[:, np.newaxis] * np.exp(
         -0.5 * (distance / widths[:, np.newaxis]) ** 2

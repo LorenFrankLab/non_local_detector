@@ -1,4 +1,4 @@
-"""Compare detector prediction speed, memory and capacity across versions and modes.
+r"""Compare detector prediction speed, memory and capacity across versions and modes.
 
 Runs one fit and prediction of a simulated 2-D recording in this process and
 writes a JSON report: fit time, compile-plus-first and warm prediction times,
@@ -24,7 +24,7 @@ reference64
 
 Example::
 
-    uv run python benchmarks/compare_prediction_modes.py --family sorted \\
+    uv run python benchmarks/compare_prediction_modes.py --family sorted \
         --mode compact --duration 60 --output /tmp/compare/sorted-compact-60
 """
 
@@ -168,7 +168,7 @@ def reference64_prediction(
 
 
 def workload(args):
-    """Encoding and decoding inputs shared with benchmark_native_pipeline.py.
+    """Build the encoding and decoding inputs shared with benchmark_native_pipeline.py.
 
     ``rate_spread`` (default 0) gives units log-spaced rates spanning
     ``2**rate_spread`` around ``spike_rate``, so they differ in spike counts.
