@@ -846,10 +846,11 @@ class _DetectorBase(
           reachable interior, not straight-line Euclidean).
         - No precomputed distance matrix: Euclidean fallback.
 
-        NaN/inf distances (off-track animal position, unreachable bins)
-        are treated as infinite distance so the penalty at those bins is
-        zero — consistent with the intuition "cannot compute → no
-        penalty applied".
+        A bin unreachable from the animal's (another component of the
+        track graph or grid) is infinitely far, so its penalty is zero.
+        ``position`` must be finite: decoding replaces
+        untracked samples with a finite placeholder and decodes the bins that
+        read them as missing.
 
         Parameters
         ----------
@@ -871,37 +872,18 @@ class _DetectorBase(
         from non_local_detector.likelihoods.common import get_position_at_time
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
-        animal_pos_arr = np.asarray(animal_pos)
-
-        # Detect NaN animal positions (tracking dropouts). get_bin_ind does
-        # not guard against NaN — np.searchsorted(nan) returns an arbitrary
-        # valid bin index, so a NaN position would produce a finite distance
-        # and thus a spurious penalty at an unrelated bin. Mask those rows
-        # to zero after computing the penalty.
-        if animal_pos_arr.ndim == 1:
-            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
-        else:
-            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
 
         # Topology-aware distance (graph shortest path when available).
-        # Replace NaN animal positions with 0 before the lookup to avoid
-        # undefined searchsorted behavior; nan_mask masks those rows below.
-        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
-        dist = environment.get_distances_to_interior_bins(safe_animal_pos)
+        dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
 
-        # NaN (off-track bin-to-bin lookups) and inf (unreachable bins) →
-        # treat as infinitely far so the penalty evaluates to zero at those
-        # cells, avoiding NaN propagation into the log-likelihood.
-        sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
+        # Unreachable bins are inf, so exp(-inf) gives them zero penalty.
+        sq_dist = jnp.asarray(dist) ** 2
 
-        penalty = -self.non_local_position_penalty * jnp.exp(
-            -0.5 * sq_dist / (self.non_local_penalty_std**2)
+        return cast(
+            "jax.Array",
+            -self.non_local_position_penalty
+            * jnp.exp(-0.5 * sq_dist / (self.non_local_penalty_std**2)),
         )
-
-        # NaN animal positions produce zero penalty (no constraint during
-        # tracking dropouts) rather than a spurious penalty at a searchsorted-
-        # dependent bin.
-        return cast("jax.Array", jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty))
 
     def _compute_local_position_kernel(
         self,
@@ -928,8 +910,8 @@ class _DetectorBase(
         bin by :meth:`Environment.get_bin_ind`, so the kernel is always
         defined on a real interior bin.
 
-        NaN animal positions (tracking dropouts) fall back to a uniform
-        kernel.
+        ``position`` must be finite: decoding replaces untracked samples with
+        a finite placeholder and decodes the bins that read them as missing.
 
         Both paths satisfy the invariant ``exp(log_kernel).sum(axis=1)
         == n_bins``. Combined with the multi-bin local state's
@@ -968,31 +950,19 @@ class _DetectorBase(
         n_bins = int(environment.is_track_interior_.sum())
         log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
 
-        # Detect NaN positions (from gaps in position data)
-        if animal_pos.ndim == 1:
-            nan_mask = jnp.isnan(animal_pos)
-        else:
-            nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
-
         # Delta kernel path: σ=0 concentrates the Local state on the
         # single bin containing the animal. Emits log(n_bins) at that bin
         # and -inf elsewhere, so after the multi-bin state's 1/n_bins
         # uniform continuous IC, the total Local mass equals p_local ×
         # P(spikes | animal_bin_center). Environment.get_bin_ind snaps
-        # gap-bin assignments to the nearest interior bin, so the only
-        # remaining case needing uniform fallback is a truly NaN animal
-        # position (tracking dropout).
+        # gap-bin assignments to the nearest interior bin.
         if local_position_std == 0:
             interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
-            # Replace NaN animal positions with 0 before get_bin_ind (it
-            # has no NaN guard); nan_mask below masks those rows.
-            safe_animal_pos = np.nan_to_num(np.asarray(animal_pos), nan=0.0)
-            animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
+            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
             is_animal_bin = jnp.asarray(
                 animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
             )
-            log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
-            return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
+            return jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
 
         # Gaussian kernel path (σ > 0). Uses topology-aware distance via
         # Environment.get_distances_to_interior_bins(). After the
@@ -1014,15 +984,11 @@ class _DetectorBase(
         # for the 1/n_bins uniform continuous IC of the multi-bin local state
         # so the effective per-bin prior matches the kernel itself. Without
         # this scaling, non-local states dominate by a factor of n_bins.
-        log_kernel = (
+        return (
             log_kernel
             - jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
             + log_n_bins
         )
-
-        # NaN animal positions (tracking dropout) fall back to a uniform
-        # kernel: each bin's exp value is 1, so log_kernel = 0 per bin.
-        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
     def _initialize_environments(
         self, environments: Environments

@@ -2009,8 +2009,10 @@ class Environment:
         Returns
         -------
         distances : np.ndarray, shape (n_positions, n_interior_bins)
-            Distance from each position to each interior bin. Rows for
-            off-track positions are NaN; unreachable bin pairs are inf. The
+            Distance from each position to each interior bin: inf where the
+            bin is unreachable from the position's (another connected
+            component), and never NaN, since every position is first snapped
+            to an interior bin. The
             array is float64 and caller-owned: deferred graph distances budget
             only their Dijkstra workspace and row cache, not this output, so
             whole-recording requests allocate ``8 * n_positions *
