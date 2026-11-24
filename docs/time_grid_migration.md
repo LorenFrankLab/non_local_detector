@@ -84,9 +84,7 @@ tracking intervals, and pass them when decoding too:
 
 ```python
 intervals = [[epoch1_start, epoch1_stop], [epoch2_start, epoch2_stop]]
-detector.fit(
-    position_time, position, spike_times, valid_position_intervals=intervals
-)
+detector.fit(position_time, position, spike_times, valid_position_intervals=intervals)
 results = detector.predict(
     spike_times,
     time_edges=edges,
