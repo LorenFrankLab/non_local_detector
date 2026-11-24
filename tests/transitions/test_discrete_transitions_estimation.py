@@ -821,6 +821,22 @@ class TestExpandedDiscreteTransitionCounts:
                 causal, predictive, acausal, *transition_args, state_ind
             )
 
+    def test_factorized_counts_name_a_state_the_matrix_lacks(self):
+        """A state_ind beyond the discrete matrix is reported as such, not as
+        a non-stationary matrix of the wrong shape."""
+        posterior = np.full((3, 4), 0.25)
+        with pytest.raises(
+            ValueError, match=r"state_ind refers to discrete state 3.*\(2, 2\)"
+        ):
+            estimate_discrete_transition_counts_from_factorized_posteriors(
+                posterior,
+                posterior,
+                posterior,
+                np.full((4, 4), 0.25),
+                np.full((2, 2), 0.5),
+                np.array([0, 1, 2, 3]),
+            )
+
     def test_zero_predictive_bins_are_finite(self):
         """Zero predictive bins should not create NaN or inf counts."""
         state_ind = np.array([0, 1])

@@ -429,8 +429,9 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     Raises
     ------
     ValueError
-        If ``discrete_transition_matrix`` is not stationary with shape
-        ``(n_states, n_states)``.
+        If ``state_ind`` refers to a state ``discrete_transition_matrix``
+        does not have, or ``discrete_transition_matrix`` is not stationary
+        with shape ``(n_states, n_states)``.
     """
     causal_posterior = _host_or_device(causal_posterior)
     predictive_posterior = _host_or_device(predictive_posterior)
@@ -453,6 +454,13 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     n_states = max(
         [_n_states_from_state_ind(state_ind), *discrete_transition_matrix.shape[-1:]]
     )
+    shape = discrete_transition_matrix.shape
+    if len(shape) == 2 and shape[0] == shape[1] < n_states:
+        msg = (
+            f"state_ind refers to discrete state {n_states - 1}, which the "
+            f"discrete_transition_matrix of shape {shape} does not have"
+        )
+        raise ValueError(msg)
     _validate_stationary_discrete_transition_shape(discrete_transition_matrix, n_states)
     joint_sum = _stationary_counts(
         causal_posterior,
