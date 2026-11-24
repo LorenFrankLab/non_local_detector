@@ -13,6 +13,7 @@ Tests cover:
 import numpy as np
 import pytest
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.continuous_state_transitions import TransitionContext
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models import (
@@ -438,37 +439,6 @@ class TestComputeLocalPositionKernel:
         n_interior = int(env.is_track_interior_.sum())
         assert log_kernel.shape == (n_time, n_interior)
 
-    def test_nan_positions_produce_uniform_kernel(self):
-        """NaN positions produce uniform (flat) kernel, not NaN or crash."""
-        import jax.numpy as jnp
-
-        detector, _position = self._make_fitted_detector(local_position_std=5.0)
-        env = detector.environments_[0]
-
-        # All NaN positions
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[np.nan], [np.nan]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-            detector.local_position_std,
-        )
-
-        # Should not contain NaN
-        log_kernel_np = np.asarray(log_kernel)
-        assert np.all(np.isfinite(log_kernel_np))
-        # Should be uniform (all equal values, all zero since exp=1 per bin)
-        np.testing.assert_allclose(log_kernel_np[0], log_kernel_np[0, 0], atol=1e-6)
-        # exp should sum to n_interior_bins (scaled normalization)
-        n_interior = int(env.is_track_interior_.sum())
-        np.testing.assert_allclose(
-            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
-        )
-
     def test_kernel_with_track_graph(self):
         """Kernel uses track graph distances when track graph is available."""
         import jax.numpy as jnp
@@ -686,29 +656,6 @@ class TestDeltaKernel:
             np.exp(log_kernel_np).sum(axis=1), n_interior, rtol=1e-6
         )
 
-    def test_nan_position_produces_uniform_fallback(self):
-        """NaN animal position → uniform kernel (all 0 in log-space)."""
-        import jax.numpy as jnp
-
-        detector, env = self._make_detector_and_env()
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[np.nan], [np.nan]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-            detector.local_position_std,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        assert np.all(np.isfinite(log_kernel_np)), (
-            "NaN fallback must produce finite kernel (uniform, 0 in log)"
-        )
-        np.testing.assert_allclose(log_kernel_np[0], 0.0, atol=1e-6)
-
     def test_delta_kernel_gap_position_snaps_to_nearest_interior(self):
         """Animal in a gap bin snaps to nearest interior bin via get_bin_ind.
 
@@ -897,3 +844,32 @@ def test_uniform_blocks_and_initial_conditions_are_per_bin_on_unequal_track_bins
     np.testing.assert_array_equal(
         initial, interior.astype(np.float32) / np.float32(n_interior)
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("local_position_std", [0.0, 5.0])
+def test_decoding_through_a_tracking_gap_stays_finite(local_position_std):
+    """A NaN tracking gap reaches the Local kernel and the Non-Local penalty
+    only after decoding fills it from finite samples, so both stay finite
+    and the posterior is a distribution in every bin."""
+    rng = np.random.default_rng(0)
+    sampling_frequency = 500
+    time = np.arange(0.0, 20.0, 1 / sampling_frequency)
+    position = (50 + 45 * np.sin(time))[:, np.newaxis]
+    spike_times = [np.sort(rng.uniform(0.0, 20.0, 300)) for _ in range(4)]
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=local_position_std,
+        non_local_position_penalty=1.0,
+        sampling_frequency=sampling_frequency,
+    ).fit(time, position, spike_times)
+
+    gappy = position.copy()
+    gappy[1000:1100] = np.nan  # a 0.2 s dropout
+    edges = time_edges_from_centers(time[:2000])
+    results = detector.predict(
+        spike_times, time_edges=edges, position_time=time, position=gappy
+    )
+
+    posterior = results.acausal_posterior.to_numpy()
+    assert np.all(np.isfinite(posterior))
+    np.testing.assert_allclose(posterior.sum(axis=1), 1.0, rtol=1e-4)
