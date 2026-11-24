@@ -285,9 +285,9 @@ class NonLocalSortedSpikesDetector(_NonLocalMixin, SortedSpikesDetector):
           shortest-path track-graph distance, modelling spatial uncertainty.
 
         With a multi-bin Local state (``0.0`` or ``> 0``), every continuous
-        transition into Local must be ``Discrete()`` or ``Uniform()``, and
-        its initial conditions uniform; ``fit`` raises ``ValidationError``
-        otherwise.
+        transition into Local from a spatial state must be ``Discrete()`` or
+        ``Uniform()``, and its initial conditions uniform; ``fit`` raises
+        ``ValidationError`` otherwise.
 
     Examples
     --------
@@ -482,9 +482,9 @@ class NonLocalClusterlessDetector(_NonLocalMixin, ClusterlessDetector):
           shortest-path track-graph distance, modelling spatial uncertainty.
 
         With a multi-bin Local state (``0.0`` or ``> 0``), every continuous
-        transition into Local must be ``Discrete()`` or ``Uniform()``, and
-        its initial conditions uniform; ``fit`` raises ``ValidationError``
-        otherwise.
+        transition into Local from a spatial state must be ``Discrete()`` or
+        ``Uniform()``, and its initial conditions uniform; ``fit`` raises
+        ``ValidationError`` otherwise.
 
     Examples
     --------

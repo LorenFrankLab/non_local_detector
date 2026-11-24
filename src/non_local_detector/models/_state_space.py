@@ -518,6 +518,7 @@ def continuous_state_transitions(
                 observation_models[from_state],
                 observation_models[to_state],
                 local_position_std,
+                block=(from_state, to_state),
             )
 
             n_row_bins = int(np.max(inds[0].shape))

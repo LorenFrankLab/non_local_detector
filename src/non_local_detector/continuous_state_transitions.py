@@ -1396,19 +1396,23 @@ def _multi_bin_local_transition(
     from_observation: ObservationModel,
     to_observation: ObservationModel,
     local_position_std: float | None,
+    block: tuple[int, int],
 ) -> ContinuousTransition:
     """Return the transition to build for a block with a multi-bin Local state.
 
     A multi-bin Local state (``local_position_std`` set) has place bins, so a
     ``Discrete`` block into or out of it becomes ``Uniform`` over the Local
     state's environment; a (1, 1) ``Discrete`` block would otherwise be
-    broadcast over every bin pair. Other transitions are returned unchanged.
+    broadcast over every bin pair. Other transitions out of it, or between
+    other states, are returned unchanged.
 
     The Local likelihood adds ``log(n_interior_bins)`` to its position
     kernel, which cancels a 1/n chance of entering each Local bin, so a block
-    into a multi-bin Local state must be ``Discrete`` or ``Uniform``. Any
-    other block leaves the factor uncancelled and inflates the Local evidence
-    by up to ``n_interior_bins`` per time step.
+    from a spatial state into a multi-bin Local state must be ``Discrete`` or
+    ``Uniform``. Any other block leaves the factor uncancelled and scales the
+    Local evidence by a factor between 0 and ``n_interior_bins`` per time
+    step. A block from No-Spike, which has one bin, is uniform over the
+    destination whatever its transition, so it is not refused.
 
     Parameters
     ----------
@@ -1418,6 +1422,8 @@ def _multi_bin_local_transition(
         Observation models of the block's source and destination states.
     local_position_std : float or None
         The detector's Local width; None keeps a single-bin Local state.
+    block : tuple of int
+        ``(from_state, to_state)`` of the block, named in the error.
 
     Returns
     -------
@@ -1426,19 +1432,27 @@ def _multi_bin_local_transition(
     Raises
     ------
     ValidationError
-        If a block into a multi-bin Local state is neither ``Discrete`` nor
-        ``Uniform``.
+        If a block from a spatial state into a multi-bin Local state is
+        neither ``Discrete`` nor ``Uniform``.
     ValueError
         If the ``Discrete`` block joins states in different environments.
     """
     if local_position_std is None:
         return transition
-    if to_observation.is_local and not isinstance(transition, (Discrete, Uniform)):
-        msg = "A block into the multi-bin Local state must be uniform"
+    if (
+        to_observation.is_local
+        and not from_observation.is_no_spike
+        and not isinstance(transition, (Discrete, Uniform))
+    ):
+        from_state, to_state = block
+        msg = (
+            "A block into the multi-bin Local state must be uniform: "
+            f"continuous_transition_types[{from_state}][{to_state}]"
+        )
         raise ValidationError(
             msg,
             expected="Discrete() or Uniform() into the Local state",
-            got=repr(transition),
+            got=f"{type(transition).__name__}",
             hint=(
                 "The Local state is placed by its position kernel "
                 "(local_position_std), so entering it cannot depend on the "
