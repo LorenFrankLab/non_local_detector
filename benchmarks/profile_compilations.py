@@ -1,4 +1,4 @@
-"""Attribute XLA compilations during a first checkpointed prediction.
+r"""Attribute XLA compilations during a first checkpointed prediction.
 
 Fits a detector on the ``compare_prediction_modes.py`` workload, then times a
 first checkpointed compact prediction while logging every XLA compilation by
@@ -8,7 +8,7 @@ between source trees.
 
 Example::
 
-    uv run python benchmarks/profile_compilations.py --family clusterless \\
+    uv run python benchmarks/profile_compilations.py --family clusterless \
         --algorithm clusterless_gmm --encoding-duration 120 --output /tmp/gmm
 """
 

@@ -78,7 +78,7 @@ def load_baseline(directory):
 
 
 def fixture(dtype):
-    """Fixed physical events/weights, with boundaries and ragged dimensions."""
+    """Make fixed physical events/weights, with boundaries and ragged dimensions."""
     rng = np.random.default_rng(7301)
     n_rows, n_cells, n_bins = 513, 96, 257
     edges = np.arange(n_rows + 1, dtype=np.float64) * 0.002

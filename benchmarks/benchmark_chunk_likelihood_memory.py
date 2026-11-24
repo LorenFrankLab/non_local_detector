@@ -305,7 +305,7 @@ def make_marks(n_spikes: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def make_position(duration_s: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    """A back-and-forth run on a 1-D track, sampled at the decoding rate.
+    """Simulate a back-and-forth run on a 1-D track, sampled at the decoding rate.
 
     Seeded tracking jitter is added because the noiseless trajectory is exactly
     periodic: at 100 Hz with a 20 s round trip the position values repeat
@@ -346,7 +346,7 @@ def make_decoding_spikes(
 
 
 def make_recording(duration_s: float, seed: int = 0) -> Recording:
-    """A decoding recording of the requested duration."""
+    """Simulate a decoding recording of the requested duration."""
     rng = np.random.default_rng(seed)
     position_time, position = make_position(duration_s, seed)
     spike_times, features = make_decoding_spikes(duration_s, rng)
@@ -364,7 +364,7 @@ def make_recording(duration_s: float, seed: int = 0) -> Recording:
 def make_spike_sweep_recording(
     n_extra_per_unit: int, duration_s: float = SPIKE_SWEEP_DURATION_S, seed: int = 0
 ) -> Recording:
-    """A recording whose FIRST ``SPIKE_SWEEP_ROWS`` rows hold a fixed spike set.
+    """Build a recording whose FIRST ``SPIKE_SWEEP_ROWS`` rows hold fixed spikes.
 
     Every extra spike is placed after those rows, so the row request at the
     start of the timeline selects the same spikes at every sweep point while the
@@ -836,7 +836,7 @@ SPIKE_COLUMNS = [
 
 
 def report_memory_budget(backends: list[FittedBackend], recording: Recording) -> None:
-    """The three budgets the brief asks to keep apart."""
+    """Report the three budgets the brief asks to keep apart."""
     print("\n### Memory budget, kept separate\n")
     print("| category | what it holds | bytes |")
     print("| --- | --- | --- |")

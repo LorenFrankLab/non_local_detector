@@ -1,4 +1,4 @@
-"""Attribute checkpointed prediction time to its stages to find bottlenecks.
+r"""Attribute checkpointed prediction time to its stages to find bottlenecks.
 
 Runs the ``compare_prediction_modes.py`` workload in checkpointed compact mode,
 then times one warm prediction with each stage instrumented:
@@ -17,7 +17,7 @@ during an uninstrumented warm prediction, to break down "other".
 
 Example::
 
-    uv run python benchmarks/profile_checkpointed_prediction.py --family sorted \\
+    uv run python benchmarks/profile_checkpointed_prediction.py --family sorted \
         --duration 30 --output /tmp/profile-sorted.json
 """
 

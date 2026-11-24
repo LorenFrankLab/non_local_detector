@@ -1,4 +1,4 @@
-"""Time EM parameter estimation on the comparison workload.
+r"""Time EM parameter estimation on the comparison workload.
 
 Runs ``estimate_parameters`` twice in one process on a simulated session (the
 ``compare_prediction_modes.py`` encoding workload, decoded over its own
@@ -9,7 +9,7 @@ length times the number of state bins.
 
 Example::
 
-    uv run python benchmarks/benchmark_em.py --family sorted --duration 60 \\
+    uv run python benchmarks/benchmark_em.py --family sorted --duration 60 \
         --bin-size 4 --max-iter 3 --output /tmp/em-sorted
 """
 

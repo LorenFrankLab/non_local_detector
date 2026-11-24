@@ -1,4 +1,4 @@
-"""Time the per-step forward/backward kernels of checkpointed prediction.
+r"""Time the per-step forward/backward kernels of checkpointed prediction.
 
 Builds the restricted, fused structured transition operator that checkpointed
 prediction uses for the ``compare_prediction_modes.py`` non-local detector
@@ -10,7 +10,7 @@ warm forward and one backward chunk for kernel-level timing.
 
 Example::
 
-    uv run python benchmarks/benchmark_checkpoint_scan_steps.py \\
+    uv run python benchmarks/benchmark_checkpoint_scan_steps.py \
         --chunk-size 4096 --output /tmp/scan-steps.json
 """
 

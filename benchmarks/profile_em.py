@@ -1,4 +1,4 @@
-"""Attribute EM parameter-estimation time and memory to its stages.
+r"""Attribute EM parameter-estimation time and memory to its stages.
 
 Runs ``estimate_parameters`` on a real recording (``--recording``) or on the
 ``compare_prediction_modes.py`` simulated session, three ways in one process:
@@ -46,7 +46,7 @@ position on a 2-D grid with an inferred track interior instead.
 
 Example::
 
-    uv run python benchmarks/profile_em.py --recording session.npz \\
+    uv run python benchmarks/profile_em.py --recording session.npz \
         --duration 120 --bin-size 2 --max-iter 3 --output /tmp/em-profile
 """
 

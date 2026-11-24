@@ -162,7 +162,7 @@ out_of_field_rate = 0.1  # Hz
 
 
 def place_field_rates(position: np.ndarray, peak_rate: np.ndarray) -> np.ndarray:
-    """Firing rate (Hz) of every cell at each position, (n_positions, n_cells)."""
+    """Return each cell's firing rate (Hz) at each position, (n_positions, n_cells)."""
     distance = (position[:, np.newaxis] - place_field_centers) / place_field_widths
     return out_of_field_rate + peak_rate * np.exp(-0.5 * distance**2)
 
@@ -554,14 +554,16 @@ results_p_non_local = non_local_probability(results)
 
 
 def find_events(probability, time_edges, threshold, min_duration=0.0):
-    """Contiguous runs of time bins with `probability` above `threshold`.
+    """Find contiguous runs of time bins with `probability` above `threshold`.
 
     Parameters
     ----------
     probability : np.ndarray, shape (n_bins,)
+        Probability in each time bin, such as the non-local probability.
     time_edges : np.ndarray, shape (n_bins + 1,)
         Edges of the time bins, in s.
     threshold : float
+        Probability a bin must exceed to belong to an event.
     min_duration : float, optional
         Shortest event kept, in s.
 

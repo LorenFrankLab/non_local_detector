@@ -1,4 +1,4 @@
-"""Compare a fitted detector's pickle with the saved-model format.
+r"""Compare a fitted detector's pickle with the saved-model format.
 
 Loads a detector pickle (as ``load_model`` loads legacy files), saves it with
 ``save_model``, and reports for both formats the file size and the median
@@ -8,7 +8,7 @@ between the posteriors the two loaded detectors decode.
 
 Usage::
 
-    python benchmarks/compare_model_formats.py detector.pkl \\
+    python benchmarks/compare_model_formats.py detector.pkl \
         --predict-inputs predict_kwargs.pkl --repeats 3
 
 ``predict_kwargs.pkl`` is a pickled dict of the keyword arguments of the
