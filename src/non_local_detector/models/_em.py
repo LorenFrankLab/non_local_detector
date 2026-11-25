@@ -48,7 +48,11 @@ from non_local_detector.exceptions import (
     ParameterWarning,
     ValidationError,
 )
-from non_local_detector.models._checkpointed import _driver_outputs, _PosteriorOutputs
+from non_local_detector.models._checkpointed import (
+    _driver_outputs,
+    _PosteriorOutputs,
+    _posteriors_to_keep,
+)
 from non_local_detector.models._input_validation import (
     _normalize_return_outputs,
 )
@@ -1316,7 +1320,9 @@ class _EMMixin:
             log_likelihood = None
             transition_statistics = e_step.transition_statistics
         else:
-            # Device arrays.
+            # Device arrays. Only the stationary counts read the filtered and
+            # predictive posteriors.
+            counts = settings.transition_statistics == "counts"
             posterior = self._predict(
                 time_edges=settings.time_edges,
                 log_likelihood_args=settings.log_likelihood_args,
@@ -1325,6 +1331,8 @@ class _EMMixin:
                 log_likelihoods=state.run_log_likelihoods,
                 n_chunks=settings.n_chunks,
                 transition_responses=settings.transition_statistics == "responses",
+                keep_causal_posterior=counts,
+                keep_predictive_posterior=counts,
             )
             acausal_state_probabilities = cast(
                 "np.ndarray", posterior.acausal_state_probabilities
@@ -1344,7 +1352,7 @@ class _EMMixin:
                     self.discrete_state_transitions_,
                     cast("np.ndarray", settings.interior_state_ind),
                 )
-                if settings.transition_statistics == "counts"
+                if counts
                 else posterior.transition_responses
             )
         # Reusable by the next iteration: the likelihood depends only on the
@@ -1752,6 +1760,8 @@ class _EMMixin:
                     predictive_posterior=values.get("predictive_posterior"),
                 )
             )
+        # Only the requested outputs are read from this E-step.
+        keep_causal, keep_predictive = _posteriors_to_keep(requested_outputs)
         posterior = self._predict(
             time_edges=settings.time_edges,
             log_likelihood_args=settings.log_likelihood_args,
@@ -1767,6 +1777,8 @@ class _EMMixin:
             accumulate_log_likelihoods=(
                 settings.store_log_likelihood or "log_likelihood" in requested_outputs
             ),
+            keep_causal_posterior=keep_causal,
+            keep_predictive_posterior=keep_predictive,
         )
         return _EMFinalEStep(posterior)
 

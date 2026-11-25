@@ -97,6 +97,7 @@ from non_local_detector.likelihoods.no_spike import (
 from non_local_detector.models._checkpointed import (
     _CheckpointedPredictionMixin,
     _PosteriorOutputs,
+    _posteriors_to_keep,
 )
 
 # EM looks these names up in models._em: patch them there, not here.
@@ -2229,6 +2230,7 @@ class _DetectorBase(
             )
             return results
 
+        keep_causal, keep_predictive = _posteriors_to_keep(requested_outputs)
         posterior = self._predict(
             time_edges=time_edges,
             log_likelihood_args=(
@@ -2241,6 +2243,8 @@ class _DetectorBase(
             n_chunks=n_chunks,
             discrete_state_transitions=predicted_transitions,
             accumulate_log_likelihoods=return_log_likelihood,
+            keep_causal_posterior=keep_causal,
+            keep_predictive_posterior=keep_predictive,
         )
 
         return convert_results_to_xarray(
@@ -2464,6 +2468,8 @@ class _DetectorBase(
         discrete_state_transitions: np.ndarray | None = None,
         accumulate_log_likelihoods: bool = False,
         transition_responses: bool = False,
+        keep_causal_posterior: bool = True,
+        keep_predictive_posterior: bool = True,
     ) -> _PosteriorOutputs:
         """
         Compute the posterior probabilities.
@@ -2499,14 +2505,19 @@ class _DetectorBase(
             expected discrete transitions between consecutive bins (EM's
             responses). Only for covariate-dependent transitions. By default
             False.
+        keep_causal_posterior, keep_predictive_posterior : bool, optional
+            If False, that posterior over state bins is not kept (None), so
+            the driver neither concatenates nor holds it; its state
+            probabilities are still returned. By default True.
 
         Returns
         -------
         posterior : _PosteriorOutputs
             Every output. ``log_likelihood`` is None when the log likelihoods
-            were neither given, cached nor accumulated. The three posteriors
-            over state bins stay on the device: callers copy to the host only
-            the ones they return or need there.
+            were neither given, cached nor accumulated, and a posterior that
+            was not kept is None. The posteriors over state bins stay on the
+            device: callers copy to the host only the ones they return or need
+            there.
         """
         # The public methods have checked already; EM reaches here after its
         # own fit. Kept as the engine's guard for direct calls.
@@ -2568,6 +2579,8 @@ class _DetectorBase(
                 cache_log_likelihoods=cache_likelihood,
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 host_outputs=False,
+                keep_causal_posterior=keep_causal_posterior,
+                keep_predictive_posterior=keep_predictive_posterior,
             )
         else:
             result = chunked_filter_smoother_covariate_dependent(
@@ -2587,6 +2600,8 @@ class _DetectorBase(
                 accumulate_log_likelihoods=accumulate_log_likelihoods,
                 host_outputs=False,
                 transition_responses=transition_responses,
+                keep_causal_posterior=keep_causal_posterior,
+                keep_predictive_posterior=keep_predictive_posterior,
             )
         return _PosteriorOutputs(
             marginal_log_likelihood=result.marginal_log_likelihood,
