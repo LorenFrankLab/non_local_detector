@@ -3211,10 +3211,10 @@ def chunked_filter_smoother(
         Keyword-only, and last, so that it cannot capture a positional argument
         aimed at a parameter that predates it (``dtype``). By default False.
     host_outputs : bool, optional, keyword-only
-        If True (the default), the three (n_time, n_state_bins) posteriors are
-        returned as NumPy arrays. If False, they stay on the device as JAX
+        If True (the default), the (n_time, n_state_bins) posteriors that are
+        returned are NumPy arrays. If False, they stay on the device as JAX
         arrays, so a caller that needs only some of them, or computes on them
-        on the device, does not copy all three to the host.
+        on the device, does not copy them all to the host.
     keep_causal_posterior : bool, optional, keyword-only
         If False, ``causal_posterior`` is None: the filtered rows are not
         concatenated, and each chunk's rows are released once the smoother
@@ -3985,10 +3985,10 @@ def chunked_filter_smoother_covariate_dependent(
         Keyword-only, and last, so that it cannot capture a positional argument
         aimed at a parameter that predates it (``dtype``). By default False.
     host_outputs : bool, optional, keyword-only
-        If True (the default), the three (n_time, n_state_bins) posteriors are
-        returned as NumPy arrays. If False, they stay on the device as JAX
+        If True (the default), the (n_time, n_state_bins) posteriors that are
+        returned are NumPy arrays. If False, they stay on the device as JAX
         arrays, so a caller that needs only some of them, or computes on them
-        on the device, does not copy all three to the host.
+        on the device, does not copy them all to the host.
     transition_responses : bool, optional, keyword-only
         If True, the smoother also returns the expected discrete transitions
         between consecutive rows, the responses of the covariate M-step, as
