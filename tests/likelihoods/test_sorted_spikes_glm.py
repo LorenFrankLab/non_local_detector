@@ -1155,6 +1155,78 @@ class TestWarmStartAndPreparedRateMaps:
 
         np.testing.assert_allclose(coef, cold, rtol=1e-4, atol=1e-4)
 
+    def test_warm_start_recovers_rate_after_silent_cell_gains_spikes(self):
+        """A warm-started cell stuck at the rate floor wakes up once it gets spikes.
+
+        Fitting with zero counts places the intercept at ``log(rate_floor)``,
+        where ``exp(eta) <= rate_floor`` zeroes the Poisson data gradient.
+        Warm-starting from those coefficients after the cell gains spikes must
+        recover the true positive rate rather than staying silent at the floor.
+        """
+        # Exact 1-parameter intercept-only counterexample: 5 s exposure.
+        design_intercept = np.ones((5, 1), dtype=np.float32)
+        exposure = np.ones(5, dtype=np.float32)
+        silent_coef = np.asarray(
+            fit_poisson_regressions(
+                design_intercept,
+                np.zeros((1, 5), dtype=np.float32),
+                exposure,
+            )
+        )
+        np.testing.assert_allclose(np.exp(silent_coef[0, 0]), EPS, rtol=1e-5, atol=0.0)
+
+        active_counts = np.ones((1, 5), dtype=np.float32)  # 5 spikes over 5 s = 1 Hz
+        warm_coef = np.asarray(
+            fit_poisson_regressions(
+                design_intercept,
+                active_counts,
+                exposure,
+                initial_coefficients=silent_coef,
+            )
+        )
+        cold_coef = np.asarray(
+            fit_poisson_regressions(design_intercept, active_counts, exposure)
+        )
+        np.testing.assert_allclose(
+            np.exp(design_intercept @ warm_coef.T), 1.0, rtol=1e-4, atol=0.0
+        )
+        np.testing.assert_allclose(warm_coef, cold_coef, rtol=1e-4, atol=1e-4)
+
+        # Multi-cell, multi-basis case: cell 0 starts silent at floor and gains
+        # spikes; cell 1 starts from a good warm start and continues converging.
+        rng = np.random.default_rng(19)
+        x = np.linspace(-1.0, 1.0, 40, dtype=np.float32)
+        design = np.column_stack([np.ones_like(x), x, x**2])
+        exp_multi = np.full(40, 0.25, dtype=np.float32)
+        counts_init = np.vstack(
+            [
+                np.zeros(40, dtype=np.float32),
+                rng.poisson(np.exp(1.2 - 1.5 * x**2) * exp_multi).astype(np.float32),
+            ]
+        )
+        init_coef = np.asarray(
+            fit_poisson_regressions(design, counts_init, exp_multi, l2_penalty=0.05)
+        )
+        counts_next = np.vstack(
+            [
+                rng.poisson(np.exp(0.8 + 1.0 * x) * exp_multi).astype(np.float32),
+                counts_init[1],
+            ]
+        )
+        warm_multi = np.asarray(
+            fit_poisson_regressions(
+                design,
+                counts_next,
+                exp_multi,
+                l2_penalty=0.05,
+                initial_coefficients=init_coef,
+            )
+        )
+        cold_multi = np.asarray(
+            fit_poisson_regressions(design, counts_next, exp_multi, l2_penalty=0.05)
+        )
+        np.testing.assert_allclose(warm_multi, cold_multi, rtol=1e-4, atol=1e-4)
+
     def test_prepared_rate_map_basis_matches_fit_rate_maps_open_and_graph(
         self, line_env_100cm, simple_spike_data
     ):

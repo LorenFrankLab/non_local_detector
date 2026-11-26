@@ -845,6 +845,12 @@ def test_validation_rejects_invalid_flow_parameters():
 @pytest.mark.unit
 def test_registry_entry_and_no_recompiles_across_spike_counts():
     """Algorithm is registered and padded predict avoids recompiling across chunks."""
+    from non_local_detector.likelihoods.clusterless_flow_mixture import (
+        _predict_local_block_jax,
+        _predict_nonlocal_block_jax,
+    )
+    from non_local_detector.likelihoods.sorted_spikes_glm import glm_rates
+
     assert "clusterless_flow_mixture" in _CLUSTERLESS_ALGORITHMS
     env, time, pos, sp_t, sp_m = _simulate_curved_banana_session(seed=3, n_time=600)
     model = fit_clusterless_flow_mixture_encoding_model(
@@ -863,21 +869,36 @@ def test_registry_entry_and_no_recompiles_across_spike_counts():
     )
     refs = fit_mark_references(sp_m, kernel_scale=1.0)
     edges = time_edges_from_centers(time[:100])
-    # Varying spike counts inside the same power-of-two bucket [17..32] should
-    # produce valid finite output without errors.
-    for n_sp in (18, 25, 31):
-        sub_t = [np.linspace(time[1], time[98], n_sp)]
-        sub_m = [sp_m[0][:n_sp]]
-        ll = predict_clusterless_flow_mixture_log_likelihood(
-            time[:100],
-            pos[:100],
-            sub_t,
-            sub_m,
-            time_edges=edges,
-            mark_reference=refs,
-            **model,
-        )
-        assert np.all(np.isfinite(np.asarray(ll)))
+    # Varying spike counts inside the same power-of-two bucket [17..32] must not
+    # recompile either the non-local or local kernels or glm_rates.
+    for is_local in (False, True):
+        glm_after_first = None
+        local_after_first = None
+        nonlocal_after_first = None
+        for n_sp in (18, 25, 31):
+            sub_t = [np.linspace(time[1], time[98], n_sp)]
+            sub_m = [sp_m[0][:n_sp]]
+            ll = predict_clusterless_flow_mixture_log_likelihood(
+                time[:100],
+                pos[:100],
+                sub_t,
+                sub_m,
+                time_edges=edges,
+                mark_reference=refs,
+                is_local=is_local,
+                **model,
+            )
+            assert np.all(np.isfinite(np.asarray(ll)))
+            if glm_after_first is None:
+                glm_after_first = glm_rates._cache_size()
+                local_after_first = _predict_local_block_jax._cache_size()
+                nonlocal_after_first = _predict_nonlocal_block_jax._cache_size()
+            else:
+                assert glm_rates._cache_size() == glm_after_first, (
+                    f"glm_rates recompiled for is_local={is_local}, n_sp={n_sp}"
+                )
+                assert _predict_local_block_jax._cache_size() == local_after_first
+                assert _predict_nonlocal_block_jax._cache_size() == nonlocal_after_first
 
 
 @pytest.mark.unit
@@ -1040,6 +1061,29 @@ def test_flow_full_covariance_floor_clamps_without_shifting_and_enforces_zca_flo
     assert len(trace) >= 2
     assert np.all(np.diff(trace) >= -1e-6), f"Non-monotone full-cov EM trace: {trace}"
 
+    # Exact 1-D, 1-component full-covariance EM must also be monotone non-decreasing.
+    sp_m_1d = [rng.normal(0.0, 2.5, size=(30, 1))]
+    enc_1d = fit_clusterless_flow_mixture_encoding_model(
+        time,
+        pos,
+        sp_t,
+        sp_m_1d,
+        env,
+        n_mark_components=1,
+        covariance_rank=None,
+        mark_reg_covar=1.0,
+        n_flow_layers=0,
+        n_em_iterations=5,
+        em_validation_blocks=0,
+        disable_progress_bar=True,
+        random_state=0,
+    )
+    trace_1d = enc_1d["em_diagnostics"]["per_electrode"][0]["train_log_likelihood"]
+    assert len(trace_1d) >= 2
+    assert np.all(np.diff(trace_1d) >= -1e-6), (
+        f"Non-monotone 1-D full-cov EM trace: {trace_1d}"
+    )
+
     # Identical marks + identity noise covariance at iter=0 must enforce unit floor.
     sp_t_id = [np.linspace(0.2, 3.5, 5)]
     sp_m_id = [np.tile(np.array([5.0, -3.0]), (5, 1))]
@@ -1120,3 +1164,207 @@ def test_flow_split_event_em_and_single_fold_owner():
     else:
         np.testing.assert_allclose(va_ls[0] + va_rs[0], 1.0, atol=1e-12)
         assert va_ls[0] == 0.0
+
+
+@pytest.mark.unit
+def test_flow_validation_folds_disjoint_on_two_sample_intervening_spikes():
+    """With 2 tracking samples and 6 intervening spikes, train and val spikes are disjoint."""
+    from non_local_detector.encoding_time import prepare_encoding_support
+    from non_local_detector.likelihoods.clusterless_flow_mixture import (
+        _partition_fold_shares,
+    )
+
+    time = np.array([0.0, 1.0], dtype=np.float64)
+    pos = np.array([[10.0], [90.0]], dtype=np.float64)
+    env = _make_1d_env(100.0, 20.0)
+    sp_t = np.array([0.1, 0.25, 0.4, 0.6, 0.75, 0.9], dtype=np.float64)
+    sp_m = np.linspace(-2.0, 2.0, 12, dtype=np.float64).reshape(6, 2)
+
+    support, _, _, _ = prepare_encoding_support(time, pos, None)
+    _, left_pos, right_pos, frac = support.event_basis(sp_t)
+    left_sh = 1.0 - frac
+    right_sh = frac
+    assert np.all(left_pos == 0)
+    assert np.all(right_pos == 1)
+
+    for val_idx in (0, 1):
+        val_mask = np.arange(2) == val_idx
+        tr_mask = ~val_mask
+        tr_sel, tr_ls, tr_rs = _partition_fold_shares(
+            left_pos, right_pos, left_sh, right_sh, tr_mask
+        )
+        va_sel, va_ls, va_rs = _partition_fold_shares(
+            left_pos, right_pos, left_sh, right_sh, val_mask
+        )
+        # No spike may belong to both training and validation; every spike has one owner.
+        assert not np.any(tr_sel & va_sel)
+        assert np.all(tr_sel | va_sel)
+        np.testing.assert_allclose(
+            float(np.sum(tr_ls + tr_rs) + np.sum(va_ls + va_rs)),
+            float(np.sum(left_sh + right_sh)),
+            atol=1e-12,
+        )
+
+    # End-to-end fit with 2 validation blocks must also run cleanly.
+    enc = fit_clusterless_flow_mixture_encoding_model(
+        time,
+        pos,
+        [sp_t],
+        [sp_m],
+        env,
+        n_mark_components=2,
+        n_flow_layers=2,
+        n_em_iterations=2,
+        flow_steps_per_em=2,
+        em_validation_blocks=2,
+        disable_progress_bar=True,
+        random_state=0,
+    )
+    assert enc["mark_mixtures"][0] is not None
+
+
+@pytest.mark.unit
+def test_flow_split_position_continuous_across_step_midpoint():
+    """Spikes at 9.98 cm vs 10.02 cm on a 0->20 cm step vary continuously, not abruptly."""
+    from non_local_detector.encoding_time import prepare_encoding_support
+    from non_local_detector.likelihoods.clusterless_flow_mixture import (
+        _accumulate_cell_counts,
+        _e_step_latent_split,
+    )
+
+    # Tracking steps from 0 cm at t=0 to 20 cm at t=1.
+    time = np.array([0.0, 1.0], dtype=np.float64)
+    pos = np.array([[0.0], [20.0]], dtype=np.float64)
+    support, _, _, _ = prepare_encoding_support(time, pos, None)
+    # Spikes at interpolated positions 9.98 cm (t=0.499) and 10.02 cm (t=0.501).
+    sp_t = np.array([0.499, 0.501], dtype=np.float64)
+    _, l_pos, r_pos, frac = support.event_basis(sp_t)
+    l_sh = 1.0 - frac
+    r_sh = frac
+    np.testing.assert_allclose(l_sh, [0.501, 0.499], atol=1e-12)
+    np.testing.assert_allclose(r_sh, [0.499, 0.501], atol=1e-12)
+
+    # Identical marks; cell 0 has high rate for component 0, cell 1 has much
+    # lower total rate and reversed component preference so ll_l != ll_r too.
+    z = np.zeros((2, 2), dtype=np.float64)
+    ld = np.zeros((2,), dtype=np.float64)
+    cell_lr = np.log(np.array([[25.0, 0.1], [0.1, 2.0]]))
+    means = np.zeros((2, 2), dtype=np.float64)
+    basis = np.broadcast_to(np.eye(2)[None, :, :], (2, 2, 2)).copy()
+    bvar = np.ones((2, 2), dtype=np.float64)
+    nvar = np.ones((2,), dtype=np.float64)
+
+    resp_l, resp_r, ll_l, ll_r = _e_step_latent_split(
+        z, ld, cell_lr[l_pos], cell_lr[r_pos], means, basis, bvar, nvar
+    )
+    combined_resp = l_sh[:, None] * resp_l + r_sh[:, None] * resp_r
+    combined_ll = l_sh * ll_l + r_sh * ll_r
+    # Continuous O(0.002) change across the midpoint, never a discontinuous flip.
+    assert np.max(np.abs(combined_resp[0] - combined_resp[1])) < 0.005
+    assert abs(float(combined_ll[0] - combined_ll[1])) < 0.01
+
+    sample_cells = np.array([0, 1], dtype=np.int64)
+    c_a = _accumulate_cell_counts(
+        sample_cells,
+        2,
+        l_pos[:1],
+        r_pos[:1],
+        l_sh[:1],
+        r_sh[:1],
+        resp_l[:1],
+        resp_r[:1],
+    )
+    c_b = _accumulate_cell_counts(
+        sample_cells,
+        2,
+        l_pos[1:],
+        r_pos[1:],
+        l_sh[1:],
+        r_sh[1:],
+        resp_l[1:],
+        resp_r[1:],
+    )
+    assert np.max(np.abs(c_a - c_b)) < 0.005
+
+
+@pytest.mark.unit
+def test_flow_minibatch_sampling_unbiased_for_unequal_spike_weights():
+    """Weighted mini-batching at batch_size=1 matches the full weighted objective."""
+    from non_local_detector.likelihoods.clusterless_flow_mixture import (
+        _sample_flow_batches,
+    )
+
+    n_hi, n_lo, n_zero = 10, 10, 2
+    n_tot = n_hi + n_lo + n_zero
+    # Encode spike identity in column 0 so we can measure exact expectations.
+    u = np.zeros((n_tot, 2), dtype=np.float64)
+    u[:n_hi, 0] = 1.0  # heavy spikes -> value 1.0
+    u[n_hi : n_hi + n_lo, 0] = -1.0  # light spikes -> value -1.0
+    u[n_hi + n_lo :, 0] = 99.0  # zero-weight spikes -> must never be sampled
+    w = np.array([1.0] * n_hi + [1e-4] * n_lo + [0.0] * n_zero, dtype=np.float64)
+    lw = np.zeros((n_tot, 2), dtype=np.float64)
+
+    rng = np.random.default_rng(7)
+    u_b, w_b, _ = _sample_flow_batches(
+        u, w, lw, n_steps=4000, batch_size=1, k_pad=2, rng=rng
+    )
+    u_vals = np.asarray(u_b[:, 0, 0], dtype=np.float64)
+    w_vals = np.asarray(w_b[:, 0], dtype=np.float64)
+
+    # Zero-weight spikes must never appear in sampled mini-batches.
+    assert not np.any(u_vals > 50.0)
+    # Per-batch normalized expectation matches exact weighted mean (~0.9998, NOT 0.0).
+    exact_mean = float(np.dot(w, u[:, 0]) / np.sum(w))
+    # Simulate _loss's per-batch normalization: sum(w_b * val) / sum(w_b).
+    batch_means = (w_vals * u_vals) / np.maximum(w_vals, 1e-12)
+    np.testing.assert_allclose(float(np.mean(batch_means)), exact_mean, atol=0.01)
+
+
+@pytest.mark.unit
+def test_position_free_responsibilities_blocked_parity_and_bounded_chunks(monkeypatch):
+    """Initial responsibilities chunk by _E_STEP_BLOCK and match dense float64."""
+    from non_local_detector.likelihoods import clusterless_flow_mixture as cfm
+
+    rng = np.random.default_rng(31)
+    n_sp, n_dims, n_comp, rank = 2500, 6, 5, 3
+    z = rng.normal(size=(n_sp, n_dims))
+    weights = rng.dirichlet(np.ones(n_comp))
+    means = rng.normal(scale=0.5, size=(n_comp, n_dims))
+    basis = np.empty((n_comp, n_dims, rank), dtype=np.float64)
+    for k in range(n_comp):
+        q, _ = np.linalg.qr(rng.normal(size=(n_dims, rank)))
+        basis[k] = q
+    bvar = rng.uniform(1.1, 4.0, size=(n_comp, rank))
+    nvar = rng.uniform(0.3, 1.5, size=(n_dims,))
+
+    # Exact dense reference computed in one shot on full array.
+    inv_sqrt_psi = 1.0 / np.sqrt(nvar)
+    log_det_psi = float(np.sum(np.log(nvar)))
+    delta = (z * inv_sqrt_psi[None, :])[:, None, :] - (means * inv_sqrt_psi[None, :])[
+        None, :, :
+    ]
+    proj = np.einsum("nkd,kdr->nkr", delta, basis)
+    recon = np.einsum("nkr,kdr->nkd", proj, basis)
+    orth_sq = np.sum((delta - recon) ** 2, axis=-1)
+    par_sq = np.sum((proj * proj) / bvar[None, :, :], axis=-1)
+    log_const = -0.5 * (
+        n_dims * np.log(2.0 * np.pi) + log_det_psi + np.sum(np.log(bvar), axis=-1)
+    )
+    lw_ref = log_const[None, :] - 0.5 * (orth_sq + par_sq) + np.log(weights)[None, :]
+    lw_ref -= np.max(lw_ref, axis=1, keepdims=True)
+    resp_ref = np.exp(lw_ref)
+    resp_ref /= np.sum(resp_ref, axis=1, keepdims=True)
+
+    # Track chunk sizes passed to _latent_woodbury_log_density_f64.
+    seen_chunks: list[int] = []
+    orig_fn = cfm._latent_woodbury_log_density_f64
+
+    def spy_density(z_blk, *args, **kwargs):
+        seen_chunks.append(int(z_blk.shape[0]))
+        return orig_fn(z_blk, *args, **kwargs)
+
+    monkeypatch.setattr(cfm, "_latent_woodbury_log_density_f64", spy_density)
+    resp = cfm._position_free_responsibilities_f64(z, weights, means, basis, bvar, nvar)
+    np.testing.assert_allclose(resp, resp_ref, rtol=1e-12, atol=1e-12)
+    assert len(seen_chunks) == 3  # 1024 + 1024 + 452
+    assert max(seen_chunks) <= cfm._E_STEP_BLOCK

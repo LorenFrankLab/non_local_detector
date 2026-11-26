@@ -12,8 +12,11 @@ where:
 
 - **Layer 0 (standardization / optional ZCA whitening)** centers and scales
   marks into dimensionless coordinates (or applies symmetric ZCA whitening
-  ``Sigma_noise^{-1/2}`` when measured ``noise_covariances`` are supplied),
-  preserving exact affine unit-change equivariance;
+  ``Sigma_noise^{-1/2}`` followed by per-channel scaling when measured
+  ``noise_covariances`` are supplied), preserving exact equivariance under
+  uniform scalar unit changes (``m -> a*m + b`` with ``a > 0`` and
+  ``noise_covariances -> a^2 * noise_covariances`` or
+  ``mark_reg_covar -> a^2 * mark_reg_covar``);
 - **Bijector ``g_theta``** is a stack of Rational-Quadratic Neural Spline
   (RQS) coupling layers (Durkan et al. 2019) with linear identity tails outside
   ``[-B, B]`` (slope 1, log-determinant 0), zero-initialized so iteration 0 is
@@ -48,6 +51,7 @@ fallback. Prediction and ``.nld`` loading run in pure JAX without ``optax``.
 
 from __future__ import annotations
 
+import importlib
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -165,15 +169,16 @@ _FLOW_STEP_KERNEL_CACHE: dict[tuple[Any, ...], Any] = {}
 def _require_optax() -> Any:
     """Import optax or raise a clear installation error."""
     try:
-        import optax
+        return importlib.import_module("optax")
     except ImportError as error:
+        if error.name != "optax":
+            raise
         msg = (
             "clusterless_flow_mixture trains its normalizing flow with optax, "
             "which is not installed. Install it with "
             "`pip install non_local_detector[neural]`."
         )
         raise ImportError(msg) from error
-    return optax
 
 
 def _power_of_two(n: int) -> int:
@@ -1003,20 +1008,27 @@ def _latent_woodbury_log_density_f64(
     basis_variances: np.ndarray,
     noise_variance: np.ndarray,
 ) -> np.ndarray:
-    """Exact float64 latent Gaussian log-density ``(N, K)`` on host."""
-    n_dims = z.shape[1]
+    """Exact float64 latent Gaussian log-density ``(N, K)`` on host in bounded blocks."""
+    n_spikes, n_dims = z.shape
+    n_comp = means.shape[0]
+    if n_spikes == 0:
+        return np.empty((0, n_comp), dtype=np.float64)
     inv_sqrt_psi = 1.0 / np.sqrt(noise_variance)
     log_det_psi = float(np.sum(np.log(noise_variance)))
-    z_std = z * inv_sqrt_psi[None, :]
     mu_std = means * inv_sqrt_psi[None, :]
-    delta = z_std[:, None, :] - mu_std[None, :, :]
-    proj = np.einsum("nkd,kdr->nkr", delta, basis)
-    recon = np.einsum("nkr,kdr->nkd", proj, basis)
-    orth_sq = np.sum((delta - recon) ** 2, axis=-1)
-    par_sq = np.sum((proj * proj) / basis_variances[None, :, :], axis=-1)
     log_det_k = log_det_psi + np.sum(np.log(basis_variances), axis=-1)
     log_const = -0.5 * (float(n_dims) * np.log(2.0 * np.pi) + log_det_k)
-    return cast(np.ndarray, log_const[None, :] - 0.5 * (orth_sq + par_sq))
+    out = np.empty((n_spikes, n_comp), dtype=np.float64)
+    for start in range(0, n_spikes, _E_STEP_BLOCK):
+        stop = min(start + _E_STEP_BLOCK, n_spikes)
+        z_std = z[start:stop] * inv_sqrt_psi[None, :]
+        delta = z_std[:, None, :] - mu_std[None, :, :]
+        proj = np.einsum("nkd,kdr->nkr", delta, basis)
+        recon = np.einsum("nkr,kdr->nkd", proj, basis)
+        orth_sq = np.sum((delta - recon) ** 2, axis=-1)
+        par_sq = np.sum((proj * proj) / basis_variances[None, :, :], axis=-1)
+        out[start:stop] = log_const[None, :] - 0.5 * (orth_sq + par_sq)
+    return out
 
 
 def _project_covariances_to_orthonormal_basis(
@@ -1190,7 +1202,9 @@ class FlowMarkMixture:
     input_mean : np.ndarray, shape (n_features,)
         Layer 0 centering offset in raw mark units.
     input_scale : np.ndarray, shape (n_features,)
-        Layer 0 positive per-feature scale (ones when ``noise_whitener`` is set).
+        Layer 0 positive per-feature scale (applied after optional
+        ``noise_whitener`` to keep high-SNR peaks inside ``[-spline_bound,
+        spline_bound]``).
     noise_whitener : np.ndarray or None, shape (n_features, n_features)
         Symmetric ZCA whitener ``Sigma_noise^{-1/2}``, or None.
     log_det_input : float
@@ -2179,6 +2193,15 @@ def _fit_input_standardization(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, float, np.ndarray]:
     """Compute Layer 0 centering + optional ZCA whitening + scaling and variance floor.
 
+    Uniform scalar unit changes (``m -> a*m + b`` with ``a > 0``, together with
+    ``noise_covariance -> a^2 * noise_covariance`` or
+    ``mark_reg_covar -> a^2 * mark_reg_covar``) leave the standardized
+    coordinates ``u`` invariant and shift ``log_det_input`` by ``-D * log(a)``.
+    With correlated ``noise_covariance``, anisotropic per-channel rescaling
+    ``A`` does not commute with ``Sigma`` (``(A Sigma A)^{-1/2} = Q Sigma^{-1/2} A^{-1}``
+    with an orthogonal rotation ``Q != I``), which changes the coordinate-aligned
+    post-whitening scale and coupling layers.
+
     Returns ``(input_mean, input_scale, noise_whitener, log_det_input, min_latent_var)``.
     """
     total_w = float(np.sum(spike_weights))
@@ -2391,6 +2414,29 @@ def _evaluate_flow_batched(
     return z_out, ld_out
 
 
+def _position_free_responsibilities_f64(
+    z: np.ndarray,
+    weights: np.ndarray,
+    means: np.ndarray,
+    basis: np.ndarray,
+    basis_variances: np.ndarray,
+    noise_variance: np.ndarray,
+) -> np.ndarray:
+    """Compute initial position-free responsibilities ``(N, K)`` in bounded blocks."""
+    n_spikes = z.shape[0]
+    n_comp = means.shape[0]
+    resp = np.empty((n_spikes, n_comp), dtype=np.float64)
+    log_w = np.log(np.maximum(weights, 1e-300))[None, :]
+    for start in range(0, n_spikes, _E_STEP_BLOCK):
+        stop = min(start + _E_STEP_BLOCK, n_spikes)
+        log_gauss = _latent_woodbury_log_density_f64(
+            z[start:stop], means, basis, basis_variances, noise_variance
+        )
+        lw = log_gauss + log_w
+        resp[start:stop] = np.exp(lw - logsumexp(lw, axis=1, keepdims=True))
+    return resp
+
+
 def _e_step_latent_split(
     z: np.ndarray,
     log_det_total: np.ndarray,
@@ -2467,7 +2513,13 @@ def _sample_flow_batches(
     k_pad: int,
     rng: np.random.Generator,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Build static-shape ``(n_steps, b_pad, ...)`` batches for optax scan."""
+    """Build static-shape ``(n_steps, b_pad, ...)`` batches for optax scan.
+
+    When mini-batching (``n_spikes > batch_size``), draws indices proportionally
+    to ``spike_weights`` and assigns uniform unit batch weights so the
+    per-batch mean in ``_loss`` is an exact unbiased estimator of the
+    weight-normalized objective at every ``batch_size >= 1``.
+    """
     n_spikes, n_dims = u.shape
     n_comp = log_comp_weights.shape[1]
     use_full = n_spikes <= batch_size
@@ -2489,12 +2541,23 @@ def _sample_flow_batches(
             jnp.broadcast_to(jnp.asarray(lw_one)[None, :, :], (n_steps, b_pad, k_pad)),
         )
 
-    idx = rng.integers(0, n_spikes, size=(n_steps, b_pad))
+    w_pos = np.maximum(np.asarray(spike_weights, dtype=np.float64), 0.0)
+    nz = np.flatnonzero(w_pos > 0.0)
+    if nz.size == 0:
+        return (
+            jnp.zeros((n_steps, b_pad, n_dims), dtype=jnp.float32),
+            jnp.zeros((n_steps, b_pad), dtype=jnp.float32),
+            jnp.full((n_steps, b_pad, k_pad), -1e30, dtype=jnp.float32),
+        )
+    cdf = np.cumsum(w_pos[nz])
+    cdf /= cdf[-1]
+    cdf[-1] = 1.0
+    pick = np.searchsorted(cdf, rng.random((n_steps, b_pad)), side="right")
+    idx = nz[np.minimum(pick, nz.size - 1)]
     u_f32 = u.astype(np.float32)
-    w_f32 = spike_weights.astype(np.float32)
     return (
         jnp.asarray(u_f32[idx]),
-        jnp.asarray(w_f32[idx]),
+        jnp.ones((n_steps, b_pad), dtype=jnp.float32),
         jnp.asarray(lw_padded[idx]),
     )
 
@@ -2660,14 +2723,6 @@ def _accumulate_cell_counts(
     return counts
 
 
-def _log_glm_rates_host(design: np.ndarray, coefficients: np.ndarray) -> np.ndarray:
-    """Evaluate floored ``log glm_rates(design, coefficients)`` as float64 ``(N, K)``."""
-    rates = np.asarray(
-        glm_rates(jnp.asarray(design), jnp.asarray(coefficients)), dtype=np.float64
-    )
-    return np.log(rates)
-
-
 def _fit_single_electrode_flow_em(
     *,
     electrode: int,
@@ -2812,12 +2867,11 @@ def _fit_single_electrode_flow_em(
             optimizer.init(flow_params_0) if topology.flow_mode != "identity" else None
         )
 
-        # Initial position-free responsibilities at identity flow (iteration 0).
-        log_gauss_0 = _latent_woodbury_log_density_f64(
-            u_tr, means_0, basis_0, bvar_0, nvar_0
+        # Initial position-free responsibilities at identity flow (iteration 0),
+        # evaluated in bounded ``_E_STEP_BLOCK`` chunks to avoid full (N, K, D) RAM spikes.
+        resp_0 = _position_free_responsibilities_f64(
+            u_tr, weights_0, means_0, basis_0, bvar_0, nvar_0
         )
-        lw_0 = log_gauss_0 + np.log(np.maximum(weights_0, 1e-300))[None, :]
-        resp_0 = np.exp(lw_0 - logsumexp(lw_0, axis=1, keepdims=True))
 
         cell_counts_0 = _accumulate_cell_counts(
             sample_cells,
@@ -3298,7 +3352,11 @@ def fit_clusterless_flow_mixture_encoding_model(
         spatial coupling layers instead of dense MLP coupling.
     noise_covariances : sequence of array_like or None, optional
         Optional per-electrode SPD channel noise covariances ``(n_channels, n_channels)``,
-        applied via symmetric ZCA whitening in Layer 0.
+        applied via symmetric ZCA whitening followed by per-channel scaling in
+        Layer 0. Preserves exact equivariance under uniform scalar unit changes
+        (``m -> a*m + b`` with ``a > 0`` and ``noise_covariances -> a^2 * noise_covariances``);
+        anisotropic per-channel rescaling with correlated noise rotates the ZCA
+        basis.
     neighborhood_radius : float or None, optional
         Physical radius for neighbor-masked coupling layers when
         ``contact_positions`` is given. None auto-infers ``3 * median_pitch``.
@@ -4060,22 +4118,9 @@ def predict_clusterless_flow_mixture_log_likelihood(
         )
         log_det_in_j = jnp.asarray(mixture.log_det_input, dtype=jnp.float32)
 
-        if is_local:
-            spike_pos = snap_off_track_positions(
-                get_position_at_time(
-                    local_pos_time,
-                    local_pos,
-                    select_spike_rows(spikes.times, spikes.selection),
-                    environment,
-                ),
-                environment,
-            )
-            spike_design = jnp.asarray(
-                make_spline_predict_matrix(emission_design_info, spike_pos)
-            )
-            spike_log_rates_all = np.asarray(
-                jnp.log(glm_rates(spike_design, coeffs_p)), dtype=np.float32
-            )
+        selected_times = (
+            select_spike_rows(spikes.times, spikes.selection) if is_local else None
+        )
 
         for start in range(0, n_sp, spike_block_size):
             stop = min(start + spike_block_size, n_sp)
@@ -4092,9 +4137,24 @@ def predict_clusterless_flow_mixture_log_likelihood(
             ids_j = jnp.asarray(ids_pad)
 
             if is_local:
-                lr_blk = jnp.asarray(
-                    pad_rows(spike_log_rates_all[start:stop], n_pad), dtype=jnp.float32
+                assert selected_times is not None
+                blk_pos = snap_off_track_positions(
+                    get_position_at_time(
+                        local_pos_time,
+                        local_pos,
+                        selected_times[start:stop],
+                        environment,
+                    ),
+                    environment,
                 )
+                blk_design = jnp.asarray(
+                    pad_rows(
+                        make_spline_predict_matrix(emission_design_info, blk_pos),
+                        n_pad,
+                    ),
+                    dtype=jnp.float32,
+                )
+                lr_blk = jnp.log(glm_rates(blk_design, coeffs_p))
                 terms = _predict_local_block_jax(
                     u_blk,
                     bg_blk,
