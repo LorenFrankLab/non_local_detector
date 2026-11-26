@@ -84,6 +84,23 @@ def _driver_outputs(requested_outputs: set[str], *, spatial: bool) -> set[str]:
     return outputs
 
 
+def _posteriors_to_keep(requested_outputs: set[str]) -> tuple[bool, bool]:
+    """Whether ``requested_results`` reads the filtered and predictive posteriors.
+
+    Parameters
+    ----------
+    requested_outputs : set of str
+        Names from ``_normalize_return_outputs``.
+
+    Returns
+    -------
+    keep_causal_posterior, keep_predictive_posterior : bool
+        The ``_predict`` flags that keep only the requested posteriors.
+    """
+    outputs = _driver_outputs(requested_outputs, spatial=True)
+    return "causal_posterior" in outputs, "predictive_posterior" in outputs
+
+
 @dataclass(frozen=True)
 class _PosteriorOutputs:
     """Outputs of one forward-backward pass over the decode bins.
