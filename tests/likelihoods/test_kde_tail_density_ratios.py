@@ -24,6 +24,7 @@ from non_local_detector.likelihoods.common import (
     _KDE_SAMPLE_TILE,
     LOG_EPS,
     KDEModel,
+    _compiled_log_space_kde_log_density,
     _compiled_scaled_kde_log_density,
     _sorted_sample_keys,
     _tiled_kde_rows,
@@ -31,7 +32,12 @@ from non_local_detector.likelihoods.common import (
     kde_log_density,
     log_density_intensity,
     log_space_kde_log_density,
+    padded_tile_count,
     true_kde_log_density,
+)
+from non_local_detector.likelihoods.common.kernel_density import (
+    _tiled_log_space_kde_log_densities,
+    _tiled_scaled_kde_log_densities,
 )
 from tests.likelihoods.conftest import (
     count_compilations,
@@ -511,28 +517,80 @@ def test_batched_log_densities_match_each_model(n_dims):
         )
 
 
+def _compiled_workspace(compiled):
+    return compiled.compile().memory_analysis().temp_size_in_bytes
+
+
 @pytest.mark.parametrize(
-    ("n_models", "n_samples", "block_size"),
-    [(16, 65_536, 1_024), (40, 65_536, 1_024), (3, 4_096, 100), (16, 20_000_000, 64)],
+    ("n_models", "n_samples", "n_points", "compare_single"),
+    [(1_000, 10_000, 4_000, False), (22, 40_000, 50_000, True)],
+    ids=["many-models", "many-points"],
 )
-def test_tiled_kernels_stay_within_the_widest_model_workspace(
-    n_models, n_samples, block_size
+def test_tiled_kernel_workspace_stays_within_the_kernel_budget(
+    n_models, n_samples, n_points, compare_single
 ):
-    """A step of tiles evaluates at most half the kernel entries of the widest
-    model's own block (or one tile), within the kernel budget, and one
-    block's tile sums fit it."""
+    """The tiled passes' compiled workspace, sized as ``kde_log_densities``
+    sizes them, holds at most twice the kernel budget beyond a few copies of
+    their output; with few large models it is at most the widest model's own
+    single-model pass. The log-space pass is sized for every model flagged.
+    2-D points, ``block_size=10_000``, the ``sorted_spikes_kde`` default."""
+    block_size, n_dims = 10_000, 2
+    sds = jax.ShapeDtypeStruct
     widest = -(-n_samples // _KDE_SAMPLE_TILE)
-    n_tiles = n_models * widest
-    points = jax.ShapeDtypeStruct((1_024, 1), jnp.float32)
-    tile_samples = jax.ShapeDtypeStruct((n_tiles, _KDE_SAMPLE_TILE, 1), jnp.float32)
-    tile_weights = jax.ShapeDtypeStruct((n_tiles, _KDE_SAMPLE_TILE), jnp.float32)
-    rows, batch_size = _tiled_kde_rows(
-        block_size, points, tile_samples, jnp.ones(1), tile_weights, widest
+    points = sds((n_points, n_dims), jnp.float32)
+    std = jnp.full(n_dims, 3.0)
+
+    def pass_tiles(log_space):
+        sample_dtype = sds((1, _KDE_SAMPLE_TILE, n_dims), jnp.float32)
+        weight_dtype = sds((1, _KDE_SAMPLE_TILE), jnp.float32)
+        rows, batch_size, n_tiles = _tiled_kde_rows(
+            block_size,
+            points,
+            padded_tile_count(n_models * widest),
+            std,
+            sample_dtype,
+            weight_dtype,
+            widest,
+            log_space=log_space,
+        )
+        tiles = (
+            sds((n_tiles, _KDE_SAMPLE_TILE, n_dims), jnp.float32),
+            sds((n_tiles, _KDE_SAMPLE_TILE), jnp.float32),
+            sds((n_tiles,), jnp.int32),
+        )
+        return rows, batch_size, tiles
+
+    rows, batch_size, tiles = pass_tiles(False)
+    scaled = _compiled_workspace(
+        _tiled_scaled_kde_log_densities.lower(
+            points,
+            *tiles,
+            sds((n_models,), jnp.int32),
+            std,
+            None,
+            rows=rows,
+            batch_size=batch_size,
+        )
     )
-    assert 1 <= rows <= block_size
-    assert 1 <= batch_size <= n_tiles
-    step = batch_size * _KDE_SAMPLE_TILE * rows
-    assert step <= max(_KDE_SAMPLE_TILE * rows, widest * _KDE_SAMPLE_TILE * rows // 2)
-    assert step * 4 <= _KDE_BLOCK_KERNEL_BYTES
-    if n_tiles * 4 <= _KDE_BLOCK_KERNEL_BYTES:
-        assert n_tiles * rows * 4 <= _KDE_BLOCK_KERNEL_BYTES
+    rows, batch_size, tiles = pass_tiles(True)
+    log_space = _compiled_workspace(
+        _tiled_log_space_kde_log_densities.lower(
+            points, *tiles, std, n_models=n_models, rows=rows, batch_size=batch_size
+        )
+    )
+    outputs = 8 * n_models * n_points * 4
+    assert scaled <= 2 * _KDE_BLOCK_KERNEL_BYTES + outputs
+    assert log_space <= 2 * _KDE_BLOCK_KERNEL_BYTES + outputs
+    if compare_single:
+        samples = sds((n_samples, n_dims), jnp.float32)
+        weights = sds((n_samples,), jnp.float32)
+        assert scaled <= _compiled_workspace(
+            _compiled_scaled_kde_log_density.lower(
+                points, samples, std, block_size, weights, None
+            )
+        )
+        assert log_space <= _compiled_workspace(
+            _compiled_log_space_kde_log_density.lower(
+                points, samples, std, block_size, weights
+            )
+        )

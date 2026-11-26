@@ -86,6 +86,7 @@ from non_local_detector.likelihoods.common.padding import (
     padded_occupancy_count,
     padded_sample_count,
     padded_spike_count,
+    padded_tile_count,
 )
 from non_local_detector.likelihoods.common.poisson import (
     _EMISSION_BLOCK_ROWS,
@@ -250,6 +251,7 @@ __all__ = [
     "padded_sample_count",
     "padded_samples",
     "padded_spike_count",
+    "padded_tile_count",
     "place_encoding_spikes",
     "poisson_row_log_likelihood",
     "prepare_decode_rows",
