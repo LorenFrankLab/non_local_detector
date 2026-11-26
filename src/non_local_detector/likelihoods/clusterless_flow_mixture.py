@@ -1047,7 +1047,9 @@ def _project_covariances_to_orthonormal_basis(
         eigvecs = eigvecs[:, order]
         if is_full:
             basis[k] = eigvecs[:, :n_dims]
-            basis_variances[k] = np.maximum(eigvals[:n_dims], 1e-6)
+            # Exact constrained MLE under Sigma >= diag(noise_variance): clamp
+            # standardized eigenvalues at 1.0 only where the floor binds.
+            basis_variances[k] = np.maximum(eigvals[:n_dims], 1.0)
         else:
             top_vals = eigvals[:stored_rank]
             top_vecs = eigvecs[:, :stored_rank]
@@ -1112,10 +1114,9 @@ def _latent_mark_m_step(
             covariances[k] = c_std * sqrt_psi[:, None] * sqrt_psi[None, :]
 
     if is_full:
-        # Full-rank exact covariance with diagonal floor min_noise_variance.
+        # Exact constrained Gaussian MLE under Sigma >= diag(min_noise_variance):
+        # clamp standardized eigenvalues at 1.0 rather than shifting all modes.
         noise_variance = np.array(min_noise_variance, dtype=np.float64, copy=True)
-        for k in range(n_comp):
-            covariances[k] = covariances[k] + np.diag(min_noise_variance)
         basis, basis_variances = _project_covariances_to_orthonormal_basis(
             covariances, noise_variance, rank=None
         )
@@ -2225,7 +2226,7 @@ def _initialize_latent_mixture(
         mean = (norm_w @ u_train)[None, :]
         noise_var = np.array(min_latent_var, dtype=np.float64)
         diff = u_train - mean
-        cov = ((diff.T * norm_w[None, :]) @ diff + np.diag(noise_var))[None, :, :]
+        cov = ((diff.T * norm_w[None, :]) @ diff)[None, :, :]
         basis, basis_var = _project_covariances_to_orthonormal_basis(
             cov, noise_var, rank=covariance_rank
         )
@@ -2257,11 +2258,9 @@ def _initialize_latent_mixture(
 
     is_full = covariance_rank is None or covariance_rank >= n_dims
     if is_full:
+        # Standardized eigenvalues are clamped at 1.0 in _project_covariances_to_orthonormal_basis,
+        # enforcing Sigma >= diag(min_latent_var) without shifting modes above the floor.
         noise_var = np.array(min_latent_var, dtype=np.float64)
-        # Ensure diagonal variance meets per-channel floor min_latent_var.
-        extra_floor = np.maximum(min_latent_var - reg_scalar, 0.0)
-        if np.any(extra_floor > 0.0):
-            covariances = covariances + np.diag(extra_floor)[None, :, :]
         basis, basis_var = _project_covariances_to_orthonormal_basis(
             covariances, noise_var, rank=None
         )
@@ -2392,30 +2391,70 @@ def _evaluate_flow_batched(
     return z_out, ld_out
 
 
-def _e_step_latent(
+def _e_step_latent_split(
     z: np.ndarray,
     log_det_total: np.ndarray,
-    log_rates_at_spikes: np.ndarray,
+    log_rates_left: np.ndarray,
+    log_rates_right: np.ndarray,
     means: np.ndarray,
     basis: np.ndarray,
     basis_variances: np.ndarray,
     noise_variance: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute joint responsibilities ``(N, K)`` and spike log intensities ``(N,)``."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute exact split-position responsibilities and log intensities ``(N, K)``/``(N,)``."""
     n_spikes = z.shape[0]
     n_comp = means.shape[0]
-    resp = np.empty((n_spikes, n_comp), dtype=np.float64)
-    log_int = np.empty((n_spikes,), dtype=np.float64)
+    resp_l = np.empty((n_spikes, n_comp), dtype=np.float64)
+    resp_r = np.empty((n_spikes, n_comp), dtype=np.float64)
+    log_int_l = np.empty((n_spikes,), dtype=np.float64)
+    log_int_r = np.empty((n_spikes,), dtype=np.float64)
     for start in range(0, n_spikes, _E_STEP_BLOCK):
         stop = min(start + _E_STEP_BLOCK, n_spikes)
         log_gauss = _latent_woodbury_log_density_f64(
             z[start:stop], means, basis, basis_variances, noise_variance
         )
-        log_joint = log_rates_at_spikes[start:stop] + log_gauss
-        log_sum = logsumexp(log_joint, axis=1)
-        resp[start:stop] = np.exp(log_joint - log_sum[:, None])
-        log_int[start:stop] = log_det_total[start:stop] + log_sum
-    return resp, log_int
+        ld_blk = log_det_total[start:stop]
+        joint_l = log_rates_left[start:stop] + log_gauss
+        lse_l = logsumexp(joint_l, axis=1)
+        resp_l[start:stop] = np.exp(joint_l - lse_l[:, None])
+        log_int_l[start:stop] = ld_blk + lse_l
+
+        joint_r = log_rates_right[start:stop] + log_gauss
+        lse_r = logsumexp(joint_r, axis=1)
+        resp_r[start:stop] = np.exp(joint_r - lse_r[:, None])
+        log_int_r[start:stop] = ld_blk + lse_r
+    return resp_l, resp_r, log_int_l, log_int_r
+
+
+def _partition_fold_shares(
+    left_pos: np.ndarray,
+    right_pos: np.ndarray,
+    left_share: np.ndarray,
+    right_share: np.ndarray,
+    allowed_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Assign each spike to a single owning fold sample and fold boundary shares.
+
+    Returns ``(owned_mask, fold_left_share, fold_right_share)`` over the owned
+    subset so no boundary spike can enter both training and validation and
+    total spike weight is conserved on allowed samples.
+    """
+    safe_l = np.maximum(left_pos, 0)
+    safe_r = np.maximum(right_pos, 0)
+    l_valid = (left_pos >= 0) & (left_share > 0.0)
+    r_valid = (right_pos >= 0) & (right_share > 0.0)
+    owner = np.where(
+        (~r_valid) | (l_valid & (left_share >= right_share)), safe_l, safe_r
+    )
+    owned = allowed_mask[owner]
+    l_in = allowed_mask[safe_l[owned]] & (left_pos[owned] >= 0)
+    r_in = allowed_mask[safe_r[owned]] & (right_pos[owned] >= 0)
+    ls = left_share[owned]
+    rs = right_share[owned]
+    tot = ls + rs
+    fold_ls = np.where(l_in & r_in, ls, np.where(l_in, tot, 0.0))
+    fold_rs = np.where(l_in & r_in, rs, np.where(r_in, tot, 0.0))
+    return owned, fold_ls, fold_rs
 
 
 def _sample_flow_batches(
@@ -2496,7 +2535,8 @@ class _ElectrodeFoldState:
         right_pos: np.ndarray,
         left_share: np.ndarray,
         right_share: np.ndarray,
-        spike_design: np.ndarray,
+        left_cells: np.ndarray,
+        right_cells: np.ndarray,
         train_prepared: PreparedRateMapBasis,
         input_mean: np.ndarray,
         input_scale: np.ndarray,
@@ -2513,8 +2553,10 @@ class _ElectrodeFoldState:
         noise_variance: np.ndarray,
         coefficients: np.ndarray,
         val_marks: np.ndarray | None = None,
-        val_weights: np.ndarray | None = None,
-        val_design: np.ndarray | None = None,
+        val_left_share: np.ndarray | None = None,
+        val_right_share: np.ndarray | None = None,
+        val_left_cells: np.ndarray | None = None,
+        val_right_cells: np.ndarray | None = None,
         val_reference_log_bg: np.ndarray | None = None,
     ) -> None:
         self.marks = marks
@@ -2523,7 +2565,8 @@ class _ElectrodeFoldState:
         self.right_pos = right_pos
         self.left_share = left_share
         self.right_share = right_share
-        self.spike_design = spike_design
+        self.left_cells = left_cells
+        self.right_cells = right_cells
         self.train_prepared = train_prepared
         self.input_mean = input_mean
         self.input_scale = input_scale
@@ -2540,8 +2583,10 @@ class _ElectrodeFoldState:
         self.noise_variance = noise_variance
         self.coefficients = coefficients  # shape (K, n_basis)
         self.val_marks = val_marks
-        self.val_weights = val_weights
-        self.val_design = val_design
+        self.val_left_share = val_left_share
+        self.val_right_share = val_right_share
+        self.val_left_cells = val_left_cells
+        self.val_right_cells = val_right_cells
         self.val_reference_log_bg = val_reference_log_bg
 
         self.u_train = _standardize_host(marks, input_mean, input_scale, noise_whitener)
@@ -2586,20 +2631,32 @@ def _accumulate_cell_counts(
     right_pos: np.ndarray,
     left_share: np.ndarray,
     right_share: np.ndarray,
-    resp: np.ndarray,
+    resp_left: np.ndarray,
+    resp_right: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Accumulate split soft spike counts onto position cells, shape ``(K, n_cells)``."""
-    n_comp = resp.shape[1]
+    """Accumulate split-position soft spike counts onto cells, shape ``(K, n_cells)``."""
+    resp_r = resp_left if resp_right is None else resp_right
+    n_comp = resp_left.shape[1]
     counts = np.zeros((n_comp, n_cells), dtype=np.float64)
-    if resp.shape[0] == 0:
+    if resp_left.shape[0] == 0:
         return counts
-    left_cells = sample_cells[left_pos]
-    right_cells = sample_cells[right_pos]
+    l_ok = (left_pos >= 0) & (left_share > 0.0)
+    r_ok = (right_pos >= 0) & (right_share > 0.0)
+    left_cells = sample_cells[left_pos[l_ok]]
+    right_cells = sample_cells[right_pos[r_ok]]
+    ls = left_share[l_ok]
+    rs = right_share[r_ok]
     for k in range(n_comp):
-        rk = resp[:, k]
-        counts[k] = np.bincount(
-            left_cells, weights=left_share * rk, minlength=n_cells
-        ) + np.bincount(right_cells, weights=right_share * rk, minlength=n_cells)
+        c_k = np.zeros(n_cells, dtype=np.float64)
+        if left_cells.size:
+            c_k += np.bincount(
+                left_cells, weights=ls * resp_left[l_ok, k], minlength=n_cells
+            )
+        if right_cells.size:
+            c_k += np.bincount(
+                right_cells, weights=rs * resp_r[r_ok, k], minlength=n_cells
+            )
+        counts[k] = c_k
     return counts
 
 
@@ -2647,16 +2704,9 @@ def _fit_single_electrode_flow_em(
 ) -> tuple[FlowMarkMixture, np.ndarray, np.ndarray, dict[str, Any]]:
     """Fit one active electrode's ``FlowMarkMixture``, GLM coefficients, and log rates."""
     n_features = marks_eff.shape[1]
-    design_info = full_prepared.emission_design_info
     sample_cells = full_prepared.sample_cells
     n_cells = full_prepared.n_position_cells
     cell_design_j = full_prepared.emission_design_matrix
-
-    primary_pos = np.where(right_share > left_share, right_pos, left_pos)
-    spike_design_all = np.asarray(
-        make_spline_predict_matrix(design_info, encoding_positions[primary_pos]),
-        dtype=np.float64,
-    )
 
     topology = _build_flow_topology(
         n_features,
@@ -2725,20 +2775,18 @@ def _fit_single_electrode_flow_em(
         val_mask_sup: np.ndarray | None,
         train_prepared: PreparedRateMapBasis,
     ) -> _ElectrodeFoldState | None:
-        fold_l_share = left_share * train_mask_sup[left_pos]
-        fold_r_share = right_share * train_mask_sup[right_pos]
-        fold_w_all = fold_l_share + fold_r_share
-        sp_train = fold_w_all > 0.0
+        sp_train, fold_ls, fold_rs = _partition_fold_shares(
+            left_pos, right_pos, left_share, right_share, train_mask_sup
+        )
+        fold_w = fold_ls + fold_rs
         if not np.any(sp_train) or float(np.sum(train_prepared.cell_exposure)) <= 0.0:
             return None
 
         fold_marks = marks_eff[sp_train]
-        fold_w = fold_w_all[sp_train]
         fold_l_pos = left_pos[sp_train]
         fold_r_pos = right_pos[sp_train]
-        fold_ls = fold_l_share[sp_train]
-        fold_rs = fold_r_share[sp_train]
-        fold_design = spike_design_all[sp_train]
+        fold_l_cells = sample_cells[np.maximum(fold_l_pos, 0)]
+        fold_r_cells = sample_cells[np.maximum(fold_r_pos, 0)]
 
         in_mean, in_scale, whitener, ld_in, min_lvar = _fit_input_standardization(
             fold_marks,
@@ -2772,7 +2820,14 @@ def _fit_single_electrode_flow_em(
         resp_0 = np.exp(lw_0 - logsumexp(lw_0, axis=1, keepdims=True))
 
         cell_counts_0 = _accumulate_cell_counts(
-            sample_cells, n_cells, fold_l_pos, fold_r_pos, fold_ls, fold_rs, resp_0
+            sample_cells,
+            n_cells,
+            fold_l_pos,
+            fold_r_pos,
+            fold_ls,
+            fold_rs,
+            resp_0,
+            resp_0,
         )
         coeffs_0_j, _ = fit_prepared_rate_maps(
             train_prepared,
@@ -2781,17 +2836,17 @@ def _fit_single_electrode_flow_em(
         )
         coeffs_0 = np.asarray(coeffs_0_j, dtype=np.float64)
 
-        val_m = val_w_arr = val_des = val_ref_bg = None
+        val_m = val_ls = val_rs = val_lc = val_rc = val_ref_bg = None
         if val_mask_sup is not None:
-            val_w_all = (
-                left_share * val_mask_sup[left_pos]
-                + right_share * val_mask_sup[right_pos]
+            sp_val, v_ls, v_rs = _partition_fold_shares(
+                left_pos, right_pos, left_share, right_share, val_mask_sup
             )
-            sp_val = val_w_all > 0.0
             if np.any(sp_val):
                 val_m = marks_eff[sp_val]
-                val_w_arr = val_w_all[sp_val]
-                val_des = spike_design_all[sp_val]
+                val_ls = v_ls
+                val_rs = v_rs
+                val_lc = sample_cells[np.maximum(left_pos[sp_val], 0)]
+                val_rc = sample_cells[np.maximum(right_pos[sp_val], 0)]
                 val_ref = _fold_mark_reference(fold_marks, fold_w, mark_reg_covar)
                 val_ref_bg = LOG_RATE_EPS_HZ + val_ref.log_density(val_m)
 
@@ -2802,7 +2857,8 @@ def _fit_single_electrode_flow_em(
             right_pos=fold_r_pos,
             left_share=fold_ls,
             right_share=fold_rs,
-            spike_design=fold_design,
+            left_cells=fold_l_cells,
+            right_cells=fold_r_cells,
             train_prepared=train_prepared,
             input_mean=in_mean,
             input_scale=in_scale,
@@ -2819,8 +2875,10 @@ def _fit_single_electrode_flow_em(
             noise_variance=nvar_0,
             coefficients=coeffs_0,
             val_marks=val_m,
-            val_weights=val_w_arr,
-            val_design=val_des,
+            val_left_share=val_ls,
+            val_right_share=val_rs,
+            val_left_cells=val_lc,
+            val_right_cells=val_rc,
             val_reference_log_bg=val_ref_bg,
         )
 
@@ -2848,24 +2906,38 @@ def _fit_single_electrode_flow_em(
         gpi_cells = np.sum(rates_cells, axis=1) + RATE_EPS_HZ
         expected_count = float(np.dot(gpi_cells, val_cell_exposure))
 
-        if state.u_val is None or state.val_weights is None or state.val_design is None:
+        if (
+            state.u_val is None
+            or state.val_left_share is None
+            or state.val_right_share is None
+            or state.val_left_cells is None
+            or state.val_right_cells is None
+        ):
             return -expected_count
 
         z_val, ld_flow = _eval_flow(state.u_val, state.flow_params)
         log_det_tot = state.log_det_input + ld_flow
-        log_rates_val = _log_glm_rates_host(state.val_design, state.coefficients)
-        _, log_int = _e_step_latent(
+        cell_log_rates = np.log(rates_cells)
+        _, _, log_int_l, log_int_r = _e_step_latent_split(
             z_val,
             log_det_tot,
-            log_rates_val,
+            cell_log_rates[state.val_left_cells],
+            cell_log_rates[state.val_right_cells],
             state.means,
             state.basis,
             state.basis_variances,
             state.noise_variance,
         )
         if state.val_reference_log_bg is not None:
-            log_int = np.logaddexp(log_int, state.val_reference_log_bg)
-        return float(np.dot(state.val_weights, log_int)) - expected_count
+            log_int_l = np.logaddexp(log_int_l, state.val_reference_log_bg)
+            log_int_r = np.logaddexp(log_int_r, state.val_reference_log_bg)
+        return (
+            float(
+                np.dot(state.val_left_share, log_int_l)
+                + np.dot(state.val_right_share, log_int_r)
+            )
+            - expected_count
+        )
 
     def _score_fold_train(state: _ElectrodeFoldState) -> float:
         rates_cells = np.asarray(
@@ -2876,17 +2948,28 @@ def _fit_single_electrode_flow_em(
         )
         z_tr, ld_flow = _eval_flow(state.u_train, state.flow_params)
         log_det_tot = state.log_det_input + ld_flow
-        log_rates_tr = _log_glm_rates_host(state.spike_design, state.coefficients)
-        _, log_int = _e_step_latent(
+        cell_log_rates = np.log(rates_cells)
+        _, _, log_int_l, log_int_r = _e_step_latent_split(
             z_tr,
             log_det_tot,
-            log_rates_tr,
+            cell_log_rates[state.left_cells],
+            cell_log_rates[state.right_cells],
             state.means,
             state.basis,
             state.basis_variances,
             state.noise_variance,
         )
-        return float(np.dot(state.spike_weights, log_int)) - expected_count
+        l2_term = state.train_prepared.l2_penalty * float(
+            np.sum(state.coefficients[:, 1:] ** 2)
+        )
+        return (
+            float(
+                np.dot(state.left_share, log_int_l)
+                + np.dot(state.right_share, log_int_r)
+            )
+            - expected_count
+            - l2_term
+        )
 
     def _run_one_em_iteration(
         state: _ElectrodeFoldState,
@@ -2894,6 +2977,12 @@ def _fit_single_electrode_flow_em(
     ) -> None:
         n_comp = state.means.shape[0]
         k_pad = _power_of_two(n_comp)
+        cell_log_rates = np.log(
+            np.asarray(
+                glm_rates(cell_design_j, jnp.asarray(state.coefficients)),
+                dtype=np.float64,
+            )
+        )
 
         # 1. Flow optimization step (skipped if identity mode or < 2 spikes).
         if (
@@ -2902,15 +2991,42 @@ def _fit_single_electrode_flow_em(
             and state.u_train.shape[0] >= 2
         ):
             if flow_objective == "joint":
-                log_comp_w = _log_glm_rates_host(state.spike_design, state.coefficients)
+                same_cell = state.left_cells == state.right_cells
+                has_l = (~same_cell) & (state.left_share > 0.0)
+                has_r = (~same_cell) & (state.right_share > 0.0)
+                u_flow = np.concatenate(
+                    [
+                        state.u_train[same_cell],
+                        state.u_train[has_l],
+                        state.u_train[has_r],
+                    ],
+                    axis=0,
+                )
+                w_flow = np.concatenate(
+                    [
+                        state.spike_weights[same_cell],
+                        state.left_share[has_l],
+                        state.right_share[has_r],
+                    ]
+                )
+                log_comp_w = np.concatenate(
+                    [
+                        cell_log_rates[state.left_cells[same_cell]],
+                        cell_log_rates[state.left_cells[has_l]],
+                        cell_log_rates[state.right_cells[has_r]],
+                    ],
+                    axis=0,
+                )
             else:
+                u_flow = state.u_train
+                w_flow = state.spike_weights
                 log_pi = np.log(np.maximum(state.weights, 1e-300))
                 log_comp_w = np.broadcast_to(
                     log_pi[None, :], (state.u_train.shape[0], n_comp)
                 )
             u_b, w_b, lw_b = _sample_flow_batches(
-                state.u_train,
-                state.spike_weights,
+                u_flow,
+                w_flow,
                 log_comp_w,
                 n_steps=flow_steps_per_em,
                 batch_size=flow_batch_size,
@@ -2943,21 +3059,23 @@ def _fit_single_electrode_flow_em(
                 cond_geom_j,
             )
 
-        # 2. E-step in updated warped coordinates z = g_theta(u).
+        # 2. Exact split-position E-step in updated warped coordinates z = g_theta(u).
         z_tr, ld_flow = _eval_flow(state.u_train, state.flow_params)
         log_det_tot = state.log_det_input + ld_flow
-        log_rates_tr = _log_glm_rates_host(state.spike_design, state.coefficients)
-        resp, _ = _e_step_latent(
+        resp_l, resp_r, _, _ = _e_step_latent_split(
             z_tr,
             log_det_tot,
-            log_rates_tr,
+            cell_log_rates[state.left_cells],
+            cell_log_rates[state.right_cells],
             state.means,
             state.basis,
             state.basis_variances,
             state.noise_variance,
         )
 
-        # 3. Monotone FA-EM latent mixture M-step.
+        # 3. Monotone FA-EM latent mixture M-step using exact combined shares.
+        gamma = state.left_share[:, None] * resp_l + state.right_share[:, None] * resp_r
+        resp_mark = gamma / np.maximum(state.spike_weights[:, None], 1e-300)
         (
             state.weights,
             state.means,
@@ -2966,7 +3084,7 @@ def _fit_single_electrode_flow_em(
             state.noise_variance,
         ) = _latent_mark_m_step(
             z_tr,
-            resp,
+            resp_mark,
             state.spike_weights,
             state.means,
             state.basis,
@@ -2984,7 +3102,8 @@ def _fit_single_electrode_flow_em(
             state.right_pos,
             state.left_share,
             state.right_share,
-            resp,
+            resp_l,
+            resp_r,
         )
         coeffs_j, _ = fit_prepared_rate_maps(
             state.train_prepared,
@@ -3045,13 +3164,17 @@ def _fit_single_electrode_flow_em(
     # Polish final GLM coefficients to convergence after flow/latent updates.
     if chosen_iterations > 0:
         z_final, ld_flow = _eval_flow(full_state.u_train, full_state.flow_params)
-        log_rates_final = _log_glm_rates_host(
-            full_state.spike_design, full_state.coefficients
+        final_cell_lr = np.log(
+            np.asarray(
+                glm_rates(cell_design_j, jnp.asarray(full_state.coefficients)),
+                dtype=np.float64,
+            )
         )
-        resp_final, _ = _e_step_latent(
+        resp_l_final, resp_r_final, _, _ = _e_step_latent_split(
             z_final,
             full_state.log_det_input + ld_flow,
-            log_rates_final,
+            final_cell_lr[full_state.left_cells],
+            final_cell_lr[full_state.right_cells],
             full_state.means,
             full_state.basis,
             full_state.basis_variances,
@@ -3064,7 +3187,8 @@ def _fit_single_electrode_flow_em(
             full_state.right_pos,
             full_state.left_share,
             full_state.right_share,
-            resp_final,
+            resp_l_final,
+            resp_r_final,
         )
         coeffs_j, interior_rates_j = fit_prepared_rate_maps(
             full_prepared,

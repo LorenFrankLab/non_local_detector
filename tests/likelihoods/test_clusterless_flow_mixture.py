@@ -1007,3 +1007,116 @@ def test_zca_whitening_chains_data_scaling_into_spline_box_and_is_unit_invariant
         rtol=1e-4,
         atol=1e-3,
     )
+
+
+@pytest.mark.unit
+def test_flow_full_covariance_floor_clamps_without_shifting_and_enforces_zca_floor():
+    """Full-rank floor clamps only where binding (EM monotone) and enforces ZCA floor."""
+    rng = np.random.default_rng(201)
+    time = np.arange(200) * 0.02
+    pos = np.linspace(0.0, 50.0, 200)[:, None]
+    env = _make_1d_env(50.0, 5.0)
+    sp_t = [np.sort(rng.uniform(0.05, 3.9, 30))]
+    sp_m = [rng.normal(0.0, 3.0, size=(30, 2))]
+
+    # Identity flow (n_flow_layers=0): pure full-rank EM must be monotone when
+    # sample covariance eigenvalues (~9) already exceed mark_reg_covar=1.0.
+    enc = fit_clusterless_flow_mixture_encoding_model(
+        time,
+        pos,
+        sp_t,
+        sp_m,
+        env,
+        n_mark_components=1,
+        covariance_rank=None,
+        mark_reg_covar=1.0,
+        n_flow_layers=0,
+        n_em_iterations=5,
+        em_validation_blocks=0,
+        disable_progress_bar=True,
+        random_state=0,
+    )
+    trace = enc["em_diagnostics"]["per_electrode"][0]["train_log_likelihood"]
+    assert len(trace) >= 2
+    assert np.all(np.diff(trace) >= -1e-6), f"Non-monotone full-cov EM trace: {trace}"
+
+    # Identical marks + identity noise covariance at iter=0 must enforce unit floor.
+    sp_t_id = [np.linspace(0.2, 3.5, 5)]
+    sp_m_id = [np.tile(np.array([5.0, -3.0]), (5, 1))]
+    enc_zca = fit_clusterless_flow_mixture_encoding_model(
+        time,
+        pos,
+        sp_t_id,
+        sp_m_id,
+        env,
+        noise_covariances=[np.eye(2)],
+        n_mark_components=1,
+        covariance_rank=None,
+        n_flow_layers=0,
+        n_em_iterations=0,
+        em_validation_blocks=0,
+        disable_progress_bar=True,
+        random_state=0,
+    )
+    mix_zca = enc_zca["mark_mixtures"][0]
+    assert mix_zca is not None
+    # In noise_variance-standardized coordinates, every full-rank eigenvalue >= 1.0.
+    assert np.all(mix_zca.basis_variances >= 1.0 - 1e-12)
+
+
+@pytest.mark.unit
+def test_flow_split_event_em_and_single_fold_owner():
+    """Split-position E-step is symmetric on midpoint spikes and folds own boundary spikes."""
+    from non_local_detector.likelihoods.clusterless_flow_mixture import (
+        _accumulate_cell_counts,
+        _e_step_latent_split,
+        _partition_fold_shares,
+    )
+
+    # Midpoint spike between two cells with opposing rates, identical latent mark density.
+    z = np.zeros((1, 2), dtype=np.float64)
+    ld = np.zeros((1,), dtype=np.float64)
+    lr_l = np.log(np.array([[20.0, 0.1]]))
+    lr_r = np.log(np.array([[0.1, 20.0]]))
+    means = np.zeros((2, 2), dtype=np.float64)
+    basis = np.broadcast_to(np.eye(2)[None, :, :], (2, 2, 2)).copy()
+    bvar = np.ones((2, 2), dtype=np.float64)
+    nvar = np.ones((2,), dtype=np.float64)
+    resp_l, resp_r, ll_l, ll_r = _e_step_latent_split(
+        z, ld, lr_l, lr_r, means, basis, bvar, nvar
+    )
+    assert resp_l[0, 0] > 0.99
+    assert resp_r[0, 1] > 0.99
+    np.testing.assert_allclose(resp_l[0, 0], resp_r[0, 1], atol=1e-12)
+    np.testing.assert_allclose(ll_l, ll_r, atol=1e-12)
+
+    counts = _accumulate_cell_counts(
+        np.array([0, 1], dtype=np.int64),
+        2,
+        np.array([0], dtype=np.int64),
+        np.array([1], dtype=np.int64),
+        np.array([0.5]),
+        np.array([0.5]),
+        resp_l,
+        resp_r,
+    )
+    assert counts[0, 0] > 0.49
+    assert counts[1, 1] > 0.49
+    np.testing.assert_allclose(counts[0, 0], counts[1, 1], atol=1e-12)
+
+    # Fold-boundary spike at midpoint between sample 4 (train) and sample 5 (val).
+    tr_mask = np.array([True] * 5 + [False] * 5)
+    va_mask = ~tr_mask
+    l_pos = np.array([4], dtype=np.int64)
+    r_pos = np.array([5], dtype=np.int64)
+    l_sh = np.array([0.5])
+    r_sh = np.array([0.5])
+    tr_sel, tr_ls, tr_rs = _partition_fold_shares(l_pos, r_pos, l_sh, r_sh, tr_mask)
+    va_sel, va_ls, va_rs = _partition_fold_shares(l_pos, r_pos, l_sh, r_sh, va_mask)
+    assert bool(tr_sel[0]) ^ bool(va_sel[0])
+    if tr_sel[0]:
+        np.testing.assert_allclose(tr_ls[0] + tr_rs[0], 1.0, atol=1e-12)
+        assert tr_rs[0] == 0.0
+    else:
+        np.testing.assert_allclose(va_ls[0] + va_rs[0], 1.0, atol=1e-12)
+        assert va_ls[0] == 0.0
