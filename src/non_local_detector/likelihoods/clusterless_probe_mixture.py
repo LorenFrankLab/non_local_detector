@@ -531,9 +531,10 @@ def _mark_mixture_to_probe_mixture(
         covs.append(0.5 * (cov_k + cov_k.T))
 
     rank = c_loc if covariance_rank is None else min(int(covariance_rank), c_loc)
+    effective_reg = 1.0 if noise_whitener is not None else mark_reg_covar
     bg_mean = np.zeros(n_channels, dtype=np.float64)
     if noise_whitener is not None:
-        noise_var = np.full(n_channels, mark_reg_covar, dtype=np.float64)
+        noise_var = np.ones(n_channels, dtype=np.float64)
     else:
         # Estimate initial shared per-channel residual variance from component
         # tail variances (or global weighted variance), floored by mark_reg_covar.
@@ -553,7 +554,7 @@ def _mark_mixture_to_probe_mixture(
     basis = np.zeros((n_comp, c_loc, rank), dtype=np.float64)
     basis_variances = np.ones((n_comp, rank), dtype=np.float64)
     peaks = np.zeros(n_comp, dtype=np.int32)
-    full_floor = mark_reg_covar if covariance_rank is None else None
+    full_floor = effective_reg if covariance_rank is None else None
 
     for k in range(n_comp):
         mask_k = support_mask[k]
@@ -623,6 +624,37 @@ def _mark_mixture_to_probe_mixture(
     )
 
 
+def _allocate_tile_components(
+    tile_weights: np.ndarray, total_components: int
+) -> np.ndarray:
+    """Budget ``total_components`` across active tiles proportionally to weight.
+
+    Every active tile receives at least 1 component so no populated region of
+    the shank is dropped. When ``total_components >= len(tile_weights)``, the
+    remaining budget is distributed by largest-remainder (Hamilton) allocation
+    so the sum equals ``total_components`` exactly.
+    """
+    n_tiles = len(tile_weights)
+    if n_tiles == 0:
+        return np.zeros(0, dtype=np.int64)
+    if total_components <= n_tiles:
+        return np.ones(n_tiles, dtype=np.int64)
+    rem = int(total_components) - n_tiles
+    total_w = float(np.sum(tile_weights))
+    shares = (
+        tile_weights / total_w * rem
+        if total_w > 0.0
+        else np.full(n_tiles, rem / n_tiles, dtype=np.float64)
+    )
+    floors = np.floor(shares).astype(np.int64)
+    leftover = rem - int(np.sum(floors))
+    if leftover > 0:
+        remainders = shares - floors
+        order = np.lexsort((np.arange(n_tiles), -tile_weights, -remainders))
+        floors[order[:leftover]] += 1
+    return np.ones(n_tiles, dtype=np.int64) + floors
+
+
 def _initialize_probe_mixture(
     marks: np.ndarray,
     weights: np.ndarray,
@@ -650,10 +682,13 @@ def _initialize_probe_mixture(
     if noise_covariance is not None:
         whitener, log_det_whitener = compute_zca_whitener(noise_covariance)
         y = marks @ whitener
+        # In ZCA-whitened coordinates, background noise covariance is I_C (variance 1.0).
+        effective_reg_covar = 1.0
     else:
         whitener = None
         log_det_whitener = 0.0
         y = marks
+        effective_reg_covar = mark_reg_covar
 
     if contact_positions is not None:
         nbr_indices, nbr_mask, radius = compute_local_neighborhoods(
@@ -675,7 +710,7 @@ def _initialize_probe_mixture(
         tile_supports = [np.arange(n_channels, dtype=np.int32)]
 
     # Single-spike electrode: one component centered on its mark with covariance
-    # mark_reg_covar * I (matching clusterless_mark_glm).
+    # effective_reg_covar * I (matching clusterless_mark_glm when unwhitened).
     if n_spikes == 1:
         peak = int(np.argmax(np.abs(y[0])))
         sup_idx = nbr_indices[peak : peak + 1].copy()
@@ -693,7 +728,7 @@ def _initialize_probe_mixture(
             basis_variances=np.ones((1, rank), dtype=np.float64),
             support_indices=sup_idx,
             support_mask=sup_mask,
-            noise_variance=np.full(n_channels, mark_reg_covar, dtype=np.float64),
+            noise_variance=np.full(n_channels, effective_reg_covar, dtype=np.float64),
             background_mean=bg_mean,
             noise_whitener=whitener,
             log_det_whitener=log_det_whitener,
@@ -708,7 +743,7 @@ def _initialize_probe_mixture(
             weights,
             n_components=n_mark_components,
             weight_concentration_prior=mark_weight_concentration,
-            reg_covar=mark_reg_covar,
+            reg_covar=effective_reg_covar,
             max_spikes=mark_fit_max_spikes,
             max_iter=mark_max_iter,
             tol=mark_tol,
@@ -739,8 +774,9 @@ def _initialize_probe_mixture(
         )
 
     # Multi-tile dense shank: route spikes by peak contact to disjoint tiles,
-    # fit local DP-VB mixtures on each tile's contact support, and merge into
-    # one unified whole-shank ProbeMarkMixture.
+    # budget n_mark_components across active tiles proportionally to spike
+    # weight, fit local DP-VB mixtures on each tile's contact support, and
+    # merge into one unified whole-shank ProbeMarkMixture.
     contact_to_tile = np.empty(n_channels, dtype=np.int32)
     for tile_idx, members in enumerate(tiles):
         contact_to_tile[members] = tile_idx
@@ -752,6 +788,24 @@ def _initialize_probe_mixture(
     spike_tiles = contact_to_tile[spike_peaks]
 
     total_weight = float(np.sum(weights))
+    active_tiles: list[tuple[int, np.ndarray, np.ndarray, np.ndarray, float]] = []
+    for tile_idx, support_ch in enumerate(tile_supports):
+        in_tile = spike_tiles == tile_idx
+        if not np.any(in_tile):
+            continue
+        tile_w = weights[in_tile]
+        tile_weight_sum = float(np.sum(tile_w))
+        if tile_weight_sum <= 0.0:
+            continue
+        active_tiles.append(
+            (tile_idx, support_ch, y[in_tile][:, support_ch], tile_w, tile_weight_sum)
+        )
+
+    tile_budgets = _allocate_tile_components(
+        np.asarray([entry[4] for entry in active_tiles], dtype=np.float64),
+        n_mark_components,
+    )
+
     comp_weights: list[float] = []
     comp_peaks: list[int] = []
     comp_means_local: list[np.ndarray] = []
@@ -759,21 +813,15 @@ def _initialize_probe_mixture(
     comp_sup_idx: list[np.ndarray] = []
     comp_sup_mask: list[np.ndarray] = []
 
-    for tile_idx, support_ch in enumerate(tile_supports):
-        in_tile = spike_tiles == tile_idx
-        if not np.any(in_tile):
-            continue
-        tile_y = y[in_tile][:, support_ch]
-        tile_w = weights[in_tile]
-        tile_weight_sum = float(np.sum(tile_w))
-        if tile_weight_sum <= 0.0:
-            continue
+    for (tile_idx, support_ch, tile_y, tile_w, tile_weight_sum), tile_k in zip(
+        active_tiles, tile_budgets, strict=True
+    ):
         tile_mix = fit_mark_mixture(
             tile_y,
             tile_w,
-            n_components=n_mark_components,
+            n_components=int(tile_k),
             weight_concentration_prior=mark_weight_concentration,
-            reg_covar=mark_reg_covar,
+            reg_covar=effective_reg_covar,
             max_spikes=mark_fit_max_spikes,
             max_iter=mark_max_iter,
             tol=mark_tol,
@@ -800,7 +848,7 @@ def _initialize_probe_mixture(
             valid_pos = np.flatnonzero(s_mask)
             n_valid = len(valid_pos)
             mu_loc = np.zeros(c_loc, dtype=np.float64)
-            cov_loc = np.eye(n_valid, dtype=np.float64) * mark_reg_covar
+            cov_loc = np.eye(n_valid, dtype=np.float64) * effective_reg_covar
             # Identify which channels in S_k were in support_ch.
             mapped_local: list[int] = []
             mapped_tile: list[int] = []
@@ -848,7 +896,7 @@ def _initialize_probe_mixture(
         0.0,
     )
     if whitener is not None:
-        noise_var = np.full(n_channels, mark_reg_covar, dtype=np.float64)
+        noise_var = np.ones(n_channels, dtype=np.float64)
     else:
         silent_var = np.where(
             has_silent,
@@ -860,7 +908,7 @@ def _initialize_probe_mixture(
 
     basis = np.zeros((n_comp, c_loc, rank), dtype=np.float64)
     basis_variances = np.ones((n_comp, rank), dtype=np.float64)
-    full_floor = mark_reg_covar if covariance_rank is None else None
+    full_floor = effective_reg_covar if covariance_rank is None else None
     for k in range(n_comp):
         mask_k = sup_mask_arr[k]
         ch_k = sup_idx_arr[k, mask_k]
@@ -1278,6 +1326,7 @@ def _mark_m_step(
         sample_covs.append(0.5 * (cov_k + cov_k.T))
 
     # 3. Unconstrained full-covariance case (all channels, full rank).
+    effective_reg = 1.0 if previous.noise_whitener is not None else mark_reg_covar
     if is_unconstrained_full:
         noise_var = np.ones(n_ch, dtype=np.float64)
         basis = np.zeros((n_comp, c_loc, rank), dtype=np.float64)
@@ -1293,7 +1342,7 @@ def _mark_m_step(
                 noise_var,
                 covariance_rank=None,
                 max_rank=rank,
-                full_rank_floor=mark_reg_covar,
+                full_rank_floor=effective_reg,
             )
             basis[k] = q_k
             basis_var[k] = lam_k
@@ -1315,7 +1364,7 @@ def _mark_m_step(
     # 4. Factor-analysis / local-support ECM step.
     # Step 4a: Tipping-Bishop update at old Psi (guarantees exact FA-EM residual).
     psi_old = previous.noise_variance
-    full_floor = mark_reg_covar if covariance_rank is None else None
+    full_floor = effective_reg if covariance_rank is None else None
     basis = np.zeros((n_comp, c_loc, rank), dtype=np.float64)
     basis_var = np.ones((n_comp, rank), dtype=np.float64)
     for k in range(n_comp):
@@ -1920,12 +1969,15 @@ def fit_clusterless_probe_mixture_encoding_model(
         Automatically uses full covariance whenever ``covariance_rank is None``
         or ``covariance_rank >= len(S_k)`` (e.g. on tetrodes).
     n_mark_components : int, optional
-        Upper bound on initial components per electrode (or per probe tile when
-        tiled), by default 32.
+        Upper bound on initial components per electrode (distributed
+        proportionally across active probe tiles by spike weight when tiled,
+        with at least 1 component per active tile), by default 32.
     mark_weight_concentration : float or None, optional
         Dirichlet-process concentration for initialization, by default None.
     mark_reg_covar : float, optional
-        Minimum residual noise variance floor in squared mark units, by default
+        Minimum residual noise variance floor in squared mark units when
+        ``noise_covariances`` is not supplied (in ZCA-whitened coordinates the
+        physical noise floor is fixed at 1.0), by default
         ``DEFAULT_GMM_REG_COVAR`` (1.0).
     mark_fit_max_spikes : int, optional
         Maximum spikes per electrode/tile used to initialize the mark mixture,

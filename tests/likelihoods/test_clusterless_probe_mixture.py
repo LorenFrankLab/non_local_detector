@@ -641,6 +641,102 @@ class TestDenseProbeAndCandidatePruning:
         assert np.all(np.isfinite(ll_pruned))
         assert ll_pruned.shape == ll_all.shape
 
+    def test_multitile_respects_n_mark_components_budget(self):
+        """Multi-tile initialization budgets n_mark_components across the whole shank."""
+        rec = _make_dense_probe_recording(
+            n_channels=64, n_units=12, duration=15.0, seed=21
+        )
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            rec["environment"],
+            contact_positions=rec["contact_positions"],
+            max_local_channels=10,
+            covariance_rank=4,
+            n_mark_components=24,
+            n_em_iterations=0,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mixture = enc["mark_mixtures"][0]
+        assert mixture is not None
+        assert 12 <= mixture.n_components <= 24
+
+    def test_zca_whitened_noise_variance_is_unit_regardless_of_mark_reg_covar(self):
+        """With ZCA noise_covariances, whitened noise_variance is 1.0 independent of mark_reg_covar."""
+        rec = _make_dense_probe_recording(
+            n_channels=16, n_units=4, duration=12.0, seed=22
+        )
+        pos_c = rec["contact_positions"][0]
+        dist = np.sqrt(np.sum((pos_c[:, None, :] - pos_c[None, :, :]) ** 2, axis=-1))
+        noise_cov = 20.0 * np.exp(-dist / 40.0) + 5.0 * np.eye(16)
+
+        fits = {}
+        for reg in (0.01, 25.0):
+            fits[reg] = fit_clusterless_probe_mixture_encoding_model(
+                rec["position_time"],
+                rec["position"],
+                rec["spike_times"],
+                rec["spike_waveform_features"],
+                rec["environment"],
+                contact_positions=rec["contact_positions"],
+                noise_covariances=[noise_cov],
+                max_local_channels=8,
+                covariance_rank=3,
+                n_mark_components=8,
+                mark_reg_covar=reg,
+                n_em_iterations=2,
+                em_validation_blocks=0,
+                disable_progress_bar=True,
+            )
+            mix = fits[reg]["mark_mixtures"][0]
+            assert mix is not None
+            np.testing.assert_allclose(mix.noise_variance, np.ones(16), atol=1e-12)
+
+        mix_small = fits[0.01]["mark_mixtures"][0]
+        mix_large = fits[25.0]["mark_mixtures"][0]
+        assert mix_small is not None
+        assert mix_large is not None
+        probe_marks = rec["spike_waveform_features"][0][:50]
+        np.testing.assert_allclose(
+            mix_small.log_component_density(probe_marks),
+            mix_large.log_component_density(probe_marks),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+        # Simultaneous raw-unit rescaling m -> s*m, noise_cov -> s^2*noise_cov
+        # must shift log_component_density by exact -C * log(s).
+        scale = 10.0
+        scaled_fit = fit_clusterless_probe_mixture_encoding_model(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            [m * scale for m in rec["spike_waveform_features"]],
+            rec["environment"],
+            contact_positions=rec["contact_positions"],
+            noise_covariances=[noise_cov * (scale**2)],
+            max_local_channels=8,
+            covariance_rank=3,
+            n_mark_components=8,
+            mark_reg_covar=0.01,
+            n_em_iterations=2,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix_scaled = scaled_fit["mark_mixtures"][0]
+        assert mix_scaled is not None
+        np.testing.assert_allclose(mix_scaled.noise_variance, np.ones(16), atol=1e-12)
+        np.testing.assert_allclose(
+            mix_scaled.log_component_density(probe_marks * scale)
+            + 16.0 * np.log(scale),
+            mix_small.log_component_density(probe_marks),
+            rtol=1e-6,
+            atol=1e-5,
+        )
+
 
 @pytest.mark.unit
 class TestEdgeCasesAndInvariants:
