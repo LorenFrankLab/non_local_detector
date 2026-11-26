@@ -25,6 +25,7 @@ from non_local_detector.likelihoods.common.position import (
     get_position_at_time,
     snap_off_track_positions,
 )
+from non_local_detector.likelihoods.common.reductions import deterministic_row_sum
 from non_local_detector.likelihoods.common.spike_rows import SpikeTimeOrder
 from non_local_detector.likelihoods.common.validation import (
     as_std_array,
@@ -310,13 +311,21 @@ def _kde_block_rows(
         ``min(block_size, rows whose kernel matrix fits _KDE_BLOCK_KERNEL_BYTES)``,
         at least one row when ``block_size`` is positive.
     """
-    # _log_kernel_matrix accumulates into the default float type.
-    accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
-    itemsize: int = jnp.result_type(
-        eval_points, samples, std, weights, accumulator
-    ).itemsize
+    itemsize = _kernel_itemsize(eval_points, samples, std, weights)
     budget_rows = _KDE_BLOCK_KERNEL_BYTES // (max(samples.shape[0], 1) * itemsize)
     return min(block_size, max(1, budget_rows))
+
+
+def _kernel_itemsize(*operands: Any) -> int:
+    """Bytes per kernel matrix entry for these KDE operands.
+
+    With the kernel's accumulator, the default float type (float64 under
+    x64) that ``_log_kernel_matrix`` accumulates into, the operands set the
+    kernel's dtype.
+    """
+    accumulator = jax.dtypes.canonicalize_dtype(jnp.float64)
+    itemsize: int = jnp.result_type(*operands, accumulator).itemsize
+    return itemsize
 
 
 def _traced_blocks(
@@ -444,9 +453,33 @@ def _relative_weights(
         ``sum(relative_weights)``, at least one with any mass. Flushed ratios
         add less than ``n_samples * tiny`` to it.
     """
+    max_weight = jnp.max(jnp.where(weights > 0, weights, 0.0), initial=0.0)
+    relative_weights, log_weights = _weights_relative_to(weights, max_weight)
+    return relative_weights, log_weights, jnp.sum(relative_weights)
+
+
+def _weights_relative_to(
+    weights: jax.Array, max_weight: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    """Weights relative to ``max_weight``, the largest positive weight, and their logs.
+
+    The relative weights and logs of :func:`_relative_weights`, for a
+    largest weight found elsewhere, such as over a model's other tiles.
+
+    Parameters
+    ----------
+    weights : jax.Array, shape (n_samples,)
+        Weights that are not positive (including NaN) carry no mass.
+    max_weight : jax.Array, shape ()
+        The largest positive weight of the model ``weights`` belong to, 0
+        without one.
+
+    Returns
+    -------
+    relative_weights, log_weights : jax.Array, shape (n_samples,)
+    """
     positive = weights > 0
     positive_weights = jnp.where(positive, weights, 0.0)
-    max_weight = jnp.max(positive_weights, initial=0.0)
     safe_max_weight = jnp.where(max_weight > 0, max_weight, 1.0)
     weight_scale = safe_max_weight
     # XLA can lower this division to multiplication by a reciprocal. For
@@ -467,11 +500,7 @@ def _relative_weights(
         jnp.log(jnp.where(representable, relative_weights, 1.0)),
         jnp.log(jnp.where(positive, weights, 1.0)) - jnp.log(safe_max_weight),
     )
-    return (
-        relative_weights,
-        jnp.where(positive, log_weights, -jnp.inf),
-        jnp.sum(relative_weights),
-    )
+    return relative_weights, jnp.where(positive, log_weights, -jnp.inf)
 
 
 @jax.jit
@@ -924,11 +953,14 @@ def kde_log_densities(
 ) -> list[jax.Array]:
     """Return the true log densities of several fitted KDEs at the same points.
 
-    ``kde_log_density`` for each model, with fewer compiled kernels: models
-    whose padded sample counts (four sizes per octave, zero-weight rows that
-    add no mass) and block sizes match share one pass, mapped over models in
-    batches (see :func:`_batched_kde_rows`). Runs outside jit; custom
-    subclasses use ``kde_log_density``.
+    ``kde_log_density`` for each model, with few compiled kernels: models
+    with the same block size and bandwidth share one pass over tiles of
+    ``_KDE_SAMPLE_TILE`` samples (zero-weight padding rows add no mass), so
+    the kernels compile for the total number of tiles, not for each model's
+    sample count; flagged points are then evaluated in log space in one
+    more tiled pass (see :func:`_tiled_kde_log_densities`). Values match
+    ``kde_log_density`` to rounding. Runs outside jit; custom subclasses use
+    ``kde_log_density``.
 
     Parameters
     ----------
@@ -957,55 +989,22 @@ def kde_log_densities(
         assert model.weights_ is not None  # set together with samples_ in fit
         std_bytes = np.asarray(as_std_array(model.std, points.shape[1])).tobytes()
         key = (
-            padded_sample_count(model.samples_.shape[0]),
             points.shape[0] if model.block_size is None else model.block_size,
             std_bytes,
             np.dtype(model.samples_.dtype).str,
             np.dtype(model.weights_.dtype).str,
         )
         groups.setdefault(key, []).append(index)
-    for (n_padded, block_size, _, _, _), members in groups.items():
-        samples = np.stack(
-            [pad_rows(cast(jax.Array, models[i].samples_), n_padded) for i in members]
-        )
-        weights = np.stack(
-            [pad_rows(cast(jax.Array, models[i].weights_), n_padded) for i in members]
-        )
-        std = as_std_array(models[members[0]].std, points.shape[1])
-        keys = None
-        if points.shape[1] == 1:
-            keys = jnp.asarray(
-                np.sort(np.where(weights > 0, samples[..., 0], np.inf), axis=1).astype(
-                    samples.dtype, copy=False
-                )
-            )
-        batch_size, batch_block_size = _batched_kde_rows(
-            block_size, len(members), points, samples[0], std, weights[0]
-        )
-        values, needs_log_space = _compiled_batched_scaled_kde_log_density(
+    for (block_size, _, _, _), members in groups.items():
+        values = _tiled_kde_log_densities(
             points,
-            jnp.asarray(samples),
-            std,
-            batch_block_size,
-            jnp.asarray(weights),
-            keys,
-            batch_size=batch_size,
+            [np.asarray(models[i].samples_) for i in members],
+            [np.asarray(models[i].weights_) for i in members],
+            as_std_array(models[members[0]].std, points.shape[1]),
+            block_size,
         )
-        # Rows are split on the host: indexing the device array compiles a
-        # slice for every row.
-        values, needs_log_space = np.asarray(values), np.asarray(needs_log_space)
         for row, index in enumerate(members):
             results[index] = jnp.asarray(values[row])
-            if needs_log_space[row].any():
-                results[index] = _repair_in_log_space(
-                    results[index],
-                    needs_log_space[row],
-                    points,
-                    jnp.asarray(samples[row]),
-                    std,
-                    block_size,
-                    jnp.asarray(weights[row]),
-                )
     return results
 
 
@@ -1084,10 +1083,75 @@ def _nearest_sample_log_kernel(
     last = keys.shape[0] - 1
     left = keys[jnp.clip(index - 1, 0, last)]
     right = keys[jnp.clip(index, 0, last)]
-    nearest = jnp.where(
-        jnp.abs(points[:, 0] - left) <= jnp.abs(points[:, 0] - right), left, right
-    )
-    return cast(jax.Array, log_gaussian_pdf(points[:, 0], nearest, std[0]))
+    return _nearer_key_log_kernel(points[:, 0], left, right, std)
+
+
+def _nearer_key_log_kernel(
+    points: jax.Array, left: jax.Array, right: jax.Array, std: jax.Array
+) -> jax.Array:
+    """Log kernel of each 1D point at the nearer of its two bracketing keys.
+
+    Parameters
+    ----------
+    points : jax.Array, shape (..., n_points)
+        Evaluation coordinates.
+    left, right : jax.Array, shape (..., n_points)
+        The keys just below and at or above each point, as
+        :func:`_nearest_sample_log_kernel` finds them; ties go left.
+    std : jax.Array, shape (1,)
+        Kernel standard deviation.
+
+    Returns
+    -------
+    log_kernel : jax.Array, shape (..., n_points)
+    """
+    nearest = jnp.where(jnp.abs(points - left) <= jnp.abs(points - right), left, right)
+    return cast(jax.Array, log_gaussian_pdf(points, nearest, std[0]))
+
+
+def _bracketing_keys(
+    points: np.ndarray,
+    samples: Sequence[np.ndarray],
+    weights: Sequence[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each model's sorted 1D keys just below and at or above each point, on the host.
+
+    The neighbours :func:`_nearest_sample_log_kernel` finds on the device,
+    for several models at once: :func:`_sorted_sample_keys` per model, then
+    a binary search. The keys are copied, so the device computes the same
+    scale from them.
+
+    Parameters
+    ----------
+    points : np.ndarray, shape (n_points,)
+        Evaluation coordinates, in the device dtype.
+    samples : sequence of np.ndarray, each shape (n_samples, 1)
+        Each model's samples.
+    weights : sequence of np.ndarray, each shape (n_samples,)
+        Each model's weights; samples without positive weight are ``inf``.
+
+    Returns
+    -------
+    left, right : np.ndarray, shape (n_models, n_points)
+        ``inf`` for a model without samples.
+    """
+    left = np.full((len(samples), points.size), np.inf, points.dtype)
+    right = left.copy()
+    for model, (model_samples, model_weights) in enumerate(
+        zip(samples, weights, strict=True)
+    ):
+        if model_samples.shape[0] == 0:
+            continue
+        keys = np.sort(
+            np.where(model_weights > 0, model_samples[:, 0], np.inf).astype(
+                model_samples.dtype, copy=False
+            )
+        )
+        index = np.searchsorted(keys, points)
+        last = keys.size - 1
+        left[model] = keys[np.clip(index - 1, 0, last)]
+        right[model] = keys[np.clip(index, 0, last)]
+    return left, right
 
 
 def _kde_log_scale(
@@ -1113,15 +1177,23 @@ def _kde_log_scale(
     -------
     log_scale : jax.Array, shape (n_points,)
     """
-    peak = sum(
-        log_gaussian_pdf(jnp.zeros(()), jnp.zeros(()), dim_std) for dim_std in std
-    )
+    peak = _kernel_log_peak(std)
     if keys is None:
         return jnp.full(points.shape[0], peak)
-    scale = _nearest_sample_log_kernel(points, keys, std)
+    return _bounded_log_scale(_nearest_sample_log_kernel(points, keys, std), peak)
+
+
+def _kernel_log_peak(std: jax.Array) -> jax.Array:
+    """Log of the kernel's peak, its value at zero distance; ``std`` shape (n_dims,)."""
     return cast(
-        jax.Array, jax.lax.stop_gradient(jnp.where(jnp.isfinite(scale), scale, peak))
+        jax.Array,
+        sum(log_gaussian_pdf(jnp.zeros(()), jnp.zeros(()), dim_std) for dim_std in std),
     )
+
+
+def _bounded_log_scale(scale: jax.Array, peak: jax.Array) -> jax.Array:
+    """``scale`` where finite, else the kernel's log ``peak``; no gradient."""
+    return jax.lax.stop_gradient(jnp.where(jnp.isfinite(scale), scale, peak))
 
 
 def _scaled_kde_log_density(
@@ -1236,78 +1308,506 @@ def _compiled_scaled_kde_log_density(
     return _scaled_kde_log_density(points, samples, std, block_size, weights, keys)
 
 
-def _batched_kde_rows(
-    block_size: int,
-    n_models: int,
-    points: jax.Array,
-    samples: jax.Array | np.ndarray,
-    std: jax.Array,
-    weights: jax.Array | np.ndarray,
-) -> tuple[int, int]:
-    """Models per batch and query rows per block for batched KDE passes.
+# Samples per tile of a batched pass (see kde_log_densities). Each model's
+# samples are cut into tiles of this many rows, the last padded with
+# zero-weight rows, so a pass over models of any mix of sample counts has one
+# shape per number of tiles.
+_KDE_SAMPLE_TILE = 256
 
-    A batch evaluates its models' blocks together, so their kernel matrices
-    share one model's ``_KDE_BLOCK_KERNEL_BYTES`` budget: at most 16 models,
-    each with an equal share of the rows one model alone would take.
+
+def _sample_tiles(
+    samples: Sequence[np.ndarray], weights: Sequence[np.ndarray]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Cut each model's samples into zero-weight padded tiles, on the host.
+
+    Parameters
+    ----------
+    samples : sequence of np.ndarray, each shape (n_samples, n_dims)
+        Each model's samples.
+    weights : sequence of np.ndarray, each shape (n_samples,)
+        Each model's weights.
+
+    Returns
+    -------
+    tile_samples : np.ndarray, shape (n_tiles, _KDE_SAMPLE_TILE, n_dims)
+    tile_weights : np.ndarray, shape (n_tiles, _KDE_SAMPLE_TILE)
+        Zero on padding rows.
+    tile_model : np.ndarray of int32, shape (n_tiles,)
+        The model of each tile, nondecreasing. A model without samples has
+        one tile of zero weight.
+    """
+    size = _KDE_SAMPLE_TILE
+    n_tiles = [max(1, -(-np.shape(s)[0] // size)) for s in samples]
+    n_dims = np.shape(samples[0])[1]
+    tile_samples = np.concatenate(
+        [pad_rows(s, n * size) for s, n in zip(samples, n_tiles, strict=True)]
+    ).reshape(sum(n_tiles), size, n_dims)
+    tile_weights = np.concatenate(
+        [pad_rows(w, n * size) for w, n in zip(weights, n_tiles, strict=True)]
+    ).reshape(sum(n_tiles), size)
+    tile_model = np.repeat(np.arange(len(samples), dtype=np.int32), n_tiles)
+    return tile_samples, tile_weights, tile_model
+
+
+def _tiled_kde_rows(
+    block_size: int,
+    points: jax.Array | np.ndarray,
+    tile_samples: jax.Array | np.ndarray,
+    std: jax.Array,
+    tile_weights: jax.Array | np.ndarray,
+    widest_tiles: int,
+) -> tuple[int, int]:
+    """Query rows per block and tiles per step of a tiled KDE pass.
+
+    One step evaluates ``batch_size`` tiles at ``rows`` points. Its kernel
+    entries are at most half those of the widest model's own block at these
+    rows (``widest_tiles`` tiles), and of ``_KDE_BLOCK_KERNEL_BYTES``, but at
+    least one tile's. The batched log-space pass holds about twice the
+    temporaries per kernel entry of the single-model one, so its compiled
+    workspace stays within that of the widest model's. The tile sums of one
+    block, ``(n_tiles, rows)``, fit the budget too.
 
     Parameters
     ----------
     block_size : int
         Requested rows per block.
-    n_models : int
-        Number of models to evaluate.
     points : array, shape (n_points, n_dims)
         Evaluation points.
-    samples : array, shape (n_samples, n_dims)
-        One model's (padded) samples.
-    std, weights : array-like
-        One model's other kernel operands.
+    tile_samples : array, shape (n_tiles, _KDE_SAMPLE_TILE, n_dims)
+        From :func:`_sample_tiles`.
+    std : jax.Array
+        Kernel bandwidth.
+    tile_weights : array, shape (n_tiles, _KDE_SAMPLE_TILE)
+        From :func:`_sample_tiles`.
+    widest_tiles : int
+        Tiles of the model with the most.
 
     Returns
     -------
-    batch_size, rows : int
-        ``batch_size * rows`` is at most the rows of one model's budget.
+    rows, batch_size : int
+        At least one each.
     """
-    budget_rows = _kde_block_rows(block_size, points, samples, std, weights)
-    batch_size = max(1, min(16, n_models, budget_rows))
-    return batch_size, max(1, budget_rows // batch_size)
+    budget = _KDE_BLOCK_KERNEL_BYTES // _kernel_itemsize(
+        points, tile_samples, std, tile_weights
+    )
+    size = _KDE_SAMPLE_TILE
+    n_tiles = tile_samples.shape[0]
+    rows = max(1, min(block_size, points.shape[0], budget // max(n_tiles, size)))
+    step = min(budget, widest_tiles * size * rows) // 2
+    return rows, max(1, min(n_tiles, step // (size * rows)))
 
 
-@partial(jax.jit, static_argnames=("block_size", "batch_size"))
-def _compiled_batched_scaled_kde_log_density(
+def _tiled_model_reduce(
+    tile_terms: Callable[..., Any],
+    tiles: tuple[jax.Array, ...],
+    tile_model: jax.Array,
+    n_models: int,
     points: jax.Array,
-    samples: jax.Array,
-    std: jax.Array,
-    block_size: int,
-    weights: jax.Array,
-    keys: jax.Array | None,
-    *,
+    model_values: jax.Array | None,
+    combine: Callable[[jax.Array, jax.Array, int], jax.Array],
+    rows: int,
     batch_size: int,
-) -> tuple[jax.Array, jax.Array]:
-    """Compute the scaled pass for each of a stack of models, ``batch_size`` at a time.
+) -> Any:
+    """Reduce per-tile terms over each model's tiles, block by block of points.
 
-    ``samples`` has shape ``(n_models, n_samples, n_dims)`` and ``weights``
-    and ``keys`` (or None) ``(n_models, n_samples)``. Returns log densities and
-    flags of shape ``(n_models, n_points)``.
+    Parameters
+    ----------
+    tile_terms : callable
+        ``tile_terms(tile, block_points, block_values)`` returns a pytree of
+        arrays of shape ``(rows,)`` for one tile, where ``tile`` holds one
+        tile of each of ``tiles`` and ``block_values`` is the tile's model's
+        row of ``model_values`` (None without them).
+    tiles : tuple of jax.Array, each shape (n_tiles, ...)
+        Per-tile operands.
+    tile_model : jax.Array, shape (n_tiles,)
+        Each tile's model, nondecreasing.
+    n_models : int
+        Number of models.
+    points : jax.Array, shape (n_points, n_dims), n_points >= 1
+        Evaluation points; the last block repeats the last point.
+    model_values : jax.Array, shape (n_models, n_points), or None
+        Per-model values at each point that ``tile_terms`` reads.
+    combine : callable
+        ``combine(terms, tile_model, n_models)`` reduces ``(n_tiles, rows)``
+        tile terms to ``(n_models, rows)``.
+    rows, batch_size : int
+        From :func:`_tiled_kde_rows`.
+
+    Returns
+    -------
+    reduced : pytree of jax.Array, each shape (n_models, n_points)
     """
+    n_points = points.shape[0]
+    n_blocks = -(-n_points // rows)
+    padding = n_blocks * rows - n_points
+    block_points = jnp.pad(points, ((0, padding), (0, 0)), mode="edge").reshape(
+        n_blocks, rows, -1
+    )
+    block_values = (
+        None
+        if model_values is None
+        else jnp.pad(model_values, ((0, 0), (0, padding)), mode="edge")
+        .reshape(n_models, n_blocks, rows)
+        .transpose(1, 0, 2)
+    )
 
-    def one_model(
-        leaf: tuple[jax.Array, jax.Array, jax.Array | None],
-    ) -> tuple[jax.Array, jax.Array]:
-        model_samples, model_weights, model_keys = leaf
-        return _scaled_kde_log_density(
-            points,
-            model_samples,
-            std,
-            block_size,
-            model_weights,
-            model_keys,
+    def block(xs: tuple[jax.Array, jax.Array | None]) -> Any:
+        points_in_block, values_in_block = xs
+
+        def one_tile(tile: tuple[jax.Array, ...]) -> Any:
+            *operands, model = tile
+            return tile_terms(
+                tuple(operands),
+                points_in_block,
+                None if values_in_block is None else values_in_block[model],
+            )
+
+        terms = jax.lax.map(one_tile, (*tiles, tile_model), batch_size=batch_size)
+        return jax.tree_util.tree_map(
+            lambda term: combine(term, tile_model, n_models), terms
         )
 
-    return cast(
-        tuple[jax.Array, jax.Array],
-        jax.lax.map(one_model, (samples, weights, keys), batch_size=batch_size),
+    reduced = jax.lax.map(block, (block_points, block_values))
+    return jax.tree_util.tree_map(
+        lambda values: values.transpose(1, 0, 2).reshape(n_models, -1)[:, :n_points],
+        reduced,
     )
+
+
+def _sum_over_tiles(
+    terms: jax.Array, tile_model: jax.Array, n_models: int
+) -> jax.Array:
+    """Each model's sum of its tiles' terms, in a fixed order on every backend."""
+    return deterministic_row_sum(terms, tile_model, n_models, indices_are_sorted=True)
+
+
+def _max_over_tiles(
+    terms: jax.Array, tile_model: jax.Array, n_models: int
+) -> jax.Array:
+    """Each model's largest tile term; a maximum does not depend on order."""
+    return jax.ops.segment_max(
+        terms, tile_model, num_segments=n_models, indices_are_sorted=True
+    )
+
+
+def _tile_weight_terms(
+    tile_weights: jax.Array, tile_model: jax.Array, n_models: int
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Compute :func:`_relative_weights` of each model from its tiles.
+
+    Returns
+    -------
+    relative_weights, log_weights : jax.Array, shape (n_tiles, _KDE_SAMPLE_TILE)
+        Relative to the model's largest positive weight.
+    relative_total, total : jax.Array, shape (n_models,)
+        Each model's sum of relative and of given weights.
+    """
+    tile_max = jnp.max(jnp.where(tile_weights > 0, tile_weights, 0.0), axis=1)
+    max_weight = _max_over_tiles(tile_max, tile_model, n_models)
+    relative_weights, log_weights = jax.vmap(_weights_relative_to)(
+        tile_weights, max_weight[tile_model]
+    )
+    return (
+        relative_weights,
+        log_weights,
+        _sum_over_tiles(jnp.sum(relative_weights, axis=1), tile_model, n_models),
+        _sum_over_tiles(jnp.sum(tile_weights, axis=1), tile_model, n_models),
+    )
+
+
+@partial(jax.jit, static_argnames=("rows", "batch_size"))
+def _tiled_scaled_kde_log_densities(
+    points: jax.Array,
+    tile_samples: jax.Array,
+    tile_weights: jax.Array,
+    tile_model: jax.Array,
+    counts: jax.Array,
+    std: jax.Array,
+    bracketing_keys: tuple[jax.Array, jax.Array] | None,
+    *,
+    rows: int,
+    batch_size: int,
+) -> tuple[jax.Array, jax.Array]:
+    """Run the scaled pass of :func:`_scaled_kde_log_density` for every model by tiles.
+
+    Each model's weighted kernel sum adds its tiles' sums in a fixed order
+    (see :func:`_sum_over_tiles`), so it matches the single-model pass to
+    rounding.
+
+    Parameters
+    ----------
+    points : jax.Array, shape (n_points, n_dims), n_points >= 1
+        Evaluation points.
+    tile_samples, tile_weights, tile_model
+        From :func:`_sample_tiles`.
+    counts : jax.Array, shape (n_models,)
+        Each model's number of samples, which sets the loss bound of its
+        sum.
+    std : jax.Array, shape (n_dims,)
+        Kernel bandwidth.
+    bracketing_keys : (left, right) of jax.Array, each shape (n_models, n_points), or None
+        From :func:`_bracketing_keys` for 1D points: the exact per-point
+        scale. None scales by the kernel's peak.
+    rows, batch_size : int
+        From :func:`_tiled_kde_rows`.
+
+    Returns
+    -------
+    log_density, needs_log_space : jax.Array, shape (n_models, n_points)
+    """
+    n_models = counts.shape[0]
+    peak = _kernel_log_peak(std)
+    if bracketing_keys is None:
+        scale = jnp.full((n_models, points.shape[0]), peak)
+    else:
+        left, right = bracketing_keys
+        scale = _bounded_log_scale(
+            _nearer_key_log_kernel(points[:, 0][None, :], left, right, std), peak
+        )
+    relative_weights, _, relative_total, total = _tile_weight_terms(
+        tile_weights, tile_model, n_models
+    )
+
+    def tile_sum(
+        tile: tuple[jax.Array, ...], block_points: jax.Array, block_scale: jax.Array
+    ) -> jax.Array:
+        samples, weights, active = tile
+        log_kernel = _log_kernel_matrix(block_points, samples, std)
+        return jnp.matmul(
+            weights,
+            jnp.exp(
+                jnp.where(active[:, None], log_kernel - block_scale[None, :], -jnp.inf)
+            ),
+            precision=jax.lax.Precision.HIGHEST,
+        )
+
+    scaled = _tiled_model_reduce(
+        tile_sum,
+        (tile_samples, relative_weights, tile_weights > 0),
+        tile_model,
+        n_models,
+        points,
+        scale,
+        _sum_over_tiles,
+        rows,
+        batch_size,
+    )
+    # As _scaled_kde_log_density, per model.
+    average = scaled / jnp.where(relative_total > 0, relative_total, 1.0)[:, None]
+    defined = (average > 0) | jnp.isnan(average)
+    values = jnp.where(
+        defined, scale + jnp.log(jnp.where(defined, average, 1.0)), -jnp.inf
+    )
+    lost = (
+        counts.astype(scaled.dtype)
+        * finfo(scaled.dtype).tiny
+        / (4 * finfo(scaled.dtype).eps)
+    )
+    has_mass = (total > 0.0)[:, None]
+    values = jnp.where(
+        jnp.isnan(total)[:, None], jnp.nan, jnp.where(has_mass, values, -jnp.inf)
+    )
+    return values, (scaled < lost[:, None]) & has_mass
+
+
+@partial(jax.jit, static_argnames=("rows", "batch_size", "n_models"))
+def _tiled_log_space_kde_log_densities(
+    points: jax.Array,
+    tile_samples: jax.Array,
+    tile_weights: jax.Array,
+    tile_model: jax.Array,
+    std: jax.Array,
+    *,
+    n_models: int,
+    rows: int,
+    batch_size: int,
+) -> jax.Array:
+    """Evaluate :func:`log_kde` of every model with positive total weight by tiles.
+
+    Each point is offset by its model's largest weighted log kernel, the
+    largest over the model's tiles, before the tiles' sums are added.
+
+    Parameters
+    ----------
+    points : jax.Array, shape (n_points, n_dims), n_points >= 1
+        Evaluation points.
+    tile_samples, tile_weights, tile_model
+        From :func:`_sample_tiles`.
+    std : jax.Array, shape (n_dims,)
+        Kernel bandwidth.
+    n_models : int
+        Number of models.
+    rows, batch_size : int
+        From :func:`_tiled_kde_rows`.
+
+    Returns
+    -------
+    log_density : jax.Array, shape (n_models, n_points)
+        Defined for models with positive total weight, which are the only
+        ones a scaled pass flags.
+    """
+    _, log_weights, relative_total, _ = _tile_weight_terms(
+        tile_weights, tile_model, n_models
+    )
+    positive = tile_weights > 0
+
+    def tile_offset(
+        tile: tuple[jax.Array, ...], block_points: jax.Array, _: None
+    ) -> tuple[jax.Array, jax.Array]:
+        samples, tile_log_weights, is_positive = tile
+        log_kernel = _log_kernel_matrix(block_points, samples, std)
+        return (
+            jnp.max(
+                jnp.where(
+                    is_positive[:, None],
+                    log_kernel + tile_log_weights[:, None],
+                    -jnp.inf,
+                ),
+                axis=0,
+            ),
+            jnp.any(jnp.isnan(log_kernel), axis=0).astype(log_kernel.dtype),
+        )
+
+    tiles = (tile_samples, log_weights, positive)
+    offset: jax.Array
+    has_nan: jax.Array
+    offset, has_nan = _tiled_model_reduce(
+        tile_offset,
+        tiles,
+        tile_model,
+        n_models,
+        points,
+        None,
+        _max_over_tiles,
+        rows,
+        batch_size,
+    )
+    offset = jnp.where(jnp.isfinite(offset), offset, 0.0)
+
+    def tile_mass(
+        tile: tuple[jax.Array, ...], block_points: jax.Array, block_offset: jax.Array
+    ) -> jax.Array:
+        samples, tile_log_weights, is_positive = tile
+        log_kernel = _log_kernel_matrix(block_points, samples, std)
+        relative = jnp.where(
+            is_positive[:, None],
+            (log_kernel - block_offset[None, :]) + tile_log_weights[:, None],
+            -jnp.inf,
+        )
+        return jnp.matmul(
+            jnp.ones(relative.shape[0], relative.dtype),
+            jnp.exp(relative),
+            precision=jax.lax.Precision.HIGHEST,
+        )
+
+    mass: jax.Array = _tiled_model_reduce(
+        tile_mass,
+        tiles,
+        tile_model,
+        n_models,
+        points,
+        offset,
+        _sum_over_tiles,
+        rows,
+        batch_size,
+    )
+    # As log_kde, per model.
+    log_total = jnp.log(jnp.where(relative_total > 0, relative_total, 1.0))[:, None]
+    log_mass = jnp.log(jnp.where(mass > 0, mass, 1.0))
+    values = jnp.where(mass > 0, offset + (log_mass - log_total), -jnp.inf)
+    values = jnp.where(jnp.isnan(mass), jnp.nan, values)
+    return jnp.where(has_nan > 0, jnp.nan, values)
+
+
+def _tiled_kde_log_densities(
+    points: jax.Array,
+    samples: Sequence[np.ndarray],
+    weights: Sequence[np.ndarray],
+    std: jax.Array,
+    block_size: int,
+) -> np.ndarray:
+    """Return the true log densities of KDEs sharing a bandwidth, on the host.
+
+    One tiled scaled pass for every model, then one tiled log-space pass for
+    the flagged points of the flagged models, gathered through an index
+    padded to few sizes. The kernels compile for the numbers of tiles and
+    points, not for each model's sample count.
+
+    Parameters
+    ----------
+    points : jax.Array, shape (n_points, n_dims), n_points >= 1
+        Evaluation points.
+    samples : sequence of np.ndarray, each shape (n_samples, n_dims)
+        Each model's samples.
+    weights : sequence of np.ndarray, each shape (n_samples,)
+        Each model's weights.
+    std : jax.Array, shape (n_dims,)
+        Kernel bandwidth.
+    block_size : int
+        Evaluation points per block.
+
+    Returns
+    -------
+    log_densities : np.ndarray, shape (n_models, n_points)
+    """
+    if points.shape[0] == 0:
+        return np.full((len(samples), 0), LOG_EPS)
+    host_points = np.asarray(points)
+
+    def tiled_inputs(
+        models: Sequence[int] | np.ndarray,
+    ) -> tuple[tuple[jax.Array, jax.Array, jax.Array], int]:
+        tile_samples, tile_weights, tile_model = _sample_tiles(
+            [samples[m] for m in models], [weights[m] for m in models]
+        )
+        return (
+            jnp.asarray(tile_samples),
+            jnp.asarray(tile_weights),
+            jnp.asarray(tile_model),
+        ), int(np.bincount(tile_model).max())
+
+    tiles, widest = tiled_inputs(range(len(samples)))
+    rows, batch_size = _tiled_kde_rows(
+        block_size, points, tiles[0], std, tiles[1], widest
+    )
+    bracketing_keys = None
+    if points.shape[1] == 1:
+        left, right = _bracketing_keys(host_points[:, 0], samples, weights)
+        bracketing_keys = (jnp.asarray(left), jnp.asarray(right))
+    values, needs_log_space = _tiled_scaled_kde_log_densities(
+        points,
+        *tiles,
+        jnp.asarray([np.shape(s)[0] for s in samples]),
+        std,
+        bracketing_keys,
+        rows=rows,
+        batch_size=batch_size,
+    )
+    # Copied to the host: device indexing compiles a kernel per shape.
+    values, needs_log_space = np.array(values), np.asarray(needs_log_space)
+    if not needs_log_space.any():
+        return values
+    flagged_models = np.flatnonzero(needs_log_space.any(axis=1))
+    flagged_points = np.flatnonzero(needs_log_space.any(axis=0))
+    gather = padded_index(flagged_points)
+    flagged_tiles, widest = tiled_inputs(flagged_models)
+    gathered = jnp.asarray(host_points[gather])
+    rows, batch_size = _tiled_kde_rows(
+        block_size, gathered, flagged_tiles[0], std, flagged_tiles[1], widest
+    )
+    exact = np.asarray(
+        _tiled_log_space_kde_log_densities(
+            gathered,
+            *flagged_tiles,
+            std,
+            n_models=flagged_models.size,
+            rows=rows,
+            batch_size=batch_size,
+        )
+    )[:, : flagged_points.size]
+    block = np.ix_(flagged_models, flagged_points)
+    values[block] = np.where(needs_log_space[block], exact, values[block])
+    return values
 
 
 _compiled_log_space_kde_log_density = jax.jit(
@@ -1334,6 +1834,28 @@ def prepared_kde_log_density(
         f"kde_log_density:{model.block_size}:{policy}",
         (model, model.samples_, model.weights_, model.std, points),
         predict,
+    )
+
+
+def prepared_kde_log_densities(
+    models: Sequence[KDEModel],
+    points: np.ndarray,
+    spike_time_order: SpikeTimeOrder,
+) -> list[jax.Array]:
+    """Cache :func:`kde_log_densities` at immutable points during a prediction.
+
+    The several-model form of :func:`prepared_kde_log_density`: one entry
+    for all ``models``, which replacing any fitted leaf invalidates.
+    """
+    leaves = [
+        leaf
+        for model in models
+        for leaf in (model, model.samples_, model.weights_, model.std)
+    ]
+    return spike_time_order.memo_kde(
+        "kde_log_densities",
+        (*leaves, points),
+        lambda: kde_log_densities(models, points),
     )
 
 

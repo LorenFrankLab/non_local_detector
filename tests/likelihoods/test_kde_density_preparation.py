@@ -204,8 +204,16 @@ def test_clusterless_prediction_evaluates_fitted_densities_in_its_block_size(
         blocks.append(density_model.block_size)
         return original(density_model, points)
 
+    original_batch = kde_module.kde_log_densities
+
+    def record_batch(density_models, points):
+        blocks.extend(density_model.block_size for density_model in density_models)
+        return original_batch(density_models, points)
+
     monkeypatch.setattr(kde_module, "kde_log_density", record)
     monkeypatch.setattr(clusterless_kde_module, "kde_log_density", record)
+    # The Local path evaluates the ground-process models together.
+    monkeypatch.setattr(kde_module, "kde_log_densities", record_batch)
     edges = np.arange(0.0, 20.0 + 1e-9, 0.02)
 
     def predict(**settings):

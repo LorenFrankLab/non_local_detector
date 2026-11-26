@@ -21,11 +21,12 @@ from non_local_detector.likelihoods.clusterless_kde import (
 )
 from non_local_detector.likelihoods.common import (
     _KDE_BLOCK_KERNEL_BYTES,
+    _KDE_SAMPLE_TILE,
     LOG_EPS,
     KDEModel,
-    _batched_kde_rows,
     _compiled_scaled_kde_log_density,
     _sorted_sample_keys,
+    _tiled_kde_rows,
     kde_log_densities,
     kde_log_density,
     log_density_intensity,
@@ -514,15 +515,24 @@ def test_batched_log_densities_match_each_model(n_dims):
     ("n_models", "n_samples", "block_size"),
     [(16, 65_536, 1_024), (40, 65_536, 1_024), (3, 4_096, 100), (16, 20_000_000, 64)],
 )
-def test_batched_kernels_share_one_model_workspace(n_models, n_samples, block_size):
-    """A batch of models together stays within one model's kernel budget."""
+def test_tiled_kernels_stay_within_the_widest_model_workspace(
+    n_models, n_samples, block_size
+):
+    """A step of tiles evaluates at most half the kernel entries of the widest
+    model's own block (or one tile), within the kernel budget, and one
+    block's tile sums fit it."""
+    widest = -(-n_samples // _KDE_SAMPLE_TILE)
+    n_tiles = n_models * widest
     points = jax.ShapeDtypeStruct((1_024, 1), jnp.float32)
-    samples = jax.ShapeDtypeStruct((n_samples, 1), jnp.float32)
-    weights = jax.ShapeDtypeStruct((n_samples,), jnp.float32)
-    batch_size, rows = _batched_kde_rows(
-        block_size, n_models, points, samples, jnp.ones(1), weights
+    tile_samples = jax.ShapeDtypeStruct((n_tiles, _KDE_SAMPLE_TILE, 1), jnp.float32)
+    tile_weights = jax.ShapeDtypeStruct((n_tiles, _KDE_SAMPLE_TILE), jnp.float32)
+    rows, batch_size = _tiled_kde_rows(
+        block_size, points, tile_samples, jnp.ones(1), tile_weights, widest
     )
-    assert 1 <= batch_size <= min(16, n_models)
-    assert rows >= 1
-    if n_samples * 4 <= _KDE_BLOCK_KERNEL_BYTES:
-        assert batch_size * rows * n_samples * 4 <= _KDE_BLOCK_KERNEL_BYTES
+    assert 1 <= rows <= block_size
+    assert 1 <= batch_size <= n_tiles
+    step = batch_size * _KDE_SAMPLE_TILE * rows
+    assert step <= max(_KDE_SAMPLE_TILE * rows, widest * _KDE_SAMPLE_TILE * rows // 2)
+    assert step * 4 <= _KDE_BLOCK_KERNEL_BYTES
+    if n_tiles * 4 <= _KDE_BLOCK_KERNEL_BYTES:
+        assert n_tiles * rows * 4 <= _KDE_BLOCK_KERNEL_BYTES

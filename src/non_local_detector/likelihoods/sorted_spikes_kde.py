@@ -466,8 +466,8 @@ def fit_sorted_spikes_kde_encoding_model(
         )
         marginal_models.append(neuron_marginal_model)
 
-    # One batched pass per group of similar sample counts, instead of a
-    # compiled kernel for every neuron's sample count.
+    # One tiled pass for every neuron, whose kernels compile for the total
+    # number of sample tiles, not for each neuron's sample count.
     for mean_rate, log_marginal in zip(
         mean_rates,
         kde_log_densities(marginal_models, interior_place_bin_centers),
