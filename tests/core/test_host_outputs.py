@@ -40,7 +40,7 @@ def model():
     }
 
 
-def _decode(model, covariate, n_chunks, host_outputs):
+def _decode(model, covariate, n_chunks, host_outputs, **keep):
     common = {
         "time_edges": np.arange(N_TIME + 1, dtype=float),
         "state_ind": STATE_IND,
@@ -50,6 +50,7 @@ def _decode(model, covariate, n_chunks, host_outputs):
         "n_chunks": n_chunks,
         "log_likelihoods": model["log_likelihoods"],
         "host_outputs": host_outputs,
+        **keep,
     }
     if covariate:
         return chunked_filter_smoother_covariate_dependent(
@@ -117,3 +118,32 @@ def test_transition_counts_from_device_posteriors(model):
         )
 
     np.testing.assert_array_equal(statistics(device), statistics(host))
+
+
+@pytest.mark.parametrize("host_outputs", [True, False])
+@pytest.mark.parametrize("n_chunks", [1, 3])
+@pytest.mark.parametrize("covariate", [False, True])
+@pytest.mark.parametrize(
+    "keep",
+    [
+        {"keep_causal_posterior": False},
+        {"keep_predictive_posterior": False},
+        {"keep_causal_posterior": False, "keep_predictive_posterior": False},
+    ],
+    ids=["no-causal", "no-predictive", "neither"],
+)
+def test_posteriors_not_kept_are_none_and_the_rest_unchanged(
+    model, covariate, n_chunks, host_outputs, keep
+):
+    kept = _decode(model, covariate, n_chunks, host_outputs)
+    result = _decode(model, covariate, n_chunks, host_outputs, **keep)
+    dropped = {
+        name.removeprefix("keep_") for name, keep_it in keep.items() if not keep_it
+    }
+    for name in FilterSmootherResult._fields:
+        if name in dropped or getattr(kept, name) is None:
+            assert getattr(result, name) is None
+        else:
+            np.testing.assert_array_equal(
+                np.asarray(getattr(result, name)), np.asarray(getattr(kept, name))
+            )

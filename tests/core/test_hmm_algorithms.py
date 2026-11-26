@@ -1635,3 +1635,59 @@ class TestSingleStateHMM:
         np.testing.assert_allclose(
             float(marginal), float(log_likelihoods.sum()), atol=1e-5
         )
+
+
+@pytest.mark.unit
+def test_covariate_smoother_keeps_a_declared_state_without_bins():
+    """A discrete state with no bins keeps its row and column.
+
+    The validation accepts a discrete transition matrix with more states than
+    ``state_ind`` uses, and the checkpointed path returns every declared
+    state. The chunked path took the count from ``max(state_ind) + 1``, so its
+    state probabilities dropped the trailing state while its transition
+    responses kept it. A state that cannot be entered (zero column) leaves the
+    other states' results those of the model without it.
+    """
+    rng = np.random.default_rng(0)
+    n_time = 10
+    state_ind = np.array([0, 0, 1, 1])
+    continuous = rng.random((4, 4)).astype(np.float32)
+    continuous /= continuous.sum(axis=1, keepdims=True)
+    discrete = rng.random((n_time, 3, 3)).astype(np.float32)
+    discrete[..., 2] = 0.0
+    discrete /= discrete.sum(axis=2, keepdims=True)
+    log_likelihoods = rng.normal(size=(n_time, 4)).astype(np.float32)
+
+    def decode(discrete_transition_matrix):
+        return chunked_filter_smoother_covariate_dependent(
+            time_edges=np.arange(n_time + 1, dtype=float),
+            state_ind=state_ind,
+            initial_distribution=np.full(4, 0.25, np.float32),
+            discrete_transition_matrix=discrete_transition_matrix,
+            continuous_transition_matrix=continuous,
+            log_likelihood_func=None,
+            log_likelihood_args=(),
+            log_likelihoods=log_likelihoods,
+            transition_responses=True,
+        )
+
+    declared = decode(discrete)
+    without = decode(discrete[:, :2, :2])
+
+    for name in (
+        "acausal_state_probabilities",
+        "causal_state_probabilities",
+        "predictive_state_probabilities",
+    ):
+        probabilities = getattr(declared, name)
+        assert probabilities.shape == (n_time, 3), name
+        np.testing.assert_array_equal(probabilities[:, 2], 0.0, err_msg=name)
+        np.testing.assert_array_equal(
+            probabilities[:, :2], getattr(without, name), err_msg=name
+        )
+    assert declared.transition_responses.shape == (n_time - 1, 3, 3)
+    np.testing.assert_allclose(
+        declared.transition_responses[:, :2, :2],
+        without.transition_responses,
+        rtol=1e-6,
+    )
