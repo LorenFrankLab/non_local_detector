@@ -90,8 +90,10 @@ def _make_random_trained_mixture(
         eigvals, eigvecs = np.linalg.eigh(noise_covariance)
         whitener = (eigvecs * (1.0 / np.sqrt(eigvals))[None, :]) @ eigvecs.T
         whitener = 0.5 * (whitener + whitener.T)
-        log_det_in = -0.5 * float(np.sum(np.log(eigvals)))
-        input_scale = np.ones(n_features, dtype=np.float64)
+        input_scale = rng.uniform(1.5, 4.0, size=(n_features,))
+        log_det_in = -0.5 * float(np.sum(np.log(eigvals))) - float(
+            np.sum(np.log(input_scale))
+        )
     else:
         whitener = None
         input_scale = rng.uniform(0.5, 3.0, size=(n_features,))
@@ -209,7 +211,13 @@ def test_flow_mixture_bijection_and_exact_jacobian(mode_case):
             None if mix.cond_nbr_indices is None else jnp.asarray(mix.cond_nbr_indices)
         )
         nm_j = None if mix.cond_nbr_masks is None else jnp.asarray(mix.cond_nbr_masks)
-        tm_j = None if mix.trans_masks is None else jnp.asarray(mix.trans_masks)
+        ti_j = None if mix.trans_indices is None else jnp.asarray(mix.trans_indices)
+        tv_j = None if mix.trans_valid is None else jnp.asarray(mix.trans_valid)
+        cg_j = (
+            None
+            if mix.cond_geom is None
+            else jnp.asarray(mix.cond_geom, dtype=jnp.float64)
+        )
         in_mean = jnp.asarray(mix.input_mean, dtype=jnp.float64)
         in_scale = jnp.asarray(mix.input_scale, dtype=jnp.float64)
         whitener = (
@@ -220,7 +228,9 @@ def test_flow_mixture_bijection_and_exact_jacobian(mode_case):
 
         def _f_single(m_one: jax.Array) -> jax.Array:
             centered = m_one - in_mean
-            u_one = centered @ whitener if whitener is not None else centered / in_scale
+            if whitener is not None:
+                centered = centered @ whitener
+            u_one = centered / in_scale
             z_one, _ = _apply_flow_forward_jax(
                 u_one[None, :],
                 fp,
@@ -230,7 +240,9 @@ def test_flow_mixture_bijection_and_exact_jacobian(mode_case):
                 cond_masks=cm_j,
                 cond_nbr_indices=ni_j,
                 cond_nbr_masks=nm_j,
-                trans_masks=tm_j,
+                trans_indices=ti_j,
+                trans_valid=tv_j,
+                cond_geom=cg_j,
                 precomputed_cayley=q_j,
             )
             return z_one[0]
@@ -866,3 +878,132 @@ def test_registry_entry_and_no_recompiles_across_spike_counts():
             **model,
         )
         assert np.all(np.isfinite(np.asarray(ll)))
+
+
+@pytest.mark.unit
+def test_local_conditioner_is_weight_shared_compact_and_handles_odd_channels():
+    """Local flow shares conditioner weights across contacts and works for odd D."""
+    coords_32 = np.column_stack([(np.arange(32) % 2) * 20.0, np.arange(32) * 20.0])
+    mix_32 = _make_random_trained_mixture(
+        32, contact_positions=coords_32, n_flow_layers=4, seed=31
+    )
+    assert mix_32.flow_mode == "local"
+    assert mix_32.w1 is not None
+    assert mix_32.w2 is not None
+    assert mix_32.w_out is not None
+    assert mix_32.w1.ndim == 3, (
+        f"Expected shared 3-D weights (L, F_in, H), got {mix_32.w1.shape}"
+    )
+    total_params = sum(
+        arr.size
+        for arr in (
+            mix_32.w1,
+            mix_32.b1,
+            mix_32.w2,
+            mix_32.b2,
+            mix_32.w_out,
+            mix_32.b_out,
+        )
+        if arr is not None
+    )
+    assert total_params < 40_000, f"Local flow too heavy: {total_params} params"
+
+    # Odd channel count (D=15): exact round-trip bijection and exact Jacobian.
+    coords_15 = np.column_stack([(np.arange(15) % 2) * 20.0, np.arange(15) * 20.0])
+    mix_15 = _make_random_trained_mixture(
+        15, contact_positions=coords_15, n_flow_layers=4, seed=32
+    )
+    rng = np.random.default_rng(33)
+    x = rng.normal(5.0, 2.0, size=(10, 15))
+    z, ld_fwd = mix_15.forward(x)
+    x_rec, ld_inv = mix_15.inverse(z)
+    np.testing.assert_allclose(x_rec, x, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(ld_fwd + ld_inv, 0.0, atol=1e-9)
+
+
+@pytest.mark.integration
+def test_zca_whitening_chains_data_scaling_into_spline_box_and_is_unit_invariant():
+    """ZCA + per-channel scaling keeps high-SNR peaks inside [-B, B] and is unit-invariant."""
+    rng = np.random.default_rng(41)
+    n_ch = 16
+    coords = np.column_stack([(np.arange(n_ch) % 2) * 20.0, np.arange(n_ch) * 20.0])
+    dist = np.sqrt(np.sum((coords[:, None, :] - coords[None, :, :]) ** 2, axis=-1))
+    noise_cov = 4.0 * np.exp(-dist / 40.0) + 1.5 * np.eye(n_ch)
+    chol = np.linalg.cholesky(noise_cov)
+
+    env = _make_1d_env(100.0, 5.0)
+    time = np.arange(800) * 0.02
+    pos = (50.0 + 45.0 * np.sin(2.0 * np.pi * time / 10.0))[:, None]
+    t_parts, m_parts = [], []
+    for pf, peak_c in zip([20.0, 45.0, 70.0, 88.0], [2, 6, 10, 13], strict=True):
+        rate = 20.0 * np.exp(-0.5 * ((pos[:, 0] - pf) / 9.0) ** 2) + 0.1
+        cnt = rng.poisson(rate * 0.02)
+        idx = np.repeat(np.arange(len(time)), cnt)
+        t_parts.append(np.clip(time[idx], time[0], time[-1]))
+        # High-SNR ~80 uV peak vs ~2.3 uV noise (~35 SNR in raw ZCA!).
+        fp = 80.0 * np.exp(-dist[peak_c] / 35.0)
+        gain = rng.lognormal(0.0, 0.25, size=(idx.size, 1))
+        m_parts.append(gain * fp[None, :] + rng.normal(size=(idx.size, n_ch)) @ chol.T)
+    all_t = np.concatenate(t_parts)
+    all_m = np.concatenate(m_parts, axis=0)
+    order = np.argsort(all_t)
+    sp_t, sp_m = [all_t[order]], [all_m[order]]
+
+    common = {
+        "n_mark_components": 8,
+        "covariance_rank": 4,
+        "contact_positions": [coords],
+        "n_flow_layers": 2,
+        "n_em_iterations": 2,
+        "flow_steps_per_em": 5,
+        "em_validation_blocks": 0,
+        "disable_progress_bar": True,
+        "random_state": 0,
+    }
+    m1 = fit_clusterless_flow_mixture_encoding_model(
+        time,
+        pos,
+        sp_t,
+        sp_m,
+        env,
+        noise_covariances=[noise_cov],
+        mark_reg_covar=0.05,
+        **common,
+    )
+    mix1 = m1["mark_mixtures"][0]
+    assert mix1 is not None
+    assert mix1.noise_whitener is not None
+    # Chained data scaling must scale down high-SNR ZCA channels into [-spline_bound, spline_bound].
+    assert np.max(mix1.input_scale) > 2.0
+    u1 = mix1.standardize_marks(sp_m[0])
+    peak_u = np.max(np.abs(u1), axis=1)
+    assert float(np.median(peak_u)) < mix1.spline_bound
+
+    # Exact bijection round-trip with combined ZCA + input_scale.
+    z1, ld_f = mix1.forward(sp_m[0][:25])
+    m_rec, ld_i = mix1.inverse(z1)
+    np.testing.assert_allclose(m_rec, sp_m[0][:25], rtol=1e-8, atol=1e-8)
+    np.testing.assert_allclose(ld_f + ld_i, 0.0, atol=1e-9)
+
+    # Simultaneous unit rescaling m -> 10*m, noise_cov -> 100*noise_cov shifts density by -C*log(10)
+    # independently of mark_reg_covar.
+    scale = 10.0
+    m2 = fit_clusterless_flow_mixture_encoding_model(
+        time,
+        pos,
+        sp_t,
+        [sp_m[0] * scale],
+        env,
+        noise_covariances=[noise_cov * (scale**2)],
+        mark_reg_covar=25.0,
+        **common,
+    )
+    mix2 = m2["mark_mixtures"][0]
+    assert mix2 is not None
+    probe = sp_m[0][:30]
+    np.testing.assert_allclose(
+        mix2.log_component_density(probe * scale) + n_ch * np.log(scale),
+        mix1.log_component_density(probe),
+        rtol=1e-4,
+        atol=1e-3,
+    )

@@ -142,8 +142,8 @@ DEFAULT_N_FLOW_LAYERS = 4
 DEFAULT_N_SPLINE_BINS = 8
 DEFAULT_SPLINE_BOUND = 5.0
 DEFAULT_FLOW_HIDDEN_UNITS = 64
-# Local conditioner hidden width cap so O(D * C_loc * H_loc) stays compact.
-_MAX_LOCAL_HIDDEN_UNITS = 16
+# Local shared conditioner hidden width cap so O(n_trans * C_loc * H_loc) stays compact.
+_MAX_LOCAL_HIDDEN_UNITS = 32
 # Default physical neighborhood radius multiplier and neighbor cap for local mode.
 _DEFAULT_PITCH_RADIUS_MULTIPLIER = 3.0
 _DEFAULT_MAX_LOCAL_CHANNELS = 16
@@ -155,9 +155,11 @@ _MIN_LATENT_VARIANCE = 1e-6
 # Minimum responsibility mass before keeping previous component parameters.
 _MIN_RESPONSIBILITY_MASS = 1e-8
 # Spikes per block for host-batched E-steps and flow evaluation.
-_E_STEP_BLOCK = 4096
+_E_STEP_BLOCK = 1024
 # Default mini-batch size for optax flow optimization steps.
-DEFAULT_FLOW_BATCH_SIZE = 2048
+DEFAULT_FLOW_BATCH_SIZE = 512
+# Module-level cache of compiled optax flow-step kernels keyed by hyperparameters.
+_FLOW_STEP_KERNEL_CACHE: dict[tuple[Any, ...], Any] = {}
 
 
 def _require_optax() -> Any:
@@ -391,14 +393,16 @@ def _build_local_coupling_topology(
     *,
     neighborhood_radius: float | None = None,
     max_local_channels: int | None = _DEFAULT_MAX_LOCAL_CHANNELS,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build spatially alternating partitions and neighbor masks for local RQS layers.
 
     Each contact ``c`` in the transformed half ``B_l`` conditions strictly on
     its physical neighbors in the complementary half ``A_l`` within
     ``neighborhood_radius`` (capped at ``max_local_channels``). Because
     ``A_l`` and ``B_l`` are disjoint, ``c`` never conditions on itself and the
-    coupling Jacobian is strictly triangular.
+    coupling Jacobian is strictly triangular. Only the ``n_trans = ceil(D / 2)``
+    transformed contacts are evaluated per layer, using a weight-shared
+    conditioner with static per-contact geometry context.
 
     Parameters
     ----------
@@ -413,14 +417,20 @@ def _build_local_coupling_topology(
 
     Returns
     -------
-    cond_nbr_indices : np.ndarray of int32, shape (n_flow_layers, n_contacts, c_loc)
-        Conditioning neighbor channel indices per layer and contact (0 on padded).
-    cond_nbr_masks : np.ndarray of bool, shape (n_flow_layers, n_contacts, c_loc)
+    cond_nbr_indices : np.ndarray of int32, shape (n_flow_layers, n_trans, c_loc)
+        Conditioning neighbor channel indices per layer and transformed slot.
+    cond_nbr_masks : np.ndarray of bool, shape (n_flow_layers, n_trans, c_loc)
         True for real conditioning neighbors in ``A_l``.
-    trans_masks : np.ndarray of bool, shape (n_flow_layers, n_contacts)
-        True for transformed contacts ``B_l`` in each layer.
+    trans_indices : np.ndarray of int32, shape (n_flow_layers, n_trans)
+        Contact indices in ``B_l`` (padded slots hold ``n_contacts``, pointing
+        to a harmless dummy column during scatter).
+    trans_valid : np.ndarray of bool, shape (n_flow_layers, n_trans)
+        True for real transformed contacts, False for odd-channel padding slots.
+    cond_geom : np.ndarray of float64, shape (n_flow_layers, n_trans, c_loc + n_pos)
+        Static geometry context per transformed slot (neighbor presence mask
+        plus normalized physical coordinates in ``[-1, 1]``).
     """
-    n_contacts = contact_positions.shape[0]
+    n_contacts, n_probe_dims = contact_positions.shape
     diff = contact_positions[:, None, :] - contact_positions[None, :, :]
     dist = np.sqrt(np.sum(diff * diff, axis=-1))
 
@@ -450,21 +460,39 @@ def _build_local_coupling_topology(
     parity = np.zeros(n_contacts, dtype=np.int32)
     parity[spatial_order] = np.arange(n_contacts, dtype=np.int32) % 2
 
-    trans_masks = np.empty((n_flow_layers, n_contacts), dtype=bool)
+    # Normalized physical contact coordinates in [-1, 1] (up to 3 spatial axes).
+    n_pos_feats = min(n_probe_dims, 3)
+    pos_cols = contact_positions[:, axis_order[:n_pos_feats]]
+    p_min = np.min(pos_cols, axis=0)
+    p_max = np.max(pos_cols, axis=0)
+    span = p_max - p_min
+    norm_pos = np.where(
+        span[None, :] > 0.0,
+        2.0 * (pos_cols - p_min[None, :]) / np.where(span > 0.0, span, 1.0)[None, :]
+        - 1.0,
+        0.0,
+    )
+
+    trans_lists: list[np.ndarray] = []
     raw_lists: list[list[np.ndarray]] = []
     max_found = 1
+    max_trans = 1
     for layer in range(n_flow_layers):
         is_cond = parity == (layer % 2)
-        is_trans = ~is_cond
-        trans_masks[layer] = is_trans
+        t_contacts = np.flatnonzero(~is_cond).astype(np.int32)
+        trans_lists.append(t_contacts)
+        max_trans = max(max_trans, int(t_contacts.size))
         layer_nbrs: list[np.ndarray] = []
-        for c in range(n_contacts):
-            if not is_trans[c]:
-                layer_nbrs.append(np.empty(0, dtype=np.int32))
-                continue
+        for c in t_contacts:
             cand = np.flatnonzero(is_cond & (dist[c] <= resolved_radius + 1e-12))
             if cand.size > 0:
-                order = np.argsort(dist[c, cand], kind="mergesort")
+                # Break distance ties canonically by signed displacement along
+                # principal probe axes so shared-weight neighbor slots align.
+                tie_keys = tuple(
+                    contact_positions[cand, ax] - contact_positions[c, ax]
+                    for ax in reversed(axis_order)
+                )
+                order = np.lexsort((*tie_keys, np.round(dist[c, cand], decimals=9)))
                 cand = cand[order]
                 if max_local_channels is not None and cand.size > max_local_channels:
                     cand = cand[:max_local_channels]
@@ -473,16 +501,27 @@ def _build_local_coupling_topology(
         raw_lists.append(layer_nbrs)
 
     c_loc = max(max_found, 1)
-    cond_nbr_indices = np.zeros((n_flow_layers, n_contacts, c_loc), dtype=np.int32)
-    cond_nbr_masks = np.zeros((n_flow_layers, n_contacts, c_loc), dtype=bool)
+    n_trans = max(max_trans, 1)
+    cond_nbr_indices = np.zeros((n_flow_layers, n_trans, c_loc), dtype=np.int32)
+    cond_nbr_masks = np.zeros((n_flow_layers, n_trans, c_loc), dtype=bool)
+    trans_indices = np.full((n_flow_layers, n_trans), n_contacts, dtype=np.int32)
+    trans_valid = np.zeros((n_flow_layers, n_trans), dtype=bool)
+    cond_geom = np.zeros(
+        (n_flow_layers, n_trans, c_loc + n_pos_feats), dtype=np.float64
+    )
     for layer in range(n_flow_layers):
-        for c in range(n_contacts):
-            nbrs = raw_lists[layer][c]
+        t_contacts = trans_lists[layer]
+        for slot, c in enumerate(t_contacts):
+            trans_indices[layer, slot] = int(c)
+            trans_valid[layer, slot] = True
+            nbrs = raw_lists[layer][slot]
             k = nbrs.size
             if k > 0:
-                cond_nbr_indices[layer, c, :k] = nbrs
-                cond_nbr_masks[layer, c, :k] = True
-    return cond_nbr_indices, cond_nbr_masks, trans_masks
+                cond_nbr_indices[layer, slot, :k] = nbrs
+                cond_nbr_masks[layer, slot, :k] = True
+                cond_geom[layer, slot, :k] = 1.0
+            cond_geom[layer, slot, c_loc:] = norm_pos[int(c)]
+    return cond_nbr_indices, cond_nbr_masks, trans_indices, trans_valid, cond_geom
 
 
 # ---------------------------------------------------------------------------
@@ -722,32 +761,43 @@ def _local_coupling_layer_forward(
     b_out: jax.Array,
     cond_nbr_idx: jax.Array,
     cond_nbr_mask: jax.Array,
-    trans_mask: jax.Array,
+    trans_idx: jax.Array,
+    trans_valid: jax.Array,
+    cond_geom: jax.Array,
     *,
     n_bins: int,
     bound: float,
 ) -> tuple[jax.Array, jax.Array]:
-    """One physically neighbor-masked RQS coupling layer."""
-    # Gather local conditioning neighbors per contact: (N, D, C_loc).
-    u_nbr = u[:, cond_nbr_idx]
-    local_in = (
-        bound * jnp.tanh(u_nbr / bound) * cond_nbr_mask[None, :, :].astype(u.dtype)
+    """One weight-shared physically neighbor-masked RQS coupling layer."""
+    n_dims = u.shape[1]
+    c_loc = cond_nbr_idx.shape[1]
+    # Pad one dummy column at index D so odd-channel padding slots write safely.
+    u_ext = jnp.pad(u, ((0, 0), (0, 1)))
+    u_trans = u_ext[:, trans_idx]  # (N, n_trans)
+    u_nbr = u[:, cond_nbr_idx]  # (N, n_trans, C_loc)
+    v_nbr = bound * jnp.tanh(u_nbr / bound) * cond_nbr_mask[None, :, :].astype(u.dtype)
+    # Split w1 into amplitude (:c_loc) and static geometry bias (c_loc:) to
+    # avoid broadcasting cond_geom over the spike batch dimension.
+    geom_bias = (
+        jnp.matmul(
+            cond_geom.astype(u.dtype), w1[c_loc:], precision=jax.lax.Precision.HIGHEST
+        )
+        + b1[None, :]
     )
     h1 = jax.nn.silu(
-        jnp.einsum("ndc,dch->ndh", local_in, w1, precision=jax.lax.Precision.HIGHEST)
-        + b1[None, :, :]
+        jnp.matmul(v_nbr, w1[:c_loc], precision=jax.lax.Precision.HIGHEST)
+        + geom_bias[None, :, :]
     )
     h2 = jax.nn.silu(
-        jnp.einsum("ndh,dhk->ndk", h1, w2, precision=jax.lax.Precision.HIGHEST)
-        + b2[None, :, :]
+        jnp.matmul(h1, w2, precision=jax.lax.Precision.HIGHEST) + b2[None, None, :]
     )
     raw = (
-        jnp.einsum("ndh,dhp->ndp", h2, w_out, precision=jax.lax.Precision.HIGHEST)
-        + b_out[None, :, :]
+        jnp.matmul(h2, w_out, precision=jax.lax.Precision.HIGHEST)
+        + b_out[None, None, :]
     )
-    y_all, log_d_all = _rqs_forward_1d(u, raw, n_bins=n_bins, bound=bound)
-    z = jnp.where(trans_mask[None, :], y_all, u)
-    log_det = jnp.sum(log_d_all * trans_mask[None, :].astype(u.dtype), axis=1)
+    y_trans, log_d_trans = _rqs_forward_1d(u_trans, raw, n_bins=n_bins, bound=bound)
+    z = u_ext.at[:, trans_idx].set(y_trans)[:, :n_dims]
+    log_det = jnp.sum(log_d_trans * trans_valid[None, :].astype(u.dtype), axis=1)
     return z, log_det
 
 
@@ -761,7 +811,9 @@ def _apply_flow_forward_jax(
     cond_masks: jax.Array | None = None,
     cond_nbr_indices: jax.Array | None = None,
     cond_nbr_masks: jax.Array | None = None,
-    trans_masks: jax.Array | None = None,
+    trans_indices: jax.Array | None = None,
+    trans_valid: jax.Array | None = None,
+    cond_geom: jax.Array | None = None,
     precomputed_cayley: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """Apply all layers of the RQS flow in JAX via ``lax.scan``.
@@ -837,7 +889,9 @@ def _apply_flow_forward_jax(
     if flow_mode == "local":
         assert cond_nbr_indices is not None
         assert cond_nbr_masks is not None
-        assert trans_masks is not None
+        assert trans_indices is not None
+        assert trans_valid is not None
+        assert cond_geom is not None
         xs_loc = (
             flow_params["w1"],
             flow_params["b1"],
@@ -847,7 +901,9 @@ def _apply_flow_forward_jax(
             flow_params["b_out"],
             cond_nbr_indices,
             cond_nbr_masks,
-            trans_masks,
+            trans_indices,
+            trans_valid,
+            cond_geom,
         )
 
         def _local_step(
@@ -855,7 +911,19 @@ def _apply_flow_forward_jax(
             layer: tuple[jax.Array, ...],
         ) -> tuple[tuple[jax.Array, jax.Array], None]:
             cur, acc_ld = carry
-            w1, b1, w2, b2, w_out, b_out, nbr_i, nbr_m, t_mask = layer
+            (
+                w1,
+                b1,
+                w2,
+                b2,
+                w_out,
+                b_out,
+                nbr_i,
+                nbr_m,
+                t_idx,
+                t_val,
+                geom,
+            ) = layer
             nxt, ld = _local_coupling_layer_forward(
                 cur,
                 w1,
@@ -866,7 +934,9 @@ def _apply_flow_forward_jax(
                 b_out,
                 nbr_i,
                 nbr_m,
-                t_mask,
+                t_idx,
+                t_val,
+                geom,
                 n_bins=n_bins,
                 bound=bound,
             )
@@ -1142,11 +1212,16 @@ class FlowMarkMixture:
     cond_masks : np.ndarray or None
         Boolean ``(L, D)`` conditioning masks for ``"dense"``.
     cond_nbr_indices : np.ndarray or None
-        ``(L, D, C_loc)`` int32 neighbor indices for ``"local"``.
+        ``(L, n_trans, C_loc)`` int32 neighbor indices for ``"local"``.
     cond_nbr_masks : np.ndarray or None
-        ``(L, D, C_loc)`` boolean neighbor masks for ``"local"``.
-    trans_masks : np.ndarray or None
-        ``(L, D)`` boolean transformed-contact masks for ``"local"``.
+        ``(L, n_trans, C_loc)`` boolean neighbor masks for ``"local"``.
+    trans_indices : np.ndarray or None
+        ``(L, n_trans)`` int32 transformed contact indices (``D`` on padded
+        odd-channel slots) for ``"local"``.
+    trans_valid : np.ndarray or None
+        ``(L, n_trans)`` boolean validity mask for ``trans_indices``.
+    cond_geom : np.ndarray or None
+        ``(L, n_trans, F_geo)`` static geometry context for ``"local"``.
     """
 
     weights: np.ndarray
@@ -1173,7 +1248,9 @@ class FlowMarkMixture:
     cond_masks: np.ndarray | None = None
     cond_nbr_indices: np.ndarray | None = None
     cond_nbr_masks: np.ndarray | None = None
-    trans_masks: np.ndarray | None = None
+    trans_indices: np.ndarray | None = None
+    trans_valid: np.ndarray | None = None
+    cond_geom: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.flow_mode not in FLOW_MODES:
@@ -1201,6 +1278,7 @@ class FlowMarkMixture:
             "w_out",
             "b_out",
             "cayley_matrices",
+            "cond_geom",
         ):
             val = getattr(self, opt_float)
             if val is not None:
@@ -1208,13 +1286,11 @@ class FlowMarkMixture:
                     self, opt_float, _read_only_copy(val, dtype=np.float64)
                 )
 
-        if self.cond_nbr_indices is not None:
-            object.__setattr__(
-                self,
-                "cond_nbr_indices",
-                _read_only_copy(self.cond_nbr_indices, dtype=np.int32),
-            )
-        for opt_bool in ("cond_masks", "cond_nbr_masks", "trans_masks"):
+        for opt_int in ("cond_nbr_indices", "trans_indices"):
+            val = getattr(self, opt_int)
+            if val is not None:
+                object.__setattr__(self, opt_int, _read_only_copy(val, dtype=np.int32))
+        for opt_bool in ("cond_masks", "cond_nbr_masks", "trans_valid"):
             val = getattr(self, opt_bool)
             if val is not None:
                 object.__setattr__(self, opt_bool, _read_only_copy(val, dtype=bool))
@@ -1240,20 +1316,22 @@ class FlowMarkMixture:
         return int(self.basis.shape[2])
 
     def standardize_marks(self, marks: np.ndarray) -> np.ndarray:
-        """Apply Layer 0 centering + scaling or ZCA whitening in float64."""
-        arr = np.asarray(marks, dtype=np.float64)
-        centered = arr - self.input_mean[None, :]
-        if self.noise_whitener is not None:
-            return cast(np.ndarray, centered @ self.noise_whitener)
-        return cast(np.ndarray, centered / self.input_scale[None, :])
+        """Apply Layer 0 centering + optional ZCA whitening + scaling in float64."""
+        return _standardize_host(
+            np.asarray(marks, dtype=np.float64),
+            self.input_mean,
+            self.input_scale,
+            self.noise_whitener,
+        )
 
     def unstandardize_marks(self, u: np.ndarray) -> np.ndarray:
         """Exact inverse of ``standardize_marks`` in float64."""
         arr = np.asarray(u, dtype=np.float64)
+        scaled = arr * self.input_scale[None, :]
         if self.noise_whitener is not None:
-            centered = np.linalg.solve(self.noise_whitener, arr.T).T
+            centered = np.linalg.solve(self.noise_whitener, scaled.T).T
         else:
-            centered = arr * self.input_scale[None, :]
+            centered = scaled
         return cast(np.ndarray, centered + self.input_mean[None, :])
 
     def _jax_flow_params(self, dtype: Any) -> dict[str, jax.Array]:
@@ -1384,12 +1462,19 @@ class FlowMarkMixture:
         assert self.b_out is not None
         assert self.cond_nbr_indices is not None
         assert self.cond_nbr_masks is not None
-        assert self.trans_masks is not None
-        t_mask = self.trans_masks[layer]
+        assert self.trans_indices is not None
+        assert self.trans_valid is not None
+        assert self.cond_geom is not None
+        n_dims = u.shape[1]
+        t_idx = self.trans_indices[layer]
+        t_valid = self.trans_valid[layer]
+        u_ext = np.pad(u, ((0, 0), (0, 1)))
+        u_trans = u_ext[:, t_idx]
         raw = _local_conditioner_np(
             u,
             self.cond_nbr_indices[layer],
             self.cond_nbr_masks[layer],
+            self.cond_geom[layer],
             self.w1[layer],
             self.b1[layer],
             self.w2[layer],
@@ -1398,9 +1483,10 @@ class FlowMarkMixture:
             self.b_out[layer],
             bound=bound,
         )
-        y_all, ld_all = _rqs_forward_1d_np(u, raw, n_bins=k_bins, bound=bound)
-        z = np.where(t_mask[None, :], y_all, u)
-        ld = np.sum(ld_all * t_mask[None, :], axis=1)
+        y_trans, ld_trans = _rqs_forward_1d_np(u_trans, raw, n_bins=k_bins, bound=bound)
+        u_ext[:, t_idx] = y_trans
+        z = u_ext[:, :n_dims]
+        ld = np.sum(ld_trans * t_valid[None, :], axis=1)
         return z, ld
 
     def _inverse_layer_f64(
@@ -1455,12 +1541,19 @@ class FlowMarkMixture:
         assert self.b_out is not None
         assert self.cond_nbr_indices is not None
         assert self.cond_nbr_masks is not None
-        assert self.trans_masks is not None
-        t_mask = self.trans_masks[layer]
+        assert self.trans_indices is not None
+        assert self.trans_valid is not None
+        assert self.cond_geom is not None
+        n_dims = z.shape[1]
+        t_idx = self.trans_indices[layer]
+        t_valid = self.trans_valid[layer]
+        z_ext = np.pad(z, ((0, 0), (0, 1)))
+        z_trans = z_ext[:, t_idx]
         raw = _local_conditioner_np(
             z,
             self.cond_nbr_indices[layer],
             self.cond_nbr_masks[layer],
+            self.cond_geom[layer],
             self.w1[layer],
             self.b1[layer],
             self.w2[layer],
@@ -1469,9 +1562,10 @@ class FlowMarkMixture:
             self.b_out[layer],
             bound=bound,
         )
-        x_all, ld_all = _rqs_inverse_1d_np(z, raw, n_bins=k_bins, bound=bound)
-        u = np.where(t_mask[None, :], x_all, z)
-        ld = np.sum(ld_all * t_mask[None, :], axis=1)
+        x_trans, ld_trans = _rqs_inverse_1d_np(z_trans, raw, n_bins=k_bins, bound=bound)
+        z_ext[:, t_idx] = x_trans
+        u = z_ext[:, :n_dims]
+        ld = np.sum(ld_trans * t_valid[None, :], axis=1)
         return u, ld
 
     def log_component_density(self, marks: ArrayLike) -> np.ndarray:
@@ -1665,6 +1759,7 @@ def _local_conditioner_np(
     u: np.ndarray,
     cond_nbr_idx: np.ndarray,
     cond_nbr_mask: np.ndarray,
+    cond_geom: np.ndarray,
     w1: np.ndarray,
     b1: np.ndarray,
     w2: np.ndarray,
@@ -1674,11 +1769,13 @@ def _local_conditioner_np(
     *,
     bound: float,
 ) -> np.ndarray:
-    """Host float64 mirror of physically neighbor-masked local conditioner."""
-    local_in = bound * np.tanh(u[:, cond_nbr_idx] / bound) * cond_nbr_mask[None, :, :]
-    h1 = _silu_np(np.einsum("ndc,dch->ndh", local_in, w1) + b1[None, :, :])
-    h2 = _silu_np(np.einsum("ndh,dhk->ndk", h1, w2) + b2[None, :, :])
-    return cast(np.ndarray, np.einsum("ndh,dhp->ndp", h2, w_out) + b_out[None, :, :])
+    """Host float64 mirror of weight-shared physically neighbor-masked conditioner."""
+    c_loc = cond_nbr_idx.shape[1]
+    v_nbr = bound * np.tanh(u[:, cond_nbr_idx] / bound) * cond_nbr_mask[None, :, :]
+    geom_bias = cond_geom @ w1[c_loc:] + b1[None, :]
+    h1 = _silu_np(v_nbr @ w1[:c_loc] + geom_bias[None, :, :])
+    h2 = _silu_np(h1 @ w2 + b2[None, None, :])
+    return cast(np.ndarray, h2 @ w_out + b_out[None, None, :])
 
 
 # ---------------------------------------------------------------------------
@@ -1696,7 +1793,9 @@ class _FlowTopology(NamedTuple):
     cond_masks: np.ndarray | None
     cond_nbr_indices: np.ndarray | None
     cond_nbr_masks: np.ndarray | None
-    trans_masks: np.ndarray | None
+    trans_indices: np.ndarray | None
+    trans_valid: np.ndarray | None
+    cond_geom: np.ndarray | None
 
 
 def _build_flow_topology(
@@ -1719,7 +1818,9 @@ def _build_flow_topology(
             cond_masks=None,
             cond_nbr_indices=None,
             cond_nbr_masks=None,
-            trans_masks=None,
+            trans_indices=None,
+            trans_valid=None,
+            cond_geom=None,
         )
     if n_features == 1:
         return _FlowTopology(
@@ -1730,7 +1831,9 @@ def _build_flow_topology(
             cond_masks=None,
             cond_nbr_indices=None,
             cond_nbr_masks=None,
-            trans_masks=None,
+            trans_indices=None,
+            trans_valid=None,
+            cond_geom=None,
         )
     if contact_positions is None:
         cond_masks = np.stack(
@@ -1748,9 +1851,17 @@ def _build_flow_topology(
             cond_masks=cond_masks,
             cond_nbr_indices=None,
             cond_nbr_masks=None,
-            trans_masks=None,
+            trans_indices=None,
+            trans_valid=None,
+            cond_geom=None,
         )
-    cond_nbr_indices, cond_nbr_masks, trans_masks = _build_local_coupling_topology(
+    (
+        cond_nbr_indices,
+        cond_nbr_masks,
+        trans_indices,
+        trans_valid,
+        cond_geom,
+    ) = _build_local_coupling_topology(
         contact_positions,
         n_flow_layers,
         neighborhood_radius=neighborhood_radius,
@@ -1764,7 +1875,9 @@ def _build_flow_topology(
         cond_masks=None,
         cond_nbr_indices=cond_nbr_indices,
         cond_nbr_masks=cond_nbr_masks,
-        trans_masks=trans_masks,
+        trans_indices=trans_indices,
+        trans_valid=trans_valid,
+        cond_geom=cond_geom,
     )
 
 
@@ -1805,23 +1918,26 @@ def _init_identity_flow_params(
 
     assert topology.flow_mode == "local"
     assert topology.cond_nbr_indices is not None
+    assert topology.cond_geom is not None
     c_loc = int(topology.cond_nbr_indices.shape[2])
+    f_geo = int(topology.cond_geom.shape[2])
+    f_in = c_loc + f_geo
     h_loc = min(int(flow_hidden_units), _MAX_LOCAL_HIDDEN_UNITS)
-    s1 = float(np.sqrt(2.0 / (c_loc + h_loc)))
+    s1 = float(np.sqrt(2.0 / (f_in + h_loc)))
     s2 = float(np.sqrt(2.0 / (h_loc + h_loc)))
     return {
         "w1": jnp.asarray(
-            rng.normal(0.0, s1, size=(n_layers, n_features, c_loc, h_loc)),
+            rng.normal(0.0, s1, size=(n_layers, f_in, h_loc)),
             dtype=jnp.float32,
         ),
-        "b1": jnp.zeros((n_layers, n_features, h_loc), dtype=jnp.float32),
+        "b1": jnp.zeros((n_layers, h_loc), dtype=jnp.float32),
         "w2": jnp.asarray(
-            rng.normal(0.0, s2, size=(n_layers, n_features, h_loc, h_loc)),
+            rng.normal(0.0, s2, size=(n_layers, h_loc, h_loc)),
             dtype=jnp.float32,
         ),
-        "b2": jnp.zeros((n_layers, n_features, h_loc), dtype=jnp.float32),
-        "w_out": jnp.zeros((n_layers, n_features, h_loc, p_dim), dtype=jnp.float32),
-        "b_out": jnp.zeros((n_layers, n_features, p_dim), dtype=jnp.float32),
+        "b2": jnp.zeros((n_layers, h_loc), dtype=jnp.float32),
+        "w_out": jnp.zeros((n_layers, h_loc, p_dim), dtype=jnp.float32),
+        "b_out": jnp.zeros((n_layers, p_dim), dtype=jnp.float32),
     }
 
 
@@ -1854,7 +1970,9 @@ def _make_flow_step_kernel(
         cond_masks: jax.Array | None,
         cond_nbr_indices: jax.Array | None,
         cond_nbr_masks: jax.Array | None,
-        trans_masks: jax.Array | None,
+        trans_indices: jax.Array | None,
+        trans_valid: jax.Array | None,
+        cond_geom: jax.Array | None,
     ) -> tuple[dict[str, jax.Array], Any]:
         def _loss(
             p: dict[str, jax.Array],
@@ -1871,7 +1989,9 @@ def _make_flow_step_kernel(
                 cond_masks=cond_masks,
                 cond_nbr_indices=cond_nbr_indices,
                 cond_nbr_masks=cond_nbr_masks,
-                trans_masks=trans_masks,
+                trans_indices=trans_indices,
+                trans_valid=trans_valid,
+                cond_geom=cond_geom,
             )
             log_gauss = _latent_woodbury_log_density_jax(
                 z, means, basis, basis_variances, noise_variance, is_component
@@ -2025,13 +2145,28 @@ def _pack_flow_mixture(
         b_out=np.asarray(flow_params["b_out"], dtype=np.float64),
         cond_nbr_indices=topology.cond_nbr_indices,
         cond_nbr_masks=topology.cond_nbr_masks,
-        trans_masks=topology.trans_masks,
+        trans_indices=topology.trans_indices,
+        trans_valid=topology.trans_valid,
+        cond_geom=topology.cond_geom,
     )
 
 
 # ---------------------------------------------------------------------------
 # Layer 0 standardization and initial latent Gaussian mixture
 # ---------------------------------------------------------------------------
+
+
+def _standardize_host(
+    marks: np.ndarray,
+    input_mean: np.ndarray,
+    input_scale: np.ndarray,
+    noise_whitener: np.ndarray | None,
+) -> np.ndarray:
+    """Apply Layer 0 centering, optional ZCA whitening, and per-feature scaling."""
+    centered = marks - input_mean[None, :]
+    if noise_whitener is not None:
+        centered = centered @ noise_whitener
+    return cast(np.ndarray, centered / input_scale[None, :])
 
 
 def _fit_input_standardization(
@@ -2041,23 +2176,28 @@ def _fit_input_standardization(
     mark_reg_covar: float,
     noise_covariance: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, float, np.ndarray]:
-    """Compute Layer 0 centering + scaling or ZCA whitening and latent variance floor.
+    """Compute Layer 0 centering + optional ZCA whitening + scaling and variance floor.
 
     Returns ``(input_mean, input_scale, noise_whitener, log_det_input, min_latent_var)``.
     """
-    n_features = marks.shape[1]
     total_w = float(np.sum(spike_weights))
     norm_w = spike_weights / total_w
     input_mean = norm_w @ marks  # (D,)
+    diff = marks - input_mean[None, :]
 
     if noise_covariance is not None:
         whitener, log_det_w = _compute_zca_whitener(noise_covariance)
-        input_scale = np.ones(n_features, dtype=np.float64)
-        # In noise-whitened units, background noise has variance 1.0 per channel.
-        min_latent_var = np.ones(n_features, dtype=np.float64)
-        return input_mean, input_scale, whitener, log_det_w, min_latent_var
+        # Chain per-channel data scaling after ZCA whitening so high-SNR spike
+        # peaks land inside [-spline_bound, spline_bound] while background noise
+        # remains diagonal with exact variance 1.0 / input_scale**2 per channel.
+        y = diff @ whitener
+        var_y = norm_w @ (y * y)
+        scale_sq = var_y + 1.0
+        input_scale = np.sqrt(scale_sq)
+        log_det_input = log_det_w - float(np.sum(np.log(input_scale)))
+        min_latent_var = np.maximum(1.0 / scale_sq, _MIN_LATENT_VARIANCE)
+        return input_mean, input_scale, whitener, log_det_input, min_latent_var
 
-    diff = marks - input_mean[None, :]
     var = norm_w @ (diff * diff)
     # Scale matches mark_reference's sqrt(var + reg) so uniform scaling a*m+b
     # with reg -> a^2*reg leaves standardized u invariant identically.
@@ -2166,57 +2306,89 @@ def _contiguous_exposure_blocks(
     return np.searchsorted(edges, cum, side="left").astype(np.int32)
 
 
+@partial(jax.jit, static_argnames=("flow_mode", "n_bins", "bound"))
+def _evaluate_flow_block_jax(
+    u_block: jax.Array,
+    flow_params: dict[str, jax.Array],
+    cond_masks: jax.Array | None,
+    cond_nbr_indices: jax.Array | None,
+    cond_nbr_masks: jax.Array | None,
+    trans_indices: jax.Array | None,
+    trans_valid: jax.Array | None,
+    cond_geom: jax.Array | None,
+    *,
+    flow_mode: str,
+    n_bins: int,
+    bound: float,
+) -> tuple[jax.Array, jax.Array]:
+    """Compiled static-shape forward flow evaluation for E-steps and validation."""
+    return _apply_flow_forward_jax(
+        u_block,
+        flow_params,
+        flow_mode=flow_mode,
+        n_bins=n_bins,
+        bound=bound,
+        cond_masks=cond_masks,
+        cond_nbr_indices=cond_nbr_indices,
+        cond_nbr_masks=cond_nbr_masks,
+        trans_indices=trans_indices,
+        trans_valid=trans_valid,
+        cond_geom=cond_geom,
+    )
+
+
 def _evaluate_flow_batched(
     u: np.ndarray,
     flow_params: dict[str, jax.Array],
     topology: _FlowTopology,
+    *,
+    cond_masks_j: jax.Array | None = None,
+    nbr_idx_j: jax.Array | None = None,
+    nbr_mask_j: jax.Array | None = None,
+    trans_idx_j: jax.Array | None = None,
+    trans_val_j: jax.Array | None = None,
+    cond_geom_j: jax.Array | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Evaluate ``u -> (z, log_det_g)`` in blocks via JAX without large workspaces."""
+    """Evaluate ``u -> (z, log_det_g)`` via compiled padded blocks."""
     n_spikes = u.shape[0]
     if n_spikes == 0 or topology.flow_mode == "identity":
         return u, np.zeros((n_spikes,), dtype=np.float64)
 
-    cond_masks_j = (
-        None if topology.cond_masks is None else jnp.asarray(topology.cond_masks)
-    )
-    nbr_idx_j = (
-        None
-        if topology.cond_nbr_indices is None
-        else jnp.asarray(topology.cond_nbr_indices)
-    )
-    nbr_mask_j = (
-        None
-        if topology.cond_nbr_masks is None
-        else jnp.asarray(topology.cond_nbr_masks)
-    )
-    trans_mask_j = (
-        None if topology.trans_masks is None else jnp.asarray(topology.trans_masks)
-    )
-    precomp_q = (
-        jax.vmap(_cayley_orthogonal)(flow_params["cayley_raw"])
-        if topology.flow_mode == "dense"
-        else None
-    )
+    if cond_masks_j is None and topology.cond_masks is not None:
+        cond_masks_j = jnp.asarray(topology.cond_masks)
+    if nbr_idx_j is None and topology.cond_nbr_indices is not None:
+        nbr_idx_j = jnp.asarray(topology.cond_nbr_indices)
+    if nbr_mask_j is None and topology.cond_nbr_masks is not None:
+        nbr_mask_j = jnp.asarray(topology.cond_nbr_masks)
+    if trans_idx_j is None and topology.trans_indices is not None:
+        trans_idx_j = jnp.asarray(topology.trans_indices)
+    if trans_val_j is None and topology.trans_valid is not None:
+        trans_val_j = jnp.asarray(topology.trans_valid)
+    if cond_geom_j is None and topology.cond_geom is not None:
+        cond_geom_j = jnp.asarray(topology.cond_geom, dtype=jnp.float32)
 
     z_out = np.empty_like(u, dtype=np.float64)
     ld_out = np.empty((n_spikes,), dtype=np.float64)
     for start in range(0, n_spikes, _E_STEP_BLOCK):
         stop = min(start + _E_STEP_BLOCK, n_spikes)
-        u_blk = jnp.asarray(u[start:stop], dtype=jnp.float32)
-        z_blk, ld_blk = _apply_flow_forward_jax(
+        n_cur = stop - start
+        n_pad = padded_spike_count(n_cur, _E_STEP_BLOCK)
+        u_blk = jnp.asarray(pad_rows(u[start:stop], n_pad), dtype=jnp.float32)
+        z_blk, ld_blk = _evaluate_flow_block_jax(
             u_blk,
             flow_params,
+            cond_masks_j,
+            nbr_idx_j,
+            nbr_mask_j,
+            trans_idx_j,
+            trans_val_j,
+            cond_geom_j,
             flow_mode=topology.flow_mode,
             n_bins=topology.n_spline_bins,
             bound=topology.spline_bound,
-            cond_masks=cond_masks_j,
-            cond_nbr_indices=nbr_idx_j,
-            cond_nbr_masks=nbr_mask_j,
-            trans_masks=trans_mask_j,
-            precomputed_cayley=precomp_q,
         )
-        z_out[start:stop] = np.asarray(z_blk, dtype=np.float64)
-        ld_out[start:stop] = np.asarray(ld_blk, dtype=np.float64)
+        z_out[start:stop] = np.asarray(z_blk[:n_cur], dtype=np.float64)
+        ld_out[start:stop] = np.asarray(ld_blk[:n_cur], dtype=np.float64)
     return z_out, ld_out
 
 
@@ -2372,18 +2544,10 @@ class _ElectrodeFoldState:
         self.val_design = val_design
         self.val_reference_log_bg = val_reference_log_bg
 
-        centered = marks - input_mean[None, :]
-        self.u_train = (
-            centered @ noise_whitener
-            if noise_whitener is not None
-            else centered / input_scale[None, :]
-        )
+        self.u_train = _standardize_host(marks, input_mean, input_scale, noise_whitener)
         if val_marks is not None and val_marks.shape[0] > 0:
-            v_cent = val_marks - input_mean[None, :]
-            self.u_val: np.ndarray | None = (
-                v_cent @ noise_whitener
-                if noise_whitener is not None
-                else v_cent / input_scale[None, :]
+            self.u_val: np.ndarray | None = _standardize_host(
+                val_marks, input_mean, input_scale, noise_whitener
             )
         else:
             self.u_val = None
@@ -2541,8 +2705,16 @@ def _fit_single_electrode_flow_em(
         if topology.cond_nbr_masks is None
         else jnp.asarray(topology.cond_nbr_masks)
     )
-    trans_mask_j = (
-        None if topology.trans_masks is None else jnp.asarray(topology.trans_masks)
+    trans_idx_j = (
+        None if topology.trans_indices is None else jnp.asarray(topology.trans_indices)
+    )
+    trans_val_j = (
+        None if topology.trans_valid is None else jnp.asarray(topology.trans_valid)
+    )
+    cond_geom_j = (
+        None
+        if topology.cond_geom is None
+        else jnp.asarray(topology.cond_geom, dtype=jnp.float32)
     )
 
     base_seed = 0 if random_state is None else int(random_state)
@@ -2574,12 +2746,7 @@ def _fit_single_electrode_flow_em(
             mark_reg_covar=mark_reg_covar,
             noise_covariance=noise_covariance,
         )
-        centered = fold_marks - in_mean[None, :]
-        u_tr = (
-            centered @ whitener
-            if whitener is not None
-            else centered / in_scale[None, :]
-        )
+        u_tr = _standardize_host(fold_marks, in_mean, in_scale, whitener)
 
         rng_init = np.random.default_rng(base_seed * 1009 + electrode * 37 + fold_idx)
         weights_0, means_0, basis_0, bvar_0, nvar_0 = _initialize_latent_mixture(
@@ -2657,6 +2824,21 @@ def _fit_single_electrode_flow_em(
             val_reference_log_bg=val_ref_bg,
         )
 
+    def _eval_flow(
+        u_arr: np.ndarray, params: dict[str, jax.Array]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return _evaluate_flow_batched(
+            u_arr,
+            params,
+            topology,
+            cond_masks_j=cond_masks_j,
+            nbr_idx_j=nbr_idx_j,
+            nbr_mask_j=nbr_mask_j,
+            trans_idx_j=trans_idx_j,
+            trans_val_j=trans_val_j,
+            cond_geom_j=cond_geom_j,
+        )
+
     def _score_fold_val(
         state: _ElectrodeFoldState, val_cell_exposure: np.ndarray
     ) -> float:
@@ -2669,9 +2851,7 @@ def _fit_single_electrode_flow_em(
         if state.u_val is None or state.val_weights is None or state.val_design is None:
             return -expected_count
 
-        z_val, ld_flow = _evaluate_flow_batched(
-            state.u_val, state.flow_params, state.topology
-        )
+        z_val, ld_flow = _eval_flow(state.u_val, state.flow_params)
         log_det_tot = state.log_det_input + ld_flow
         log_rates_val = _log_glm_rates_host(state.val_design, state.coefficients)
         _, log_int = _e_step_latent(
@@ -2694,9 +2874,7 @@ def _fit_single_electrode_flow_em(
         expected_count = float(
             np.dot(np.sum(rates_cells, axis=1), state.train_prepared.cell_exposure)
         )
-        z_tr, ld_flow = _evaluate_flow_batched(
-            state.u_train, state.flow_params, state.topology
-        )
+        z_tr, ld_flow = _eval_flow(state.u_train, state.flow_params)
         log_det_tot = state.log_det_input + ld_flow
         log_rates_tr = _log_glm_rates_host(state.spike_design, state.coefficients)
         _, log_int = _e_step_latent(
@@ -2760,13 +2938,13 @@ def _fit_single_electrode_flow_em(
                 cond_masks_j,
                 nbr_idx_j,
                 nbr_mask_j,
-                trans_mask_j,
+                trans_idx_j,
+                trans_val_j,
+                cond_geom_j,
             )
 
         # 2. E-step in updated warped coordinates z = g_theta(u).
-        z_tr, ld_flow = _evaluate_flow_batched(
-            state.u_train, state.flow_params, state.topology
-        )
+        z_tr, ld_flow = _eval_flow(state.u_train, state.flow_params)
         log_det_tot = state.log_det_input + ld_flow
         log_rates_tr = _log_glm_rates_host(state.spike_design, state.coefficients)
         resp, _ = _e_step_latent(
@@ -2866,9 +3044,7 @@ def _fit_single_electrode_flow_em(
 
     # Polish final GLM coefficients to convergence after flow/latent updates.
     if chosen_iterations > 0:
-        z_final, ld_flow = _evaluate_flow_batched(
-            full_state.u_train, full_state.flow_params, full_state.topology
-        )
+        z_final, ld_flow = _eval_flow(full_state.u_train, full_state.flow_params)
         log_rates_final = _log_glm_rates_host(
             full_state.spike_design, full_state.coefficients
         )
@@ -3014,8 +3190,8 @@ def fit_clusterless_flow_mixture_encoding_model(
         Half-width ``B > 0`` of the RQS nonlinear interval (identity outside),
         by default 5.0.
     flow_hidden_units : int, optional
-        Hidden width of the dense coupling conditioner MLP (capped at 16 per
-        contact in local coupling mode), by default 64.
+        Hidden width of the dense coupling conditioner MLP (capped at 32 in
+        weight-shared local coupling mode), by default 64.
     flow_objective : {"joint", "marginal"}, optional
         ``"joint"`` (default) trains the flow on the marked Poisson spatial-mark
         log-likelihood; ``"marginal"`` trains it on position-free mark density.
@@ -3030,7 +3206,7 @@ def fit_clusterless_flow_mixture_encoding_model(
         AdamW decoupled weight decay for flow parameters, by default ``1e-4``.
     flow_batch_size : int, optional
         Mini-batch size for flow gradient steps (full-batch when
-        ``n_spikes <= flow_batch_size``), by default 2048.
+        ``n_spikes <= flow_batch_size``), by default 512.
     em_glm_steps : int, optional
         Warm-started damped Newton steps for the GLM rate-map M-step per outer
         iteration, by default 2.
@@ -3200,7 +3376,7 @@ def fit_clusterless_flow_mixture_encoding_model(
     log_rate_maps: list[np.ndarray | None] = [None] * n_electrodes
     summed_gpi = np.zeros(n_interior, dtype=np.float64)
     per_electrode_diag: list[dict[str, Any]] = []
-    flow_kernel_cache: dict[tuple[Any, ...], Any] = {}
+    flow_kernel_cache = _FLOW_STEP_KERNEL_CACHE
 
     for electrode, (t_e, m_e) in enumerate(
         zip(spike_times_arr, marks_arr, strict=True)
@@ -3319,7 +3495,9 @@ def _predict_nonlocal_block_jax(
     cond_masks: jax.Array | None,
     cond_nbr_indices: jax.Array | None,
     cond_nbr_masks: jax.Array | None,
-    trans_masks: jax.Array | None,
+    trans_indices: jax.Array | None,
+    trans_valid: jax.Array | None,
+    cond_geom: jax.Array | None,
     means: jax.Array,
     basis: jax.Array,
     basis_variances: jax.Array,
@@ -3345,7 +3523,9 @@ def _predict_nonlocal_block_jax(
         cond_masks=cond_masks,
         cond_nbr_indices=cond_nbr_indices,
         cond_nbr_masks=cond_nbr_masks,
-        trans_masks=trans_masks,
+        trans_indices=trans_indices,
+        trans_valid=trans_valid,
+        cond_geom=cond_geom,
         precomputed_cayley=cayley_matrices,
     )
     log_gauss = _latent_woodbury_log_density_jax(
@@ -3384,7 +3564,9 @@ def _predict_local_block_jax(
     cond_masks: jax.Array | None,
     cond_nbr_indices: jax.Array | None,
     cond_nbr_masks: jax.Array | None,
-    trans_masks: jax.Array | None,
+    trans_indices: jax.Array | None,
+    trans_valid: jax.Array | None,
+    cond_geom: jax.Array | None,
     means: jax.Array,
     basis: jax.Array,
     basis_variances: jax.Array,
@@ -3408,7 +3590,9 @@ def _predict_local_block_jax(
         cond_masks=cond_masks,
         cond_nbr_indices=cond_nbr_indices,
         cond_nbr_masks=cond_nbr_masks,
-        trans_masks=trans_masks,
+        trans_indices=trans_indices,
+        trans_valid=trans_valid,
+        cond_geom=cond_geom,
         precomputed_cayley=cayley_matrices,
     )
     log_gauss = _latent_woodbury_log_density_jax(
@@ -3737,8 +3921,18 @@ def predict_clusterless_flow_mixture_log_likelihood(
             if mixture.cond_nbr_masks is None
             else jnp.asarray(mixture.cond_nbr_masks)
         )
-        trans_m_j = (
-            None if mixture.trans_masks is None else jnp.asarray(mixture.trans_masks)
+        trans_i_j = (
+            None
+            if mixture.trans_indices is None
+            else jnp.asarray(mixture.trans_indices)
+        )
+        trans_v_j = (
+            None if mixture.trans_valid is None else jnp.asarray(mixture.trans_valid)
+        )
+        cond_g_j = (
+            None
+            if mixture.cond_geom is None
+            else jnp.asarray(mixture.cond_geom, dtype=jnp.float32)
         )
         log_det_in_j = jnp.asarray(mixture.log_det_input, dtype=jnp.float32)
 
@@ -3786,7 +3980,9 @@ def predict_clusterless_flow_mixture_log_likelihood(
                     cond_m_j,
                     nbr_i_j,
                     nbr_m_j,
-                    trans_m_j,
+                    trans_i_j,
+                    trans_v_j,
+                    cond_g_j,
                     means_j,
                     basis_j,
                     var_j,
@@ -3812,7 +4008,9 @@ def predict_clusterless_flow_mixture_log_likelihood(
                     cond_m_j,
                     nbr_i_j,
                     nbr_m_j,
-                    trans_m_j,
+                    trans_i_j,
+                    trans_v_j,
+                    cond_g_j,
                     means_j,
                     basis_j,
                     var_j,
