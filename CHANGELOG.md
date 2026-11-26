@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Opt-in `max_candidate_components` execution setting builds a static per-peak-contact lookup table for sub-linear prediction on high component counts without refitting, matching all-`K` scoring when `>= K`.
   - Added `ProbeGeometry` helper (`non_local_detector.likelihoods.probe_geometry`) and registered `ProbeMarkMixture` and `ProbeGeometry` in `model_format` for `.nld` save/load.
 
+### Less device memory for posteriors you did not request
+
+- **Changed:** `predict` and `estimate_parameters` no longer concatenate or hold the (n_time, n_state_bins) filtered and predictive posteriors unless `return_outputs` asks for them (`"filter"`, `"predictive_posterior"` or `"all"`). Before, both were concatenated on the device and held through the backward pass, and `return_outputs` only chose which reached the results. Now each chunk's predicted rows are released once their state probabilities are taken, and each chunk's filtered rows once the smoother has used them (#233).
+  - Posterior-sized device arrays held at the peak of a CPU decode with the default outputs: 3, 3.5 and 3.25 before, 2, 1.5 and 1.25 after, for `n_chunks` 1, 2 and 4. Unchunked, the filter's own output (filtered and predicted rows together) still sets the peak.
+  - EM's in-loop E-steps keep the two posteriors only for stationary transition estimates, which read them.
+  - Requested outputs, and every result of `estimate_parameters`, are bit-identical on CPU.
+  - `chunked_filter_smoother`, `chunked_filter_smoother_covariate_dependent` and the detectors' private `_predict` take keyword-only `keep_causal_posterior` and `keep_predictive_posterior` (default True). Pass False to get None for that posterior and not hold it, for example when calling `_predict` repeatedly with precomputed log likelihoods.
+
+### Discrete states without bins
+
+- **Fixed:** `chunked_filter_smoother_covariate_dependent` takes the number of discrete states from its discrete transition matrix, as `checkpointed_forward_backward` does, instead of `max(state_ind) + 1`. With a declared state that has no bins, the covariate smoother returned state probabilities of shape `(n_time, 2)` beside transition responses of shape `(n_time - 1, 3, 3)`; both now cover the three states, the empty one with zeros. `estimate_discrete_transition_counts_from_factorized_posteriors` likewise takes the states from its discrete matrix, which it refused as the wrong shape, and gives a state without bins zero counts. Detectors give every state at least one bin, so only direct calls are affected.
+
 ### 2-D ahead/behind distances
 
 - **Fixed (changes results):** with a track graph, `get_2D_distance`, `get_map_estimate_direction_from_track_graph`, `head_direction_similarity` and `get_ahead_behind_distance2D` return NaN for a row whose head or MAP position has a NaN or infinite coordinate, as they already did for NaN without a track graph. Such a position was binned into the grid's last bin, so the distance was measured from that corner: 61.54 cm instead of NaN on a 50 × 50 cm arena in 5 cm bins, 0 between two NaN positions, and `inf` (with a "No path" warning) when the corner bin is off the track. Rows with finite positions are unchanged. `maximum_a_posteriori_estimate` gives NaN MAP positions for time bins with no posterior mass, so this reached package output called directly with a track graph.
