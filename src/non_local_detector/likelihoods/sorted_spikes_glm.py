@@ -1229,12 +1229,13 @@ def fit_poisson_regressions(
         coefficients[:, 0] = np.log(rate_floor)
         return jnp.asarray(coefficients)
     weight_sum = max(total_exposure, EPS)
+    cold_coefficients = np.zeros((n_cells, n_coefficients))
+    average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
+    cold_coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor)).astype(
+        np.float32
+    )
     if initial_coefficients is None:
-        coefficients = np.zeros((n_cells, n_coefficients))
-        average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
-        coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor)).astype(
-            np.float32
-        )
+        coefficients = cold_coefficients
     else:
         init = np.asarray(initial_coefficients, dtype=np.float64)
         if init.shape != (n_cells, n_coefficients):
@@ -1344,6 +1345,35 @@ def fit_poisson_regressions(
     active = np.ones(n_cells, dtype=bool)
     singular_cells: set[int] = set()
     n_steps = GLM_MAX_NEWTON_STEPS if max_steps is None else max_steps
+    if initial_coefficients is not None and n_steps > 0:
+        # Warm-starting a cell whose previous fit sat at the rate floor (e.g. a
+        # zero-spike EM component with beta = [log(rate_floor), 0, ...]) places
+        # exp(eta) <= rate_floor where the clipped data gradient is identically
+        # zero. Falling back to the intercept-only cold start whenever it
+        # strictly lowers the penalized objective unblocks such cells while
+        # guaranteeing monotonic non-increase of the objective.
+        cold_rate = np.maximum(np.exp(cold_coefficients[:, 0]), rate_floor)
+        spike_sum = np.sum(spikes, axis=1, dtype=np.float64)
+        cold_data = (
+            np.where(spike_sum > 0.0, spike_sum * np.log(cold_rate), 0.0)
+            - total_exposure * cold_rate
+        )
+        cold_loss_est = -cold_data / weight_sum
+        maybe_reset = np.any(coefficients != cold_coefficients, axis=1) & (
+            (~np.isfinite(loss)) | (cold_loss_est < loss)
+        )
+        if np.any(maybe_reset):
+            cold_loss, cold_grad, cold_hess = evaluate(cold_coefficients)
+            do_reset = (
+                maybe_reset
+                & np.isfinite(cold_loss)
+                & ((~np.isfinite(loss)) | (cold_loss < loss))
+            )
+            if np.any(do_reset):
+                coefficients[do_reset] = cold_coefficients[do_reset]
+                loss[do_reset] = cold_loss[do_reset]
+                gradient[do_reset] = cold_grad[do_reset]
+                hessian[do_reset] = cold_hess[do_reset]
     for _ in range(n_steps):
         gradient_norm = np.max(np.abs(gradient), axis=1)
         active &= np.isfinite(loss) & (gradient_norm > GLM_GRADIENT_TOL)
