@@ -1413,8 +1413,10 @@ def _tiled_kde_rows(
     The log-space pass, which holds about twice the temporaries per entry,
     halves both bounds. The compiled workspace then holds a few such
     matrices, as a single-model pass of the widest model does. The pass's
-    tiles are a whole number of steps: a last, smaller step would compile a
-    second batched program beside the first, with its own workspace.
+    tiles are a whole number of equal steps: a last, smaller step would
+    compile a second batched program beside the first, with its own
+    workspace. The steps are evened out, so this adds fewer zero-weight
+    tiles than there are steps.
 
     Parameters
     ----------
@@ -1438,8 +1440,8 @@ def _tiled_kde_rows(
     rows, batch_size : int
         At least one each.
     n_tiles : int
-        ``n_tiles`` rounded up to a multiple of ``batch_size``, by fewer than
-        ``batch_size`` zero-weight tiles.
+        ``n_tiles`` rounded up to a multiple of ``batch_size``, by fewer
+        zero-weight tiles than the ``n_tiles / batch_size`` steps.
     """
     budget = _KDE_BLOCK_KERNEL_BYTES // _kernel_itemsize(
         points, tile_samples, std, tile_weights
@@ -1450,8 +1452,10 @@ def _tiled_kde_rows(
     step = min(budget // 2, widest_tiles * size * rows)
     if log_space:
         step //= 2
-    batch_size = max(1, min(n_tiles, step // (size * rows)))
-    return rows, batch_size, -(-n_tiles // batch_size) * batch_size
+    largest_batch = max(1, min(n_tiles, step // (size * rows)))
+    n_steps = -(-n_tiles // largest_batch)
+    batch_size = -(-n_tiles // n_steps)
+    return rows, batch_size, n_steps * batch_size
 
 
 def _tiled_model_reduce(
@@ -1844,17 +1848,14 @@ def _tiled_kde_log_densities(
     flagged_points = np.flatnonzero(needs_log_space.any(axis=0))
     # The flagged points, padded to a power of two by repeating the last,
     # and the flagged models' tiles, which keep their ids among all models,
-    # padded to a quarter, a half or all of the scaled pass's tiles: passes
-    # over different flagged sets (chunks, refits) share few kernels.
+    # padded to four sizes per octave: passes over different flagged sets
+    # (chunks, refits) share kernels, and the padding stays a fraction of the
+    # flagged work however few models are flagged.
     n_gather = 1 << (max(flagged_points.size, 16) - 1).bit_length()
     gather = np.pad(flagged_points, (0, n_gather - flagged_points.size), mode="edge")
     gathered = jnp.asarray(host_points[gather])
     n_flagged_tiles = int(np.count_nonzero(is_flagged_model[host_tiles[2]]))
-    n_repair_tiles = next(
-        size
-        for size in (-(-n_tiles // 4), -(-n_tiles // 2), n_tiles)
-        if size >= n_flagged_tiles
-    )
+    n_repair_tiles = padded_tile_count(n_flagged_tiles)
     rows, batch_size, n_pass_tiles = _tiled_kde_rows(
         block_size,
         gathered,

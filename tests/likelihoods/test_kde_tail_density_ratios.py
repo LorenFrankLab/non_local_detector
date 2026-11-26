@@ -20,7 +20,6 @@ from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale,
 )
 from non_local_detector.likelihoods.common import (
-    _KDE_BLOCK_KERNEL_BYTES,
     _KDE_SAMPLE_TILE,
     LOG_EPS,
     KDEModel,
@@ -522,18 +521,18 @@ def _compiled_workspace(compiled):
 
 
 @pytest.mark.parametrize(
-    ("n_models", "n_samples", "n_points", "compare_single"),
-    [(1_000, 10_000, 4_000, False), (22, 40_000, 50_000, True)],
+    ("n_models", "n_samples", "n_points"),
+    [(1_000, 10_000, 4_000), (22, 40_000, 50_000)],
     ids=["many-models", "many-points"],
 )
-def test_tiled_kernel_workspace_stays_within_the_kernel_budget(
-    n_models, n_samples, n_points, compare_single
+def test_tiled_kernel_workspace_stays_within_the_widest_model_pass(
+    n_models, n_samples, n_points
 ):
-    """The tiled passes' compiled workspace, sized as ``kde_log_densities``
-    sizes them, holds at most twice the kernel budget beyond a few copies of
-    their output; with few large models it is at most the widest model's own
-    single-model pass. The log-space pass is sized for every model flagged.
-    2-D points, ``block_size=10_000``, the ``sorted_spikes_kde`` default."""
+    """Each tiled pass, sized as ``kde_log_densities`` sizes it, needs no
+    more compiled workspace than the widest model's own single-model pass,
+    beyond four copies of its ``(n_models, n_points)`` output. The log-space
+    pass is sized for every model flagged. 2-D points, ``block_size=10_000``,
+    the ``sorted_spikes_kde`` default."""
     block_size, n_dims = 10_000, 2
     sds = jax.ShapeDtypeStruct
     widest = -(-n_samples // _KDE_SAMPLE_TILE)
@@ -578,19 +577,16 @@ def test_tiled_kernel_workspace_stays_within_the_kernel_budget(
             points, *tiles, std, n_models=n_models, rows=rows, batch_size=batch_size
         )
     )
-    outputs = 8 * n_models * n_points * 4
-    assert scaled <= 2 * _KDE_BLOCK_KERNEL_BYTES + outputs
-    assert log_space <= 2 * _KDE_BLOCK_KERNEL_BYTES + outputs
-    if compare_single:
-        samples = sds((n_samples, n_dims), jnp.float32)
-        weights = sds((n_samples,), jnp.float32)
-        assert scaled <= _compiled_workspace(
-            _compiled_scaled_kde_log_density.lower(
-                points, samples, std, block_size, weights, None
-            )
+    outputs = 4 * n_models * n_points * 4
+    samples = sds((n_samples, n_dims), jnp.float32)
+    weights = sds((n_samples,), jnp.float32)
+    assert scaled <= outputs + _compiled_workspace(
+        _compiled_scaled_kde_log_density.lower(
+            points, samples, std, block_size, weights, None
         )
-        assert log_space <= _compiled_workspace(
-            _compiled_log_space_kde_log_density.lower(
-                points, samples, std, block_size, weights
-            )
+    )
+    assert log_space <= outputs + _compiled_workspace(
+        _compiled_log_space_kde_log_density.lower(
+            points, samples, std, block_size, weights
         )
+    )

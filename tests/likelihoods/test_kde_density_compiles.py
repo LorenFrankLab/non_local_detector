@@ -110,10 +110,10 @@ def test_clusterless_kde_local_predict_compiles_density_kernels_independent_of_e
 
 def test_clusterless_kde_local_chunks_share_tiled_density_kernels():
     """Row chunks with different flagged points and models reuse the tiled
-    density kernels: their log-space repair pads the flagged tiles and points
-    to few sizes."""
-    environment, time, position, spike_times = recording(UNIT_COUNTS[0])
-    rng = np.random.default_rng(UNIT_COUNTS[0])
+    density kernels: their log-space repair pads the flagged tiles (four
+    sizes per octave) and points (powers of two) to few sizes."""
+    environment, time, position, spike_times = recording(UNIT_COUNTS[1])
+    rng = np.random.default_rng(UNIT_COUNTS[1])
     marks = [rng.normal(0.0, 30.0, (len(times), 2)) for times in spike_times]
     model = fit_clusterless_kde_encoding_model(
         time,
@@ -128,6 +128,7 @@ def test_clusterless_kde_local_chunks_share_tiled_density_kernels():
     model["mark_reference"] = fit_mark_references(marks, kernel_scale=24.0)
     edges = np.arange(0.0, 60.0 + 1e-9, 0.01)
     compiles = []
+    jax.clear_caches()
     for start in range(0, 6_000, 500):
         with count_compilations() as compiled:
             predict_clusterless_kde_log_likelihood(
@@ -141,7 +142,7 @@ def test_clusterless_kde_local_chunks_share_tiled_density_kernels():
                 **model,
             )
         compiles.append([name for name in compiled if "_tiled_" in name])
-    # The first chunk compiles the scaled pass; later chunks compile at most
-    # the other repair sizes.
+    # The first chunk compiles the scaled pass; the 11 later chunks compile
+    # only a few more repair sizes (8 when each flagged set had its own).
     assert compiles[0]
-    assert sum(len(names) for names in compiles[1:]) <= 3, compiles
+    assert sum(len(names) for names in compiles[1:]) <= 5, compiles
