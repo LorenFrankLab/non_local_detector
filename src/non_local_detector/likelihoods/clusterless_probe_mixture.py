@@ -357,10 +357,8 @@ class ProbeMarkMixture:
         all_full = self.all_full_support
         if not all_full:
             bg_std = (y - self.background_mean[None, :]) * inv_std[None, :]
-            total_bg_sq = np.sum(bg_std * bg_std, axis=1)
         else:
             bg_std = np.empty((0, 0), dtype=np.float64)
-            total_bg_sq = np.empty(0, dtype=np.float64)
 
         out = np.empty((n_spikes, n_comp), dtype=np.float64)
         for k in range(n_comp):
@@ -377,8 +375,9 @@ class ProbeMarkMixture:
             if all_full:
                 d2_out = 0.0
             else:
-                local_bg_sq = np.sum(bg_std[:, ch_k] ** 2, axis=1)
-                d2_out = np.maximum(0.0, total_bg_sq - local_bg_sq)
+                out_mask = np.ones(n_ch, dtype=bool)
+                out_mask[ch_k] = False
+                d2_out = np.sum(bg_std[:, out_mask] ** 2, axis=1)
             out[:, k] = log_norm - 0.5 * (log_det_basis[k] + d2_local + d2_out)
         return out
 
@@ -436,15 +435,24 @@ def _eigendecompose_local_covariance(
     inv_sqrt = 1.0 / np.sqrt(local_noise_var)
 
     if is_full and full_rank_floor is not None:
-        sym = 0.5 * (cov + cov.T) + full_rank_floor * np.eye(m)
-        std_cov = (inv_sqrt[:, None] * sym) * inv_sqrt[None, :]
+        # Exact constrained Gaussian MLE under Sigma >= full_rank_floor * I:
+        # clamp eigenvalues in the coordinate system where the floor is defined
+        # rather than shifting eigenvalues that already exceed the floor.
+        sym = 0.5 * (cov + cov.T)
+        raw_vals, raw_vecs = np.linalg.eigh(sym)
+        clamped_vals = np.maximum(raw_vals, float(full_rank_floor))
+        if np.allclose(local_noise_var, 1.0, rtol=0.0, atol=1e-12):
+            order = np.argsort(clamped_vals)[::-1]
+            q_out[:, :m] = raw_vecs[:, order]
+            lam_out[:m] = clamped_vals[order]
+            return q_out, lam_out
+        sym_clamped = (raw_vecs * clamped_vals[None, :]) @ raw_vecs.T
+        std_cov = (inv_sqrt[:, None] * sym_clamped) * inv_sqrt[None, :]
         std_cov = 0.5 * (std_cov + std_cov.T)
         eigvals, eigvecs = np.linalg.eigh(std_cov)
         order = np.argsort(eigvals)[::-1]
-        eigvals = np.maximum(eigvals[order], 1e-12)
-        eigvecs = eigvecs[:, order]
-        q_out[:, :m] = eigvecs
-        lam_out[:m] = eigvals
+        q_out[:, :m] = eigvecs[:, order]
+        lam_out[:m] = np.maximum(eigvals[order], 1e-12)
         return q_out, lam_out
 
     r_eff = m if covariance_rank is None else min(int(covariance_rank), m)
@@ -473,6 +481,7 @@ def _mark_mixture_to_probe_mixture(
     contact_positions: np.ndarray | None,
     marks_whitened: np.ndarray,
     spike_weights: np.ndarray,
+    initial_background: np.ndarray | None = None,
 ) -> ProbeMarkMixture:
     """Convert a single-group ``MarkMixture`` to a ``ProbeMarkMixture``."""
     n_comp = mixture.n_components
@@ -481,10 +490,17 @@ def _mark_mixture_to_probe_mixture(
     is_unconstrained_full = all_full and (
         covariance_rank is None or covariance_rank >= n_channels
     )
+    init_bg = (
+        np.zeros(n_channels, dtype=np.float64)
+        if initial_background is None
+        else np.asarray(initial_background, dtype=np.float64)
+    )
 
     if is_unconstrained_full:
         # Exact full-covariance conversion matching MarkMixture without inversion
         # via eigendecomposition of the precision matrix P_k = L_k @ L_k.T.
+        # Reorder mean and eigenvector rows to match each component's
+        # support_indices[k] channel ordering (which geometry orders by distance).
         rank = n_channels
         noise_var = np.ones(n_channels, dtype=np.float64)
         bg_mean = np.zeros(n_channels, dtype=np.float64)
@@ -493,16 +509,19 @@ def _mark_mixture_to_probe_mixture(
         basis_variances = np.ones((n_comp, rank), dtype=np.float64)
         peaks = np.zeros(n_comp, dtype=np.int32)
         for k in range(n_comp):
-            means[k] = mixture.means[k]
-            peaks[k] = int(np.argmax(np.abs(mixture.means[k])))
+            ch_k = support_indices[k]
+            means[k] = mixture.means[k, ch_k]
+            peaks[k] = int(np.argmax(np.abs(mixture.means[k] - init_bg)))
             prec_chol = mixture.precisions_cholesky[k]
             precision = prec_chol @ prec_chol.T
             precision = 0.5 * (precision + precision.T)
             tau, eigvecs = np.linalg.eigh(precision)
             # Smallest precision eigenvalue = largest variance eigenvalue.
             lam = 1.0 / np.maximum(tau, 1e-30)
+            if noise_whitener is not None:
+                lam = np.maximum(lam, 1.0)
             order = np.argsort(lam)[::-1]
-            basis[k] = eigvecs[:, order]
+            basis[k] = eigvecs[ch_k][:, order]
             basis_variances[k] = lam[order]
         return ProbeMarkMixture(
             weights=np.array(mixture.weights, dtype=np.float64),
@@ -532,7 +551,7 @@ def _mark_mixture_to_probe_mixture(
 
     rank = c_loc if covariance_rank is None else min(int(covariance_rank), c_loc)
     effective_reg = 1.0 if noise_whitener is not None else mark_reg_covar
-    bg_mean = np.zeros(n_channels, dtype=np.float64)
+    bg_mean = init_bg.copy()
     if noise_whitener is not None:
         noise_var = np.ones(n_channels, dtype=np.float64)
     else:
@@ -575,8 +594,8 @@ def _mark_mixture_to_probe_mixture(
     # noise variance directly from the data outside each component's support.
     if not all_full and len(marks_whitened) > 0:
         total_w = max(float(np.sum(spike_weights)), 1e-12)
-        # Rough assignment by nearest component peak channel.
-        spike_peaks = np.argmax(np.abs(marks_whitened), axis=1)
+        # Rough assignment by nearest component peak channel (baseline-relative).
+        spike_peaks = np.argmax(np.abs(marks_whitened - bg_mean[None, :]), axis=1)
         if contact_positions is not None:
             comp_pos = contact_positions[peaks]
             d_sc = np.sum(
@@ -598,7 +617,7 @@ def _mark_mixture_to_probe_mixture(
             has_silent,
             np.sum(silent_w * marks_whitened, axis=0)
             / np.where(has_silent, silent_sum, 1.0),
-            0.0,
+            bg_mean,
         )
         if noise_whitener is None:
             silent_var = np.sum(
@@ -655,6 +674,46 @@ def _allocate_tile_components(
     return np.ones(n_tiles, dtype=np.int64) + floors
 
 
+def _estimate_channel_baseline(y: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Estimate per-channel silent baseline robust to DC offsets and 2-unit splits.
+
+    For unimodal or majority-silent channels (including constant DC offsets on
+    silent contacts and dense probes with >= 3 units), returns the weighted
+    median. For strongly bimodal channels (e.g., a 2-unit shank where one unit
+    accounts for ~45-55% of spikes), selects the tighter-spread (or closer-to-
+    zero) mode rather than landing between modes or on the firing mode.
+    """
+    n_spikes, n_channels = y.shape
+    if n_spikes == 0:
+        return np.zeros(n_channels, dtype=np.float64)
+    if n_spikes == 1:
+        return np.zeros(n_channels, dtype=np.float64)
+    total_w = float(np.sum(weights))
+    if total_w <= 0.0:
+        return np.zeros(n_channels, dtype=np.float64)
+    probs = np.array([0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], dtype=np.float64)
+    baseline = np.empty(n_channels, dtype=np.float64)
+    for c in range(n_channels):
+        vals = y[:, c]
+        order = np.argsort(vals, kind="mergesort")
+        sv = vals[order]
+        sw = weights[order]
+        cdf = (np.cumsum(sw) - 0.5 * sw) / total_w
+        q12, q25, q37, q50, q62, q75, q87 = np.interp(probs, cdf, sv)
+        iqr_low = float(q37 - q12)
+        iqr_high = float(q87 - q62)
+        if float(q75 - q25) > 2.5 * max(iqr_low, iqr_high, 1e-12):
+            if iqr_low < 0.85 * iqr_high:
+                baseline[c] = float(q25)
+            elif iqr_high < 0.85 * iqr_low:
+                baseline[c] = float(q75)
+            else:
+                baseline[c] = float(q25) if abs(q25) <= abs(q75) else float(q75)
+        else:
+            baseline[c] = float(q50)
+    return baseline
+
+
 def _initialize_probe_mixture(
     marks: np.ndarray,
     weights: np.ndarray,
@@ -709,13 +768,15 @@ def _initialize_probe_mixture(
         tiles = [np.arange(n_channels, dtype=np.int32)]
         tile_supports = [np.arange(n_channels, dtype=np.int32)]
 
+    has_silent_channels = not (c_loc == n_channels and np.all(nbr_mask))
+
     # Single-spike electrode: one component centered on its mark with covariance
     # effective_reg_covar * I (matching clusterless_mark_glm when unwhitened).
     if n_spikes == 1:
         peak = int(np.argmax(np.abs(y[0])))
         sup_idx = nbr_indices[peak : peak + 1].copy()
         sup_mask = nbr_mask[peak : peak + 1].copy()
-        rank = 1 if covariance_rank is None else min(int(covariance_rank), c_loc)
+        rank = c_loc if covariance_rank is None else min(int(covariance_rank), c_loc)
         means = np.zeros((1, c_loc), dtype=np.float64)
         means[0, sup_mask[0]] = y[0, sup_idx[0, sup_mask[0]]]
         bg_mean = np.zeros(n_channels, dtype=np.float64)
@@ -736,6 +797,12 @@ def _initialize_probe_mixture(
             component_peak_channels=np.array([peak], dtype=np.int32),
         )
 
+    init_bg = (
+        _estimate_channel_baseline(y, weights)
+        if has_silent_channels
+        else np.zeros(n_channels, dtype=np.float64)
+    )
+
     # Single-tile path (no geometry, or electrode fits in one local neighborhood).
     if len(tiles) == 1:
         base_mixture = fit_mark_mixture(
@@ -749,7 +816,9 @@ def _initialize_probe_mixture(
             tol=mark_tol,
             random_state=mark_random_state,
         )
-        peaks = np.argmax(np.abs(base_mixture.means), axis=1).astype(np.int32)
+        peaks = np.argmax(np.abs(base_mixture.means - init_bg[None, :]), axis=1).astype(
+            np.int32
+        )
         if contact_positions is not None:
             sup_idx = nbr_indices[peaks].copy()
             sup_mask = nbr_mask[peaks].copy()
@@ -771,20 +840,18 @@ def _initialize_probe_mixture(
             contact_positions=contact_positions,
             marks_whitened=y,
             spike_weights=weights,
+            initial_background=init_bg,
         )
 
-    # Multi-tile dense shank: route spikes by peak contact to disjoint tiles,
-    # budget n_mark_components across active tiles proportionally to spike
-    # weight, fit local DP-VB mixtures on each tile's contact support, and
-    # merge into one unified whole-shank ProbeMarkMixture.
+    # Multi-tile dense shank: route spikes by baseline-relative peak contact to
+    # disjoint tiles, budget n_mark_components across active tiles proportionally
+    # to spike weight, fit local DP-VB mixtures on each tile's contact support,
+    # and merge into one unified whole-shank ProbeMarkMixture.
     contact_to_tile = np.empty(n_channels, dtype=np.int32)
     for tile_idx, members in enumerate(tiles):
         contact_to_tile[members] = tile_idx
 
-    # Estimate global silent baseline using median-like quiet channels per spike
-    # (zero for standard zero-baseline amplitudes; handles shifted marks cleanly).
-    bg_mean = np.zeros(n_channels, dtype=np.float64)
-    spike_peaks = np.argmax(np.abs(y), axis=1)
+    spike_peaks = np.argmax(np.abs(y - init_bg[None, :]), axis=1)
     spike_tiles = contact_to_tile[spike_peaks]
 
     total_weight = float(np.sum(weights))
@@ -829,9 +896,10 @@ def _initialize_probe_mixture(
         )
         # Map tile-support index -> channel index, and look up permanent S_k.
         support_lookup = {int(ch): pos for pos, ch in enumerate(support_ch)}
+        tile_bg = init_bg[support_ch]
         for k in range(tile_mix.n_components):
             mean_tile = tile_mix.means[k]
-            peak_pos = int(np.argmax(np.abs(mean_tile)))
+            peak_pos = int(np.argmax(np.abs(mean_tile - tile_bg)))
             peak_ch = int(support_ch[peak_pos])
             s_idx = nbr_indices[peak_ch].copy()
             s_mask = nbr_mask[peak_ch].copy()
@@ -848,6 +916,7 @@ def _initialize_probe_mixture(
             valid_pos = np.flatnonzero(s_mask)
             n_valid = len(valid_pos)
             mu_loc = np.zeros(c_loc, dtype=np.float64)
+            mu_loc[valid_pos] = init_bg[s_idx[valid_pos]]
             cov_loc = np.eye(n_valid, dtype=np.float64) * effective_reg_covar
             # Identify which channels in S_k were in support_ch.
             mapped_local: list[int] = []
@@ -893,7 +962,7 @@ def _initialize_probe_mixture(
     bg_mean = np.where(
         has_silent,
         np.sum(silent_w * y, axis=0) / np.where(has_silent, silent_sum, 1.0),
-        0.0,
+        init_bg,
     )
     if whitener is not None:
         noise_var = np.ones(n_channels, dtype=np.float64)
@@ -936,6 +1005,21 @@ def _initialize_probe_mixture(
         contact_positions=contact_positions,
         component_peak_channels=peaks_arr,
     )
+
+
+def _outside_support_mask(
+    support_indices: jax.Array,
+    support_mask: jax.Array,
+    n_channels: int,
+    dtype: Any,
+) -> jax.Array:
+    """Return ``(K, C)`` mask with 1.0 on channels outside ``S_k`` and 0.0 inside."""
+    n_comp = support_indices.shape[0]
+    in_sup = jnp.zeros((n_comp, n_channels + 1), dtype=dtype)
+    idx = jnp.where(support_mask, support_indices, n_channels)
+    k_idx = jnp.arange(n_comp)[:, None]
+    in_sup = in_sup.at[k_idx, idx].set(jnp.asarray(1.0, dtype=dtype))
+    return jnp.asarray(1.0, dtype=dtype) - in_sup[:, :n_channels]
 
 
 def _woodbury_log_density(
@@ -1010,15 +1094,25 @@ def _woodbury_log_density(
         d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
     else:
         bg_std = (features - background_mean[None, :]) * inv_std[None, :]
-        total_bg_sq = jnp.sum(bg_std * bg_std, axis=1, keepdims=True)
-        local_bg = jnp.where(
-            support_mask[None, :, :],
-            bg_std[:, support_indices],
-            jnp.asarray(0.0, dtype=dtype),
+        bg_sq = bg_std * bg_std  # (B, C)
+        outside_mask = _outside_support_mask(
+            support_indices, support_mask, n_channels, dtype
+        )  # (K, C)
+        safe_bg_sq = jnp.where(
+            jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
         )
-        local_bg_sq = jnp.sum(local_bg * local_bg, axis=2)
-        d2_outside = jnp.maximum(
-            jnp.asarray(0.0, dtype=dtype), total_bg_sq - local_bg_sq
+        has_inf_out = (
+            jnp.matmul(
+                (~jnp.isfinite(bg_sq)).astype(dtype),
+                outside_mask.T,
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            > 0.0
+        )
+        d2_outside = jnp.where(
+            has_inf_out,
+            jnp.asarray(jnp.inf, dtype=dtype),
+            jnp.matmul(safe_bg_sq, outside_mask.T, precision=jax.lax.Precision.HIGHEST),
         )
 
     log_norm = jnp.asarray(
@@ -1101,15 +1195,29 @@ def _woodbury_candidate_log_density(
         d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
     else:
         bg_std = (features - background_mean[None, :]) * inv_std[None, :]
-        total_bg_sq = jnp.sum(bg_std * bg_std, axis=1, keepdims=True)
-        local_bg = jnp.where(
-            c_mask,
-            jnp.take_along_axis(bg_std[:, None, :], c_sup, axis=2),
-            jnp.asarray(0.0, dtype=dtype),
+        bg_sq = bg_std * bg_std  # (B, C)
+        outside_mask = _outside_support_mask(
+            support_indices, support_mask, n_channels, dtype
         )
-        local_bg_sq = jnp.sum(local_bg * local_bg, axis=2)
-        d2_outside = jnp.maximum(
-            jnp.asarray(0.0, dtype=dtype), total_bg_sq - local_bg_sq
+        c_outside = outside_mask[candidate_indices]  # (B, k_cand, C)
+        safe_bg_sq = jnp.where(
+            jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
+        )
+        has_inf_out = (
+            jnp.einsum(
+                "bc,bjc->bj",
+                (~jnp.isfinite(bg_sq)).astype(dtype),
+                c_outside,
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            > 0.0
+        )
+        d2_outside = jnp.where(
+            has_inf_out,
+            jnp.asarray(jnp.inf, dtype=dtype),
+            jnp.einsum(
+                "bc,bjc->bj", safe_bg_sq, c_outside, precision=jax.lax.Precision.HIGHEST
+            ),
         )
 
     log_norm = jnp.asarray(
@@ -1137,81 +1245,74 @@ def _e_step_block(
     noise_variance: jax.Array,
     background_mean: jax.Array,
     is_component: jax.Array,
-    log_rates: jax.Array,
-    weights: jax.Array,
+    log_rates_left: jax.Array,
+    log_rates_right: jax.Array,
+    left_share: jax.Array,
+    right_share: jax.Array,
     log_det_whitener: jax.Array,
     *,
     all_full_support: bool,
-) -> tuple[jax.Array, jax.Array]:
-    """Responsibilities and weighted spike log-likelihood for one EM block."""
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Split-position responsibilities and weighted spike log-likelihood for one block."""
     dtype = features.dtype
-    n_channels = features.shape[1]
-    inv_std = jnp.reciprocal(jnp.sqrt(noise_variance))
-    local_inv_std = inv_std[support_indices]
-    y_local = features[:, support_indices]
-    delta = jnp.where(
-        support_mask[None, :, :],
-        (y_local - means[None, :, :]) * local_inv_std[None, :, :],
-        jnp.asarray(0.0, dtype=dtype),
-    )
-    proj = jnp.einsum("bkc,kcr->bkr", delta, basis, precision=jax.lax.Precision.HIGHEST)
-    resid = delta - jnp.einsum(
-        "bkr,kcr->bkc", proj, basis, precision=jax.lax.Precision.HIGHEST
-    )
-    d2_local = jnp.sum(resid * resid, axis=2) + jnp.sum(
-        (proj * proj) * jnp.reciprocal(basis_variances)[None, :, :], axis=2
-    )
-    if all_full_support:
-        d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
-    else:
-        bg_std = (features - background_mean[None, :]) * inv_std[None, :]
-        total_bg_sq = jnp.sum(bg_std * bg_std, axis=1, keepdims=True)
-        local_bg = jnp.where(
-            support_mask[None, :, :],
-            bg_std[:, support_indices],
-            jnp.asarray(0.0, dtype=dtype),
-        )
-        d2_outside = jnp.maximum(
-            jnp.asarray(0.0, dtype=dtype),
-            total_bg_sq - jnp.sum(local_bg * local_bg, axis=2),
-        )
-    log_norm = (
-        jnp.asarray(-0.5 * n_channels * np.log(2.0 * np.pi), dtype=dtype)
-        + log_det_whitener.astype(dtype)
-        - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
-    )
-    log_det_basis = jnp.sum(jnp.log(basis_variances), axis=1)
-    log_dens = log_norm - jnp.asarray(0.5, dtype=dtype) * (
-        log_det_basis[None, :] + d2_local + d2_outside
-    )
+    log_dens = _woodbury_log_density(
+        features,
+        means,
+        basis,
+        basis_variances,
+        support_indices,
+        support_mask,
+        noise_variance,
+        background_mean,
+        is_component,
+        log_det_whitener=0.0,
+        all_full_support=all_full_support,
+    ) + log_det_whitener.astype(dtype)
     log_dens = jnp.where(
         is_component[None, :] & jnp.isfinite(log_dens),
         log_dens,
         jnp.asarray(-jnp.inf, dtype=dtype),
     )
-    joint = log_rates + log_dens
-    log_total = jax.scipy.special.logsumexp(joint, axis=1)
-    safe_total = jnp.where(
-        jnp.isfinite(log_total), log_total, jnp.asarray(0.0, dtype=dtype)
+    joint_l = log_rates_left + log_dens
+    log_tot_l = jax.scipy.special.logsumexp(joint_l, axis=1)
+    safe_l = jnp.where(
+        jnp.isfinite(log_tot_l), log_tot_l, jnp.asarray(0.0, dtype=dtype)
     )
-    responsibilities = jnp.where(
-        jnp.isfinite(log_total)[:, None],
-        jnp.exp(joint - safe_total[:, None]),
+    resp_l = jnp.where(
+        jnp.isfinite(log_tot_l)[:, None],
+        jnp.exp(joint_l - safe_l[:, None]),
         jnp.asarray(0.0, dtype=dtype),
     )
-    weighted_ll = jnp.sum(
-        jnp.where((weights > 0) & jnp.isfinite(log_total), weights * safe_total, 0.0)
+
+    joint_r = log_rates_right + log_dens
+    log_tot_r = jax.scipy.special.logsumexp(joint_r, axis=1)
+    safe_r = jnp.where(
+        jnp.isfinite(log_tot_r), log_tot_r, jnp.asarray(0.0, dtype=dtype)
     )
-    return responsibilities, weighted_ll
+    resp_r = jnp.where(
+        jnp.isfinite(log_tot_r)[:, None],
+        jnp.exp(joint_r - safe_r[:, None]),
+        jnp.asarray(0.0, dtype=dtype),
+    )
+
+    weighted_ll = jnp.sum(
+        jnp.where((left_share > 0) & jnp.isfinite(log_tot_l), left_share * safe_l, 0.0)
+        + jnp.where(
+            (right_share > 0) & jnp.isfinite(log_tot_r), right_share * safe_r, 0.0
+        )
+    )
+    return resp_l, resp_r, weighted_ll
 
 
 def _e_step_electrode(
     marks_whitened: np.ndarray,
     mixture: ProbeMarkMixture,
-    log_rates: np.ndarray,
-    weights: np.ndarray,
-) -> tuple[np.ndarray, float]:
-    """Compute exact responsibilities (float64) and weighted spike log-likelihood."""
+    log_rates_left: np.ndarray,
+    log_rates_right: np.ndarray,
+    left_share: np.ndarray,
+    right_share: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Compute exact split-position responsibilities (float64) and weighted spike LL."""
     n_spikes = len(marks_whitened)
     n_comp = mixture.n_components
     all_full = mixture.all_full_support
@@ -1225,7 +1326,8 @@ def _e_step_electrode(
     is_comp = jnp.ones((n_comp,), dtype=bool)
     log_det_w = jnp.asarray(mixture.log_det_whitener, dtype=jnp.float32)
 
-    resp_out = np.empty((n_spikes, n_comp), dtype=np.float64)
+    resp_l_out = np.empty((n_spikes, n_comp), dtype=np.float64)
+    resp_r_out = np.empty((n_spikes, n_comp), dtype=np.float64)
     total_ll = 0.0
     block = min(_E_STEP_BLOCK, max(n_spikes, 1))
     for start in range(0, n_spikes, block):
@@ -1235,9 +1337,17 @@ def _e_step_electrode(
         y_blk = jnp.asarray(
             pad_rows(marks_whitened[start:stop], n_pad), dtype=jnp.float32
         )
-        lr_blk = jnp.asarray(pad_rows(log_rates[start:stop], n_pad), dtype=jnp.float32)
-        w_blk = jnp.asarray(pad_rows(weights[start:stop], n_pad), dtype=jnp.float32)
-        resp_blk, ll_blk = _e_step_block(
+        lrl_blk = jnp.asarray(
+            pad_rows(log_rates_left[start:stop], n_pad), dtype=jnp.float32
+        )
+        lrr_blk = jnp.asarray(
+            pad_rows(log_rates_right[start:stop], n_pad), dtype=jnp.float32
+        )
+        ls_blk = jnp.asarray(pad_rows(left_share[start:stop], n_pad), dtype=jnp.float32)
+        rs_blk = jnp.asarray(
+            pad_rows(right_share[start:stop], n_pad), dtype=jnp.float32
+        )
+        rl_blk, rr_blk, ll_blk = _e_step_block(
             y_blk,
             means,
             basis,
@@ -1247,14 +1357,17 @@ def _e_step_electrode(
             noise_var,
             bg_mean,
             is_comp,
-            lr_blk,
-            w_blk,
+            lrl_blk,
+            lrr_blk,
+            ls_blk,
+            rs_blk,
             log_det_w,
             all_full_support=all_full,
         )
-        resp_out[start:stop] = np.asarray(resp_blk[:n_cur], dtype=np.float64)
+        resp_l_out[start:stop] = np.asarray(rl_blk[:n_cur], dtype=np.float64)
+        resp_r_out[start:stop] = np.asarray(rr_blk[:n_cur], dtype=np.float64)
         total_ll += float(ll_blk)
-    return resp_out, total_ll
+    return resp_l_out, resp_r_out, total_ll
 
 
 def _mark_m_step(
@@ -1471,10 +1584,20 @@ def _collect_electrode_events(
     support_position: np.ndarray,
     electrode_times: np.ndarray,
     electrode_marks: np.ndarray,
+    *,
+    allowed_samples: np.ndarray | None = None,
 ) -> (
     tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None
 ):
-    """Extract positive-weight encoding spikes and their bracketing shares."""
+    """Extract positive-weight encoding spikes and their bracketing shares.
+
+    When ``allowed_samples`` is supplied (for inner validation folds), each
+    spike is first assigned to a single owning tracking sample (the endpoint
+    with the larger full-data share, left on ties) and kept only when that
+    owner lies in ``allowed_samples``. Any cross-boundary minor share on the
+    non-allowed side is folded onto the owning endpoint so total spike weight
+    is preserved and no spike can enter both training and validation.
+    """
     spike_index, left, right, fraction = support.event_basis(electrode_times)
     validate_finite(electrode_marks[spike_index], "spike_waveform_features")
     left_share = (1.0 - fraction) * weights[left]
@@ -1483,13 +1606,35 @@ def _collect_electrode_events(
     positive = spike_weight > 0.0
     if not np.any(positive):
         return None
-    l_pos = support_position[left[positive]]
-    r_pos = support_position[right[positive]]
+    sp_idx = spike_index[positive]
+    l_orig = left[positive]
+    r_orig = right[positive]
     l_sh = left_share[positive]
     r_sh = right_share[positive]
+    owner_orig = np.where(
+        (r_sh <= 0.0) | ((l_sh >= r_sh) & (l_sh > 0.0)), l_orig, r_orig
+    )
+
+    if allowed_samples is not None:
+        owned = allowed_samples[owner_orig]
+        if not np.any(owned):
+            return None
+        sp_idx = sp_idx[owned]
+        l_orig = l_orig[owned]
+        r_orig = r_orig[owned]
+        l_sh = l_sh[owned]
+        r_sh = r_sh[owned]
+        l_in = allowed_samples[l_orig]
+        r_in = allowed_samples[r_orig]
+        total_sh = l_sh + r_sh
+        l_sh = np.where(l_in & r_in, l_sh, np.where(l_in, total_sh, 0.0))
+        r_sh = np.where(l_in & r_in, r_sh, np.where(r_in, total_sh, 0.0))
+
+    l_pos = support_position[l_orig]
+    r_pos = support_position[r_orig]
     primary = np.where((r_pos < 0) | ((l_pos >= 0) & (l_sh >= r_sh)), l_pos, r_pos)
     return (
-        electrode_marks[spike_index[positive]],
+        electrode_marks[sp_idx],
         l_pos,
         r_pos,
         l_sh,
@@ -1500,20 +1645,22 @@ def _collect_electrode_events(
 
 def _soft_cell_counts(
     events_list: list[_ElectrodeEvents],
-    responsibilities_list: list[np.ndarray],
+    responsibilities_list: list[tuple[np.ndarray, np.ndarray]],
     sample_cells: np.ndarray,
     n_cells: int,
 ) -> np.ndarray:
-    """Sum responsibility-weighted spike shares into position cells."""
+    """Sum split-position responsibility-weighted spike shares into position cells."""
     rows: list[np.ndarray] = []
-    for events, resp in zip(events_list, responsibilities_list, strict=True):
-        n_comp = resp.shape[1]
+    for events, (resp_l, resp_r) in zip(
+        events_list, responsibilities_list, strict=True
+    ):
+        n_comp = resp_l.shape[1]
         counts = np.zeros(n_cells * n_comp, dtype=np.float64)
-        for sample, share in (
-            (events.left, events.left_share),
-            (events.right, events.right_share),
+        for sample, share, resp in (
+            (events.left, events.left_share, resp_l),
+            (events.right, events.right_share, resp_r),
         ):
-            inside = sample >= 0
+            inside = (sample >= 0) & (share > 0.0)
             if not np.any(inside):
                 continue
             index = (
@@ -1573,7 +1720,8 @@ class _EMRun:
         covariance_rank: int | None,
         mark_reg_covar: float,
         warn_empty: bool,
-        validation: tuple[np.ndarray, np.ndarray] | None = None,
+        train_sample_mask: np.ndarray | None = None,
+        validation: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     ) -> None:
         self.covariance_rank = covariance_rank
         self.mark_reg_covar = mark_reg_covar
@@ -1593,7 +1741,8 @@ class _EMRun:
         self.fitted_indices: list[int] = []
         self.fitted: list[ProbeMarkMixture] = []
         self.events: list[_ElectrodeEvents] = []
-        self.spike_cells: list[np.ndarray] = []
+        self.spike_cells_left: list[np.ndarray] = []
+        self.spike_cells_right: list[np.ndarray] = []
 
         for electrode, (times, marks, pos_c, noise_c) in enumerate(
             zip(
@@ -1605,7 +1754,12 @@ class _EMRun:
             )
         ):
             raw = _collect_electrode_events(
-                support, weights, support_position, times, marks
+                support,
+                weights,
+                support_position,
+                times,
+                marks,
+                allowed_samples=train_sample_mask,
             )
             if raw is None:
                 if warn_empty:
@@ -1647,35 +1801,43 @@ class _EMRun:
                 )
             )
             if self.prepared.sample_cells.size:
-                self.spike_cells.append(self.prepared.sample_cells[primary])
+                self.spike_cells_left.append(
+                    self.prepared.sample_cells[np.maximum(left, 0)]
+                )
+                self.spike_cells_right.append(
+                    self.prepared.sample_cells[np.maximum(right, 0)]
+                )
             else:
-                self.spike_cells.append(np.zeros(len(primary), dtype=np.int64))
+                zeros = np.zeros(len(primary), dtype=np.int64)
+                self.spike_cells_left.append(zeros)
+                self.spike_cells_right.append(zeros)
 
         self.total_spike_weight = sum(
             float(np.sum(ev.total_weight)) for ev in self.events
         )
-        # Iteration 0: exact two-stage fit (position-free mark responsibilities).
-        init_resp = [
-            mixture.responsibilities(
-                # Re-use already-whitened marks by invoking density on raw marks via
-                # whitened helper; easier to evaluate directly in whitened space.
-                ev.marks_whitened
+        # Iteration 0: exact two-stage fit (position-free mark responsibilities,
+        # identical on both bracketing endpoints).
+        init_resp: list[tuple[np.ndarray, np.ndarray]] = []
+        for mixture, ev in zip(self.fitted, self.events, strict=True):
+            r0 = (
+                mixture.responsibilities(ev.marks_whitened)
+                if mixture.noise_whitener is None
+                else _responsibilities_whitened(mixture, ev.marks_whitened)
             )
-            if mixture.noise_whitener is None
-            else _responsibilities_whitened(mixture, ev.marks_whitened)
-            for mixture, ev in zip(self.fitted, self.events, strict=True)
-        ]
+            init_resp.append((r0, r0))
         self._fit_rate_maps(init_resp, warm_start=False, max_steps=None, warn=True)
         self.train_log_likelihood: list[float] = []
         self.validation_nats: list[float] = []
         self.validation_log_likelihood: list[float] = []
-        self._responsibilities: list[np.ndarray] = init_resp
+        self._responsibilities: list[tuple[np.ndarray, np.ndarray]] = init_resp
 
         # Prepare validation spikes & validation cell exposure if requested.
         self._val_data: dict[str, Any] | None = None
         if validation is not None and self.fitted:
-            val_w, val_exp = validation
-            val_events: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
+            val_w, val_exp, val_sample_mask = validation
+            val_events: list[
+                tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+            ] = []
             val_spikes = 0.0
             for fit_idx, electrode in enumerate(self.fitted_indices):
                 raw_v = _collect_electrode_events(
@@ -1684,20 +1846,21 @@ class _EMRun:
                     support_position,
                     spike_times[electrode],
                     spike_marks[electrode],
+                    allowed_samples=val_sample_mask,
                 )
                 if raw_v is None:
                     continue
-                v_marks, _, _, l_sh, r_sh, primary = raw_v
-                v_w = l_sh + r_sh
-                val_spikes += float(np.sum(v_w))
-                v_design = np.asarray(
-                    make_spline_predict_matrix(
-                        self.prepared.emission_design_info,
-                        encoding_positions[primary],
-                    ),
-                    dtype=np.float32,
+                v_marks, v_left, v_right, v_l_sh, v_r_sh, _ = raw_v
+                val_spikes += float(np.sum(v_l_sh + v_r_sh))
+                if self.prepared.sample_cells.size:
+                    v_cells_l = self.prepared.sample_cells[np.maximum(v_left, 0)]
+                    v_cells_r = self.prepared.sample_cells[np.maximum(v_right, 0)]
+                else:
+                    v_cells_l = np.zeros(len(v_marks), dtype=np.int64)
+                    v_cells_r = v_cells_l
+                val_events.append(
+                    (fit_idx, v_marks, v_cells_l, v_cells_r, v_l_sh, v_r_sh)
                 )
-                val_events.append((fit_idx, v_marks, v_w, v_design))
             val_exp_support = val_exp[support.indices]
             val_exp_cells = np.bincount(
                 self.prepared.sample_cells,
@@ -1712,7 +1875,7 @@ class _EMRun:
 
     def _fit_rate_maps(
         self,
-        responsibilities: list[np.ndarray],
+        responsibilities: list[tuple[np.ndarray, np.ndarray]],
         *,
         warm_start: bool,
         max_steps: int | None,
@@ -1748,24 +1911,34 @@ class _EMRun:
         )
 
     def evaluate(self) -> None:
-        """Run E-step at current parameters and record penalized & validation LL."""
+        """Run exact split-position E-step and record penalized & validation LL."""
         if not self.fitted:
             return
         cell_log_rates = np.log(self.cell_rates)  # (n_cells, total_K)
-        responsibilities: list[np.ndarray] = []
+        responsibilities: list[tuple[np.ndarray, np.ndarray]] = []
         spike_ll = 0.0
         first = 0
-        for mixture, ev, s_cells in zip(
-            self.fitted, self.events, self.spike_cells, strict=True
+        for mixture, ev, cells_l, cells_r in zip(
+            self.fitted,
+            self.events,
+            self.spike_cells_left,
+            self.spike_cells_right,
+            strict=True,
         ):
             k_count = mixture.n_components
             maps = slice(first, first + k_count)
             first += k_count
-            log_rates_spikes = cell_log_rates[s_cells, maps]
-            resp, e_ll = _e_step_electrode(
-                ev.marks_whitened, mixture, log_rates_spikes, ev.total_weight
+            lr_left = cell_log_rates[cells_l, maps]
+            lr_right = cell_log_rates[cells_r, maps]
+            resp_l, resp_r, e_ll = _e_step_electrode(
+                ev.marks_whitened,
+                mixture,
+                lr_left,
+                lr_right,
+                ev.left_share,
+                ev.right_share,
             )
-            responsibilities.append(resp)
+            responsibilities.append((resp_l, resp_r))
             spike_ll += e_ll
         self._responsibilities = responsibilities
 
@@ -1788,14 +1961,23 @@ class _EMRun:
             for mixture in self.fitted:
                 offsets.append(slice(offset, offset + mixture.n_components))
                 offset += mixture.n_components
-            for fit_idx, v_marks, v_w, v_design in self._val_data["events"]:
+            for (
+                fit_idx,
+                v_marks,
+                v_cells_l,
+                v_cells_r,
+                v_l_sh,
+                v_r_sh,
+            ) in self._val_data["events"]:
                 mixture = self.fitted[fit_idx]
-                coef_e = jnp.asarray(self.coefficients[offsets[fit_idx]])
-                v_log_rates = np.log(
-                    np.asarray(glm_rates(jnp.asarray(v_design), coef_e))
-                )
-                _, e_vll = _e_step_electrode(
-                    mixture.whiten_marks(v_marks), mixture, v_log_rates, v_w
+                maps = offsets[fit_idx]
+                _, _, e_vll = _e_step_electrode(
+                    mixture.whiten_marks(v_marks),
+                    mixture,
+                    cell_log_rates[v_cells_l, maps],
+                    cell_log_rates[v_cells_r, maps],
+                    v_l_sh,
+                    v_r_sh,
                 )
                 val_ll += e_vll
             val_expected = float(
@@ -1812,19 +1994,24 @@ class _EMRun:
         """Apply one generalized-EM M-step (marks + warm-started GLM rate maps)."""
         if not self.fitted:
             return
-        self.fitted = [
-            _mark_m_step(
-                ev.marks_whitened,
-                ev.total_weight,
-                resp,
-                mixture,
-                covariance_rank=self.covariance_rank,
-                mark_reg_covar=self.mark_reg_covar,
+        updated_fitted: list[ProbeMarkMixture] = []
+        for ev, (resp_l, resp_r), mixture in zip(
+            self.events, self._responsibilities, self.fitted, strict=True
+        ):
+            # Combine split-position responsibilities using exact endpoint shares.
+            gamma = ev.left_share[:, None] * resp_l + ev.right_share[:, None] * resp_r
+            resp_mark = gamma / np.maximum(ev.total_weight[:, None], 1e-300)
+            updated_fitted.append(
+                _mark_m_step(
+                    ev.marks_whitened,
+                    ev.total_weight,
+                    resp_mark,
+                    mixture,
+                    covariance_rank=self.covariance_rank,
+                    mark_reg_covar=self.mark_reg_covar,
+                )
             )
-            for ev, resp, mixture in zip(
-                self.events, self._responsibilities, self.fitted, strict=True
-            )
-        ]
+        self.fitted = updated_fitted
         for fit_idx, electrode in enumerate(self.fitted_indices):
             self.mark_mixtures[electrode] = self.fitted[fit_idx]
         self._fit_rate_maps(
@@ -1852,10 +2039,8 @@ def _responsibilities_whitened(
     all_full = mixture.all_full_support
     if not all_full:
         bg_std = (marks_whitened - mixture.background_mean[None, :]) * inv_std[None, :]
-        total_bg_sq = np.sum(bg_std * bg_std, axis=1)
     else:
         bg_std = np.empty((0, 0), dtype=np.float64)
-        total_bg_sq = np.empty(0, dtype=np.float64)
     log_dens = np.empty((n_spikes, n_comp), dtype=np.float64)
     for k in range(n_comp):
         mask_k = mixture.support_mask[k]
@@ -1869,11 +2054,12 @@ def _responsibilities_whitened(
         d2_loc = np.sum(resid * resid, axis=1) + np.sum(
             (proj * proj) * inv_basis_var[k][None, :], axis=1
         )
-        d2_out = (
-            0.0
-            if all_full
-            else np.maximum(0.0, total_bg_sq - np.sum(bg_std[:, ch_k] ** 2, axis=1))
-        )
+        if all_full:
+            d2_out = 0.0
+        else:
+            out_mask = np.ones(n_ch, dtype=bool)
+            out_mask[ch_k] = False
+            d2_out = np.sum(bg_std[:, out_mask] ** 2, axis=1)
         log_dens[:, k] = log_norm - 0.5 * (log_det_basis[k] + d2_loc + d2_out)
     log_joint = log_dens + np.log(np.maximum(mixture.weights, 1e-300))[None, :]
     return cast(
@@ -2138,12 +2324,14 @@ def fit_clusterless_probe_mixture_encoding_model(
             val_runs = [
                 _EMRun(
                     **run_common,
-                    weights=np.where(mask, 0.0, weights_arr),
+                    weights=weights_arr,
                     exposure_weights=np.where(mask, 0.0, exposure_weights),
                     warn_empty=False,
+                    train_sample_mask=~mask,
                     validation=(
-                        np.where(mask, weights_arr, 0.0),
+                        weights_arr,
                         np.where(mask, exposure_weights, 0.0),
+                        mask,
                     ),
                 )
                 for mask in block_masks
@@ -2245,9 +2433,9 @@ def fit_clusterless_probe_mixture_encoding_model(
         maps = slice(first, first + k_count)
         first += k_count
         ev = full_run.events[fit_pos]
-        resp = full_run._responsibilities[fit_pos]
+        resp_l, resp_r = full_run._responsibilities[fit_pos]
         fit_pos += 1
-        counts = ev.total_weight @ resp
+        counts = ev.left_share @ resp_l + ev.right_share @ resp_r
         keep = counts >= min(_MIN_COMPONENT_SPIKES, float(np.max(counts)))
         if not np.all(keep):
             w_kept = mixture.weights[keep]
@@ -2861,97 +3049,111 @@ def predict_clusterless_probe_mixture_log_likelihood(
         use_candidates = max_candidate_components is not None
 
         if is_local:
-            n_padded = padded_spike_count(spikes.n_spikes, spike_block_size)
-            spike_position = snap_off_track_positions(
-                get_position_at_time(
-                    local_position_time,
-                    local_position,
-                    select_spike_rows(spikes.times, spikes.selection),
-                    environment,
-                ),
-                environment,
-            )
-            spike_log_rates = jnp.log(
-                glm_rates(
-                    jnp.asarray(
-                        pad_rows(
-                            make_spline_predict_matrix(
-                                emission_design_info, spike_position
-                            ),
-                            n_padded,
-                        ),
-                        dtype=jnp.float32,
-                    ),
-                    model.coefficients,
-                )
-            )
-            dev_marks = _device_marks(whitened_marks, n_padded)
-            row_ids = jnp.asarray(spike_row_ids(spikes.selection, n_padded))
-            dev_bg = jnp.asarray(
-                pad_rows(spikes.log_background, n_padded), dtype=jnp.float32
-            )
+            selected_times = select_spike_rows(spikes.times, spikes.selection)
+            raw_row_ids = spike_row_ids(spikes.selection)
             if use_candidates:
                 assert max_candidate_components is not None
                 cand_tbl, cand_msk = model.mixture.candidate_table(
                     max_candidate_components
                 )
-                with np.errstate(over="ignore", invalid="ignore"):
-                    peaks = np.argmax(
-                        np.abs(
-                            np.where(
-                                np.isfinite(whitened_marks),
-                                whitened_marks - model.mixture.background_mean[None, :],
-                                0.0,
-                            )
-                        ),
-                        axis=1,
-                    ).astype(np.int32)
-                dev_peaks = jnp.asarray(pad_rows(peaks, n_padded), dtype=jnp.int32)
-                return cast(
-                    jax.Array,
-                    _add_electrode_local_candidate_terms(
-                        ll,
-                        dev_marks,
-                        dev_peaks,
-                        row_ids,
-                        jnp.asarray(cand_tbl, dtype=jnp.int32),
-                        jnp.asarray(cand_msk),
-                        model.means,
-                        model.basis,
-                        model.basis_variances,
-                        model.support_indices,
-                        model.support_mask,
-                        model.noise_variance,
-                        model.background_mean,
-                        model.is_component,
-                        log_det_w,
-                        spike_log_rates,
-                        dev_bg,
-                        indices_are_sorted=spikes.selection.indices_are_sorted,
-                        all_full_support=model.all_full_support,
+                cand_tbl_j = jnp.asarray(cand_tbl, dtype=jnp.int32)
+                cand_msk_j = jnp.asarray(cand_msk)
+
+            for start in range(0, spikes.n_spikes, spike_block_size):
+                stop = min(start + spike_block_size, spikes.n_spikes)
+                n_cur = stop - start
+                n_pad = padded_spike_count(n_cur, spike_block_size)
+                blk_position = snap_off_track_positions(
+                    get_position_at_time(
+                        local_position_time,
+                        local_position,
+                        selected_times[start:stop],
+                        environment,
                     ),
+                    environment,
                 )
-            return cast(
-                jax.Array,
-                _add_electrode_local_terms(
-                    ll,
-                    dev_marks,
-                    row_ids,
-                    model.means,
-                    model.basis,
-                    model.basis_variances,
-                    model.support_indices,
-                    model.support_mask,
-                    model.noise_variance,
-                    model.background_mean,
-                    model.is_component,
-                    log_det_w,
-                    spike_log_rates,
-                    dev_bg,
-                    indices_are_sorted=spikes.selection.indices_are_sorted,
-                    all_full_support=model.all_full_support,
-                ),
-            )
+                blk_log_rates = jnp.log(
+                    glm_rates(
+                        jnp.asarray(
+                            pad_rows(
+                                make_spline_predict_matrix(
+                                    emission_design_info, blk_position
+                                ),
+                                n_pad,
+                            ),
+                            dtype=jnp.float32,
+                        ),
+                        model.coefficients,
+                    )
+                )
+                blk_marks = _device_marks(whitened_marks[start:stop], n_pad)
+                blk_ids_host = np.full((n_pad,), n_rows, dtype=raw_row_ids.dtype)
+                blk_ids_host[:n_cur] = raw_row_ids[start:stop]
+                blk_row_ids = jnp.asarray(blk_ids_host)
+                blk_bg = jnp.asarray(
+                    pad_rows(spikes.log_background[start:stop], n_pad),
+                    dtype=jnp.float32,
+                )
+                if use_candidates:
+                    blk_w = whitened_marks[start:stop]
+                    with np.errstate(over="ignore", invalid="ignore"):
+                        blk_peaks = np.argmax(
+                            np.abs(
+                                np.where(
+                                    np.isfinite(blk_w),
+                                    blk_w - model.mixture.background_mean[None, :],
+                                    0.0,
+                                )
+                            ),
+                            axis=1,
+                        ).astype(np.int32)
+                    ll = cast(
+                        jax.Array,
+                        _add_electrode_local_candidate_terms(
+                            ll,
+                            blk_marks,
+                            jnp.asarray(pad_rows(blk_peaks, n_pad), dtype=jnp.int32),
+                            blk_row_ids,
+                            cand_tbl_j,
+                            cand_msk_j,
+                            model.means,
+                            model.basis,
+                            model.basis_variances,
+                            model.support_indices,
+                            model.support_mask,
+                            model.noise_variance,
+                            model.background_mean,
+                            model.is_component,
+                            log_det_w,
+                            blk_log_rates,
+                            blk_bg,
+                            indices_are_sorted=spikes.selection.indices_are_sorted,
+                            all_full_support=model.all_full_support,
+                        ),
+                    )
+                else:
+                    ll = cast(
+                        jax.Array,
+                        _add_electrode_local_terms(
+                            ll,
+                            blk_marks,
+                            blk_row_ids,
+                            model.means,
+                            model.basis,
+                            model.basis_variances,
+                            model.support_indices,
+                            model.support_mask,
+                            model.noise_variance,
+                            model.background_mean,
+                            model.is_component,
+                            log_det_w,
+                            blk_log_rates,
+                            blk_bg,
+                            indices_are_sorted=spikes.selection.indices_are_sorted,
+                            all_full_support=model.all_full_support,
+                        ),
+                    )
+            return ll
 
         log_rates = jnp.asarray(model.log_rates, dtype=jnp.float32)
         log_rate_scale = jnp.max(log_rates, axis=1)

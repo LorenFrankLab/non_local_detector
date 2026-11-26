@@ -1090,3 +1090,441 @@ class TestEdgeCasesAndInvariants:
             np.testing.assert_allclose(
                 ll_t + counts[:, None] * log_jac, ll_orig, rtol=1e-4, atol=1e-3
             )
+
+
+@pytest.mark.unit
+class TestReviewRegressions:
+    """Targeted regression tests for PR #271 review findings."""
+
+    def test_full_covariance_preserves_channel_order_with_geometry(self):
+        """Comment 1 (P1): geometry channel ordering matches full-cov means & basis."""
+        rng = np.random.default_rng(101)
+        time = np.arange(200) * 0.01
+        pos = np.linspace(0.0, 50.0, 200)[:, None]
+        env = Environment(place_bin_size=5.0).fit_place_grid(pos)
+        sp_t = [np.sort(rng.uniform(0.05, 1.95, 100))]
+        # Centered at [0, 50] so peak contact is channel 1 -> support_indices=[1, 0].
+        sp_m = [np.array([0.0, 50.0]) + rng.normal(0.0, 1.0, size=(100, 2))]
+        coords = np.array([[0.0, 0.0], [0.0, 20.0]])
+
+        fit_no_geom = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            sp_t,
+            sp_m,
+            env,
+            n_mark_components=1,
+            covariance_rank=None,
+            n_em_iterations=0,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        fit_geom = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            sp_t,
+            sp_m,
+            env,
+            contact_positions=[coords],
+            n_mark_components=1,
+            covariance_rank=None,
+            n_em_iterations=0,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix_no = fit_no_geom["mark_mixtures"][0]
+        mix_g = fit_geom["mark_mixtures"][0]
+        assert mix_no is not None
+        assert mix_g is not None
+        probe = np.array([[0.0, 50.0], [50.0, 0.0]])
+        ld_no = mix_no.log_component_density(probe)
+        ld_g = mix_g.log_component_density(probe)
+        np.testing.assert_allclose(ld_g, ld_no, rtol=1e-10, atol=1e-10)
+        assert ld_g[0, 0] > ld_g[1, 0] + 1000.0
+
+    def test_em_uses_consistent_split_event_positions_for_midpoint_spike(self):
+        """Comment 2 (P1): midpoint spike between opposing fields splits symmetrically."""
+        from non_local_detector.likelihoods.clusterless_probe_mixture import (
+            _e_step_electrode,
+            _ElectrodeEvents,
+            _soft_cell_counts,
+        )
+
+        # Two components with identical mark density at m=[0, 0].
+        mix = ProbeMarkMixture(
+            weights=np.array([0.5, 0.5]),
+            means=np.zeros((2, 2)),
+            basis=np.zeros((2, 2, 2)),
+            basis_variances=np.ones((2, 2)),
+            support_indices=np.array([[0, 1], [0, 1]], dtype=np.int32),
+            support_mask=np.ones((2, 2), dtype=bool),
+            noise_variance=np.ones(2),
+            background_mean=np.zeros(2),
+            noise_whitener=None,
+            log_det_whitener=0.0,
+            contact_positions=None,
+            component_peak_channels=np.array([0, 0], dtype=np.int32),
+        )
+        # Midpoint spike: left sample strongly favors comp 0, right sample favors comp 1.
+        lr_left = np.log(np.array([[20.0, 0.1]]))
+        lr_right = np.log(np.array([[0.1, 20.0]]))
+        resp_l, resp_r, _ = _e_step_electrode(
+            np.zeros((1, 2)),
+            mix,
+            lr_left,
+            lr_right,
+            np.array([0.5]),
+            np.array([0.5]),
+        )
+        # Left endpoint favors comp 0, right endpoint favors comp 1 symmetrically.
+        assert resp_l[0, 0] > 0.99
+        assert resp_r[0, 1] > 0.99
+        np.testing.assert_allclose(resp_l[0, 0], resp_r[0, 1], atol=1e-5)
+        ev = _ElectrodeEvents(
+            marks_whitened=np.zeros((1, 2)),
+            left=np.array([0], dtype=np.int64),
+            right=np.array([1], dtype=np.int64),
+            left_share=np.array([0.5]),
+            right_share=np.array([0.5]),
+            total_weight=np.array([1.0]),
+            primary_sample=np.array([0], dtype=np.int64),
+        )
+        counts = _soft_cell_counts(
+            [ev], [(resp_l, resp_r)], np.array([0, 1], dtype=np.int64), 2
+        )
+        # Comp 0 gets ~0.5 at cell 0, Comp 1 gets ~0.5 at cell 1.
+        assert counts[0, 0] > 0.49
+        assert counts[1, 1] > 0.49
+        np.testing.assert_allclose(counts[0, 0], counts[1, 1], atol=1e-5)
+
+    def test_single_effective_spike_full_covariance_runs_em_without_error(self):
+        """Comment 3 (P2): single-spike 2-ch full-cov electrode succeeds through EM."""
+        time = np.arange(100) * 0.01
+        pos = np.linspace(0.0, 30.0, 100)[:, None]
+        env = Environment(place_bin_size=5.0).fit_place_grid(pos)
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            [np.array([0.5])],
+            [np.array([[10.0, -5.0]])],
+            env,
+            covariance_rank=None,
+            n_em_iterations=3,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix = enc["mark_mixtures"][0]
+        assert mix is not None
+        assert mix.basis.shape == (1, 2, 2)
+
+    def test_full_covariance_em_monotone_when_floor_does_not_bind(self):
+        """Comment 4 (P2): full-rank variance floor clamps rather than shifting all eigs."""
+        rng = np.random.default_rng(104)
+        time = np.arange(200) * 0.01
+        pos = np.linspace(0.0, 50.0, 200)[:, None]
+        env = Environment(place_bin_size=5.0).fit_place_grid(pos)
+        sp_t = [np.sort(rng.uniform(0.05, 1.95, 20))]
+        # Eigenvalues well above floor=1.0 (std=3 -> var~9).
+        sp_m = [rng.normal(0.0, 3.0, size=(20, 2))]
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            sp_t,
+            sp_m,
+            env,
+            n_mark_components=1,
+            covariance_rank=None,
+            mark_reg_covar=1.0,
+            n_em_iterations=5,
+            em_validation_blocks=0,
+            em_tol=-np.inf,
+            disable_progress_bar=True,
+        )
+        trace = enc["em_diagnostics"]["train_log_likelihood"]
+        assert len(trace) >= 2
+        assert np.all(np.diff(trace) >= -1e-6), f"Non-monotone trace: {trace}"
+
+    def test_full_rank_init_enforces_measured_noise_floor(self):
+        """Comment 5 (P2): full-rank iter=0 with noise_covariances enforces unit floor."""
+        time = np.arange(100) * 0.01
+        pos = np.linspace(0.0, 30.0, 100)[:, None]
+        env = Environment(place_bin_size=5.0).fit_place_grid(pos)
+        sp_t = [np.linspace(0.1, 0.9, 5)]
+        sp_m = [np.tile(np.array([5.0, -3.0]), (5, 1))]
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            sp_t,
+            sp_m,
+            env,
+            noise_covariances=[np.eye(2)],
+            n_mark_components=1,
+            covariance_rank=None,
+            n_em_iterations=0,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix = enc["mark_mixtures"][0]
+        assert mix is not None
+        assert np.all(mix.basis_variances >= 1.0 - 1e-12)
+
+    def test_multitile_peak_selection_invariant_to_constant_channel_offset(self):
+        """Comment 6 (P2): constant DC offset on silent contact 0 cannot hijack peaks."""
+        rng = np.random.default_rng(106)
+        n_ch = 16
+        coords = _make_two_column_probe(n_ch, pitch=20.0)
+        dist = np.sqrt(np.sum((coords[:, None, :] - coords[None, :, :]) ** 2, axis=-1))
+        time = np.arange(1000) * 0.01
+        pos = (50.0 + 40.0 * np.sin(2.0 * np.pi * time / 5.0))[:, None]
+        env = Environment(place_bin_size=5.0).fit_place_grid(pos)
+
+        t_parts, m_parts = [], []
+        for peak_c, pf in ((2, 25.0), (13, 75.0)):
+            rate = 0.2 + 25.0 * np.exp(-0.5 * ((pos[:, 0] - pf) / 8.0) ** 2)
+            cnt = rng.poisson(rate * 0.01)
+            st = np.clip(np.repeat(time, cnt), time[0], time[-1])
+            template = 80.0 * np.exp(-0.5 * (dist[peak_c] / 30.0) ** 2)
+            gain = 1.0 + rng.normal(0.0, 0.08, size=(len(st), 1))
+            marks = gain * template[None, :] + rng.normal(
+                0.0, 4.0, size=(len(st), n_ch)
+            )
+            t_parts.append(st)
+            m_parts.append(marks)
+        all_t = np.concatenate(t_parts)
+        all_m = np.concatenate(m_parts, axis=0)
+        order = np.argsort(all_t)
+        all_t = all_t[order]
+        all_m = all_m[order]
+        # Add large DC offset strictly to silent contact 0.
+        all_m[:, 0] += 500.0
+
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            [all_t],
+            [all_m],
+            env,
+            contact_positions=[coords],
+            max_local_channels=6,
+            covariance_rank=3,
+            n_mark_components=4,
+            n_em_iterations=0,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix = enc["mark_mixtures"][0]
+        assert mix is not None
+        peaks = set(mix.component_peak_channels.tolist())
+        assert 0 not in peaks, f"Offset contact 0 hijacked peaks: {peaks}"
+        assert any(p in {1, 2, 3} for p in peaks), (
+            f"Missed unit near contact 2: {peaks}"
+        )
+        assert any(p in {12, 13, 14} for p in peaks), (
+            f"Missed unit near contact 13: {peaks}"
+        )
+
+    def test_off_support_evidence_preserved_in_float32_at_large_local_amplitude(self):
+        """Comment 7 (P2): large local amplitude cannot cancel off-support d2 in f32."""
+        import jax.numpy as jnp
+
+        from non_local_detector.likelihoods.clusterless_probe_mixture import (
+            _e_step_block,
+            _woodbury_candidate_log_density,
+            _woodbury_log_density,
+        )
+
+        feats = jnp.asarray([[10000.0, 0.0], [10000.0, 2.0]], dtype=jnp.float32)
+        means = jnp.asarray([[10000.0]], dtype=jnp.float32)
+        basis = jnp.zeros((1, 1, 1), dtype=jnp.float32)
+        basis_var = jnp.ones((1, 1), dtype=jnp.float32)
+        sup_idx = jnp.asarray([[0]], dtype=jnp.int32)
+        sup_mask = jnp.asarray([[True]])
+        noise_var = jnp.ones(2, dtype=jnp.float32)
+        bg_mean = jnp.zeros(2, dtype=jnp.float32)
+        is_comp = jnp.asarray([True])
+
+        ld_exact = np.asarray(
+            _woodbury_log_density(
+                feats,
+                means,
+                basis,
+                basis_var,
+                sup_idx,
+                sup_mask,
+                noise_var,
+                bg_mean,
+                is_comp,
+                all_full_support=False,
+            )
+        )
+        np.testing.assert_allclose(ld_exact[0, 0] - ld_exact[1, 0], 2.0, atol=1e-4)
+
+        ld_cand = np.asarray(
+            _woodbury_candidate_log_density(
+                feats,
+                jnp.zeros((2, 1), dtype=jnp.int32),
+                jnp.ones((2, 1), dtype=bool),
+                means,
+                basis,
+                basis_var,
+                sup_idx,
+                sup_mask,
+                noise_var,
+                bg_mean,
+                is_comp,
+                all_full_support=False,
+            )
+        )
+        np.testing.assert_allclose(ld_cand[0, 0] - ld_cand[1, 0], 2.0, atol=1e-4)
+
+        _, _, ll_0 = _e_step_block(
+            feats[:1],
+            means,
+            basis,
+            basis_var,
+            sup_idx,
+            sup_mask,
+            noise_var,
+            bg_mean,
+            is_comp,
+            jnp.zeros((1, 1), dtype=jnp.float32),
+            jnp.zeros((1, 1), dtype=jnp.float32),
+            jnp.ones(1, dtype=jnp.float32),
+            jnp.zeros(1, dtype=jnp.float32),
+            jnp.asarray(0.0, dtype=jnp.float32),
+            all_full_support=False,
+        )
+        _, _, ll_1 = _e_step_block(
+            feats[1:],
+            means,
+            basis,
+            basis_var,
+            sup_idx,
+            sup_mask,
+            noise_var,
+            bg_mean,
+            is_comp,
+            jnp.zeros((1, 1), dtype=jnp.float32),
+            jnp.zeros((1, 1), dtype=jnp.float32),
+            jnp.ones(1, dtype=jnp.float32),
+            jnp.zeros(1, dtype=jnp.float32),
+            jnp.asarray(0.0, dtype=jnp.float32),
+            all_full_support=False,
+        )
+        np.testing.assert_allclose(float(ll_0) - float(ll_1), 2.0, atol=1e-4)
+
+    def test_validation_folds_assign_boundary_spikes_to_single_owner(self):
+        """Comment 8 (P2): a midpoint fold-boundary spike cannot enter both train & val."""
+        from non_local_detector.encoding_time import prepare_encoding_support
+        from non_local_detector.likelihoods.clusterless_probe_mixture import (
+            _collect_electrode_events,
+            _contiguous_exposure_blocks,
+        )
+
+        time = np.arange(20) * 0.1
+        pos = np.linspace(0.0, 20.0, 20)[:, None]
+        support, weights_arr, exposure_weights, _ = prepare_encoding_support(
+            time, pos, None
+        )
+        support_pos = np.full(len(time), -1, dtype=np.int64)
+        support_pos[support.indices] = np.arange(len(support.indices), dtype=np.int64)
+        masks = _contiguous_exposure_blocks(exposure_weights, 2)
+        assert len(masks) == 2
+        # Place a spike at exact midpoint between last sample of block 0 and first of block 1.
+        last0 = int(np.flatnonzero(masks[0])[-1])
+        first1 = int(np.flatnonzero(masks[1])[0])
+        mid_t = np.array([0.5 * (time[last0] + time[first1])])
+        mid_m = np.array([[42.0, -7.0]])
+
+        tr_raw = _collect_electrode_events(
+            support,
+            weights_arr,
+            support_pos,
+            mid_t,
+            mid_m,
+            allowed_samples=~masks[1],
+        )
+        va_raw = _collect_electrode_events(
+            support,
+            weights_arr,
+            support_pos,
+            mid_t,
+            mid_m,
+            allowed_samples=masks[1],
+        )
+        # Strictly one of train or validation owns the boundary spike, with full weight 1.0.
+        assert (tr_raw is None) ^ (va_raw is None)
+        owned = tr_raw if tr_raw is not None else va_raw
+        assert owned is not None
+        np.testing.assert_allclose(owned[3] + owned[4], 1.0, atol=1e-12)
+
+    def test_local_predict_blocks_spikes_by_spike_block_size(self, monkeypatch):
+        """Comment 9 (P2): local predict processes spikes in spike_block_size chunks."""
+        from non_local_detector.likelihoods import clusterless_probe_mixture as cpm
+
+        rec = _make_dense_probe_recording(
+            n_channels=16, n_units=4, duration=15.0, seed=109
+        )
+        time, pos = rec["position_time"], rec["position"]
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            pos,
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            rec["environment"],
+            contact_positions=rec["contact_positions"],
+            max_local_channels=8,
+            covariance_rank=3,
+            n_mark_components=8,
+            n_em_iterations=2,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        ref = fit_mark_references(rec["spike_waveform_features"], kernel_scale=1.0)
+        edges = time_edges_from_centers(time[:400])
+
+        seen_batch_sizes: list[int] = []
+        orig_local = cpm._add_electrode_local_terms
+
+        def _spy_local(ll, features, *args, **kwargs):
+            seen_batch_sizes.append(int(features.shape[0]))
+            return orig_local(ll, features, *args, **kwargs)
+
+        monkeypatch.setattr(cpm, "_add_electrode_local_terms", _spy_local)
+        for max_cand in (None, 4):
+            ll_small = np.asarray(
+                predict_clusterless_probe_mixture_log_likelihood(
+                    time[:400],
+                    pos[:400],
+                    rec["spike_times"],
+                    rec["spike_waveform_features"],
+                    time_edges=edges,
+                    mark_reference=ref,
+                    is_local=True,
+                    **{
+                        **enc,
+                        "spike_block_size": 32,
+                        "max_candidate_components": max_cand,
+                    },
+                )
+            )
+            if max_cand is None:
+                assert len(seen_batch_sizes) >= 2
+                assert max(seen_batch_sizes) <= 32
+            ll_large = np.asarray(
+                predict_clusterless_probe_mixture_log_likelihood(
+                    time[:400],
+                    pos[:400],
+                    rec["spike_times"],
+                    rec["spike_waveform_features"],
+                    time_edges=edges,
+                    mark_reference=ref,
+                    is_local=True,
+                    **{
+                        **enc,
+                        "spike_block_size": 1000,
+                        "max_candidate_components": max_cand,
+                    },
+                )
+            )
+            np.testing.assert_allclose(ll_small, ll_large, rtol=1e-5, atol=1e-4)
