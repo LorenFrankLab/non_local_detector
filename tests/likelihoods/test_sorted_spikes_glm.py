@@ -1096,3 +1096,149 @@ def test_place_field_rates_request_highest_precision():
         np.full((7, 3), np.exp(4.0)),
         rtol=1e-6,
     )
+
+
+@pytest.mark.unit
+class TestWarmStartAndPreparedRateMaps:
+    """Warm-started damped Newton steps and cached cell basis for EM loops."""
+
+    def test_warm_start_is_monotone_and_converges_to_cold_start(self):
+        rng = np.random.default_rng(7)
+        x = np.linspace(0.0, 100.0, 200)[:, None]
+        edges = np.linspace(0.0, 100.0, 21)[:, None]
+        design = np.asarray(
+            sorted_spikes_glm.make_spline_design_matrix(x, edges, knot_spacing=25.0),
+            dtype=np.float32,
+        )
+        exposure = rng.uniform(0.05, 0.25, size=len(x)).astype(np.float32)
+        true_rates = np.vstack(
+            [
+                2.0 + 18.0 * np.exp(-0.5 * ((x[:, 0] - 25.0) / 8.0) ** 2),
+                1.0 + 12.0 * np.exp(-0.5 * ((x[:, 0] - 75.0) / 10.0) ** 2),
+            ]
+        )
+        counts = rng.poisson(true_rates * exposure[None, :]).astype(np.float32)
+        penalty = 0.05
+
+        cold = np.asarray(
+            fit_poisson_regressions(design, counts, exposure, l2_penalty=penalty)
+        )
+
+        # Two warm-started steps at a time must never increase the penalized loss
+        # and must reach the same optimum as cold-start.
+        def penalized_nll(coef: np.ndarray) -> np.ndarray:
+            eta = design.astype(np.float64) @ coef.T.astype(np.float64)
+            rate = np.maximum(np.exp(eta), sorted_spikes_glm.EPS)
+            data = np.sum(counts.T * np.log(rate) - exposure[:, None] * rate, axis=0)
+            reg = penalty * np.sum(coef[:, 1:] ** 2, axis=1)
+            return -data + reg
+
+        init = np.zeros_like(cold)
+        init[:, 0] = np.log(np.maximum(counts.sum(axis=1) / exposure.sum(), 1e-6))
+        prev_loss = penalized_nll(init)
+        coef = init
+        for _ in range(12):
+            coef = np.asarray(
+                fit_poisson_regressions(
+                    design,
+                    counts,
+                    exposure,
+                    l2_penalty=penalty,
+                    initial_coefficients=coef,
+                    max_steps=2,
+                    warn_on_nonconvergence=False,
+                )
+            )
+            loss = penalized_nll(coef)
+            assert np.all(loss <= prev_loss + 1e-6)
+            prev_loss = loss
+
+        np.testing.assert_allclose(coef, cold, rtol=1e-4, atol=1e-4)
+
+    def test_prepared_rate_map_basis_matches_fit_rate_maps_open_and_graph(
+        self, line_env_100cm, simple_spike_data
+    ):
+        # Open 1-D environment
+        env = line_env_100cm
+        pos = np.asarray(simple_spike_data["position"])
+        exposure = np.full(len(pos), 0.002)
+        rng = np.random.default_rng(11)
+        soft_counts = rng.uniform(0.0, 0.2, size=(3, len(pos)))
+        is_interior = env.is_track_interior_flat_
+        interior_centers = jnp.asarray(env.place_bin_centers_[is_interior])
+
+        basis_ref, coef_ref, rates_ref = sorted_spikes_glm.fit_rate_maps(
+            env,
+            env.place_bin_edges_,
+            interior_centers,
+            pos,
+            soft_counts,
+            exposure,
+            emission_knot_spacing=20.0,
+        )
+        prepared = sorted_spikes_glm.prepare_rate_map_basis(
+            env,
+            env.place_bin_edges_,
+            interior_centers,
+            pos,
+            exposure,
+            emission_knot_spacing=20.0,
+        )
+        cell_counts = np.stack(
+            [
+                np.bincount(
+                    prepared.sample_cells,
+                    weights=row,
+                    minlength=prepared.n_position_cells,
+                )
+                for row in soft_counts
+            ]
+        )
+        coef_new, rates_new = sorted_spikes_glm.fit_prepared_rate_maps(
+            prepared, cell_counts
+        )
+        assert type(prepared.emission_design_info) is type(basis_ref)
+        np.testing.assert_array_equal(np.asarray(coef_new), np.asarray(coef_ref))
+        np.testing.assert_array_equal(np.asarray(rates_new), np.asarray(rates_ref))
+
+        # Track-graph environment
+        graph_env, _, graph_pos, _, _ = _corner_track_data(environment_name="g")
+        graph_pos_1d = graph_env.decoding_position(graph_pos)
+        graph_exp = np.full(len(graph_pos_1d), 0.01)
+        graph_counts = rng.uniform(0.0, 0.1, size=(2, len(graph_pos_1d)))
+        graph_centers = jnp.asarray(
+            graph_env.place_bin_centers_[graph_env.is_track_interior_flat_]
+        )
+        g_basis_ref, g_coef_ref, g_rates_ref = sorted_spikes_glm.fit_rate_maps(
+            graph_env,
+            graph_env.place_bin_edges_,
+            graph_centers,
+            graph_pos_1d,
+            graph_counts,
+            graph_exp,
+            emission_knot_spacing=4.0,
+        )
+        g_prepared = sorted_spikes_glm.prepare_rate_map_basis(
+            graph_env,
+            graph_env.place_bin_edges_,
+            graph_centers,
+            graph_pos_1d,
+            graph_exp,
+            emission_knot_spacing=4.0,
+        )
+        g_cell_counts = np.stack(
+            [
+                np.bincount(
+                    g_prepared.sample_cells,
+                    weights=row,
+                    minlength=g_prepared.n_position_cells,
+                )
+                for row in graph_counts
+            ]
+        )
+        g_coef_new, g_rates_new = sorted_spikes_glm.fit_prepared_rate_maps(
+            g_prepared, g_cell_counts
+        )
+        assert type(g_prepared.emission_design_info) is type(g_basis_ref)
+        np.testing.assert_array_equal(np.asarray(g_coef_new), np.asarray(g_coef_ref))
+        np.testing.assert_array_equal(np.asarray(g_rates_new), np.asarray(g_rates_ref))

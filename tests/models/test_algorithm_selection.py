@@ -32,7 +32,6 @@ from non_local_detector.likelihoods import (
 from non_local_detector.observation_models import ObservationModel
 from tests.conftest import em_stops_at_max_iter
 from tests.models._helpers import (
-    ALGORITHMS,
     CLUSTERLESS_SIM_RATE,
     SORTED_SIM_RATE,
     _decoder,
@@ -315,7 +314,7 @@ def _round_trip_fit(algorithm):
 @pytest.mark.filterwarnings(
     r"ignore:position_std \(.*\) is below the characteristic bin spacing:UserWarning"
 )
-@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.parametrize("algorithm", sorted(_PRE_ALGORITHM_ENCODING_KEYS))
 def test_detector_saved_before_algorithms_were_recorded_decodes_after_loading(
     algorithm,
 ):
@@ -569,7 +568,7 @@ def test_saved_key_sets_are_the_saved_history():
     )
 
 
-@pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.parametrize("algorithm", sorted(_PRE_ALGORITHM_ENCODING_KEYS))
 def test_current_encoding_models_add_only_known_keys_to_the_saved_ones(algorithm):
     """A key added to an encoding-model type is missing from saved models.
 

@@ -9,6 +9,7 @@ term then shifts by ``-log|det A|`` at every position, for every state.
 
 import copy
 import warnings
+from dataclasses import replace
 
 import jax.numpy as jnp
 import numpy as np
@@ -97,6 +98,14 @@ def _params(algorithm, scale=1.0):
         }
     if algorithm == "clusterless_mark_glm":
         return {"disable_progress_bar": True}
+    if algorithm == "clusterless_flow_mixture":
+        return {
+            "n_flow_layers": 2,
+            "n_em_iterations": 2,
+            "flow_steps_per_em": 5,
+            "em_validation_blocks": 0,
+            "disable_progress_bar": True,
+        }
     return {
         "position_std": 6.0,
         "waveform_std": 24.0 * scale,
@@ -185,6 +194,21 @@ def _transform_mark_mixture(mixture):
     )
 
 
+def _transform_flow_mixture(mixture):
+    """The same fitted flow mixture expressed in transformed mark units."""
+    if mixture is None:
+        return None
+    assert mixture.noise_whitener is None
+    # Layer 0 standardizes u = (m - mean) / scale, so transforming Layer 0
+    # leaves u and every downstream flow/latent parameter identical.
+    return replace(
+        mixture,
+        input_mean=mixture.input_mean * SCALE + OFFSET,
+        input_scale=mixture.input_scale * np.abs(SCALE),
+        log_det_input=mixture.log_det_input - float(np.sum(np.log(np.abs(SCALE)))),
+    )
+
+
 def _transformed_model(run_data, variant, model):
     """``model`` expressed in the transformed mark units.
 
@@ -203,6 +227,10 @@ def _transformed_model(run_data, variant, model):
     elif algorithm == "clusterless_mark_glm":
         transformed["mark_mixtures"] = [
             _transform_mark_mixture(m) for m in model["mark_mixtures"]
+        ]
+    elif algorithm == "clusterless_flow_mixture":
+        transformed["mark_mixtures"] = [
+            _transform_flow_mixture(m) for m in model["mark_mixtures"]
         ]
     else:
         marks = [m * SCALE + OFFSET for m in run_data["train_marks"]]

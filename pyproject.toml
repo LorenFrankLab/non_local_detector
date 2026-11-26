@@ -57,6 +57,8 @@ gpu = [
     "jax[cuda13]>=0.7; python_version >= '3.11'",
     "jax[cuda12]; python_version < '3.11'",
 ]
+# Optimizers for learned clusterless likelihoods (clusterless_flow_mixture).
+neural = ["optax"]
 viz = ["sortingview"]
 
 [tool.hatch.version]
@@ -173,6 +175,7 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 [[tool.mypy.overrides]]
 module = [
     "networkx.*",
+    "optax.*",
     "pandas.*",
     "patsy.*",
     "psutil.*",
@@ -265,6 +268,8 @@ test = [
     # Reads the netCDF4 results Spyglass saves (tests/compat_data); without it
     # xarray writes and reads only netCDF3.
     "netCDF4",
+    # Optimizers for testing the optional neural extra (clusterless_flow_mixture).
+    "optax",
 ]
 dev = [
     { include-group = "test" },

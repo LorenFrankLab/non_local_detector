@@ -358,8 +358,8 @@ def ircm_transform(
         A fitted clusterless encoding model, as stored in a detector's
         ``encoding_model_``. The algorithm it records must be
         ``"clusterless_kde"``, ``"clusterless_gmm"`` or
-        ``"clusterless_diffusion"``; ``"clusterless_mark_glm"`` is not
-        supported.
+        ``"clusterless_diffusion"``; ``"clusterless_mark_glm"`` and
+        ``"clusterless_flow_mixture"`` are not supported.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)
@@ -491,8 +491,8 @@ def mdci_transform(
         A fitted clusterless encoding model, as stored in a detector's
         ``encoding_model_``. The algorithm it records must be
         ``"clusterless_kde"``, ``"clusterless_gmm"`` or
-        ``"clusterless_diffusion"``; ``"clusterless_mark_glm"`` is not
-        supported.
+        ``"clusterless_diffusion"``; ``"clusterless_mark_glm"`` and
+        ``"clusterless_flow_mixture"`` are not supported.
     electrode : int
         Index of the electrode in the encoding model.
     position_time : np.ndarray, shape (n_time,)

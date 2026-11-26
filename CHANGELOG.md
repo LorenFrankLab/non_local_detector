@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### New clusterless likelihood: flow-warped mark mixture (`clusterless_flow_mixture`)
+
+- **Added:** opt-in clusterless likelihood `clusterless_flow_mixture` (`non_local_detector.likelihoods.clusterless_flow_mixture`) and optional dependency extra `non_local_detector[neural]` (`optax`). Warps waveform features through an invertible Rational-Quadratic Neural Spline (RQS) normalizing flow with identity tails outside `[-spline_bound, spline_bound]` (guaranteeing `No-Spike` Student-$t$ tail dominance and exact analytical normalization $\int \lambda\,dm = \Lambda(x)$), paired with an orthonormal low-rank-plus-diagonal latent Gaussian mixture and warm-started Poisson GLM spline rate maps (`PreparedRateMapBasis`).
+  - Dense mode (`contact_positions=None`) uses alternating MLP coupling layers and zero-initialized Cayley orthogonal mixing; providing optional per-electrode `contact_positions` switches to physically neighbor-masked local coupling layers, and optional `noise_covariances` applies symmetric ZCA whitening in Layer 0.
+  - Trains jointly on the marked Poisson likelihood by default (`flow_objective="joint"`, with `flow_objective="marginal"` available for position-free ablation) using blocked inner-validation early stopping with an exact identity epoch-0 fallback.
+  - Includes `.nld` persistence (`nld.FlowMarkMixture`); loading and prediction run in pure JAX without `optax`.
+
 ### 2-D ahead/behind distances
 
 - **Fixed (changes results):** with a track graph, `get_2D_distance`, `get_map_estimate_direction_from_track_graph`, `head_direction_similarity` and `get_ahead_behind_distance2D` return NaN for a row whose head or MAP position has a NaN or infinite coordinate, as they already did for NaN without a track graph. Such a position was binned into the grid's last bin, so the distance was measured from that corner: 61.54 cm instead of NaN on a 50 × 50 cm arena in 5 cm bins, 0 between two NaN positions, and `inf` (with a "No path" warning) when the corner bin is off the track. Rows with finite positions are unchanged. `maximum_a_posteriori_estimate` gives NaN MAP positions for time bins with no posterior mass, so this reached package output called directly with a track graph.

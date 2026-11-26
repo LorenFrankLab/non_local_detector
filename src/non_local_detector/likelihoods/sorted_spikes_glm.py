@@ -1147,6 +1147,9 @@ def fit_poisson_regressions(
     l2_penalty: float = 1e-7,
     *,
     rate_floor: float = EPS,
+    initial_coefficients: np.ndarray | jax.Array | None = None,
+    max_steps: int | None = None,
+    warn_on_nonconvergence: bool = True,
 ) -> jax.Array:
     """Fit weighted Poisson regressions for many cells sharing one design.
 
@@ -1193,6 +1196,16 @@ def fit_poisson_regressions(
         default 1e-7.
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
+    initial_coefficients : np.ndarray or jax.Array, shape (n_cells, n_coefficients), optional
+        Starting coefficients for warm-started damped Newton steps (e.g. inside
+        generalized EM). By default None (intercept-only initialization at each
+        cell's mean rate).
+    max_steps : int, optional
+        Maximum damped Newton steps, by default ``GLM_MAX_NEWTON_STEPS``.
+    warn_on_nonconvergence : bool, optional
+        If True (default), emit a ``NumericalWarning`` when a cell finishes
+        with gradient norm above ``GLM_CONVERGENCE_GRAD_TOL``. Set False for
+        capped intermediate generalized-EM steps.
 
     Returns
     -------
@@ -1211,13 +1224,30 @@ def fit_poisson_regressions(
     # with real exposure but no spikes gets from the initial condition below.
     # A small-but-positive exposure (a low-mass EM update) still fits normally.
     total_exposure = float(np.sum(weights, dtype=np.float64))
-    coefficients = np.zeros((n_cells, n_coefficients))
     if total_exposure <= 0.0:
+        coefficients = np.zeros((n_cells, n_coefficients))
         coefficients[:, 0] = np.log(rate_floor)
         return jnp.asarray(coefficients)
     weight_sum = max(total_exposure, EPS)
-    average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
-    coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor)).astype(np.float32)
+    if initial_coefficients is None:
+        coefficients = np.zeros((n_cells, n_coefficients))
+        average_rate = np.sum(spikes, axis=1, dtype=np.float64) / total_exposure
+        coefficients[:, 0] = np.log(np.maximum(average_rate, rate_floor)).astype(
+            np.float32
+        )
+    else:
+        init = np.asarray(initial_coefficients, dtype=np.float64)
+        if init.shape != (n_cells, n_coefficients):
+            msg = "initial_coefficients shape does not match (n_cells, n_coefficients)"
+            raise ValidationError(
+                msg,
+                expected=f"shape {(n_cells, n_coefficients)}",
+                got=f"shape {init.shape}",
+            )
+        if not np.all(np.isfinite(init)):
+            msg = "initial_coefficients must contain only finite values"
+            raise ValidationError(msg)
+        coefficients = init.astype(np.float32).astype(np.float64)
 
     block_rows = int(
         np.clip(_GLM_BLOCK_BYTES // (4 * max(n_cells, 1) * n_coefficients), 1, n_time)
@@ -1313,7 +1343,8 @@ def fit_poisson_regressions(
     loss, gradient, hessian = evaluate(coefficients)
     active = np.ones(n_cells, dtype=bool)
     singular_cells: set[int] = set()
-    for _ in range(GLM_MAX_NEWTON_STEPS):
+    n_steps = GLM_MAX_NEWTON_STEPS if max_steps is None else max_steps
+    for _ in range(n_steps):
         gradient_norm = np.max(np.abs(gradient), axis=1)
         active &= np.isfinite(loss) & (gradient_norm > GLM_GRADIENT_TOL)
         if not active.any():
@@ -1390,7 +1421,7 @@ def fit_poisson_regressions(
         | ~np.isfinite(loss)
         | (gradient_norm > GLM_CONVERGENCE_GRAD_TOL)
     )
-    if unconverged.any():
+    if warn_on_nonconvergence and unconverged.any():
         worst = float(
             np.max(
                 np.where(np.isfinite(gradient_norm), gradient_norm, np.inf)[unconverged]
@@ -1610,6 +1641,242 @@ def fit_rate_maps(
         jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
     )  # (n_interior_bins, n_maps)
     return emission_design_info, coefficients, interior_rates
+
+
+@dataclass(frozen=True, eq=False)
+class PreparedRateMapBasis:
+    """Cached spatial basis, position cells, and design matrices for repeated GLM fits.
+
+    Iterative EM algorithms refit Poisson GLM rate maps many times on the same
+    tracking trajectory and exposure while only the soft spike counts change.
+    Precomputing the spline basis, position-cell assignment, cell exposure,
+    design matrices, and prior penalty avoids rebuilding them each iteration.
+
+    Attributes
+    ----------
+    emission_design_info : TrackGraphBasis or TensorSplineBasis
+        Fitted spatial spline basis.
+    sample_cells : np.ndarray, shape (n_samples,)
+        Position-cell index of each support sample (empty when exposure is empty).
+    n_position_cells : int
+        Number of position cells.
+    cell_exposure : np.ndarray, shape (n_position_cells,)
+        Weighted exposure summed into each position cell, in seconds.
+    emission_design_matrix : jax.Array, shape (n_fit_rows, n_coefficients)
+        Spline design evaluated at each occupied position cell (or interior bin
+        centers when exposure is empty).
+    emission_predict_matrix : jax.Array, shape (n_interior_bins, n_coefficients)
+        Spline design evaluated at the interior place bin centers.
+    l2_penalty : float
+        Penalty on the squared non-intercept coefficients.
+    """
+
+    emission_design_info: "TrackGraphBasis | TensorSplineBasis"
+    sample_cells: np.ndarray
+    n_position_cells: int
+    cell_exposure: np.ndarray
+    emission_design_matrix: jax.Array
+    emission_predict_matrix: jax.Array
+    l2_penalty: float
+
+
+def prepare_rate_map_basis(
+    environment: Environment,
+    place_bin_edges: np.ndarray,
+    interior_place_bin_centers: jax.Array,
+    encoding_positions: np.ndarray,
+    exposure: np.ndarray,
+    *,
+    emission_knot_spacing: float,
+    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
+    l2_penalty: float | None = None,
+) -> PreparedRateMapBasis:
+    """Build and cache the spatial basis and position-cell aggregation once.
+
+    Matches :func:`fit_rate_maps` exactly so repeated EM M-steps can call
+    :func:`fit_prepared_rate_maps` with updated per-cell counts and warm-started
+    coefficients.
+
+    Parameters
+    ----------
+    environment : Environment
+        Environment whose track graph or grid defines the spline basis.
+    place_bin_edges : np.ndarray, shape (n_edge_points, n_position_dims)
+        Place-bin edge coordinates (``environment.place_bin_edges_``).
+    interior_place_bin_centers : jax.Array, shape (n_interior_bins, n_position_dims)
+        Centers of the interior place bins.
+    encoding_positions : np.ndarray, shape (n_samples, n_position_dims)
+        Position of each encoding sample; linear position on a track graph.
+    exposure : np.ndarray, shape (n_samples,)
+        Weighted exposure of each sample, in seconds.
+    emission_knot_spacing : float
+        Spacing of the spline knots in position units.
+    log_rate_prior_std : float, optional
+        Prior SD, in nats, of each map's log-rate deviation from its baseline,
+        by default ``GLM_LOG_RATE_PRIOR_STD``. Ignored when ``l2_penalty`` is
+        given.
+    l2_penalty : float, optional
+        Penalty on the squared non-intercept coefficients, by default None
+        (derived from ``log_rate_prior_std``).
+
+    Returns
+    -------
+    prepared : PreparedRateMapBasis
+        Cached basis, cell assignment, cell exposure, design matrices, and penalty.
+    """
+    if environment.track_graph is not None:
+        emission_design_info: TrackGraphBasis | TensorSplineBasis = (
+            make_track_graph_basis(environment, knot_spacing=emission_knot_spacing)
+        )
+    else:
+        basis_positions = np.asarray(interior_place_bin_centers)
+        varying_dimensions = np.ptp(basis_positions, axis=0) > 0
+        if np.any(varying_dimensions):
+            boundary_positions = np.tile(basis_positions[0], (2, 1))
+            boundary_positions[:, varying_dimensions] = np.vstack(
+                (np.min(place_bin_edges, axis=0), np.max(place_bin_edges, axis=0))
+            )[:, varying_dimensions]
+            basis_positions = np.vstack((basis_positions, boundary_positions))
+        emission_design_info = TensorSplineBasis(
+            basis_positions=basis_positions,
+            place_bin_edges=place_bin_edges,
+            knot_spacing=emission_knot_spacing,
+        )
+
+    fit_edges = None
+    if exposure.size:
+        cell_size = _GLM_FIT_CELL_FRACTION * min(
+            emission_knot_spacing,
+            _narrowest_knot_interval(emission_design_info),
+        )
+        if isinstance(emission_design_info, TrackGraphBasis):
+            linear = np.asarray(encoding_positions, dtype=float).reshape(-1)
+            edge = emission_design_info.edge_index(linear)
+            offset = linear - emission_design_info.edge_starts[edge]
+            pos_arr = np.column_stack([offset, edge])
+            region: np.ndarray | None = edge
+        else:
+            pos_arr = np.asarray(encoding_positions, dtype=float).reshape(
+                len(exposure), -1
+            )
+            region = None
+        key = np.floor(pos_arr / cell_size).astype(np.int64)
+        if region is not None:
+            key = np.column_stack([np.asarray(region, dtype=np.int64), key])
+        _, cell = np.unique(key, axis=0, return_inverse=True)
+        sample_cells = cell.ravel()
+        n_position_cells = int(sample_cells.max()) + 1 if sample_cells.size else 0
+        cell_exposure: np.ndarray = np.bincount(
+            sample_cells, weights=exposure, minlength=n_position_cells
+        )
+        weight = np.where(cell_exposure[sample_cells] > 0, exposure, 1.0)
+        weight_sum = np.bincount(
+            sample_cells, weights=weight, minlength=n_position_cells
+        )
+        mean_position = (
+            np.stack(
+                [
+                    np.bincount(
+                        sample_cells,
+                        weights=weight * pos_arr[:, dim],
+                        minlength=n_position_cells,
+                    )
+                    for dim in range(pos_arr.shape[1])
+                ],
+                axis=1,
+            )
+            / weight_sum[:, None]
+        )
+        if isinstance(emission_design_info, TrackGraphBasis):
+            fit_edges = np.rint(mean_position[:, 1]).astype(int)
+            fit_positions: np.ndarray = (
+                emission_design_info.edge_starts[fit_edges] + mean_position[:, 0]
+            )[:, None]
+        else:
+            fit_positions = mean_position
+    else:
+        sample_cells = np.zeros(0, dtype=np.int64)
+        fit_positions = np.asarray(interior_place_bin_centers)
+        n_position_cells = len(fit_positions)
+        cell_exposure = np.zeros(n_position_cells)
+
+    if not isinstance(emission_design_info, TrackGraphBasis):
+        emission_design_info = _select_supported_columns(
+            emission_design_info,
+            np.vstack(
+                [np.asarray(interior_place_bin_centers), np.asarray(fit_positions)]
+            ),
+        )
+    emission_predict_matrix = jnp.asarray(
+        make_spline_predict_matrix(emission_design_info, interior_place_bin_centers)
+    )
+    if l2_penalty is None:
+        l2_penalty = log_rate_prior_l2_penalty(
+            np.asarray(emission_predict_matrix), log_rate_prior_std
+        )
+    if fit_edges is None:
+        emission_design_matrix = jnp.asarray(
+            make_spline_predict_matrix(emission_design_info, fit_positions)
+        )
+    else:
+        emission_design_matrix = jnp.asarray(
+            cast(TrackGraphBasis, emission_design_info).design_matrix(
+                fit_positions, edge=fit_edges
+            )
+        )
+    return PreparedRateMapBasis(
+        emission_design_info=emission_design_info,
+        sample_cells=sample_cells,
+        n_position_cells=n_position_cells,
+        cell_exposure=cell_exposure,
+        emission_design_matrix=emission_design_matrix,
+        emission_predict_matrix=emission_predict_matrix,
+        l2_penalty=float(l2_penalty),
+    )
+
+
+def fit_prepared_rate_maps(
+    prepared: PreparedRateMapBasis,
+    cell_event_counts: np.ndarray,
+    *,
+    initial_coefficients: np.ndarray | jax.Array | None = None,
+    max_steps: int | None = None,
+    warn_on_nonconvergence: bool = True,
+) -> tuple[jax.Array, jax.Array]:
+    """Fit penalized Poisson GLM rate maps on a cached ``PreparedRateMapBasis``.
+
+    Parameters
+    ----------
+    prepared : PreparedRateMapBasis
+        Basis and position-cell exposure returned by :func:`prepare_rate_map_basis`.
+    cell_event_counts : np.ndarray, shape (n_maps, n_position_cells)
+        Weighted soft event counts summed into each position cell.
+    initial_coefficients : np.ndarray or jax.Array, shape (n_maps, n_coefficients), optional
+        Optional warm-start coefficients from a previous EM iteration.
+    max_steps : int, optional
+        Maximum damped Newton steps, by default ``GLM_MAX_NEWTON_STEPS``.
+    warn_on_nonconvergence : bool, optional
+        Whether to warn if final gradient exceeds ``GLM_CONVERGENCE_GRAD_TOL``.
+
+    Returns
+    -------
+    coefficients : jax.Array, shape (n_maps, n_coefficients)
+        Fitted coefficients.
+    interior_rates : jax.Array, shape (n_interior_bins, n_maps)
+        Floored rates in Hz at the interior bin centers.
+    """
+    coefficients = fit_poisson_regressions(
+        prepared.emission_design_matrix,
+        cell_event_counts,
+        prepared.cell_exposure,
+        l2_penalty=prepared.l2_penalty,
+        rate_floor=RATE_EPS_HZ,
+        initial_coefficients=initial_coefficients,
+        max_steps=max_steps,
+        warn_on_nonconvergence=warn_on_nonconvergence,
+    )
+    interior_rates = glm_rates(prepared.emission_predict_matrix, coefficients)
+    return coefficients, interior_rates
 
 
 class SortedSpikesGLMEncodingModel(SortedSpikesEncodingModel):
