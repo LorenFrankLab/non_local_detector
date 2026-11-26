@@ -17,6 +17,7 @@ from non_local_detector.likelihoods import (
     clusterless_gmm,
     clusterless_kde,
     clusterless_mark_glm,
+    clusterless_probe_mixture,
 )
 from non_local_detector.likelihoods.clusterless_diffusion import (
     ClusterlessDiffusionEncodingModel,
@@ -37,6 +38,11 @@ from non_local_detector.likelihoods.clusterless_mark_glm import (
     ClusterlessMarkGLMEncodingModel,
     fit_clusterless_mark_glm_encoding_model,
     predict_clusterless_mark_glm_log_likelihood,
+)
+from non_local_detector.likelihoods.clusterless_probe_mixture import (
+    ClusterlessProbeMixtureEncodingModel,
+    fit_clusterless_probe_mixture_encoding_model,
+    predict_clusterless_probe_mixture_log_likelihood,
 )
 from non_local_detector.likelihoods.encoding_model import (
     ClusterlessEncodingModel,
@@ -367,6 +373,20 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         ClusterlessMarkGLMEncodingModel,
         execution_settings=frozenset({"spike_block_size", "disable_progress_bar"}),
         mark_reference_scale=clusterless_mark_glm.mark_reference_scale,
+    ),
+    # Model checking does not implement the probe mixture's intensity.
+    "clusterless_probe_mixture": ClusterlessLikelihoodAlgorithm(
+        fit_clusterless_probe_mixture_encoding_model,
+        predict_clusterless_probe_mixture_log_likelihood,
+        ClusterlessProbeMixtureEncodingModel,
+        execution_settings=frozenset(
+            {
+                "spike_block_size",
+                "max_candidate_components",
+                "disable_progress_bar",
+            }
+        ),
+        mark_reference_scale=clusterless_probe_mixture.mark_reference_scale,
     ),
 }
 

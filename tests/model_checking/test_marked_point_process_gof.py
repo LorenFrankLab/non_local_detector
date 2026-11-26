@@ -408,15 +408,18 @@ def test_transforms_reject_an_unknown_algorithm(transform, recorded):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "algorithm", ["clusterless_mark_glm", "clusterless_probe_mixture"]
+)
 @pytest.mark.parametrize("transform", [ircm_transform, mdci_transform])
-def test_transforms_name_an_unsupported_clusterless_algorithm(transform):
+def test_transforms_name_an_unsupported_clusterless_algorithm(transform, algorithm):
     """A registered clusterless algorithm without transforms says so, up front."""
     time = np.linspace(0.0, 1.0, 11)
     with pytest.raises(
-        ValueError, match="model checking does not support 'clusterless_mark_glm'"
+        ValueError, match=f"model checking does not support '{algorithm}'"
     ):
         transform(
-            {"algorithm": "clusterless_mark_glm"},
+            {"algorithm": algorithm},
             0,
             time,
             np.linspace(0.0, 10.0, 11)[:, None],

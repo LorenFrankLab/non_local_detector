@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### New clusterless likelihood: probe-localized structured mixture (`clusterless_probe_mixture`)
+
+- **Added:** `clusterless_probe_mixture`, selectable with `clusterless_algorithm="clusterless_probe_mixture"`, designed for high-density multielectrode probes (polymer shanks, silicon probes, Neuropixels) while falling back to dense groups (tetrodes) when contact coordinates are omitted.
+  - Each component `k` lives on a physical local contact support `S_k` (inferred from `contact_positions` via `3×` median nearest-neighbor pitch, capped at `max_local_channels=16`, fixed after initialization) with factor-analysis-plus-noise covariance `Sigma_k = Psi + U_k U_k^T` (`covariance_rank=4` default; full covariance automatically whenever `covariance_rank is None` or `>= len(S_k)`). Optional measured `noise_covariances` are applied via symmetric ZCA whitening; otherwise a shared per-channel residual variance `Psi` is estimated from data and floored by `mark_reg_covar`.
+  - Exact full-channel normalization over all `C` channels is preserved via cancellation-free orthonormal Woodbury scoring in `O(|S_k| * r)` time, keeping `mark_reference` and `No-Spike` unit-consistent.
+  - Probe-tiled local initialization merges disjoint physical tiles into one whole-shank mixture, refined by warm-started generalized EM (`fit_poisson_regressions` now accepts `initial_coefficients`, `max_steps` and `warn_on_nonconvergence`, alongside cached `prepare_rate_map_basis` / `fit_prepared_rate_maps`) with blocked inner-validation early stopping (`em_validation_blocks=4`, `n_em_iterations=100`, `em_patience=5`) and exact iteration-0 fallback (`n_em_iterations=0`).
+  - Opt-in `max_candidate_components` execution setting builds a static per-peak-contact lookup table for sub-linear prediction on high component counts without refitting, matching all-`K` scoring when `>= K`.
+  - Added `ProbeGeometry` helper (`non_local_detector.likelihoods.probe_geometry`) and registered `ProbeMarkMixture` and `ProbeGeometry` in `model_format` for `.nld` save/load.
+
 ### 2-D ahead/behind distances
 
 - **Fixed (changes results):** with a track graph, `get_2D_distance`, `get_map_estimate_direction_from_track_graph`, `head_direction_similarity` and `get_ahead_behind_distance2D` return NaN for a row whose head or MAP position has a NaN or infinite coordinate, as they already did for NaN without a track graph. Such a position was binned into the grid's last bin, so the distance was measured from that corner: 61.54 cm instead of NaN on a 50 × 50 cm arena in 5 cm bins, 0 between two NaN positions, and `inf` (with a "No path" warning) when the corner bin is off the track. Rows with finite positions are unchanged. `maximum_a_posteriori_estimate` gives NaN MAP positions for time bins with no posterior mass, so this reached package output called directly with a track graph.

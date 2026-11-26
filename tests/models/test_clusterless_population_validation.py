@@ -30,6 +30,7 @@ ALGORITHMS = [
     "clusterless_gmm",
     "clusterless_diffusion",
     "clusterless_mark_glm",
+    "clusterless_probe_mixture",
 ]
 N_DECODE = 300
 

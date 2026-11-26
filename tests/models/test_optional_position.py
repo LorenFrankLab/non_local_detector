@@ -30,6 +30,7 @@ POSITION_FREE_ALGORITHMS = [
     "clusterless_gmm",
     "clusterless_kde",
     "clusterless_mark_glm",
+    "clusterless_probe_mixture",
 ]
 N_DECODE = 400
 

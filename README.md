@@ -180,7 +180,7 @@ intervals, and downstream pipeline changes.
 
 1. **Likelihood Models** (`non_local_detector.likelihoods`), selected with `sorted_spikes_algorithm` or `clusterless_algorithm`
    - Sorted spikes: `sorted_spikes_glm`, `sorted_spikes_kde`, `sorted_spikes_diffusion`, `sorted_spikes_mrf`
-   - Clusterless: `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion`, `clusterless_mark_glm` (a mark mixture with a Poisson GLM rate map per component)
+   - Clusterless: `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion`, `clusterless_mark_glm` (a mark mixture with a Poisson GLM rate map per component), `clusterless_probe_mixture` (a probe-localized low-rank-plus-noise mark mixture with jointly fitted Poisson GLM rate maps for high-density probes)
 
 2. **State Transition Models**
    - **Continuous**: `RandomWalk`, `RandomWalkDirection1`, `RandomWalkDirection2`, `EmpiricalMovement`, `Identity`, `Uniform`, `Discrete`

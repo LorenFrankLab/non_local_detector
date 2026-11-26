@@ -77,10 +77,15 @@ MARK_KERNEL_SD = {
     "clusterless_gmm": 0.0,
     "clusterless_diffusion": DEFAULT_WAVEFORM_STD,
     "clusterless_mark_glm": 0.0,
+    "clusterless_probe_mixture": 0.0,
 }
 
 # Nats per spike; see test_nonlocal_likelihood_tracks_the_exact_likelihood.
-LEVEL_TOLERANCE = {"clusterless_gmm": 1.5, "clusterless_mark_glm": 0.75}
+LEVEL_TOLERANCE = {
+    "clusterless_gmm": 1.5,
+    "clusterless_mark_glm": 0.75,
+    "clusterless_probe_mixture": 0.75,
+}
 
 
 def _true_rates(x):

@@ -19,6 +19,7 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
 )
 from non_local_detector.likelihoods.clusterless_mark_glm import MarkMixture
+from non_local_detector.likelihoods.clusterless_probe_mixture import ProbeMarkMixture
 from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ, RATE_EPS_HZ
 from non_local_detector.likelihoods.mark_reference import (
     MarkReference,
@@ -39,6 +40,7 @@ _TILED_PREDICT_OVERRIDES = {
         {"enc_tile_size": 64, "use_streaming": True},
         {"pos_tile_size": 9},
     ],
+    "clusterless_probe_mixture": [{"max_candidate_components": 64}],
 }
 VARIANTS = [
     (name, overrides)
@@ -97,6 +99,12 @@ def _params(algorithm, scale=1.0):
         }
     if algorithm == "clusterless_mark_glm":
         return {"disable_progress_bar": True}
+    if algorithm == "clusterless_probe_mixture":
+        return {
+            "n_em_iterations": 2,
+            "em_validation_blocks": 0,
+            "disable_progress_bar": True,
+        }
     return {
         "position_std": 6.0,
         "waveform_std": 24.0 * scale,
@@ -185,6 +193,32 @@ def _transform_mark_mixture(mixture):
     )
 
 
+def _transform_probe_mixture(mixture):
+    """The same fitted probe mixture expressed in transformed mark units."""
+    if mixture is None:
+        return None
+    assert mixture.noise_whitener is None
+    sup = mixture.support_indices
+    mask = mixture.support_mask
+    scale_loc = SCALE[sup]
+    offset_loc = OFFSET[sup]
+    sign_loc = np.sign(scale_loc)
+    return ProbeMarkMixture(
+        weights=mixture.weights,
+        means=np.where(mask, mixture.means * scale_loc + offset_loc, 0.0),
+        basis=mixture.basis * sign_loc[:, :, None],
+        basis_variances=mixture.basis_variances,
+        support_indices=sup,
+        support_mask=mask,
+        noise_variance=mixture.noise_variance * (SCALE**2),
+        background_mean=mixture.background_mean * SCALE + OFFSET,
+        noise_whitener=None,
+        log_det_whitener=0.0,
+        contact_positions=mixture.contact_positions,
+        component_peak_channels=mixture.component_peak_channels,
+    )
+
+
 def _transformed_model(run_data, variant, model):
     """``model`` expressed in the transformed mark units.
 
@@ -203,6 +237,10 @@ def _transformed_model(run_data, variant, model):
     elif algorithm == "clusterless_mark_glm":
         transformed["mark_mixtures"] = [
             _transform_mark_mixture(m) for m in model["mark_mixtures"]
+        ]
+    elif algorithm == "clusterless_probe_mixture":
+        transformed["mark_mixtures"] = [
+            _transform_probe_mixture(m) for m in model["mark_mixtures"]
         ]
     else:
         marks = [m * SCALE + OFFSET for m in run_data["train_marks"]]
