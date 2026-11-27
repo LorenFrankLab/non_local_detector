@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Whittle-Matern spatial smoothness penalty for GLM rate maps
+
+- **Added:** opt-in `log_rate_smoothness_length` (position units, default `None`) on `fit_sorted_spikes_glm_encoding_model`, `fit_clusterless_mark_glm_encoding_model`, and `fit_rate_maps`, backed by `log_rate_prior_smoothness_penalty` and general symmetric positive semidefinite `penalty_matrix` support in `fit_poisson_regressions` / `fit_poisson_regression`.
+  - Uses the environment's cached finite-volume graph Laplacian (`diffusion.cached_laplacian`) to assemble the Whittle-Matern SPDE ($\alpha = 2$) prior precision $\beta_s^\top P_s \beta_s$ on the spline log-rate deviation (unpenalized intercept), respecting 1-D/2-D/3-D geometry, non-convex walls, track-graph junctions, and unequal bin widths while remaining invariant to coordinate unit rescaling and place bin size.
+  - Prevents overfitting on large sparse 2-D arenas at default `emission_knot_spacing` without degrading compact 2-D boxes or 1-D tracks. Default behavior (`log_rate_smoothness_length=None`) is unchanged.
+
 ### KDE density kernels compile a few times per fit or decode
 
 - **Changed:** `kde_log_densities` evaluates its models in one pass over tiles of 256 samples. It computes the place fields of `sorted_spikes_kde` and the ground-process densities of `clusterless_kde` at fit. Each model's samples are cut into tiles and the last tile is padded with zero-weight rows. The points this pass flags are then evaluated in log space in one more pass. Each flagged model is evaluated only at its own flagged points, in blocks of 16 points, one tile and one block at a time. The numbers of blocks and of tile-block pairs are padded to powers of two, so calls with different flagged sets share kernels. Before, it compiled one pass for each padded sample count (four sizes per octave), and each flagged model compiled a log-space kernel and indexing kernels for its padded size and flagged count. Its kernels now compile once or twice per call, however many units there are and whatever their spike counts. On simulated 2-D place cells with 8 and 40 units of different spike counts (17 to 3,000 spikes), a `sorted_spikes_kde` fit compiled 17 and 69 KDE density kernels before and 3 and 3 after (CPU, fresh caches).

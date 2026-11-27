@@ -926,3 +926,37 @@ def test_soft_counts_split_each_spike_by_its_sample_shares(monkeypatch, track_1d
             track_1d["spike_times"][electrode], sample_weights
         )[support.indices]
         np.testing.assert_allclose(electrode_counts, expected, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.integration
+def test_clusterless_mark_glm_smoothness_length_roundtrip(tmp_path, track_1d):
+    """Opt-in log_rate_smoothness_length threads cleanly through mark GLM and .nld."""
+    from non_local_detector import ClusterlessDecoder
+
+    time, position = track_1d["time"], track_1d["position"]
+    dec = ClusterlessDecoder(
+        environments=track_1d["environment"],
+        clusterless_algorithm="clusterless_mark_glm",
+        clusterless_algorithm_params={
+            "n_mark_components": 8,
+            "log_rate_smoothness_length": 15.0,
+            "disable_progress_bar": True,
+        },
+    ).fit(
+        position_time=time,
+        position=position,
+        spike_times=track_1d["spike_times"],
+        spike_waveform_features=track_1d["features"],
+    )
+    path = tmp_path / "smooth_mark_glm.nld"
+    dec.save_model(path)
+    reloaded = ClusterlessDecoder.load_model(path)
+    edges = dec.calculate_time_edges([float(time[0]), float(time[99])])
+    r1 = dec.predict(track_1d["spike_times"], track_1d["features"], time_edges=edges)
+    r2 = reloaded.predict(
+        track_1d["spike_times"], track_1d["features"], time_edges=edges
+    )
+    assert np.all(np.isfinite(r1.acausal_posterior.values))
+    np.testing.assert_allclose(
+        r1.acausal_posterior.values, r2.acausal_posterior.values, rtol=0, atol=0
+    )
