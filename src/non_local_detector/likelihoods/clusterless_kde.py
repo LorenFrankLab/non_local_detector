@@ -1285,6 +1285,10 @@ def _pad_with_last_row(array: ArrayLike, n_rows: int) -> np.ndarray:
 # when the mark factor dominates, and one per sample.
 _NONLOCAL_BIN_BUFFERS = 4
 _NONLOCAL_SAMPLE_BUFFERS = 2
+# Float buffers per (encoding sample, place bin) that a group of tiles is
+# counted as holding: its log position kernels, their weighted sums and the
+# slice of scaled factors its GEMM reads.
+_NONLOCAL_TILE_BUFFERS = 3
 # Float buffers per (spike, encoding sample) that a group of blocks of the
 # Local pass is counted as holding: XLA:CPU holds about seven.
 _LOCAL_TILE_BUFFERS = 8
@@ -1374,7 +1378,7 @@ def _encoding_tiles(
     encoding_positions: Sequence[ArrayLike],
     encoding_weights: Sequence[ArrayLike | None],
     waveform_std: jax.Array | np.ndarray | float,
-) -> tuple[_EncodingTiles, _ElectrodeTerms, int]:
+) -> tuple[_EncodingTiles, _ElectrodeTerms, np.ndarray]:
     """Tile every electrode's encoding samples once per prediction.
 
     Each electrode's samples are cut into tiles of ``_KDE_SAMPLE_TILE`` rows,
@@ -1402,11 +1406,11 @@ def _encoding_tiles(
     -------
     tiles : _EncodingTiles
     electrodes : _ElectrodeTerms
-    widest_tiles : int
-        The most tiles any electrode has.
+    n_tiles : np.ndarray of int, shape (n_electrodes,)
+        Each electrode's tiles.
     """
 
-    def build() -> tuple[_EncodingTiles, _ElectrodeTerms, int]:
+    def build() -> tuple[_EncodingTiles, _ElectrodeTerms, np.ndarray]:
         n_features = [int(np.shape(f)[1]) for f in encoding_features]
         width = max(n_features)
         marks = [
@@ -1458,7 +1462,7 @@ def _encoding_tiles(
                     np.array([_scaled_gemm_window(n, jnp.float32) for n in n_samples])
                 ),
             ),
-            int(np.diff(first_tile).max()),
+            np.diff(first_tile),
         )
 
     return spike_time_order.memo(
@@ -1480,23 +1484,30 @@ def _power_of_two_below(n: int) -> int:
 
 def _nonlocal_sizes(
     n_spikes: Sequence[int],
+    n_tiles: Sequence[int],
     block_size: int,
     n_bins: int,
     itemsize: int,
     widest_tiles: int,
+    used: list[int],
 ) -> tuple[int, int, int]:
     """Sizes of the batched non-local pass.
 
     One GEMM reduces at most ``group_blocks`` blocks of one electrode
-    against at most ``group_tiles`` of its tiles. Its rows, at most
-    ``block_size``, hold buffers counted as ``_NONLOCAL_BIN_BUFFERS`` floats
-    per place bin and ``_NONLOCAL_SAMPLE_BUFFERS`` per encoding sample of a
-    GEMM, within ``_KDE_BLOCK_KERNEL_BYTES``.
+    against at most ``group_tiles`` of its tiles. A group of tiles holds
+    buffers counted as ``_NONLOCAL_TILE_BUFFERS`` floats per sample per
+    place bin, within half of ``_KDE_BLOCK_KERNEL_BYTES`` (one tile at
+    least). The GEMM's rows, at most ``block_size``, hold buffers counted as
+    ``_NONLOCAL_BIN_BUFFERS`` floats per place bin and
+    ``_NONLOCAL_SAMPLE_BUFFERS`` per sample of the group of tiles, within the
+    rest of the budget (16 rows at least).
 
     Parameters
     ----------
     n_spikes : sequence of int
         Spike count of each electrode with spikes in the rows.
+    n_tiles : sequence of int
+        Encoding tiles of the same electrodes.
     block_size : int
         The requested spikes per block.
     n_bins : int
@@ -1504,49 +1515,38 @@ def _nonlocal_sizes(
     itemsize : int
         Bytes per float of the pass.
     widest_tiles : int
-        Tiles of the electrode with the most.
+        Tiles of the electrode with the most, spikes or not.
+    used : list of int
+        Block sizes the prediction has used (see ``_block_rows``).
 
     Returns
     -------
     block_rows, group_blocks, group_tiles : int
     """
-    row_limit = max(
-        1,
-        _KDE_BLOCK_KERNEL_BYTES
-        // (
-            itemsize
-            * (
-                _NONLOCAL_BIN_BUFFERS * n_bins
-                + _NONLOCAL_SAMPLE_BUFFERS * _LOG_REDUCTION_ENCODING_ROWS
-            )
-        ),
-    )
-    return _group_sizes(n_spikes, block_size, row_limit, widest_tiles)
-
-
-def _group_sizes(
-    n_spikes: Sequence[int], block_size: int, row_limit: int, widest_tiles: int
-) -> tuple[int, int, int]:
-    """Block rows and the largest groups of blocks and tiles of a batched pass.
-
-    A group of blocks holds at most ``min(block_size, row_limit)`` spikes
-    and ``_GROUP_BLOCKS`` blocks, at most the padded block count; a group of
-    tiles at most ``_LOG_REDUCTION_ENCODING_ROWS`` samples, at most the
-    widest electrode's tiles. Both are powers of two.
-    """
-    block_rows = _block_rows(n_spikes, block_size, row_limit)
-    n_blocks = padded_block_count(sum(-(-n // block_rows) for n in n_spikes))
-    group_blocks = _power_of_two_below(
-        min(_GROUP_BLOCKS, min(block_size, row_limit) // block_rows, n_blocks)
-    )
+    tile_bytes = _NONLOCAL_TILE_BUFFERS * _KDE_SAMPLE_TILE * n_bins * itemsize
     group_tiles = _power_of_two_below(
-        min(_LOG_REDUCTION_ENCODING_ROWS // _KDE_SAMPLE_TILE, widest_tiles)
+        min(
+            _LOG_REDUCTION_ENCODING_ROWS // _KDE_SAMPLE_TILE,
+            widest_tiles,
+            _KDE_BLOCK_KERNEL_BYTES // 2 // tile_bytes,
+        )
     )
-    return block_rows, group_blocks, group_tiles
+    row_bytes = itemsize * (
+        _NONLOCAL_BIN_BUFFERS * n_bins
+        + _NONLOCAL_SAMPLE_BUFFERS * group_tiles * _KDE_SAMPLE_TILE
+    )
+    row_limit = max(
+        16, (_KDE_BLOCK_KERNEL_BYTES - group_tiles * tile_bytes) // row_bytes
+    )
+    return _group_sizes(n_spikes, n_tiles, block_size, row_limit, group_tiles, used)
 
 
 def _local_sizes(
-    n_spikes: Sequence[int], block_size: int, widest_tiles: int
+    n_spikes: Sequence[int],
+    n_tiles: Sequence[int],
+    block_size: int,
+    widest_tiles: int,
+    used: list[int],
 ) -> tuple[int, int, int]:
     """Sizes of the Local pass.
 
@@ -1559,41 +1559,83 @@ def _local_sizes(
     ----------
     n_spikes : sequence of int
         Spike count of each electrode with spikes in the rows.
+    n_tiles : sequence of int
+        Encoding tiles of the same electrodes.
     block_size : int
         The requested spikes per block.
     widest_tiles : int
-        Tiles of the electrode with the most.
+        Tiles of the electrode with the most, spikes or not.
+    used : list of int
+        Block sizes the prediction has used (see ``_block_rows``).
 
     Returns
     -------
     block_rows, group_blocks, group_tiles : int
     """
     itemsize = jnp.dtype(jax.dtypes.canonicalize_dtype(jnp.float64)).itemsize
-    samples = _LOG_REDUCTION_ENCODING_ROWS
-    row_limit = max(
-        1, _KDE_BLOCK_KERNEL_BYTES // (_LOCAL_TILE_BUFFERS * samples * itemsize)
+    group_tiles = _power_of_two_below(
+        min(_LOG_REDUCTION_ENCODING_ROWS // _KDE_SAMPLE_TILE, widest_tiles)
     )
-    return _group_sizes(n_spikes, block_size, row_limit, widest_tiles)
+    row_limit = max(
+        1,
+        _KDE_BLOCK_KERNEL_BYTES
+        // (_LOCAL_TILE_BUFFERS * group_tiles * _KDE_SAMPLE_TILE * itemsize),
+    )
+    return _group_sizes(n_spikes, n_tiles, block_size, row_limit, group_tiles, used)
 
 
-def _block_rows(n_spikes: Sequence[int], block_size: int, row_limit: int) -> int:
+def _group_sizes(
+    n_spikes: Sequence[int],
+    n_tiles: Sequence[int],
+    block_size: int,
+    row_limit: int,
+    group_tiles: int,
+    used: list[int],
+) -> tuple[int, int, int]:
+    """Block rows and the largest groups of blocks and tiles of a batched pass.
+
+    A group of blocks holds at most ``min(block_size, row_limit)`` spikes
+    and ``_GROUP_BLOCKS`` blocks, at most the padded block count; both group
+    sizes are powers of two.
+    """
+    block_rows = _block_rows(n_spikes, n_tiles, block_size, row_limit, used)
+    n_blocks = padded_block_count(sum(-(-n // block_rows) for n in n_spikes))
+    group_blocks = _power_of_two_below(
+        min(_GROUP_BLOCKS, min(block_size, row_limit) // block_rows, n_blocks)
+    )
+    return block_rows, group_blocks, group_tiles
+
+
+def _block_rows(
+    n_spikes: Sequence[int],
+    n_tiles: Sequence[int],
+    block_size: int,
+    row_limit: int,
+    used: list[int],
+) -> int:
     """Spikes per block of a batched pass, shared by every electrode.
 
-    Each electrode's spikes are padded to whole blocks. The rows are the
+    Each electrode's spikes are padded to whole blocks, and each padded
+    spike is reduced against all of its electrode's tiles. The rows are the
     largest of 16, 64, 256, ... (powers of four) below
-    ``min(block_size, row_limit)``, or that cap itself, that pads the spikes
-    by at most a quarter of their total; the smallest of them when none
-    does. Few sizes let row chunks with different spike counts share a
-    compiled pass.
+    ``min(block_size, row_limit)``, or that cap itself, that adds at most a
+    quarter to the (spike, tile) pairs the pass reduces; the smallest of them
+    when none does. Of the sizes that meet that bound, one already ``used``
+    by the prediction is preferred, so its row chunks share compiled passes.
 
     Parameters
     ----------
     n_spikes : sequence of int
         Each electrode's spike count, at least one each.
+    n_tiles : sequence of int
+        Each electrode's encoding tiles.
     block_size : int
         The requested spikes per block.
     row_limit : int
         The most rows whose buffers fit the pass's budget.
+    used : list of int
+        The block sizes the prediction has used so far; the chosen size is
+        added.
 
     Returns
     -------
@@ -1603,11 +1645,18 @@ def _block_rows(n_spikes: Sequence[int], block_size: int, row_limit: int) -> int
     sizes = [
         size for size in (16 << 2 * k for k in range(cap.bit_length())) if size < cap
     ]
-    total = sum(n_spikes)
-    rows = (sizes or [cap])[0]
-    for size in (*sizes, cap):
-        if 4 * sum(-(-n // size) * size for n in n_spikes) <= 5 * total:
-            rows = size
+    pairs = sum(n * t for n, t in zip(n_spikes, n_tiles, strict=True))
+    meeting = [
+        size
+        for size in (*sizes, cap)
+        if 4
+        * sum(-(-n // size) * size * t for n, t in zip(n_spikes, n_tiles, strict=True))
+        <= 5 * pairs
+    ]
+    reused = [size for size in meeting if size in used]
+    rows = max(reused or meeting or [(sizes or [cap])[0]])
+    if rows not in used:
+        used.append(rows)
     return rows
 
 
@@ -3025,19 +3074,24 @@ def predict_clusterless_kde_log_likelihood(
             disable_progress_bar=disable_progress_bar,
         )
         if collected:
-            tiles, electrodes, widest_tiles = _encoding_tiles(
+            tiles, electrodes, n_tiles = _encoding_tiles(
                 rows.spike_time_order,
                 encoding_spike_waveform_features,
                 encoding_positions,
                 per_electrode_weights,
                 waveform_std,
             )
+            widest_tiles = int(n_tiles.max())
             block_rows, group_blocks, group_tiles = _nonlocal_sizes(
                 [spikes.n_spikes for spikes in collected],
+                [int(n_tiles[spikes.electrode]) for spikes in collected],
                 block_size,
                 interior_place_bin_centers.shape[0],
                 log_likelihood.dtype.itemsize,
                 widest_tiles,
+                rows.spike_time_order.memo(
+                    "clusterless_kde_nonlocal_block_rows", (tiles,), list
+                ),
             )
             blocks, _ = _spike_blocks(
                 [
@@ -3321,7 +3375,7 @@ def compute_local_log_likelihood(
             )
     log_likelihood = jnp.zeros((n_rows,))
     if spikes:
-        tiles, electrodes, widest_tiles = _encoding_tiles(
+        tiles, electrodes, n_tiles = _encoding_tiles(
             rows.spike_time_order,
             encoding_spike_waveform_features,
             encoding_positions,
@@ -3329,7 +3383,13 @@ def compute_local_log_likelihood(
             waveform_std,
         )
         block_rows, group_blocks, group_tiles = _local_sizes(
-            [marks.shape[0] for _, marks, _, _ in spikes], block_size, widest_tiles
+            [marks.shape[0] for _, marks, _, _ in spikes],
+            [int(n_tiles[electrode]) for electrode, *_ in spikes],
+            block_size,
+            int(n_tiles.max()),
+            rows.spike_time_order.memo(
+                "clusterless_kde_local_block_rows", (tiles,), list
+            ),
         )
         blocks, (block_positions, block_log_occupancy) = _spike_blocks(
             spikes,

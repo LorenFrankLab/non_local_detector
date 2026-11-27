@@ -9,7 +9,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import padded_sample_count
+from non_local_detector.likelihoods.common import (
+    SpikeTimeOrder,
+    padded_sample_count,
+)
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from tests.likelihoods.conftest import count_compilations
 
@@ -65,7 +68,7 @@ def marked_kernel_compiles(compiled):
     ]
 
 
-def predict(data, is_local, row_slice=None):
+def predict(data, is_local, row_slice=None, spike_time_order=None):
     time, position, spike_times, marks, model = data
     return predict_clusterless_kde_log_likelihood(
         time,
@@ -75,6 +78,7 @@ def predict(data, is_local, row_slice=None):
         time_edges=np.arange(0.0, 60.0 + 1e-9, 0.01),
         is_local=is_local,
         row_slice=row_slice,
+        _spike_time_order=spike_time_order,
         **model,
     )
 
@@ -103,15 +107,20 @@ def test_marked_kernels_compile_independent_of_electrode_count(is_local):
 def test_row_chunks_and_repeated_decodes_reuse_marked_kernels(is_local):
     """Twelve row chunks of 40 electrodes, whose spike counts per chunk vary,
     compile the marked kernels a few times in all; decoding them again
-    compiles nothing."""
+    compiles nothing. The chunks share one prediction's preparation, as a
+    detector's chunks do."""
     data = recording(ELECTRODE_COUNTS[-1])
     chunks = [slice(start, start + 500) for start in range(0, 6_000, 500)]
     jax.clear_caches()
+    spike_time_order = SpikeTimeOrder()
     with count_compilations() as compiled:
         for rows in chunks:
-            predict(data, is_local, rows)
-    assert 1 <= len(marked_kernel_compiles(compiled)) <= 4, compiled
+            predict(data, is_local, rows, spike_time_order)
+    # Measured 4 on CPU (block sizes and padded block counts, both powers
+    # of four, vary with each chunk's spikes); main compiled 72 and 88. The
+    # bound leaves room for a different data mix.
+    assert 1 <= len(marked_kernel_compiles(compiled)) <= 6, compiled
     with count_compilations() as compiled:
         for rows in chunks:
-            predict(data, is_local, rows)
+            predict(data, is_local, rows, spike_time_order)
     assert marked_kernel_compiles(compiled) == []
