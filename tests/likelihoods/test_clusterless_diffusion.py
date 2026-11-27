@@ -70,6 +70,7 @@ from non_local_detector.likelihoods.diffusion import (
     get_device_point_source_basis,
     heat_kernel_apply,
     n_connected_components,
+    resolved_occupancy,
 )
 from tests.likelihoods._sorted_spikes_helpers import (
     make_two_room_env,
@@ -198,6 +199,72 @@ def test_fit_densities_are_finite_and_nonnegative():
         density = np.asarray(enc[key])
         assert np.all(np.isfinite(density)), key
         assert np.all(density >= 0.0), key
+
+
+@pytest.mark.unit
+def test_fit_does_not_depend_on_the_position_units():
+    """Rescaling positions, bins and ``position_std`` together leaves the fit.
+
+    Occupancy is a density in 1 / length**d, so its values scale with the
+    units. Flooring it at the absolute ``EPS`` (1e-15) gave unvisited bins of a
+    1.2 m arena in micrometres (peak density ~4e-12 per um**2) an occupancy
+    above ``FIELD_RESOLUTION`` (1e-6) of the peak, so they passed as resolved and got
+    intensities; in metres they were unresolved.
+    """
+    rng = np.random.default_rng(0)
+    n_pos = 2000
+    position_time = np.linspace(0.0, 20.0, n_pos)
+    # A walk confined to the lower-left quarter of a 1.2 m x 1.2 m arena.
+    position = 0.3 + 0.2 * np.sin(
+        np.outer(position_time, [0.7, 1.1]) + np.array([0.0, 1.0])
+    )
+    spike_times = [np.sort(rng.uniform(0.0, 20.0, 150)) for _ in range(2)]
+    marks = [rng.standard_normal((t.size, 2)).astype(np.float32) for t in spike_times]
+
+    def fit(scale):
+        env = Environment(
+            environment_name="arena",
+            place_bin_size=0.1 * scale,
+            position_range=((0.0, 1.2 * scale), (0.0, 1.2 * scale)),
+        ).fit_place_grid(position=position * scale, infer_track_interior=False)
+        return fit_clusterless_diffusion_encoding_model(
+            position_time,
+            position * scale,
+            [jnp.asarray(t) for t in spike_times],
+            [jnp.asarray(m) for m in marks],
+            env,
+            position_std=0.15 * scale,
+            waveform_std=WAVEFORM_STD,
+            disable_progress_bar=True,
+        )
+
+    metres, micrometres = fit(1.0), fit(1e6)
+    occupancy = np.asarray(metres["occupancy"])
+    relative = occupancy / occupancy.max()
+    # The two unit systems round the heat kernel differently (~2e-7 of the peak),
+    # so a bin within a factor 2 of the resolution threshold may fall either
+    # side of it; every other bin must be resolved alike.
+    clear = (relative > 2 * FIELD_RESOLUTION) | (relative < FIELD_RESOLUTION / 2)
+    resolved = np.asarray(resolved_occupancy(occupancy))
+    assert 0 < resolved[clear].sum() < clear.sum()  # the walk leaves bins unvisited
+    np.testing.assert_array_equal(
+        np.asarray(resolved_occupancy(np.asarray(micrometres["occupancy"])))[clear],
+        resolved[clear],
+    )
+    # Near the resolution floor the intensity is a ratio of two fields at the
+    # heat kernel's noise level, whose rounding differs between unit systems
+    # (5e-4 relative at 5e-6 of the peak occupancy); compare it where resolved
+    # well, and check the unresolved bins have none in either unit system.
+    well_resolved = relative > 1e-4
+    np.testing.assert_allclose(
+        np.asarray(micrometres["summed_ground_process_intensity"])[well_resolved],
+        np.asarray(metres["summed_ground_process_intensity"])[well_resolved],
+        rtol=1e-4,
+    )
+    unresolved = clear & ~resolved
+    np.testing.assert_array_equal(
+        np.asarray(micrometres["summed_ground_process_intensity"])[unresolved], 0.0
+    )
 
 
 # ----------------------------------------------------------------------------

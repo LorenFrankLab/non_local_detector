@@ -94,6 +94,27 @@ def test_replaced_fitted_leaves_are_included_in_the_preparation_budget(monkeypat
         assert retained_sources <= order._kde_prepared_bytes
 
 
+def test_prepared_batched_densities_recompute_after_a_block_size_change(
+    monkeypatch,
+):
+    models = [common.KDEModel(std=1.0).fit(jnp.arange(5.0)[:, None]) for _ in range(2)]
+    points = np.arange(3.0)[:, None]
+    order = common.SpikeTimeOrder()
+    calls = []
+    original = kde_module.kde_log_densities
+
+    def record(density_models, density_points):
+        calls.append([model.block_size for model in density_models])
+        return original(density_models, density_points)
+
+    monkeypatch.setattr(kde_module, "kde_log_densities", record)
+    first = common.prepared_kde_log_densities(models, points, order)
+    assert common.prepared_kde_log_densities(models, points, order) is first
+    models[0].block_size = 2
+    common.prepared_kde_log_densities(models, points, order)
+    assert calls == [[None, None], [2, None]]
+
+
 @pytest.mark.parametrize("block_size", [None, 2])
 def test_true_density_with_no_evaluation_points_is_empty(block_size):
     model = common.KDEModel(std=1.0, block_size=block_size).fit(jnp.zeros((3, 1)))
@@ -204,8 +225,16 @@ def test_clusterless_prediction_evaluates_fitted_densities_in_its_block_size(
         blocks.append(density_model.block_size)
         return original(density_model, points)
 
+    original_batch = kde_module.kde_log_densities
+
+    def record_batch(density_models, points):
+        blocks.extend(density_model.block_size for density_model in density_models)
+        return original_batch(density_models, points)
+
     monkeypatch.setattr(kde_module, "kde_log_density", record)
     monkeypatch.setattr(clusterless_kde_module, "kde_log_density", record)
+    # The Local path evaluates the ground-process models together.
+    monkeypatch.setattr(kde_module, "kde_log_densities", record_batch)
     edges = np.arange(0.0, 20.0 + 1e-9, 0.02)
 
     def predict(**settings):

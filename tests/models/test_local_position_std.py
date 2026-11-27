@@ -14,7 +14,12 @@ import numpy as np
 import pytest
 
 from non_local_detector import time_edges_from_centers
-from non_local_detector.continuous_state_transitions import TransitionContext
+from non_local_detector.continuous_state_transitions import (
+    Identity,
+    RandomWalk,
+    TransitionContext,
+    Uniform,
+)
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models import (
     NonLocalClusterlessDetector,
@@ -34,7 +39,7 @@ DETECTOR_CLASSES = [NonLocalSortedSpikesDetector, NonLocalClusterlessDetector]
 DETECTOR_IDS = ["sorted", "clusterless"]
 
 
-def _fit_state_space(detector, position):
+def _fit_state_space(detector, position, transition_representation="dense"):
     """Fit the environments, initial conditions and state space as ``fit`` does."""
     detector.initialize_environments(position)
     state_ind, bin_sizes, is_track_interior = state_layout(
@@ -60,6 +65,7 @@ def _fit_state_space(detector, position):
         state_ind,
         bin_sizes,
         context=TransitionContext(position),
+        transition_representation=transition_representation,
     )
     detector.state_space_ = StateSpace(
         **recorded_layout_parameters(detector),
@@ -68,7 +74,7 @@ def _fit_state_space(detector, position):
         is_track_interior=is_track_interior,
         continuous_transitions=transitions,
         transition_operator=operator,
-        transition_representation="dense",
+        transition_representation=transition_representation,
         max_dense_transition_bytes=DEFAULT_MAX_DENSE_BYTES,
     )
 
@@ -313,6 +319,125 @@ class TestMultiBinLocalContinuousTransitions:
                         atol=1e-10,
                         err_msg=f"Block ({from_state},{to_state}) not stochastic",
                     )
+
+
+class _RampInitialConditions:
+    """Initial conditions rising linearly across the interior bins."""
+
+    def make_initial_conditions(self, observation_model, environments):
+        interior = environments[0].is_track_interior_.ravel()
+        ramp = np.where(interior, np.arange(interior.size) + 1.0, 0.0)
+        return ramp / ramp.sum()
+
+
+def _with_block_into(detector_cls, from_state, to_state, transition):
+    """Default transition types of ``detector_cls`` with one block replaced."""
+    types = [list(row) for row in detector_cls().continuous_transition_types]
+    types[from_state][to_state] = transition
+    return types
+
+
+@pytest.mark.unit
+class TestMultiBinLocalRequiresUniformEntry:
+    """The multi-bin Local likelihood adds ``log(n_interior_bins)`` to cancel a
+    1/n chance of entering each Local bin. A block into Local that is not
+    uniform does not cancel it: the Local evidence is then scaled by a factor
+    between 0 and ``n_interior_bins`` per time step and the marginal
+    likelihood is no longer a probability. So such blocks and initial
+    conditions are refused."""
+
+    @pytest.mark.parametrize("representation", ["dense", "structured"])
+    @pytest.mark.parametrize("from_state", [0, 2], ids=["Local", "Non-Local"])
+    @pytest.mark.parametrize(
+        "transition", [RandomWalk(), Identity()], ids=["RandomWalk", "Identity"]
+    )
+    def test_non_uniform_block_into_multibin_local_raises(
+        self, transition, from_state, representation
+    ):
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=5.0,
+            continuous_transition_types=_with_block_into(
+                NonLocalSortedSpikesDetector, from_state, 0, transition
+            ),
+        )
+        position = np.linspace(0, 10, 11)[:, np.newaxis]
+        with pytest.raises(ValidationError, match="into the multi-bin Local"):
+            _fit_state_space(detector, position, representation)
+
+    def test_error_names_the_refused_block(self):
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=5.0,
+            continuous_transition_types=_with_block_into(
+                NonLocalSortedSpikesDetector, 2, 0, RandomWalk()
+            ),
+        )
+        position = np.linspace(0, 10, 11)[:, np.newaxis]
+        with pytest.raises(
+            ValidationError, match=r"continuous_transition_types\[2\]\[0\]"
+        ):
+            _fit_state_space(detector, position)
+
+    @pytest.mark.parametrize("representation", ["dense", "structured"])
+    def test_any_block_from_no_spike_into_multibin_local_accepted(self, representation):
+        """No-Spike has one bin, so its block into Local is uniform whatever
+        its transition, and is not refused."""
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=5.0,
+            continuous_transition_types=_with_block_into(
+                NonLocalSortedSpikesDetector, 1, 0, RandomWalk()
+            ),
+        )
+        position = np.linspace(0, 10, 11)[:, np.newaxis]
+        _fit_state_space(detector, position, representation)
+
+        block = np.asarray(detector.continuous_state_transitions_)[
+            np.ix_(detector.state_ind_ == 1, detector.state_ind_ == 0)
+        ]
+        np.testing.assert_allclose(block, 1.0 / detector.bin_sizes_[0], rtol=1e-6)
+
+    def test_uniform_block_into_multibin_local_accepted(self):
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=5.0,
+            continuous_transition_types=_with_block_into(
+                NonLocalSortedSpikesDetector, 2, 0, Uniform()
+            ),
+        )
+        position = np.linspace(0, 10, 11)[:, np.newaxis]
+        _fit_state_space(detector, position)
+
+        block = detector.continuous_state_transitions_[
+            np.ix_(detector.state_ind_ == 2, detector.state_ind_ == 0)
+        ]
+        np.testing.assert_allclose(block, 1.0 / detector.bin_sizes_[0], rtol=1e-12)
+
+    def test_non_uniform_block_out_of_multibin_local_accepted(self):
+        """Leaving Local does not touch the cancelled 1/n, so any block may."""
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=5.0,
+            continuous_transition_types=_with_block_into(
+                NonLocalSortedSpikesDetector, 0, 2, RandomWalk()
+            ),
+        )
+        position = np.linspace(0, 10, 11)[:, np.newaxis]
+        _fit_state_space(detector, position)
+
+        block = detector.continuous_state_transitions_[
+            np.ix_(detector.state_ind_ == 0, detector.state_ind_ == 2)
+        ]
+        np.testing.assert_allclose(block.sum(axis=1), 1.0, atol=1e-10)
+
+    def test_non_uniform_initial_conditions_of_multibin_local_raise(self):
+        initial_conditions_types = list(
+            NonLocalSortedSpikesDetector().continuous_initial_conditions_types
+        )
+        initial_conditions_types[0] = _RampInitialConditions()
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=5.0,
+            continuous_initial_conditions_types=initial_conditions_types,
+        )
+        position = np.linspace(0, 10, 11)[:, np.newaxis]
+        with pytest.raises(ValidationError, match="multi-bin Local"):
+            _fit_state_space(detector, position)
 
 
 @pytest.mark.unit
@@ -896,3 +1021,31 @@ def test_decoding_through_a_tracking_gap_stays_finite(local_position_std):
     posterior = results.acausal_posterior.to_numpy()
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=1), 1.0, rtol=1e-4)
+
+
+@pytest.mark.integration
+def test_save_refuses_a_held_block_into_multibin_local_it_would_not_rebuild(tmp_path):
+    """A load rebuilds a stored block as itself and would refuse one into a
+    multi-bin Local state, so the save refuses it and writes nothing. A
+    detector fitted by an earlier version can hold such a block; here the
+    held Non-Local -> Local block is moved off the one this version builds."""
+    import dataclasses
+
+    rng = np.random.default_rng(0)
+    time = np.arange(0.0, 10.0, 0.002)
+    position = (50 + 45 * np.sin(time))[:, np.newaxis]
+    spike_times = [np.sort(rng.uniform(0.0, 10.0, 100)) for _ in range(3)]
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=5.0, sampling_frequency=500
+    ).fit(time, position, spike_times)
+    state_ind = np.asarray(detector.state_space_.state_ind)
+    transitions = np.array(detector.state_space_.continuous_transitions)
+    transitions[np.ix_(state_ind == 2, state_ind == 0)] *= 1 - 1e-6
+    detector.state_space_ = dataclasses.replace(
+        detector.state_space_, continuous_transitions=transitions
+    )
+
+    path = tmp_path / "detector.nld"
+    with pytest.raises(ValidationError, match="multi-bin Local"):
+        detector.save_model(path)
+    assert not path.exists()
