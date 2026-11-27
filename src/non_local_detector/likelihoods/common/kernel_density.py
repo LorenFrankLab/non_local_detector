@@ -994,6 +994,7 @@ def kde_log_density_rows(
     points: jax.Array | np.ndarray,
     *,
     log_floor: LogFloor | None = None,
+    spike_time_order: SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """:func:`kde_log_densities` as one host array, one row per model.
 
@@ -1013,6 +1014,10 @@ def kde_log_density_rows(
         NaN floor (``inf`` plus ``-inf``) leaves the point flagged. By
         default every flagged point is evaluated in log space. Models that
         are not exactly ``KDEModel`` ignore it.
+    spike_time_order : SpikeTimeOrder, optional
+        A prediction's preparation cache. With it, the models' sample tiles
+        and sorted 1D keys are built and moved to the device once per
+        prediction, not once per call.
 
     Returns
     -------
@@ -1022,7 +1027,7 @@ def kde_log_density_rows(
     points = jnp.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
-    results = _kde_log_density_list(models, points, log_floor)
+    results = _kde_log_density_list(models, points, log_floor, spike_time_order)
     if not results:
         return np.empty(
             (0, points.shape[0]), jax.dtypes.canonicalize_dtype(jnp.float64)
@@ -1081,6 +1086,7 @@ def _kde_log_density_list(
     models: Sequence["KDEModel"],
     points: jax.Array,
     log_floor: LogFloor | None = None,
+    spike_time_order: SpikeTimeOrder | None = None,
 ) -> list[np.ndarray | jax.Array]:
     """Each model's log densities in its own dtype; see :func:`kde_log_density_rows`."""
     if points.ndim == 1:
@@ -1105,10 +1111,27 @@ def _kde_log_density_list(
         )
         groups.setdefault(key, []).append(index)
     for (block_size, *_), members in groups.items():
+        leaves = tuple(
+            leaf for i in members for leaf in (models[i].samples_, models[i].weights_)
+        )
+
+        def build(members: list[int] = members) -> _GroupTiles:
+            return _GroupTiles.build(
+                [np.asarray(models[i].samples_) for i in members],
+                [np.asarray(models[i].weights_) for i in members],
+                one_dimensional=points.shape[1] == 1,
+            )
+
+        group = (
+            build()
+            if spike_time_order is None
+            else spike_time_order.memo(
+                f"kde_group_tiles:{points.shape[1]}", leaves, build
+            )
+        )
         values = _tiled_kde_log_densities(
             points,
-            [np.asarray(models[i].samples_) for i in members],
-            [np.asarray(models[i].weights_) for i in members],
+            group,
             as_std_array(models[members[0]].std, points.shape[1]),
             block_size,
             log_floor=None
@@ -1221,55 +1244,81 @@ def _nearer_key_log_kernel(
     return cast(jax.Array, log_gaussian_pdf(points, nearest, std[0]))
 
 
+def _sorted_model_keys(
+    samples: Sequence[np.ndarray], weights: Sequence[np.ndarray]
+) -> list[np.ndarray]:
+    """Each model's sorted 1D keys for :func:`_bracketing_keys`, on the host.
+
+    As :func:`_sorted_sample_keys` per model, in the samples' common dtype (a
+    floating one for integer samples): samples without positive weight are
+    ``inf``.
+
+    Parameters
+    ----------
+    samples : sequence of np.ndarray, each shape (n_samples, 1)
+        Each model's samples.
+    weights : sequence of np.ndarray, each shape (n_samples,)
+        Each model's weights.
+
+    Returns
+    -------
+    keys : list of np.ndarray, each shape (n_samples,)
+    """
+    key_dtype = np.result_type(*(np.asarray(s).dtype for s in samples), np.float16)
+    return [
+        np.sort(
+            np.where(model_weights > 0, model_samples[:, 0], np.inf).astype(
+                key_dtype, copy=False
+            )
+        )
+        for model_samples, model_weights in zip(samples, weights, strict=True)
+    ]
+
+
 def _bracketing_keys(
-    points: np.ndarray,
-    samples: Sequence[np.ndarray],
-    weights: Sequence[np.ndarray],
+    points: np.ndarray, keys: Sequence[np.ndarray]
 ) -> tuple[np.ndarray, np.ndarray]:
     """Each model's sorted 1D keys just below and at or above each point, on the host.
 
     The neighbours :func:`_nearest_sample_log_kernel` finds on the device,
-    for several models at once: :func:`_sorted_sample_keys` per model, then
-    a binary search. The keys are copied, so the device computes the same
-    scale from them.
+    for several models at once, by a binary search of each model's keys.
+    The keys are copied, so the device computes the same scale from them.
 
     Parameters
     ----------
     points : np.ndarray, shape (n_points,)
         Evaluation coordinates, in the device dtype; any numeric dtype.
-    samples : sequence of np.ndarray, each shape (n_samples, 1)
-        Each model's samples.
-    weights : sequence of np.ndarray, each shape (n_samples,)
-        Each model's weights; samples without positive weight are ``inf``.
+    keys : sequence of np.ndarray, each shape (n_samples,)
+        From :func:`_sorted_model_keys`.
 
     Returns
     -------
     left, right : np.ndarray, shape (n_models, n_points)
-        In the samples' dtype (a floating one for integer samples), so the
-        keys are the sample coordinates whatever the points' dtype; ``inf``
-        for a model without samples.
+        In the keys' dtype, so the keys are the sample coordinates whatever
+        the points' dtype; ``inf`` for a model without samples.
     """
-    key_dtype = np.result_type(*(np.asarray(s).dtype for s in samples), np.float16)
-    left = np.full((len(samples), points.size), np.inf, key_dtype)
+    key_dtype = np.result_type(*(model_keys.dtype for model_keys in keys))
+    left = np.full((len(keys), points.size), np.inf, key_dtype)
     right = left.copy()
-    # Searching the points in sorted order reads each model's keys in order,
-    # several times faster than searching them as they come.
+    # The points are searched in sorted order, which reads the keys in
+    # order. A point's index is the number of keys below it: for a model
+    # with fewer keys than points, a running count of where each key falls
+    # among the sorted points, one search per key instead of per point.
     order = np.argsort(points, kind="stable")
     sorted_points = points[order]
-    for model, (model_samples, model_weights) in enumerate(
-        zip(samples, weights, strict=True)
-    ):
-        if model_samples.shape[0] == 0:
+    for model, model_keys in enumerate(keys):
+        if model_keys.size == 0:
             continue
-        keys = np.sort(
-            np.where(model_weights > 0, model_samples[:, 0], np.inf).astype(
-                key_dtype, copy=False
-            )
-        )
-        index = np.searchsorted(keys, sorted_points)
-        last = keys.size - 1
-        left[model, order] = keys[np.clip(index - 1, 0, last)]
-        right[model, order] = keys[np.clip(index, 0, last)]
+        if model_keys.size < points.size:
+            where = np.searchsorted(sorted_points, model_keys, side="right")
+            index = np.cumsum(np.bincount(where, minlength=points.size + 1))[
+                : points.size
+            ]
+        else:
+            index = np.searchsorted(model_keys, sorted_points)
+        last = model_keys.size - 1
+        left[model, order] = model_keys[np.clip(index - 1, 0, last)]
+        right[model, order] = model_keys[np.clip(index, 0, last)]
     return left, right
 
 
@@ -1996,10 +2045,60 @@ def _paired_log_space_kde_log_densities(
     return jnp.where(has_nan > 0, jnp.nan, values)
 
 
+@dataclass
+class _GroupTiles:
+    """A group of models' tiles and sorted 1D keys, built once per prediction.
+
+    Attributes
+    ----------
+    host : (np.ndarray, np.ndarray, np.ndarray)
+        From :func:`_sample_tiles`.
+    widest : int
+        Tiles of the model with the most.
+    counts : np.ndarray, shape (n_models,)
+        Each model's number of samples.
+    keys : list of np.ndarray or None
+        From :func:`_sorted_model_keys`, for 1D points.
+    device : dict
+        The tiles on the device, by padded tile count (see
+        :func:`_bucketed_tiles`).
+    """
+
+    host: tuple[np.ndarray, np.ndarray, np.ndarray]
+    widest: int
+    counts: np.ndarray
+    keys: list[np.ndarray] | None
+    device: dict[int, tuple[jax.Array, jax.Array, jax.Array]] = field(
+        default_factory=dict
+    )
+
+    @classmethod
+    def build(
+        cls,
+        samples: Sequence[np.ndarray],
+        weights: Sequence[np.ndarray],
+        *,
+        one_dimensional: bool,
+    ) -> "_GroupTiles":
+        """Cut the models' samples into tiles and, for 1D points, sort their keys."""
+        host = _sample_tiles(samples, weights)
+        return cls(
+            host=host,
+            widest=int(np.bincount(host[2]).max()),
+            counts=np.asarray([np.shape(s)[0] for s in samples]),
+            keys=_sorted_model_keys(samples, weights) if one_dimensional else None,
+        )
+
+    def on_device(self, n_padded: int) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the tiles padded to ``n_padded``, moved to the device once."""
+        if n_padded not in self.device:
+            self.device[n_padded] = _bucketed_tiles(*self.host, n_padded)
+        return self.device[n_padded]
+
+
 def _tiled_kde_log_densities(
     points: jax.Array,
-    samples: Sequence[np.ndarray],
-    weights: Sequence[np.ndarray],
+    group: _GroupTiles,
     std: jax.Array,
     block_size: int,
     *,
@@ -2018,10 +2117,8 @@ def _tiled_kde_log_densities(
     ----------
     points : jax.Array, shape (n_points, n_dims), n_points >= 1
         Evaluation points.
-    samples : sequence of np.ndarray, each shape (n_samples, n_dims)
-        Each model's samples.
-    weights : sequence of np.ndarray, each shape (n_samples,)
-        Each model's weights.
+    group : _GroupTiles
+        The models' tiles and, for 1D points, sorted keys.
     std : jax.Array, shape (n_dims,)
         Kernel bandwidth.
     block_size : int
@@ -2033,25 +2130,25 @@ def _tiled_kde_log_densities(
     -------
     log_densities : np.ndarray, shape (n_models, n_points)
     """
+    n_models = group.counts.size
     if points.shape[0] == 0:
-        return np.full((len(samples), 0), LOG_EPS)
+        return np.full((n_models, 0), LOG_EPS)
     host_points = np.asarray(points)
-    n_models = len(samples)
-    host_tiles = _sample_tiles(samples, weights)
-    widest = int(np.bincount(host_tiles[2]).max())
+    host_tiles = group.host
+    widest = group.widest
     n_tiles = padded_tile_count(host_tiles[2].size)
     rows, batch_size, n_pass_tiles = _tiled_kde_rows(
         block_size, points, n_tiles, std, *host_tiles[:2], widest
     )
-    tiles = _bucketed_tiles(*host_tiles, n_pass_tiles)
+    tiles = group.on_device(n_pass_tiles)
     bracketing_keys = None
-    if points.shape[1] == 1:
-        left, right = _bracketing_keys(host_points[:, 0], samples, weights)
+    if group.keys is not None:
+        left, right = _bracketing_keys(host_points[:, 0], group.keys)
         bracketing_keys = (jnp.asarray(left), jnp.asarray(right))
     values, needs_log_space = _tiled_scaled_kde_log_densities(
         points,
         *tiles,
-        jnp.asarray([np.shape(s)[0] for s in samples]),
+        jnp.asarray(group.counts),
         std,
         bracketing_keys,
         None

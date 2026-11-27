@@ -629,6 +629,7 @@ def predict_sorted_spikes_kde_log_likelihood(
                 marginal_models,
                 pad(points[block]),
                 log_floor=(unit_log_floor, row_log_floor),
+                spike_time_order=rows.spike_time_order,
             )
             log_likelihood = _local_kde_log_likelihood(
                 log_marginals,

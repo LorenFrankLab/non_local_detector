@@ -286,3 +286,31 @@ def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims, x64
             assert footprint(scaled, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
         for args, kwargs in distinct("_local_kde_log_likelihood"):
             assert footprint(local, args, kwargs) <= 5 * unit_bytes
+
+
+def test_bracketing_keys_match_a_search_for_each_point():
+    """Both searches (per key for models with fewer keys than points, per
+    point otherwise) find the keys a direct search of each point finds,
+    with ties, repeated points, infinite keys and NaN or infinite points."""
+    rng = np.random.default_rng(3)
+    points = np.round(rng.uniform(-5, 5, 200), 1).astype(np.float32)
+    points[[3, 50]] = np.nan
+    points[7], points[8] = np.inf, -np.inf
+    samples = [
+        np.round(rng.uniform(-6, 6, (n, 1)), 1).astype(np.float32)
+        for n in (0, 1, 30, 199, 200, 1_000)
+    ]
+    weights = [np.where(rng.uniform(size=len(s)) < 0.1, 0.0, 1.0) for s in samples]
+    keys = kernel_density._sorted_model_keys(samples, weights)
+    left, right = kernel_density._bracketing_keys(points, keys)
+    for model, model_keys in enumerate(keys):
+        if model_keys.size == 0:
+            assert np.isinf(left[model]).all()
+            assert np.isinf(right[model]).all()
+            continue
+        index = np.searchsorted(model_keys, points)
+        last = model_keys.size - 1
+        np.testing.assert_array_equal(
+            left[model], model_keys[np.clip(index - 1, 0, last)]
+        )
+        np.testing.assert_array_equal(right[model], model_keys[np.clip(index, 0, last)])
