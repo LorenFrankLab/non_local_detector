@@ -405,6 +405,156 @@ def test_reml_robust_to_ill_conditioned_hessian():
     assert 0.0 < penalty < np.inf
 
 
+@pytest.mark.unit
+def test_fit_reaches_the_mle_beside_a_bin_at_the_rate_clip():
+    """A bin whose fitted rate reaches the clip must not stop the other bins short.
+
+    Bin 0 has 100 spikes in 1e-12 s, so its log-rate is held at the clip (30).
+    The objective used to score the unclipped predictor there, so it kept
+    falling linearly while the rate stayed fixed: its size (~1e13) swamped the
+    relative-decrease test, which stopped after two iterations with bin 1 (one
+    spike in 1 s, maximum-likelihood log-rate 0) at 2.65 -- a rate 14x too high.
+    """
+    _, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        np.array([[100.0], [1.0]]),
+        np.array([1e-12, 1.0]),
+        np.eye(2),
+        np.array([0.0, 1.0]),
+        penalty=1e-4,
+    )
+    assert diagnostics["converged"]
+    assert eta[0, 0] == pytest.approx(30.0)
+    # The 1e-4 penalty moves the optimum off 0 by ~1e-4.
+    assert eta[1, 0] == pytest.approx(0.0, abs=1e-2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("penalty_weights", [[0.0, 1.0], [1.0, 1.0]])
+def test_fit_returns_from_past_the_clip_to_an_mle_inside_it(penalty_weights):
+    """A bin whose maximum-likelihood log-rate is just inside the clip ends there.
+
+    One spike in 2.5e-13 s gives the MLE log(4e12) = 29.02, below the clip
+    (30). A Newton step from such a tiny-occupancy bin overshoots the clip;
+    with the term flat past it and the bin's gradient masked, the bin stayed
+    at 30 (rate 2.7x too high), reported converged when unpenalized and not
+    converged after 100 iterations when penalized.
+    """
+    _, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        np.array([[1.0], [1.0]]),
+        np.array([2.5e-13, 1.0]),
+        np.eye(2),
+        np.array(penalty_weights),
+        penalty=1e-4,
+    )
+    assert diagnostics["converged"]
+    # The 1e-4 penalty moves the optimum by ~3e-3 when bin 0 is penalized.
+    assert eta[0, 0] == pytest.approx(np.log(4e12), abs=5e-3)
+    assert eta[1, 0] == pytest.approx(0.0, abs=1e-2)
+
+
+@pytest.mark.unit
+def test_nearly_unpenalized_fit_matches_per_bin_mle_with_tiny_occupancy_bins():
+    """A full-rank, nearly unpenalized fit gives each bin with spikes its own
+    maximum-likelihood log-rate ``log(counts / occupancy)``, including bins of
+    tiny occupancy whose rate is huge but inside the clip.
+
+    A Newton step out of a tiny-occupancy bin (curvature ~1e-13) overshoots the
+    clip; scoring the unclipped predictor rewarded staying there, so those
+    bins ended at the clip (36.2) instead of their MLE (31.0), and the
+    objective's growth stopped the other bins early.
+    """
+    n_bins = 40
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(n_bins)), rank=None
+    )
+    rng = np.random.default_rng(0)
+    occupancy = rng.uniform(0.5, 2.0, n_bins)
+    occupancy[[7, 23]] = 1e-13
+    counts = rng.poisson(2.0, (n_bins, 3)).astype(float)
+    counts[[7, 23], :] = 3.0
+
+    _, eta, _, _ = mrf_penalized_poisson_fit(
+        counts, occupancy, basis, penalty_weights, penalty=1e-6, rate_scale=500.0
+    )
+
+    has_spikes = counts > 0
+    mle = np.log(
+        counts[has_spikes]
+        / np.broadcast_to(occupancy[:, None], counts.shape)[has_spikes]
+    )
+    np.testing.assert_allclose(eta[has_spikes], mle, atol=1e-3)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("counts", "occupancy", "penalty_weights", "rate_scale"),
+    [
+        # One bin with MLE log-rate log(100 / 1e-11) = 29.93, just under the clip (30).
+        ([[100.0], [1.0]], [1e-11, 1.0], [0.0, 1.0], 1.0),
+        # Clip at 30 + log(500) = 36.21; MLE log(50 / 1e-14) = 36.15.
+        ([[50.0], [1.0]], [1e-14, 1.0], [0.0, 1.0], 500.0),
+    ],
+)
+def test_fit_converges_when_a_bin_mle_is_just_inside_the_clip(
+    counts, occupancy, penalty_weights, rate_scale
+):
+    """A bin whose MLE log-rate sits just under the clip converges to it quickly.
+
+    From the warm start that bin's curvature is ~1e-11, so the full Newton step
+    overshoots the clip by hundreds. A linear (tangent) continuation past the
+    clip made that overshoot cheap, the halving test accepted it, and each later
+    iteration brought the bin back by only ``1 - counts / mu_clip`` (0.06 here),
+    so the fit stopped at ``max_iter`` still ~300 past the clip.
+    """
+    counts = np.array(counts)
+    occupancy = np.array(occupancy)
+    _, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        counts,
+        occupancy,
+        np.eye(2),
+        np.array(penalty_weights),
+        penalty=1e-4,
+        rate_scale=rate_scale,
+    )
+    assert diagnostics["converged"]
+    assert diagnostics["n_iter"] < 30
+    assert eta[0, 0] == pytest.approx(np.log(counts[0, 0] / occupancy[0]), abs=1e-3)
+    # The 1e-4 penalty on bin 1 moves its optimum off log(1 / 1) = 0 by ~1e-4.
+    assert eta[1, 0] == pytest.approx(0.0, abs=1e-2)
+
+
+@pytest.mark.unit
+def test_fit_keeps_coefficients_of_a_neuron_whose_step_is_not_finite():
+    """A neuron whose Newton step is NaN keeps its coefficients, not NaN ones.
+
+    A rank-deficient, unpenalized basis gives a float32-singular Hessian, so the
+    solve returns a non-finite step that fails every halving. Zeroing that step
+    by multiplying it by 0 gave NaN coefficients; the neuron must keep its
+    (finite) warm start and the fit must report not converged.
+    """
+    basis = np.ones((3, 2))
+    counts = np.array([[1.0, 0.0], [2.0, 5.0], [3.0, 1.0]])
+    occupancy = np.ones(3)
+    hessian = sorted_spikes_mrf._penalized_hessian(
+        jnp.asarray(basis, jnp.float32),
+        jnp.ones((3, 2), jnp.float32),
+        jnp.zeros(2, jnp.float32),
+    )
+    step = jnp.linalg.solve(hessian, jnp.ones((2, 2, 1), jnp.float32))
+    assert not np.all(np.isfinite(step)), "precondition: the solve must fail"
+
+    coeffs, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        counts, occupancy, basis, np.zeros(2), penalty=0.0
+    )
+
+    assert not diagnostics["converged"]
+    assert np.all(np.isfinite(coeffs))
+    # The warm start: a constant log-rate log(total counts / total occupancy).
+    np.testing.assert_allclose(
+        eta, np.broadcast_to(np.log(counts.sum(0) / 3.0), eta.shape), rtol=1e-6
+    )
+
+
 def test_occupancy_offset_gives_finite_rate_at_zero_occupancy():
     """Occupancy enters as an exposure offset, so zero-occupancy bins yield finite
     (unconstrained, smoothly-interpolated) rates — no division blow-up."""
