@@ -1,9 +1,9 @@
 """Bounded long-encoding comparison against independent float64 linear KDEs.
 
-The tiled log-space paths (row-blocked KDE log densities, the local log
-ratio, and the streamed encoding x position tiled joint mark intensity) are
-compared with float64 oracles and with the untiled log-space evaluation, in
-float32 and float64.
+The tiled log-space paths (row-blocked KDE log densities, the Local pass's
+spike terms, and the streamed encoding x position tiled joint mark
+intensity) are compared with float64 oracles and with the untiled log-space
+evaluation, in float32 and float64.
 """
 
 import argparse
@@ -20,6 +20,10 @@ from scipy.stats import norm
 
 import non_local_detector
 from non_local_detector.likelihoods.clusterless_kde import (
+    _add_local_terms,
+    _encoding_tiles,
+    _local_sizes,
+    _spike_blocks,
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
     log_kde_distance,
@@ -27,9 +31,8 @@ from non_local_detector.likelihoods.clusterless_kde import (
 from non_local_detector.likelihoods.common import (
     LOG_EPS,
     KDEModel,
+    SpikeTimeOrder,
     kde_log_density,
-    local_kde_log_ratio,
-    log_density_intensity,
     log_kde,
 )
 from non_local_detector.likelihoods.mark_reference import (
@@ -131,6 +134,58 @@ def untiled_log_density(points, samples, std, weights):
         jnp.asarray(samples),
         jnp.asarray(std),
         jnp.asarray(weights),
+    )
+
+
+def local_log_intensity(
+    positions,
+    marks,
+    encoding_positions,
+    encoding_marks,
+    position_std,
+    waveform_std,
+    log_occupancy,
+    weights,
+    scale,
+    log_background,
+):
+    """Each spike's Local term ``logaddexp(log intensity, log background)``.
+
+    One electrode through the Local pass, each spike in a row of its own and
+    in blocks of at most ``DENSITY_ROWS`` spikes.
+    """
+    tiles, electrodes, n_tiles = _encoding_tiles(
+        SpikeTimeOrder(),
+        [encoding_marks],
+        [encoding_positions],
+        [weights],
+        waveform_std,
+    )
+    n_spikes = marks.shape[0]
+    block_rows, group_blocks, group_tiles = _local_sizes(
+        [n_spikes], [int(n_tiles[0])], DENSITY_ROWS, int(n_tiles[0]), []
+    )
+    blocks, (block_positions, block_log_occupancy) = _spike_blocks(
+        [(0, marks, np.asarray(log_background), np.arange(n_spikes))],
+        n_spikes,
+        [marks.shape[1]],
+        block_rows,
+        pad_with_last=False,
+        per_spike=([positions], [np.asarray(log_occupancy)]),
+    )
+    return _add_local_terms(
+        jnp.zeros(n_spikes, jnp.result_type(float)),
+        blocks._replace(
+            positions=jnp.asarray(block_positions),
+            log_occupancy=jnp.asarray(block_log_occupancy),
+        ),
+        tiles,
+        electrodes,
+        jnp.asarray([scale]),
+        jnp.asarray(position_std),
+        group_blocks=group_blocks,
+        group_tiles=group_tiles,
+        indices_are_sorted=True,
     )
 
 
@@ -288,19 +343,16 @@ def main():
                 - oracle_log_density(*density_args["local_occupancy"]),
                 log_background64,
             )
-            local_ratio = jax.jit(local_kde_log_ratio, static_argnums=8)(
-                jnp.asarray(values["local_position"]),
-                jnp.asarray(values["decoded_marks"]),
-                jnp.asarray(values["encoding_position"]),
-                jnp.asarray(values["encoding_marks"]),
-                jnp.asarray(values["position_std"]),
-                jnp.asarray(values["waveform_std"]),
+            local_log = local_log_intensity(
+                values["local_position"],
+                values["decoded_marks"],
+                values["encoding_position"],
+                values["encoding_marks"],
+                values["position_std"],
+                values["waveform_std"],
                 tiled_log_density(*density_args["local_occupancy"]),
-                jnp.asarray(values["encoding_weights"]),
-                DENSITY_ROWS,
-            )
-            local_log = jnp.logaddexp(
-                log_density_intensity(scale, local_ratio, jnp.zeros_like(local_ratio)),
+                values["encoding_weights"],
+                scale,
                 log_background,
             )
             local_log_baseline = jnp.logaddexp(

@@ -207,7 +207,7 @@ def _log_marginal_floor(
 
     Parameters
     ----------
-    mean_rate : float
+    mean_rate : float or jax.Array, scalar
         Electrode's mean rate.
     occupancy : jax.Array, shape (n_position_bins,)
         Occupancy density at each position bin.
@@ -272,7 +272,7 @@ def _log_joint_from_log_marginal(
         spikes for the non-local paths, or ``1`` for the per-spike local path (which
         passes its ``(n_spikes,)`` marginal as a single row so the per-bin broadcast
         below becomes a per-spike elementwise combine).
-    mean_rate : float
+    mean_rate : float or jax.Array, scalar
         Mean firing rate for this electrode.
     occupancy : jax.Array, shape (n_position_bins,)
         Occupancy density at the position bins (per decoding spike for the local
@@ -2127,31 +2127,6 @@ def _add_log_mark_intensities(
     return total
 
 
-def _masked_log_mark_kernel(
-    marks: jax.Array, samples: jax.Array, stds: jax.Array, mask: jax.Array
-) -> jax.Array:
-    """Log Gaussian mark kernel over the features in ``mask``, as ``_log_kernel_matrix``.
-
-    Returns
-    -------
-    log_kernel : jax.Array, shape (n_samples, n_marks)
-    """
-    log_kernel = jnp.zeros((samples.shape[0], marks.shape[0]))
-    for dim_mark, dim_sample, dim_std, keep in zip(
-        marks.T, samples.T, stds, mask, strict=True
-    ):
-        log_kernel += jnp.where(
-            keep,
-            log_gaussian_pdf(
-                jnp.expand_dims(dim_mark, axis=0),
-                jnp.expand_dims(dim_sample, axis=1),
-                dim_std,
-            ),
-            0.0,
-        )
-    return log_kernel
-
-
 @partial(
     jax.jit,
     static_argnames=("group_blocks", "group_tiles", "indices_are_sorted"),
@@ -2174,8 +2149,9 @@ def _add_local_terms(
     Electrode by electrode, its blocks of spikes are reduced over its tiles
     only. The joint KDE over occupancy at each spike's position and mark is
     a logsumexp over the electrode's samples, carried tile by tile with a
-    running maximum (see ``local_kde_log_ratio``, whose division of the
-    position kernels before the marks are added it keeps).
+    running maximum. The position kernels are divided by the occupancy
+    before the mark kernels are added, which keeps the mark normalizer when
+    position log densities are large enough to round it away in float32.
 
     Parameters
     ----------
@@ -2210,8 +2186,9 @@ def _add_local_terms(
     n_features = blocks.marks.shape[2]
     n_position_dims = positions.shape[2]
     weight_total = _electrode_weight_totals(tiles, n_electrodes)
-    # As local_kde_log_ratio, whose points and samples are concatenated into
-    # one float array each and whose kernels accumulate in the default float.
+    # Spike positions, marks and occupancy share one float type, as do the
+    # samples' positions and marks; the kernels accumulate in the default
+    # float.
     dtype = jnp.result_type(
         jax.dtypes.canonicalize_dtype(jnp.float64),
         positions,
@@ -2275,7 +2252,7 @@ def _add_local_terms(
                             )
                             - safe_occ[None, :]
                         )
-                        + _masked_log_mark_kernel(
+                        + _log_kernel_matrix(
                             spike_marks,
                             samples(tiles.marks, n_features).astype(dtype),
                             stds,
