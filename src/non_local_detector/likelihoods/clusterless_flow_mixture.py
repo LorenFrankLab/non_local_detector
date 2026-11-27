@@ -3867,7 +3867,7 @@ def predict_clusterless_flow_mixture_log_likelihood(
     row_slice: slice | None = None,
     algorithm: str | None = None,
     environment_grid: dict[str, Any] | None = None,
-    rate_units: str | None = None,
+    rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     em_diagnostics: dict[str, Any] | None = None,
     _spike_time_order: SpikeTimeOrder | None = None,
@@ -3918,7 +3918,7 @@ def predict_clusterless_flow_mixture_log_likelihood(
         Recorded algorithm name (validated against ``"clusterless_flow_mixture"``).
     environment_grid : dict, optional
         Recorded environment grid fingerprint for contract checking.
-    rate_units : str, optional
+    rate_units : str, default="Hz", keyword-only
         Recorded rate units (validated to be ``"Hz"``).
     encoding_exposure_seconds : float, optional
         Recorded weighted encoding exposure (ignored at predict).
