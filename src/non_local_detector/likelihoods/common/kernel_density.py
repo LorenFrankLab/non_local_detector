@@ -1182,6 +1182,10 @@ def _bracketing_keys(
     key_dtype = np.result_type(*(np.asarray(s).dtype for s in samples), np.float16)
     left = np.full((len(samples), points.size), np.inf, key_dtype)
     right = left.copy()
+    # Searching the points in sorted order reads each model's keys in order,
+    # several times faster than searching them as they come.
+    order = np.argsort(points, kind="stable")
+    sorted_points = points[order]
     for model, (model_samples, model_weights) in enumerate(
         zip(samples, weights, strict=True)
     ):
@@ -1192,10 +1196,10 @@ def _bracketing_keys(
                 key_dtype, copy=False
             )
         )
-        index = np.searchsorted(keys, points)
+        index = np.searchsorted(keys, sorted_points)
         last = keys.size - 1
-        left[model] = keys[np.clip(index - 1, 0, last)]
-        right[model] = keys[np.clip(index, 0, last)]
+        left[model, order] = keys[np.clip(index - 1, 0, last)]
+        right[model, order] = keys[np.clip(index, 0, last)]
     return left, right
 
 
