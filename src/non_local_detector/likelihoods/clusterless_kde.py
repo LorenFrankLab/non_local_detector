@@ -11,7 +11,7 @@ are recomputed with an exact logsumexp.
 
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -34,6 +34,8 @@ from non_local_detector.likelihoods.clusterless_spikes import (
     add_electrode_spike_terms,
 )
 from non_local_detector.likelihoods.common import (
+    _KDE_BLOCK_KERNEL_BYTES,
+    _KDE_SAMPLE_TILE,
     DEFAULT_WAVEFORM_STD,
     EPS,
     EXACT_REPAIR_SLOTS,
@@ -41,18 +43,18 @@ from non_local_detector.likelihoods.common import (
     RATE_REFERENCE_SECONDS,
     KDEModel,
     SpikeTimeOrder,
+    _log_kernel_matrix,
     as_array,
     as_arrays,
     as_std_array,
     compute_log_mark_kernel_gemm,
-    deterministic_row_sum,
+    deterministic_row_accumulate,
     drop_zero_weight_samples,
     environment_grid_fingerprint,
     get_position_at_time,
     kde_log_densities,
     kde_log_density,
     kde_model_with_block_size,
-    local_kde_log_ratio,
     log_bin_duration_evidence,
     log_density_intensity,
     log_gaussian_pdf,
@@ -60,9 +62,11 @@ from non_local_detector.likelihoods.common import (
     masked_logaddexp,
     masked_logsumexp,
     pad_rows,
+    padded_block_count,
     padded_occupancy_count,
     padded_samples,
     padded_spike_count,
+    padded_tile_count,
     place_encoding_spikes,
     prepare_decode_rows,
     prepare_kde_local_inputs,
@@ -82,6 +86,11 @@ from non_local_detector.likelihoods.common import (
     validate_positive_int,
     weighted_mean_rate,
     zero_if_neginf,
+)
+from non_local_detector.likelihoods.common.kernel_density import (
+    _bucketed_tiles,
+    _sample_tiles,
+    _sum_over_tiles,
 )
 from non_local_detector.likelihoods.encoding_model import ClusterlessEncodingModel
 from non_local_detector.likelihoods.mark_reference import (
@@ -183,7 +192,9 @@ def _repair_flagged_in_groups(
     )
 
 
-def _log_marginal_floor(mean_rate: float, occupancy: jax.Array) -> jax.Array:
+def _log_marginal_floor(
+    mean_rate: float | jax.Array, occupancy: jax.Array
+) -> jax.Array:
     """Per-bin part of the smallest log marginal that can change a spike's term.
 
     Each spike's term is ``logaddexp(log_joint, log_background)``. A joint below
@@ -240,7 +251,7 @@ def _scaled_gemm_window(n_rows: int, dtype: DTypeLike) -> float:
 
 
 def _log_joint_from_log_marginal(
-    log_marginal: jax.Array, mean_rate: float, occupancy: jax.Array
+    log_marginal: jax.Array, mean_rate: float | jax.Array, occupancy: jax.Array
 ) -> jax.Array:
     """Combine a log marginal density with mean rate and occupancy.
 
@@ -447,7 +458,26 @@ def _encoding_log_weights(
         # Use max(n, 1) to avoid log(0); when n=0 the result is unused.
         safe_n = jnp.where(n_encoding_spikes > 0, float(n_encoding_spikes), 1.0)
         return jnp.full((n_encoding_spikes,), -jnp.log(safe_n))
-    weight_total = jnp.sum(encoding_weights)
+    return _log_weights_given_total(encoding_weights, jnp.sum(encoding_weights))
+
+
+def _log_weights_given_total(
+    encoding_weights: jax.Array, weight_total: jax.Array
+) -> jax.Array:
+    """``log(w_e / weight_total)`` with the semantics of ``_encoding_log_weights``.
+
+    Parameters
+    ----------
+    encoding_weights : jax.Array, shape (n_encoding_spikes,)
+        Encoding spike weights.
+    weight_total : jax.Array, scalar
+        The sum of every weight of the encoding model, which may hold more
+        samples than ``encoding_weights``.
+
+    Returns
+    -------
+    log_w : jax.Array, shape (n_encoding_spikes,)
+    """
     safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
     safe_weights = jnp.where(encoding_weights > 0, encoding_weights, 1.0)
     log_w = jnp.where(
@@ -1151,216 +1181,1141 @@ def _pad_with_last_row(array: ArrayLike, n_rows: int) -> np.ndarray:
     return np.concatenate([array, np.repeat(array[-1:], n_rows - len(array), axis=0)])
 
 
+# Float buffers per spike that one GEMM of the batched non-local pass is
+# counted as holding against _KDE_BLOCK_KERNEL_BYTES: this many per place bin
+# (numerator, marginal, joint, terms) and per encoding sample of the GEMM
+# (log mark kernel, mark factor). XLA:CPU holds about three per bin, or six
+# when the mark factor dominates, and one per sample.
+_NONLOCAL_BIN_BUFFERS = 4
+_NONLOCAL_SAMPLE_BUFFERS = 2
+# Float buffers per (spike, encoding sample) that a group of blocks of the
+# Local pass is counted as holding: XLA:CPU holds about seven.
+_LOCAL_TILE_BUFFERS = 8
+# The most blocks of one electrode that the batched passes reduce together.
+# Groups of 8, 4, 2 and 1 blocks give an electrode's spikes operations of at
+# least half their rows, up to 8 blocks, for four traced copies of the
+# reduction; few rows per operation are slow on CPU.
+_GROUP_BLOCKS = 8
+
+
+class _EncodingTiles(NamedTuple):
+    """Every electrode's encoding samples, cut into tiles of ``_KDE_SAMPLE_TILE``.
+
+    Attributes
+    ----------
+    positions : jax.Array, shape (n_tiles, _KDE_SAMPLE_TILE, n_position_dims)
+    marks : jax.Array, shape (n_tiles, _KDE_SAMPLE_TILE, n_features)
+        Zero on padded features, which electrodes with fewer features have.
+    weights : jax.Array, shape (n_tiles, _KDE_SAMPLE_TILE)
+        Zero on padding rows.
+    electrode : jax.Array of int32, shape (n_tiles,)
+        Each tile's electrode, nondecreasing; ``n_electrodes`` on padding
+        tiles.
+    first_tile : jax.Array of int32, shape (n_electrodes + 1,)
+        Electrode ``e``'s tiles are ``first_tile[e]`` to ``first_tile[e + 1]``.
+    """
+
+    positions: jax.Array
+    marks: jax.Array
+    weights: jax.Array
+    electrode: jax.Array
+    first_tile: jax.Array
+
+
+class _ElectrodeTerms(NamedTuple):
+    """Per-electrode kernel settings of the batched passes.
+
+    Attributes
+    ----------
+    waveform_stds : jax.Array, shape (n_electrodes, n_features)
+        Mark bandwidths; 1 on padded features.
+    feature_mask : jax.Array of bool, shape (n_electrodes, n_features)
+        The electrode's own features.
+    gemm_shift, gemm_window : jax.Array, shape (n_electrodes,)
+        ``_scaled_gemm_shift`` and ``_scaled_gemm_window`` of the electrode's
+        sample count for a float32 GEMM.
+    """
+
+    waveform_stds: jax.Array
+    feature_mask: jax.Array
+    gemm_shift: jax.Array
+    gemm_window: jax.Array
+
+
+class _SpikeBlocks(NamedTuple):
+    """Every electrode's decoding spikes, cut into blocks of one electrode each.
+
+    Attributes
+    ----------
+    marks : jax.Array, shape (n_blocks, block_rows, n_features)
+        Zero on padded features.
+    log_background : jax.Array, shape (n_blocks, block_rows)
+    rows : jax.Array, shape (n_blocks, block_rows)
+        Local row of each spike; ``n_rows`` on padding rows, which the row
+        sums drop.
+    first_block : jax.Array of int32, shape (n_electrodes + 1,)
+        Electrode ``e``'s blocks are ``first_block[e]`` to
+        ``first_block[e + 1]``; the padding blocks after the last are never
+        reduced.
+    positions : jax.Array, shape (n_blocks, block_rows, n_position_dims), or None
+        Position at each spike (the Local pass only).
+    log_occupancy : jax.Array, shape (n_blocks, block_rows), or None
+        Log occupancy density at each spike's position (the Local pass only).
+    """
+
+    marks: jax.Array
+    log_background: jax.Array
+    rows: jax.Array
+    first_block: jax.Array
+    positions: jax.Array | None = None
+    log_occupancy: jax.Array | None = None
+
+
+def _encoding_tiles(
+    spike_time_order: SpikeTimeOrder,
+    encoding_features: Sequence[ArrayLike],
+    encoding_positions: Sequence[ArrayLike],
+    encoding_weights: Sequence[ArrayLike | None],
+    waveform_std: jax.Array | np.ndarray | float,
+) -> tuple[_EncodingTiles, _ElectrodeTerms, int]:
+    """Tile every electrode's encoding samples once per prediction.
+
+    Each electrode's samples are cut into tiles of ``_KDE_SAMPLE_TILE`` rows,
+    the last padded with zero-weight rows (an electrode without samples has
+    one), and its marks are padded with zero features to the most any
+    electrode has. The tile count is padded to four sizes per octave with
+    zero-weight tiles of electrode ``n_electrodes``. One compiled pass then
+    covers electrodes of any sample and feature counts.
+
+    Parameters
+    ----------
+    spike_time_order : SpikeTimeOrder
+        The prediction's preparation cache; the tiles are reused across its
+        chunks.
+    encoding_features : sequence of array, each shape (n_samples, n_features)
+        Each electrode's encoding waveform features.
+    encoding_positions : sequence of array, each shape (n_samples, n_position_dims)
+        Each electrode's encoding positions.
+    encoding_weights : sequence of array or None, each shape (n_samples,)
+        None weights an electrode's samples uniformly.
+    waveform_std : float or array, shape (n_features,)
+        Mark bandwidth, shared by every electrode.
+
+    Returns
+    -------
+    tiles : _EncodingTiles
+    electrodes : _ElectrodeTerms
+    widest_tiles : int
+        The most tiles any electrode has.
+    """
+
+    def build() -> tuple[_EncodingTiles, _ElectrodeTerms, int]:
+        n_features = [int(np.shape(f)[1]) for f in encoding_features]
+        width = max(n_features)
+        marks = [
+            np.pad(np.asarray(f), ((0, 0), (0, width - n)))
+            for f, n in zip(encoding_features, n_features, strict=True)
+        ]
+        weights = [
+            np.ones(np.shape(f)[0]) if w is None else np.asarray(w)
+            for f, w in zip(encoding_features, encoding_weights, strict=True)
+        ]
+        tile_positions, tile_weights, tile_electrode = _sample_tiles(
+            [np.asarray(p) for p in encoding_positions], weights
+        )
+        tile_marks, _, _ = _sample_tiles(marks, weights)
+        n_electrodes = len(n_features)
+        first_tile = np.searchsorted(tile_electrode, np.arange(n_electrodes + 1))
+        positions, device_weights, device_electrode = _bucketed_tiles(
+            tile_positions,
+            tile_weights,
+            tile_electrode,
+            padded_tile_count(tile_electrode.size),
+        )
+        electrode_stds = [np.asarray(as_std_array(waveform_std, n)) for n in n_features]
+        stds = np.ones(
+            (n_electrodes, width), np.result_type(*electrode_stds, np.float32)
+        )
+        for electrode, (n, std) in enumerate(
+            zip(n_features, electrode_stds, strict=True)
+        ):
+            stds[electrode, :n] = std
+        # The bound of each electrode's scaled sum counts its own samples:
+        # padding rows have zero weight and add nothing.
+        n_samples = [max(np.shape(f)[0], 1) for f in encoding_features]
+        return (
+            _EncodingTiles(
+                positions,
+                jnp.asarray(pad_rows(tile_marks, device_electrode.shape[0])),
+                device_weights,
+                device_electrode,
+                jnp.asarray(first_tile.astype(np.int32)),
+            ),
+            _ElectrodeTerms(
+                jnp.asarray(stds),
+                jnp.asarray(np.arange(width) < np.asarray(n_features)[:, None]),
+                jnp.asarray(
+                    np.array([_scaled_gemm_shift(n, jnp.float32) for n in n_samples])
+                ),
+                jnp.asarray(
+                    np.array([_scaled_gemm_window(n, jnp.float32) for n in n_samples])
+                ),
+            ),
+            int(np.diff(first_tile).max()),
+        )
+
+    return spike_time_order.memo(
+        "clusterless_kde_encoding_tiles",
+        (
+            *encoding_features,
+            *encoding_positions,
+            *encoding_weights,
+            waveform_std,
+        ),
+        build,
+    )
+
+
+def _power_of_two_below(n: int) -> int:
+    """Return the largest power of two at most ``max(n, 1)``."""
+    return 1 << (max(n, 1).bit_length() - 1)
+
+
+def _nonlocal_sizes(
+    n_spikes: Sequence[int],
+    block_size: int,
+    n_bins: int,
+    itemsize: int,
+    widest_tiles: int,
+) -> tuple[int, int, int]:
+    """Sizes of the batched non-local pass.
+
+    One GEMM reduces at most ``group_blocks`` blocks of one electrode
+    against at most ``group_tiles`` of its tiles. Its rows, at most
+    ``block_size``, hold buffers counted as ``_NONLOCAL_BIN_BUFFERS`` floats
+    per place bin and ``_NONLOCAL_SAMPLE_BUFFERS`` per encoding sample of a
+    GEMM, within ``_KDE_BLOCK_KERNEL_BYTES``.
+
+    Parameters
+    ----------
+    n_spikes : sequence of int
+        Spike count of each electrode with spikes in the rows.
+    block_size : int
+        The requested spikes per block.
+    n_bins : int
+        Place bins.
+    itemsize : int
+        Bytes per float of the pass.
+    widest_tiles : int
+        Tiles of the electrode with the most.
+
+    Returns
+    -------
+    block_rows, group_blocks, group_tiles : int
+    """
+    row_limit = max(
+        1,
+        _KDE_BLOCK_KERNEL_BYTES
+        // (
+            itemsize
+            * (
+                _NONLOCAL_BIN_BUFFERS * n_bins
+                + _NONLOCAL_SAMPLE_BUFFERS * _LOG_REDUCTION_ENCODING_ROWS
+            )
+        ),
+    )
+    return _group_sizes(n_spikes, block_size, row_limit, widest_tiles)
+
+
+def _group_sizes(
+    n_spikes: Sequence[int], block_size: int, row_limit: int, widest_tiles: int
+) -> tuple[int, int, int]:
+    """Block rows and the largest groups of blocks and tiles of a batched pass.
+
+    A group of blocks holds at most ``min(block_size, row_limit)`` spikes
+    and ``_GROUP_BLOCKS`` blocks, at most the padded block count; a group of
+    tiles at most ``_LOG_REDUCTION_ENCODING_ROWS`` samples, at most the
+    widest electrode's tiles. Both are powers of two.
+    """
+    block_rows = _block_rows(n_spikes, block_size, row_limit)
+    n_blocks = padded_block_count(sum(-(-n // block_rows) for n in n_spikes))
+    group_blocks = _power_of_two_below(
+        min(_GROUP_BLOCKS, min(block_size, row_limit) // block_rows, n_blocks)
+    )
+    group_tiles = _power_of_two_below(
+        min(_LOG_REDUCTION_ENCODING_ROWS // _KDE_SAMPLE_TILE, widest_tiles)
+    )
+    return block_rows, group_blocks, group_tiles
+
+
+def _local_sizes(
+    n_spikes: Sequence[int], block_size: int, widest_tiles: int
+) -> tuple[int, int, int]:
+    """Sizes of the Local pass.
+
+    At most ``group_blocks`` blocks of one electrode are reduced against at
+    most ``group_tiles`` of its tiles at once. Their (samples x spikes)
+    buffers, counted as ``_LOCAL_TILE_BUFFERS`` floats per entry of the
+    default float type, fit ``_KDE_BLOCK_KERNEL_BYTES``.
+
+    Parameters
+    ----------
+    n_spikes : sequence of int
+        Spike count of each electrode with spikes in the rows.
+    block_size : int
+        The requested spikes per block.
+    widest_tiles : int
+        Tiles of the electrode with the most.
+
+    Returns
+    -------
+    block_rows, group_blocks, group_tiles : int
+    """
+    itemsize = jnp.dtype(jax.dtypes.canonicalize_dtype(jnp.float64)).itemsize
+    samples = _LOG_REDUCTION_ENCODING_ROWS
+    row_limit = max(
+        1, _KDE_BLOCK_KERNEL_BYTES // (_LOCAL_TILE_BUFFERS * samples * itemsize)
+    )
+    return _group_sizes(n_spikes, block_size, row_limit, widest_tiles)
+
+
+def _block_rows(n_spikes: Sequence[int], block_size: int, row_limit: int) -> int:
+    """Spikes per block of a batched pass, shared by every electrode.
+
+    Each electrode's spikes are padded to whole blocks. The rows are the
+    largest of 16, 64, 256, ... (powers of four) below
+    ``min(block_size, row_limit)``, or that cap itself, that pads the spikes
+    by at most a quarter of their total; the smallest of them when none
+    does. Few sizes let row chunks with different spike counts share a
+    compiled pass.
+
+    Parameters
+    ----------
+    n_spikes : sequence of int
+        Each electrode's spike count, at least one each.
+    block_size : int
+        The requested spikes per block.
+    row_limit : int
+        The most rows whose buffers fit the pass's budget.
+
+    Returns
+    -------
+    rows : int
+    """
+    cap = max(1, min(block_size, row_limit))
+    sizes = [
+        size for size in (16 << 2 * k for k in range(cap.bit_length())) if size < cap
+    ]
+    total = sum(n_spikes)
+    rows = (sizes or [cap])[0]
+    for size in (*sizes, cap):
+        if 4 * sum(-(-n // size) * size for n in n_spikes) <= 5 * total:
+            rows = size
+    return rows
+
+
+def _spike_blocks(
+    spikes: Sequence[tuple[int, np.ndarray, np.ndarray, np.ndarray]],
+    n_rows: int,
+    n_features: Sequence[int],
+    block_rows: int,
+    *,
+    pad_with_last: bool,
+    per_spike: Sequence[Sequence[np.ndarray]] = (),
+) -> tuple[_SpikeBlocks, tuple[np.ndarray, ...]]:
+    """Cut every electrode's spikes into blocks of ``block_rows``, on the host.
+
+    Parameters
+    ----------
+    spikes : sequence of (electrode, marks, log_background, rows)
+        Each electrode's index, marks ``(n_spikes, n_features)``, log
+        background ``(n_spikes,)`` and local rows ``(n_spikes,)``.
+    n_rows : int
+        Number of output rows; the id of padding rows.
+    n_features : sequence of int
+        Each electrode's encoding feature count, which its marks must have.
+        Marks are padded with zero features to the largest.
+    block_rows : int
+        Spikes per block.
+    pad_with_last : bool
+        Pad an electrode's last block with its last spike, rather than zeros.
+    per_spike : sequence of sequences of np.ndarray
+        Further per-spike arrays, one sequence per array and one array per
+        electrode in ``spikes``, padded like the marks.
+
+    Returns
+    -------
+    blocks : _SpikeBlocks
+        The number of blocks is padded to a power of four.
+    per_spike : tuple of np.ndarray, each shape (n_blocks, block_rows, ...)
+
+    Raises
+    ------
+    ValidationError
+        If an electrode's marks have another feature count than its encoding
+        marks.
+    """
+    for electrode, marks, _, _ in spikes:
+        if marks.shape[1] != n_features[electrode]:
+            msg = (
+                f"waveform features of electrode {electrode} do not match its encoding"
+            )
+            raise ValidationError(
+                msg,
+                expected=f"{n_features[electrode]} features per spike",
+                got=f"{marks.shape[1]} features per spike",
+            )
+    n_electrodes, width = len(n_features), max(n_features)
+
+    def pad(array: np.ndarray, n: int) -> np.ndarray:
+        return _pad_with_last_row(array, n) if pad_with_last else pad_rows(array, n)
+
+    n_blocks = [-(-marks.shape[0] // block_rows) for _, marks, _, _ in spikes]
+    n_padded = padded_block_count(sum(n_blocks))
+
+    def blocked(arrays: list[np.ndarray], fill: float) -> np.ndarray:
+        padded = np.concatenate(
+            [pad(a, n * block_rows) for a, n in zip(arrays, n_blocks, strict=True)]
+        )
+        tail = np.full(
+            ((n_padded - sum(n_blocks)) * block_rows, *padded.shape[1:]),
+            fill,
+            padded.dtype,
+        )
+        return np.concatenate([padded, tail]).reshape(
+            n_padded, block_rows, *padded.shape[1:]
+        )
+
+    marks = blocked(
+        [np.pad(m, ((0, 0), (0, width - m.shape[1]))) for _, m, _, _ in spikes], 0
+    )
+    # Rows pad with the dropped id n_rows, which keeps sorted rows sorted.
+    rows = blocked(
+        [
+            np.concatenate([r, np.full(n * block_rows - r.size, n_rows, r.dtype)])
+            for (_, _, _, r), n in zip(spikes, n_blocks, strict=True)
+        ],
+        n_rows,
+    )
+    electrodes = [e for e, _, _, _ in spikes]
+    if np.any(np.diff(electrodes) <= 0):
+        msg = "electrodes must be listed once each, in increasing order"
+        raise ValueError(msg)
+    first_block = np.searchsorted(
+        np.repeat(electrodes, n_blocks), np.arange(n_electrodes + 1)
+    )
+    return (
+        _SpikeBlocks(
+            jnp.asarray(marks),
+            jnp.asarray(blocked([b for _, _, b, _ in spikes], 0)),
+            jnp.asarray(rows),
+            jnp.asarray(first_block.astype(np.int32)),
+        ),
+        tuple(blocked(list(arrays), 0) for arrays in per_spike),
+    )
+
+
+def _fold_groups(
+    add: Callable[[Any, jax.Array, int], Any],
+    largest: int,
+    begin: jax.Array,
+    end: jax.Array,
+    accumulated: Any,
+) -> Any:
+    """Fold ``add(accumulated, index, size)`` over ``begin`` to ``end`` in groups.
+
+    As many groups of ``largest`` (a power of two) as fit, then at most one
+    group each of half as many, and so on to one. Larger groups make larger
+    operations; each size is traced once.
+
+    Parameters
+    ----------
+    add : callable
+        ``add(accumulated, index, size)`` adds the group of ``size`` items
+        from ``index``.
+    largest : int
+        Items in the largest group, a power of two.
+    begin, end : jax.Array, scalar int
+        The items to fold.
+    accumulated : pytree of jax.Array
+        Initial value.
+
+    Returns
+    -------
+    accumulated : pytree of jax.Array
+    """
+    index = jnp.asarray(begin)
+    for size in (1 << k for k in reversed(range(largest.bit_length()))):
+        n_groups = (end - index) // size
+        accumulated = jax.lax.fori_loop(
+            0,
+            n_groups,
+            lambda group, accumulated, index=index, size=size: add(
+                accumulated, index + group * size, size
+            ),
+            accumulated,
+        )
+        index = index + n_groups * size
+    return accumulated
+
+
+def _electrode_weight_totals(tiles: _EncodingTiles, n_electrodes: int) -> jax.Array:
+    """Each electrode's total sample weight, summed in a fixed order."""
+    return _sum_over_tiles(
+        jnp.sum(tiles.weights, axis=1), tiles.electrode, n_electrodes + 1
+    )
+
+
 @partial(
     jax.jit,
-    static_argnames=("block_size", "pos_tile_size", "indices_are_sorted"),
+    static_argnames=(
+        "widest_tiles",
+        "group_blocks",
+        "group_tiles",
+        "pos_tile_size",
+        "indices_are_sorted",
+    ),
     donate_argnums=0,
 )
-def _add_electrode_log_mark_intensities(
+def _add_log_mark_intensities(
     total: jax.Array,
-    decoding_features: jax.Array,
-    row_ids: jax.Array,
-    encoding_features: jax.Array,
-    encoding_positions: jax.Array,
-    encoding_weights: jax.Array,
-    waveform_stds: jax.Array,
+    blocks: _SpikeBlocks,
+    tiles: _EncodingTiles,
+    electrodes: _ElectrodeTerms,
+    mean_rates: jax.Array,
     position_std: jax.Array,
     place_bin_centers: jax.Array,
-    mean_rate: float,
     log_occupancy: jax.Array,
-    log_background: jax.Array,
     *,
-    block_size: int,
+    widest_tiles: int,
+    group_blocks: int,
+    group_tiles: int,
     pos_tile_size: int | None,
     indices_are_sorted: bool,
 ) -> jax.Array:
-    """Add one electrode's non-local log marked intensities to their rows.
+    """Add every electrode's non-local log marked intensities to their rows.
+
+    Electrode by electrode, the scaled position factors of its tiles are
+    formed once, then each of its blocks of spikes is reduced over them with
+    the electrode's own weights, bandwidths, mean rate and background, as
+    ``_estimate_with_enc_chunking`` reduces one electrode: a scaled GEMM,
+    exact above each spike's floor, and a direct logsumexp over its tiles for
+    the spikes it flags. Each block's terms are then added to their rows
+    (see ``deterministic_row_accumulate``).
 
     Parameters
     ----------
     total : jax.Array, shape (n_rows, n_bins)
-        Running sum over electrodes; donated.
-    decoding_features : jax.Array, shape (n_padded_spikes, n_features)
-        A multiple of ``block_size`` rows. Padding repeats the last spike; each
-        spike is reduced independently, so padding cannot change real rows.
-    row_ids : jax.Array, shape (n_padded_spikes,)
-        Local rows; padding uses ``n_rows``, which the row sum drops.
-    encoding_features : jax.Array, shape (n_padded_samples, n_features)
-        Waveform features of the encoding samples.
-    encoding_positions : jax.Array, shape (n_padded_samples, n_position_dims)
-        Positions of the encoding samples.
-    encoding_weights : jax.Array, shape (n_padded_samples,)
-        Zero for padding samples, which then drop out of every reduction.
-    waveform_stds : jax.Array, shape (n_features,)
-        Waveform-feature kernel bandwidths.
+        Running log likelihood; donated.
+    blocks : _SpikeBlocks
+        Decoding spikes, with ``first_block``; padding repeats each
+        electrode's last spike, which is reduced like it and dropped.
+    tiles : _EncodingTiles
+        Every electrode's encoding samples.
+    electrodes : _ElectrodeTerms
+        Every electrode's mark bandwidths and scaled-sum bounds.
+    mean_rates : jax.Array, shape (n_electrodes,)
+        Mean rates times ``RATE_REFERENCE_SECONDS``.
     position_std : jax.Array, shape (n_position_dims,)
         Position kernel bandwidths.
     place_bin_centers : jax.Array, shape (n_bins, n_position_dims)
         Place bin centers.
-    mean_rate : float
-        Mean rate times ``RATE_REFERENCE_SECONDS``.
     log_occupancy : jax.Array, shape (n_bins,)
         Log occupancy density at each bin.
-    log_background : jax.Array, shape (n_padded_spikes,)
-        Log background intensity of each spike, in the units of ``mean_rate``.
-    block_size : int
-        Decoding spikes per block.
+    widest_tiles : int
+        The most tiles any electrode has, which sizes the position factors
+        of one electrode.
+    group_blocks, group_tiles : int
+        Powers of two: the most blocks and tiles of one
+        electrode reduced in one GEMM (see ``_fold_groups``). Larger GEMMs
+        are faster, and the padding stays within one block and one tile per
+        electrode.
     pos_tile_size : int or None
-        Place bins per tile of the position kernel; None for no tiling.
+        Place bins per tile of the reduction; None for no tiling.
     indices_are_sorted : bool
-        Whether ``row_ids`` are sorted in nondecreasing order.
+        Whether every block's rows are nondecreasing.
 
     Returns
     -------
     total : jax.Array, shape (n_rows, n_bins)
     """
-    log_position_distance = log_kde_distance(
-        place_bin_centers, encoding_positions, std=position_std
-    )
-    # Everything that depends on no decoding spike is prepared once for the
-    # electrode, not once per block of spikes.
+    n_electrodes = mean_rates.shape[0]
+    n_bins = place_bin_centers.shape[0]
+    block_rows = blocks.marks.shape[1]
+    tile_rows = tiles.weights.shape[1]
+    first_block = blocks.first_block
+    pos_tile_size = min(n_bins, pos_tile_size or n_bins)
+    n_pos_chunks = -(-n_bins // pos_tile_size)
     normalizer, occupancy = _occupancy_normalizer(log_occupancy)
-    log_position_distance = log_position_distance - normalizer[None, :]
-    n_encoding = encoding_features.shape[0]
-    n_bins = occupancy.shape[0]
-    log_w = _encoding_log_weights(encoding_weights, n_encoding)
     dtype = jnp.result_type(
         jnp.float32,
-        decoding_features,
-        encoding_features,
-        waveform_stds,
-        log_w,
-        log_position_distance,
+        blocks.marks,
+        tiles.marks,
+        electrodes.waveform_stds,
+        tiles.weights,
+        tiles.positions,
+        place_bin_centers,
+        position_std,
+        log_occupancy,
     )
-    position_terms = _position_scale_terms(log_position_distance, log_w, dtype)
-    supported = _encoding_supported(
-        log_w, encoding_features, waveform_stds, log_position_distance
+    weight_total = _electrode_weight_totals(tiles, n_electrodes)
+    mean_rates = jnp.asarray(mean_rates, dtype)
+    n_features = electrodes.waveform_stds.shape[1]
+    origin = jnp.zeros((1, n_features), dtype)
+    group_size = max(
+        1,
+        min(EXACT_REPAIR_SLOTS, _EXACT_REPAIR_ELEMENTS // (tile_rows * pos_tile_size)),
     )
 
-    def score_block(block: tuple[jax.Array, jax.Array]) -> jax.Array:
-        features, background = block
-        return _score_spikes(
-            supported,
-            features,
-            encoding_features,
-            waveform_stds,
-            occupancy,
-            mean_rate,
-            log_position_distance,
-            log_w,
-            max(n_encoding, 1),
-            pos_tile_size,
-            background,
-            position_terms=position_terms,
+    def log_position(tile: jax.Array, pos_start: jax.Array | int) -> jax.Array:
+        """Log position kernel of one tile at ``pos_tile_size`` bins, over occupancy."""
+        bins = jax.lax.dynamic_slice_in_dim(place_bin_centers, pos_start, pos_tile_size)
+        return cast(
+            jax.Array,
+            log_kde_distance(bins, tiles.positions[tile], std=position_std)
+            - jax.lax.dynamic_slice_in_dim(normalizer, pos_start, pos_tile_size)[
+                None, :
+            ],
         )
 
-    n_blocks = decoding_features.shape[0] // block_size
-    intensities = jax.lax.map(
-        score_block,
-        (
-            decoding_features.reshape(n_blocks, block_size, -1),
-            log_background.reshape(n_blocks, block_size),
-        ),
-    ).reshape(-1, n_bins)
-    return total + deterministic_row_sum(
-        intensities,
-        row_ids,
-        total.shape[0],
-        indices_are_sorted=indices_are_sorted,
+    def log_weights(tile: jax.Array, electrode: jax.Array) -> jax.Array:
+        return jnp.asarray(
+            _log_weights_given_total(tiles.weights[tile], weight_total[electrode]),
+            dtype,
+        )
+
+    def position_tiles(
+        update: Callable[
+            [jax.Array, jax.Array, jax.Array, jax.Array | None], jax.Array
+        ],
+        values: Callable[[jax.Array], jax.Array],
+        accumulated: jax.Array,
+    ) -> jax.Array:
+        """Fold ``update(accumulated, values(pos_start), pos_start, is_new)`` over bin tiles."""
+        if n_pos_chunks == 1:
+            return update(accumulated, values(jnp.asarray(0)), jnp.asarray(0), None)
+
+        def position_chunk(pos_idx: jax.Array, accumulated: jax.Array) -> jax.Array:
+            requested = pos_idx * pos_tile_size
+            pos_start = jnp.minimum(requested, n_bins - pos_tile_size)
+            # An overlapping final tile repeats earlier bins; only the rest
+            # are new.
+            is_new = pos_start + jnp.arange(pos_tile_size) >= requested
+            return update(accumulated, values(pos_start), pos_start, is_new)
+
+        return cast(
+            jax.Array,
+            jax.lax.fori_loop(0, n_pos_chunks, position_chunk, accumulated),
+        )
+
+    def add_tile_columns(
+        accumulated: jax.Array,
+        values: jax.Array,
+        pos_start: jax.Array,
+        is_new: jax.Array | None,
+        combine: Callable[[jax.Array, jax.Array], jax.Array],
+    ) -> jax.Array:
+        if is_new is None:
+            return combine(accumulated, values)
+        current = jax.lax.dynamic_slice_in_dim(
+            accumulated, pos_start, pos_tile_size, axis=1
+        )
+        updated = jnp.where(is_new[None, :], combine(current, values), current)
+        return jax.lax.dynamic_update_slice(
+            accumulated, updated, (jnp.zeros((), pos_start.dtype), pos_start)
+        )
+
+    gemm_shift = jnp.asarray(electrodes.gemm_shift, dtype)
+
+    def add_electrode(
+        carry: tuple[jax.Array, jax.Array], electrode: jax.Array
+    ) -> tuple[tuple[jax.Array, jax.Array], None]:
+        total, factors = carry
+        first = tiles.first_tile[electrode]
+        # An electrode without spikes in the rows needs no factors.
+        has_spikes = first_block[electrode + 1] > first_block[electrode]
+        stop = jnp.where(has_spikes, tiles.first_tile[electrode + 1], first)
+        stds = electrodes.waveform_stds[electrode]
+        mask = electrodes.feature_mask[electrode]
+        shift = gemm_shift[electrode]
+        mark_peak = compute_log_mark_kernel_gemm(origin, origin, stds, mask)[0, 0]
+        safe_mark_peak = zero_if_neginf(mark_peak)
+
+        # The electrode's weighted log position kernels, their largest value
+        # per bin and whether they can give a nonzero or NaN intensity (see
+        # _encoding_supported), then its scaled factors, indexed from its
+        # first tile.
+        def weighted_tiles(
+            carry: tuple[jax.Array, jax.Array, jax.Array],
+            tile: jax.Array,
+            n_tiles: int,
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            factors, peak, supported = carry
+            log_w = jnp.asarray(
+                _log_weights_given_total(
+                    jax.lax.dynamic_slice_in_dim(tiles.weights, tile, n_tiles),
+                    weight_total[electrode],
+                ),
+                dtype,
+            )
+            log_position_distance = (
+                jax.vmap(
+                    lambda positions: log_kde_distance(
+                        place_bin_centers, positions, std=position_std
+                    )
+                )(jax.lax.dynamic_slice_in_dim(tiles.positions, tile, n_tiles))
+                - (normalizer[None, None, :])
+            )
+            weighted = (log_position_distance + log_w[:, :, None]).astype(dtype)
+            supported |= (
+                jnp.any(jnp.isfinite(log_w))
+                | jnp.any(jnp.isnan(log_w))
+                | jnp.any(
+                    jnp.isnan(jax.lax.dynamic_slice_in_dim(tiles.marks, tile, n_tiles))
+                )
+                | jnp.any(jnp.isnan(log_position_distance))
+            )
+            return (
+                jax.lax.dynamic_update_slice_in_dim(factors, weighted, tile - first, 0),
+                jnp.maximum(peak, jnp.max(weighted, axis=(0, 1))),
+                supported,
+            )
+
+        factors, peak, supported = _fold_groups(
+            weighted_tiles,
+            group_tiles,
+            first,
+            stop,
+            (factors, jnp.full(n_bins, -jnp.inf, dtype), jnp.any(jnp.isnan(stds))),
+        )
+
+        # As _position_scale_terms: the scaled position factor of each tile.
+        def scaled_tiles(
+            factors: jax.Array, index: jax.Array, n_tiles: int
+        ) -> jax.Array:
+            weighted = jax.lax.dynamic_slice_in_dim(factors, index, n_tiles)
+            return jax.lax.dynamic_update_slice_in_dim(
+                factors,
+                jnp.exp(weighted - zero_if_neginf(peak)[None, None, :] + shift),
+                index,
+                0,
+            )
+
+        factors = _fold_groups(
+            scaled_tiles, group_tiles, jnp.zeros((), first.dtype), stop - first, factors
+        )
+        safe_peak = zero_if_neginf(peak)
+        # As _estimate_with_enc_chunking: a spike is exact on the linear path
+        # when every kernel peak lies within the scaled GEMM's window of its
+        # floor.
+        exact_threshold = jnp.max(
+            mark_peak
+            + peak
+            - jnp.asarray(electrodes.gemm_window[electrode], dtype)
+            - _log_marginal_floor(mean_rates[electrode], occupancy)
+        )
+
+        start, end = first_block[electrode], first_block[electrode + 1]
+
+        def spike_terms(marks: jax.Array, background: jax.Array) -> jax.Array:
+            """``logaddexp(log intensity, background)`` of some of its spikes."""
+            n_spikes = marks.shape[0]
+
+            def reduce_linearly() -> jax.Array:
+                def add_tile_group(
+                    numerator: jax.Array, tile: jax.Array, n_tiles: int
+                ) -> jax.Array:
+                    """Add the scaled GEMM over ``n_tiles`` tiles from ``tile``."""
+                    encoding_marks = jax.lax.dynamic_slice_in_dim(
+                        tiles.marks, tile, n_tiles
+                    ).reshape(n_tiles * tile_rows, n_features)
+                    position_factors = jax.lax.dynamic_slice_in_dim(
+                        factors, tile - first, n_tiles
+                    ).reshape(n_tiles * tile_rows, n_bins)
+                    mark_factor = jnp.exp(
+                        compute_log_mark_kernel_gemm(marks, encoding_marks, stds, mask)
+                        - safe_mark_peak
+                        + shift
+                    )
+
+                    def update(
+                        numerator: jax.Array,
+                        position_factor: jax.Array,
+                        pos_start: jax.Array,
+                        is_new: jax.Array | None,
+                    ) -> jax.Array:
+                        product = jnp.matmul(
+                            mark_factor.T,
+                            position_factor,
+                            precision=jax.lax.Precision.HIGHEST,
+                        )
+                        return add_tile_columns(
+                            numerator, product, pos_start, is_new, jnp.add
+                        )
+
+                    return position_tiles(
+                        update,
+                        lambda pos_start: jax.lax.dynamic_slice_in_dim(
+                            position_factors, pos_start, pos_tile_size, axis=1
+                        ),
+                        numerator,
+                    )
+
+                numerator = _fold_groups(
+                    add_tile_group,
+                    group_tiles,
+                    first,
+                    stop,
+                    jnp.zeros((n_spikes, n_bins), dtype),
+                )
+                return (
+                    log_nonnegative(numerator)
+                    + safe_mark_peak
+                    + safe_peak[None, :]
+                    - 2.0 * shift
+                )
+
+            def exact_rows(rows: jax.Array) -> jax.Array:
+                queries = marks[rows]
+
+                def encoding_tile(tile: jax.Array, marginal: jax.Array) -> jax.Array:
+                    log_w = log_weights(tile, electrode)
+                    log_mark = compute_log_mark_kernel_gemm(
+                        queries, tiles.marks[tile], stds, mask
+                    )
+
+                    def update(
+                        marginal: jax.Array,
+                        log_position_distance: jax.Array,
+                        pos_start: jax.Array,
+                        is_new: jax.Array | None,
+                    ) -> jax.Array:
+                        contribution = masked_logsumexp(
+                            log_mark[:, :, None]
+                            + log_position_distance[:, None, :]
+                            + log_w[:, None, None]
+                        )
+                        return add_tile_columns(
+                            marginal, contribution, pos_start, is_new, masked_logaddexp
+                        )
+
+                    return position_tiles(
+                        update,
+                        lambda pos_start: log_position(tile, pos_start),
+                        marginal,
+                    )
+
+                return cast(
+                    jax.Array,
+                    jax.lax.fori_loop(
+                        first,
+                        stop,
+                        encoding_tile,
+                        jnp.full((rows.shape[0], n_bins), -jnp.inf, dtype),
+                    ),
+                )
+
+            def estimate() -> jax.Array:
+                query_floor = jnp.asarray(background, dtype) + np.log(finfo(dtype).eps)
+                marginal = _repair_flagged_in_groups(
+                    reduce_linearly(),
+                    exact_threshold > query_floor,
+                    exact_rows,
+                    group_size,
+                )
+                return _log_joint_from_log_marginal(
+                    marginal, mean_rates[electrode], occupancy
+                )
+
+            # As _score_spikes: spikes of an electrode that cannot give a
+            # nonzero or NaN intensity have the background alone.
+            log_joint = jax.lax.cond(
+                supported | jnp.any(jnp.isnan(marks)),
+                estimate,
+                lambda: _log_joint_from_log_marginal(
+                    jnp.full((n_spikes, n_bins), -jnp.inf, dtype),
+                    mean_rates[electrode],
+                    occupancy,
+                ),
+            )
+            return jnp.logaddexp(log_joint, background[:, None])
+
+        def add_blocks(total: jax.Array, block: jax.Array, n_blocks: int) -> jax.Array:
+            """Add the terms of ``n_blocks`` blocks from ``block`` to their rows."""
+
+            def spikes(values: jax.Array) -> jax.Array:
+                return jax.lax.dynamic_slice_in_dim(values, block, n_blocks).reshape(
+                    n_blocks * block_rows, *values.shape[2:]
+                )
+
+            return deterministic_row_accumulate(
+                total,
+                spike_terms(spikes(blocks.marks), spikes(blocks.log_background)),
+                spikes(blocks.rows),
+                indices_are_sorted=indices_are_sorted,
+            )
+
+        # Groups of group_blocks blocks are reduced together, then at most one
+        # group each of half as many, and so on to one block; likewise each
+        # GEMM's tiles.
+        total = _fold_groups(add_blocks, group_blocks, start, end, total)
+        return (total, factors), None
+
+    (total, _), _ = jax.lax.scan(
+        add_electrode,
+        (total, jnp.zeros((widest_tiles, tile_rows, n_bins), dtype)),
+        jnp.arange(n_electrodes),
     )
+    return total
+
+
+def _masked_log_mark_kernel(
+    marks: jax.Array, samples: jax.Array, stds: jax.Array, mask: jax.Array
+) -> jax.Array:
+    """Log Gaussian mark kernel over the features in ``mask``, as ``_log_kernel_matrix``.
+
+    Returns
+    -------
+    log_kernel : jax.Array, shape (n_samples, n_marks)
+    """
+    log_kernel = jnp.zeros((samples.shape[0], marks.shape[0]))
+    for dim_mark, dim_sample, dim_std, keep in zip(
+        marks.T, samples.T, stds, mask, strict=True
+    ):
+        log_kernel += jnp.where(
+            keep,
+            log_gaussian_pdf(
+                jnp.expand_dims(dim_mark, axis=0),
+                jnp.expand_dims(dim_sample, axis=1),
+                dim_std,
+            ),
+            0.0,
+        )
+    return log_kernel
 
 
 @partial(
     jax.jit,
-    static_argnames=("block_size", "indices_are_sorted"),
-    donate_argnums=(0, 1),
+    static_argnames=("group_blocks", "group_tiles", "indices_are_sorted"),
+    donate_argnums=0,
 )
-def _add_electrode_local_terms(
+def _add_local_terms(
     log_likelihood: jax.Array,
-    expected_counts: jax.Array,
-    spike_positions: jax.Array,
-    decoding_features: jax.Array,
-    row_ids: jax.Array,
-    encoding_positions: jax.Array,
-    encoding_features: jax.Array,
-    encoding_weights: jax.Array,
+    blocks: _SpikeBlocks,
+    tiles: _EncodingTiles,
+    electrodes: _ElectrodeTerms,
+    scaled_rates: jax.Array,
     position_std: jax.Array,
-    waveform_stds: jax.Array,
-    log_occupancy_at_spikes: jax.Array,
-    log_gpi_density: jax.Array,
-    log_occupancy: jax.Array,
-    scaled_rate: float,
-    mean_rate: float,
-    log_background: jax.Array,
     *,
-    block_size: int,
+    group_blocks: int,
+    group_tiles: int,
     indices_are_sorted: bool,
-) -> tuple[jax.Array, jax.Array]:
-    """Add one electrode's local spike terms and expected count rate.
+) -> jax.Array:
+    """Add every electrode's local spike terms to their rows.
+
+    Electrode by electrode, its blocks of spikes are reduced over its tiles
+    only. The joint KDE over occupancy at each spike's position and mark is
+    a logsumexp over the electrode's samples, carried tile by tile with a
+    running maximum (see ``local_kde_log_ratio``, whose division of the
+    position kernels before the marks are added it keeps).
 
     Parameters
     ----------
-    log_likelihood, expected_counts : jax.Array, shape (n_rows,)
-        Running sums over electrodes; donated.
-    spike_positions : jax.Array, shape (n_padded_spikes, n_position_dims)
-        Position at each decoding spike; padding rows are zero.
-    decoding_features : jax.Array, shape (n_padded_spikes, n_features)
-        Waveform features of each decoding spike.
-    row_ids : jax.Array, shape (n_padded_spikes,)
-        Local rows; padding uses ``n_rows``, which the row sum drops.
-    encoding_positions, encoding_features, encoding_weights
-        Padded joint KDE samples and weights (zero for padding).
-    position_std, waveform_stds : jax.Array
-        Position and waveform-feature kernel bandwidths.
-    log_occupancy_at_spikes : jax.Array, shape (n_padded_spikes,)
-        True log occupancy density at ``spike_positions``; padding rows hold
-        values that are never used.
-    log_gpi_density : jax.Array, shape (n_rows,)
-        This electrode's ground-process log density at the animal's position
-        in each row.
-    log_occupancy : jax.Array, shape (n_rows,)
-        Log occupancy density at the animal's position in each row.
-    scaled_rate : float
-        Mean rate times ``RATE_REFERENCE_SECONDS``.
-    mean_rate : float
-        Mean rate in Hz.
-    log_background : jax.Array, shape (n_padded_spikes,)
-        Log background intensity of each spike, in the units of ``scaled_rate``.
-    block_size : int
-        Decoding spikes per block.
+    log_likelihood : jax.Array, shape (n_rows,)
+        Running log likelihood; donated.
+    blocks : _SpikeBlocks
+        Decoding spikes with ``positions`` and ``log_occupancy``; padding
+        rows are zero and dropped.
+    tiles : _EncodingTiles
+        Every electrode's encoding samples.
+    electrodes : _ElectrodeTerms
+        Every electrode's mark bandwidths.
+    scaled_rates : jax.Array, shape (n_electrodes,)
+        Mean rates times ``RATE_REFERENCE_SECONDS``.
+    position_std : jax.Array, shape (n_position_dims,)
+        Position kernel bandwidths.
+    group_blocks, group_tiles : int
+        Powers of two: the most blocks and tiles of one
+        electrode reduced together (see ``_fold_groups``).
     indices_are_sorted : bool
-        Whether ``row_ids`` are sorted in nondecreasing order.
+        Whether every block's rows are nondecreasing.
 
     Returns
     -------
-    log_likelihood, expected_counts : jax.Array, shape (n_rows,)
+    log_likelihood : jax.Array, shape (n_rows,)
     """
-    # See compute_local_log_likelihood for the per-spike combine.
-    log_ratio = local_kde_log_ratio(
-        spike_positions,
-        decoding_features,
-        encoding_positions,
-        encoding_features,
+    n_electrodes = scaled_rates.shape[0]
+    positions = cast(jax.Array, blocks.positions)
+    block_log_occupancy = cast(jax.Array, blocks.log_occupancy)
+    block_rows = blocks.marks.shape[1]
+    tile_rows = tiles.weights.shape[1]
+    n_features = blocks.marks.shape[2]
+    n_position_dims = positions.shape[2]
+    weight_total = _electrode_weight_totals(tiles, n_electrodes)
+    # As local_kde_log_ratio, whose points and samples are concatenated into
+    # one float array each and whose kernels accumulate in the default float.
+    dtype = jnp.result_type(
+        jax.dtypes.canonicalize_dtype(jnp.float64),
+        positions,
+        blocks.marks,
+        block_log_occupancy,
+        tiles.positions,
+        tiles.marks,
         position_std,
-        waveform_stds,
-        log_occupancy_at_spikes,
-        encoding_weights,
-        block_size,
+        electrodes.waveform_stds,
     )
-    spike_contribution = jnp.logaddexp(
-        log_density_intensity(scaled_rate, log_ratio, jnp.zeros_like(log_ratio)),
-        log_background,
+
+    def add_electrode(
+        log_likelihood: jax.Array, electrode: jax.Array
+    ) -> tuple[jax.Array, None]:
+        stds = electrodes.waveform_stds[electrode]
+        mask = electrodes.feature_mask[electrode]
+        own_total = weight_total[electrode]
+        first, stop = tiles.first_tile[electrode], tiles.first_tile[electrode + 1]
+
+        def add_blocks(
+            log_likelihood: jax.Array, block: jax.Array, n_blocks: int
+        ) -> jax.Array:
+            """Add the terms of ``n_blocks`` blocks from ``block`` to their rows."""
+
+            def spikes(values: jax.Array) -> jax.Array:
+                return jax.lax.dynamic_slice_in_dim(values, block, n_blocks).reshape(
+                    n_blocks * block_rows, *values.shape[2:]
+                )
+
+            n_spikes = n_blocks * block_rows
+            log_occ = spikes(block_log_occupancy).astype(dtype)
+            safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
+            spike_positions = spikes(positions).astype(dtype)
+            spike_marks = spikes(blocks.marks).astype(dtype)
+
+            def log_ratio() -> jax.Array:
+                def add_tiles(
+                    carry: tuple[jax.Array, jax.Array], tile: jax.Array, n_tiles: int
+                ) -> tuple[jax.Array, jax.Array]:
+                    """Fold ``n_tiles`` tiles from ``tile`` into the logsumexp."""
+                    peak, mass = carry
+
+                    def samples(values: jax.Array, width: int) -> jax.Array:
+                        return jax.lax.dynamic_slice_in_dim(
+                            values, tile, n_tiles
+                        ).reshape(n_tiles * tile_rows, width)
+
+                    weights = jax.lax.dynamic_slice_in_dim(
+                        tiles.weights, tile, n_tiles
+                    ).reshape(-1)
+                    safe_weights = jnp.where(weights > 0.0, weights, 1.0)
+                    log_weights = jnp.where(
+                        weights > 0.0, jnp.log(safe_weights), -jnp.inf
+                    )
+                    values = (
+                        (
+                            _log_kernel_matrix(
+                                spike_positions,
+                                samples(tiles.positions, n_position_dims).astype(dtype),
+                                position_std,
+                            )
+                            - safe_occ[None, :]
+                        )
+                        + _masked_log_mark_kernel(
+                            spike_marks,
+                            samples(tiles.marks, n_features).astype(dtype),
+                            stds,
+                            mask,
+                        )
+                        + log_weights[:, None]
+                    )
+                    new_peak = jnp.maximum(peak, jnp.max(values, axis=0))
+                    scale = jnp.where(jnp.isfinite(new_peak), new_peak, 0.0)
+                    mass = mass * jnp.exp(peak - scale) + jnp.sum(
+                        jnp.exp(values - scale[None, :]), axis=0
+                    )
+                    return new_peak, mass
+
+                peak, mass = _fold_groups(
+                    add_tiles,
+                    group_tiles,
+                    first,
+                    stop,
+                    (
+                        jnp.full(n_spikes, -jnp.inf, dtype),
+                        jnp.zeros(n_spikes, dtype),
+                    ),
+                )
+                ratio = (
+                    jnp.log(mass)
+                    + jnp.where(jnp.isfinite(peak), peak, 0.0)
+                    - jnp.log(own_total)
+                )
+                return cast(
+                    jax.Array, jnp.where(jnp.isneginf(log_occ), -jnp.inf, ratio)
+                )
+
+            ratio = jax.lax.cond(
+                own_total > 0.0,
+                log_ratio,
+                lambda: jnp.full(n_spikes, -jnp.inf, dtype),
+            )
+            return deterministic_row_accumulate(
+                log_likelihood,
+                jnp.logaddexp(
+                    log_density_intensity(
+                        scaled_rates[electrode], ratio, jnp.zeros_like(ratio)
+                    ),
+                    spikes(blocks.log_background),
+                ),
+                spikes(blocks.rows),
+                indices_are_sorted=indices_are_sorted,
+            )
+
+        return _fold_groups(
+            add_blocks,
+            group_blocks,
+            blocks.first_block[electrode],
+            blocks.first_block[electrode + 1],
+            log_likelihood,
+        ), None
+
+    log_likelihood, _ = jax.lax.scan(
+        add_electrode, log_likelihood, jnp.arange(n_electrodes)
     )
-    log_likelihood = log_likelihood + deterministic_row_sum(
-        spike_contribution,
-        row_ids,
-        log_likelihood.shape[0],
-        indices_are_sorted=indices_are_sorted,
+    return log_likelihood
+
+
+@jax.jit
+def _summed_expected_counts(
+    mean_rates: jax.Array, log_gpi_densities: jax.Array, log_occupancy: jax.Array
+) -> jax.Array:
+    """Every electrode's expected count rate at the rows, added in electrode order.
+
+    Parameters
+    ----------
+    mean_rates : jax.Array, shape (n_electrodes,)
+        Mean rates in Hz.
+    log_gpi_densities : jax.Array, shape (n_electrodes, n_rows)
+        Each electrode's ground-process log density at the animal's position.
+    log_occupancy : jax.Array, shape (n_rows,)
+        Log occupancy density at the animal's position.
+
+    Returns
+    -------
+    expected_counts : jax.Array, shape (n_rows,)
+    """
+
+    def add(
+        total: jax.Array, electrode: tuple[jax.Array, jax.Array]
+    ) -> tuple[jax.Array, None]:
+        rate, log_gpi_density = electrode
+        return total + jnp.exp(
+            log_density_intensity(rate, log_gpi_density, log_occupancy)
+        ), None
+
+    total, _ = jax.lax.scan(
+        add,
+        jnp.zeros(log_occupancy.shape, log_gpi_densities.dtype),
+        (mean_rates, log_gpi_densities),
     )
-    expected_counts = expected_counts + jnp.exp(
-        log_density_intensity(mean_rate, log_gpi_density, log_occupancy)
-    )
-    return log_likelihood, expected_counts
+    return total
 
 
 def block_estimate_log_joint_mark_intensity(
@@ -1573,9 +2528,9 @@ def fit_clusterless_kde_encoding_model(
     waveform_std : float, optional
         Gaussian smoothing standard deviation for waveform, by default 24.0.
     block_size : int, optional
-        Decoding spikes per block, by default 10,000, matching the
+        Most decoding spikes per block, by default 10,000, matching the
         detectors' default. It is stored with the model and used at
-        prediction.
+        prediction (see ``predict_clusterless_kde_log_likelihood``).
     enc_tile_size : int, optional
         Encoding samples per reduction tile at predict time (capped at 2048),
         bounding the workspace by the tile rather than the encoding count. By
@@ -1834,8 +2789,11 @@ def predict_clusterless_kde_log_likelihood(
     is_local : bool, optional
         If True, compute the log likelihood at the animal's position, by default False.
     block_size : int, optional
-        Decoding spikes per block, by default 10,000, matching the
-        detectors' default.
+        Most decoding spikes per block, by default 10,000, matching the
+        detectors' default. Without ``enc_tile_size``, one pass reduces every
+        electrode in blocks of one size: fewer spikes when padding each
+        electrode's spikes to whole blocks would add more than a quarter, or
+        when a block's buffers would exceed the kernel budget.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False.
     enc_tile_size : int | None, optional
@@ -1976,49 +2934,31 @@ def predict_clusterless_kde_log_likelihood(
         if log_occupancy is None:
             log_occupancy = kde_log_density(occupancy_model, interior_place_bin_centers)
 
+        batched = not use_streaming and enc_tile_size is None
+        collected: list[ElectrodeSpikes] = []
+
         def add_electrode(
             log_likelihood: jax.Array,
             spikes: ElectrodeSpikes,
             model: tuple[jax.Array, jax.Array, Any, jax.Array | None],
         ) -> jax.Array:
+            if batched:
+                # Every electrode is reduced in one pass below.
+                collected.append(spikes)
+                return log_likelihood
             encoding_features, encoding_positions, mean_rate, encoding_weights = model
             # Expand waveform_std to match this electrode's feature count if scalar
             electrode_waveform_std = as_std_array(
                 waveform_std, encoding_features.shape[1]
             )
-            # Padded spikes and zero-weight encoding samples let electrodes
-            # and chunks with nearby sizes share one compiled kernel.
+            # Padded zero-weight encoding samples let electrodes and chunks
+            # with nearby sizes share one compiled kernel.
             padded_features, padded_weights = padded_samples(
                 rows.spike_time_order, encoding_features, encoding_weights
             )
             padded_positions, _ = padded_samples(
                 rows.spike_time_order, encoding_positions, encoding_weights
             )
-            if not use_streaming and enc_tile_size is None:
-                n_padded = padded_spike_count(spikes.n_spikes, block_size)
-                return cast(
-                    jax.Array,
-                    _add_electrode_log_mark_intensities(
-                        log_likelihood,
-                        jnp.asarray(_pad_with_last_row(spikes.marks, n_padded)),
-                        jnp.asarray(spike_row_ids(spikes.selection, n_padded)),
-                        padded_features,
-                        padded_positions,
-                        padded_weights,
-                        electrode_waveform_std,
-                        jnp.asarray(position_std),
-                        interior_place_bin_centers,
-                        mean_rate * RATE_REFERENCE_SECONDS,
-                        log_occupancy,
-                        jnp.asarray(
-                            _pad_with_last_row(spikes.log_background, n_padded)
-                        ),
-                        block_size=min(block_size, n_padded),
-                        pos_tile_size=pos_tile_size,
-                        indices_are_sorted=spikes.selection.indices_are_sorted,
-                    ),
-                )
-
             # Compute position kernel in log-space to prevent underflow
             # (Skip if using streaming mode - computed on-the-fly)
             if use_streaming:
@@ -2075,6 +3015,53 @@ def predict_clusterless_kde_log_likelihood(
             desc="Position-Bin Likelihood",
             disable_progress_bar=disable_progress_bar,
         )
+        if collected:
+            tiles, electrodes, widest_tiles = _encoding_tiles(
+                rows.spike_time_order,
+                encoding_spike_waveform_features,
+                encoding_positions,
+                per_electrode_weights,
+                waveform_std,
+            )
+            block_rows, group_blocks, group_tiles = _nonlocal_sizes(
+                [spikes.n_spikes for spikes in collected],
+                block_size,
+                interior_place_bin_centers.shape[0],
+                log_likelihood.dtype.itemsize,
+                widest_tiles,
+            )
+            blocks, _ = _spike_blocks(
+                [
+                    (
+                        spikes.electrode,
+                        spikes.marks,
+                        spikes.log_background,
+                        spike_row_ids(spikes.selection),
+                    )
+                    for spikes in collected
+                ],
+                log_likelihood.shape[0],
+                [np.shape(f)[1] for f in encoding_spike_waveform_features],
+                block_rows,
+                pad_with_last=True,
+            )
+            log_likelihood = _add_log_mark_intensities(
+                log_likelihood,
+                blocks,
+                tiles,
+                electrodes,
+                jnp.asarray(np.asarray(mean_rates, float) * RATE_REFERENCE_SECONDS),
+                jnp.asarray(position_std),
+                jnp.asarray(interior_place_bin_centers),
+                jnp.asarray(log_occupancy),
+                widest_tiles=widest_tiles,
+                group_blocks=group_blocks,
+                group_tiles=group_tiles,
+                pos_tile_size=pos_tile_size,
+                indices_are_sorted=all(
+                    spikes.selection.indices_are_sorted for spikes in collected
+                ),
+            )
 
     return (
         log_likelihood
@@ -2197,8 +3184,8 @@ def compute_local_log_likelihood(
     waveform_std : jax.Array
         Gaussian smoothing standard deviation for waveform.
     block_size : int, optional
-        Decoding spikes per block, by default 10,000, matching the
-        detectors' default.
+        Most decoding spikes per block, by default 10,000, matching the
+        detectors' default (see ``predict_clusterless_kde_log_likelihood``).
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False.
     encoding_weights : list[jax.Array] | None, optional
@@ -2243,10 +3230,7 @@ def compute_local_log_likelihood(
         rows.spike_time_order,
     )
 
-    log_likelihood = jnp.zeros((n_rows,))
-    summed_expected_counts = jnp.zeros((n_rows,))
     n_position_dims = np.shape(interpolated_position)[1]
-    position_std_array = jnp.asarray(position_std)
     occupancy_std = as_std_array(occupancy_model.std, n_position_dims)
     occupancy_samples, occupancy_weights = padded_samples(
         rows.spike_time_order,
@@ -2280,9 +3264,9 @@ def compute_local_log_likelihood(
             spike_times, selections, strict=True
         )
     ]
-    # Every electrode's occupancy at its spikes and ground-process density at
-    # the rows, each in one pass: their kernels compile for the chunk, not
-    # for each electrode's spike or encoding count.
+    # Every electrode's occupancy at its spikes, ground-process density at the
+    # rows and spike terms, each in one pass: their kernels compile for the
+    # chunk, not for each electrode's spike, encoding or feature count.
     occupancy_at_spikes = _log_occupancy_at_spikes(
         positions_at_spike_times,
         occupancy_samples,
@@ -2294,91 +3278,83 @@ def compute_local_log_likelihood(
     log_gpi_densities = prepared_kde_log_densities(
         gpi_models, interpolated_position, rows.spike_time_order
     )
+    spikes = []
     for electrode, (
-        electrode_encoding_spike_waveform_features,
-        electrode_encoding_positions,
-        electrode_encoding_weights,
-        electrode_mean_rate,
-        electrode_log_gpi_density,
-        electrode_decoding_spike_waveform_features,
+        decoding_features,
         selection,
-        position_at_spike_time,
-        electrode_occupancy_at_spikes,
         electrode_mark_reference,
     ) in enumerate(
         zip(
             tqdm(
-                encoding_spike_waveform_features,
+                spike_waveform_features,
                 unit="electrode",
                 desc="Local Likelihood",
                 disable=disable_progress_bar,
             ),
-            encoding_positions,
-            encoding_weights,
-            mean_rates,
-            log_gpi_densities,
-            spike_waveform_features,
             selections,
-            positions_at_spike_times,
-            occupancy_at_spikes,
             mark_reference,
             strict=True,
         )
     ):
-        electrode_decoding_spike_waveform_features = select_decode_marks(
-            electrode_decoding_spike_waveform_features, selection, electrode
-        )
-        # This electrode's feature count, used below to expand a scalar waveform_std.
-        n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-
-        # Padded spikes and zero-weight samples let electrodes and chunks with
-        # nearby sizes share one compiled kernel. The marginal density is
-        # formed in log space; the spike contribution is
-        # logaddexp(log(rate * density / occupancy), log background).
-        n_padded = padded_spike_count(position_at_spike_time.shape[0], block_size)
-        padded_positions, padded_weights = padded_samples(
-            rows.spike_time_order,
-            electrode_encoding_positions,
-            electrode_encoding_weights,
-        )
-        padded_features, _ = padded_samples(
-            rows.spike_time_order,
-            electrode_encoding_spike_waveform_features,
-            electrode_encoding_weights,
-        )
-        log_likelihood, summed_expected_counts = _add_electrode_local_terms(
-            log_likelihood,
-            summed_expected_counts,
-            jnp.asarray(pad_rows(position_at_spike_time, n_padded)),
-            jnp.asarray(pad_rows(electrode_decoding_spike_waveform_features, n_padded)),
-            jnp.asarray(spike_row_ids(selection, n_padded)),
-            padded_positions,
-            padded_features,
-            padded_weights,
-            position_std_array,
-            as_std_array(waveform_std, n_waveform_features),
-            # Evaluated outside the kernel, which then compiles no density
-            # repair for it; the padding rows are dropped.
-            jnp.asarray(pad_rows(electrode_occupancy_at_spikes, n_padded)),
-            electrode_log_gpi_density,
-            log_occupancy,
-            electrode_mean_rate * RATE_REFERENCE_SECONDS,
-            electrode_mean_rate,
-            jnp.asarray(
-                pad_rows(
+        marks = select_decode_marks(decoding_features, selection, electrode)
+        if marks.shape[0]:
+            spikes.append(
+                (
+                    electrode,
+                    marks,
                     background_log_intensity(
                         electrode_mark_reference,
-                        np.asarray(electrode_decoding_spike_waveform_features),
+                        marks,
                         LOG_EPS,  # log(RATE_EPS_HZ * RATE_REFERENCE_SECONDS)
                     ),
-                    n_padded,
+                    spike_row_ids(selection),
                 )
-            ),
-            block_size=min(block_size, n_padded),
-            indices_are_sorted=selection.indices_are_sorted,
+            )
+    log_likelihood = jnp.zeros((n_rows,))
+    if spikes:
+        tiles, electrodes, widest_tiles = _encoding_tiles(
+            rows.spike_time_order,
+            encoding_spike_waveform_features,
+            encoding_positions,
+            encoding_weights,
+            waveform_std,
         )
-
+        block_rows, group_blocks, group_tiles = _local_sizes(
+            [marks.shape[0] for _, marks, _, _ in spikes], block_size, widest_tiles
+        )
+        blocks, (block_positions, block_log_occupancy) = _spike_blocks(
+            spikes,
+            n_rows,
+            [np.shape(f)[1] for f in encoding_spike_waveform_features],
+            block_rows,
+            pad_with_last=False,
+            per_spike=(
+                [positions_at_spike_times[electrode] for electrode, *_ in spikes],
+                [occupancy_at_spikes[electrode] for electrode, *_ in spikes],
+            ),
+        )
+        log_likelihood = _add_local_terms(
+            log_likelihood,
+            blocks._replace(
+                positions=jnp.asarray(block_positions),
+                log_occupancy=jnp.asarray(block_log_occupancy),
+            ),
+            tiles,
+            electrodes,
+            jnp.asarray(np.asarray(mean_rates, float) * RATE_REFERENCE_SECONDS),
+            jnp.asarray(position_std),
+            group_blocks=group_blocks,
+            group_tiles=group_tiles,
+            indices_are_sorted=all(
+                selection.indices_are_sorted for selection in selections
+            ),
+        )
+    summed_expected_counts = _summed_expected_counts(
+        jnp.asarray(np.asarray(mean_rates, float)),
+        jnp.stack([jnp.asarray(density) for density in log_gpi_densities]),
+        jnp.asarray(log_occupancy),
+    )
     log_likelihood -= jnp.asarray(rows.durations()) * (
         summed_expected_counts + background_rate(len(spike_times))
     )
-    return log_likelihood[:, jnp.newaxis]
+    return cast(jax.Array, log_likelihood[:, jnp.newaxis])
