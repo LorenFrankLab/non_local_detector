@@ -1203,7 +1203,9 @@ def _kde_log_density_list(
         group = (
             build()
             if spike_time_order is None
-            else spike_time_order.memo(
+            # Within the prediction's bounded KDE cache, which also drops
+            # tiles of leaves replaced by a refit.
+            else spike_time_order.memo_kde(
                 f"kde_group_tiles:{points.shape[1]}", leaves, build
             )
         )
@@ -2166,6 +2168,16 @@ class _GroupTiles:
             counts=np.asarray([np.shape(s)[0] for s in samples]),
             keys=_sorted_model_keys(samples, weights) if one_dimensional else None,
         )
+
+    @property
+    def nbytes(self) -> int:
+        """Bytes held: the host tiles and keys, and the tiles again for the device copy.
+
+        ``SpikeTimeOrder.memo_kde`` counts it against its budget.
+        """
+        tiles = sum(array.nbytes for array in self.host)
+        keys = 0 if self.keys is None else sum(k.nbytes for k in self.keys)
+        return 2 * tiles + keys + self.counts.nbytes
 
     def on_device(self, n_padded: int) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Return the tiles padded to ``n_padded``, moved to the device once."""
