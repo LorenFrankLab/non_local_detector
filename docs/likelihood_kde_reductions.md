@@ -132,8 +132,15 @@ The scaled-sum bounds use the electrode's own sample count; padding rows have
 zero weight. The Local path is batched the same way, with a logsumexp over each
 electrode's tiles carried by a running maximum.
 
+The opt-in `enc_tile_size` and `use_streaming` paths still reduce one
+electrode per call, with the same per-tile steps (scaled factors, one tile's
+scaled GEMM over position tiles, one tile of the exact logsumexp, the gate and
+the repair); only the loops that drive them differ.
+
 The pass compiles for the block size, the padded block count (a power of four)
 and the padded tile count (four sizes per octave), not for each electrode's
 spike, sample or feature count, so a decode compiles it a few times however
-many electrodes it has. Its memory and padding bounds are listed in the
-CHANGELOG.
+many electrodes it has. The block size is chosen so that padding adds at most
+a quarter to the (spike, tile) pairs reduced, and a prediction reuses a block
+size it has compiled when that size meets the bound. Its memory and padding
+bounds are listed in the CHANGELOG.
