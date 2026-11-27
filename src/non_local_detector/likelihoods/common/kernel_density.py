@@ -994,7 +994,7 @@ def kde_log_density_rows(
     points: jax.Array | np.ndarray,
     *,
     log_floor: LogFloor | None = None,
-    spike_time_order: SpikeTimeOrder | None = None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
 ) -> np.ndarray:
     """:func:`kde_log_densities` as one host array, one row per model.
 
@@ -1014,10 +1014,11 @@ def kde_log_density_rows(
         NaN floor (``inf`` plus ``-inf``) leaves the point flagged. By
         default every flagged point is evaluated in log space. Models that
         are not exactly ``KDEModel`` ignore it.
-    spike_time_order : SpikeTimeOrder, optional
-        A prediction's preparation cache. With it, the models' sample tiles
-        and sorted 1D keys are built and moved to the device once per
-        prediction, not once per call.
+    tiles : dict, optional
+        The caller's store of the models' sample tiles and sorted 1D keys,
+        filled on first use: calls that pass the same dict with the same
+        ``models`` and point dimensions build and move them to the device
+        once. By default each call builds its own.
 
     Returns
     -------
@@ -1027,7 +1028,7 @@ def kde_log_density_rows(
     points = jnp.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
-    results = _kde_log_density_list(models, points, log_floor, spike_time_order)
+    results = _kde_log_density_list(models, points, log_floor, tiles)
     if not results:
         return np.empty(
             (0, points.shape[0]), jax.dtypes.canonicalize_dtype(jnp.float64)
@@ -1164,7 +1165,7 @@ def _kde_log_density_list(
     models: Sequence["KDEModel"],
     points: jax.Array,
     log_floor: LogFloor | None = None,
-    spike_time_order: SpikeTimeOrder | None = None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
 ) -> list[np.ndarray | jax.Array]:
     """Each model's log densities in its own dtype; see :func:`kde_log_density_rows`."""
     if points.ndim == 1:
@@ -1188,27 +1189,17 @@ def _kde_log_density_list(
             np.dtype(model.weights_.dtype).str,
         )
         groups.setdefault(key, []).append(index)
+    if tiles is None:
+        tiles = {}
     for (block_size, *_), members in groups.items():
-        leaves = tuple(
-            leaf for i in members for leaf in (models[i].samples_, models[i].weights_)
-        )
-
-        def build(members: list[int] = members) -> _GroupTiles:
-            return _GroupTiles.build(
+        tiles_key = (points.shape[1], *members)
+        if tiles_key not in tiles:
+            tiles[tiles_key] = _GroupTiles.build(
                 [np.asarray(models[i].samples_) for i in members],
                 [np.asarray(models[i].weights_) for i in members],
                 one_dimensional=points.shape[1] == 1,
             )
-
-        group = (
-            build()
-            if spike_time_order is None
-            # Within the prediction's bounded KDE cache, which also drops
-            # tiles of leaves replaced by a refit.
-            else spike_time_order.memo_kde(
-                f"kde_group_tiles:{points.shape[1]}", leaves, build
-            )
-        )
+        group = tiles[tiles_key]
         values = _tiled_kde_log_densities(
             points,
             group,
@@ -2168,16 +2159,6 @@ class _GroupTiles:
             counts=np.asarray([np.shape(s)[0] for s in samples]),
             keys=_sorted_model_keys(samples, weights) if one_dimensional else None,
         )
-
-    @property
-    def nbytes(self) -> int:
-        """Bytes held: the host tiles and keys, and the tiles again for the device copy.
-
-        ``SpikeTimeOrder.memo_kde`` counts it against its budget.
-        """
-        tiles = sum(array.nbytes for array in self.host)
-        keys = 0 if self.keys is None else sum(k.nbytes for k in self.keys)
-        return 2 * tiles + keys + self.counts.nbytes
 
     def on_device(self, n_padded: int) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Return the tiles padded to ``n_padded``, moved to the device once."""

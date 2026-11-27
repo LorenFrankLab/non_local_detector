@@ -593,7 +593,9 @@ def predict_sorted_spikes_kde_log_likelihood(
         # Full blocks keep their rows; a shorter block is padded (see
         # _padded_block_rows), so chunks share compiled kernels.
         max_rows, point_rows = _local_block_rows(marginal_models, points.shape[1])
-        # The density pass evaluates the models in blocks of point_rows.
+        # The density pass evaluates the models in blocks of point_rows, from
+        # tiles built once for every block of this call.
+        tiles: dict[tuple[int, ...], Any] = {}
         block_models = [
             kde_model_with_block_size(model, point_rows, rows.spike_time_order)
             for model in marginal_models
@@ -630,7 +632,7 @@ def predict_sorted_spikes_kde_log_likelihood(
                 block_models,
                 pad(points[block]),
                 log_floor=(unit_log_floor, row_log_floor),
-                spike_time_order=rows.spike_time_order,
+                tiles=tiles,
             )
             log_likelihood = _local_kde_log_likelihood(
                 log_marginals,
