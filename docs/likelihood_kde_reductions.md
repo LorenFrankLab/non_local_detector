@@ -141,7 +141,5 @@ The pass compiles for the block size, the padded block count (a power of four)
 and the padded tile count (four sizes per octave), not for each electrode's
 spike, sample or feature count, so a decode compiles it a few times however
 many electrodes it has. The block size is chosen so that padding adds at most
-a quarter to the (spike, tile) pairs reduced. A chunk prefers the size the rule
-gives for its expected spike counts (the whole decode's, scaled to the chunk's
-rows) when that size meets the bound, so the choice depends on the chunk alone. Its memory and padding
-bounds are listed in the CHANGELOG.
+a quarter to the (spike, tile) pairs reduced; the choice depends on the chunk
+alone. Its memory and padding bounds are listed in the CHANGELOG.
