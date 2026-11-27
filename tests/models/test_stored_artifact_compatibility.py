@@ -809,7 +809,10 @@ def test_structured_detector_pickled_before_the_uniform_density_walk_keeps_its_w
     reference = pickle.loads(
         (BEFORE_UNIFORM_DENSITY_WALK / "predict_reference.pkl").read_bytes()
     )[STRUCTURED_FINE_BINS]
-    np.testing.assert_allclose(posterior, reference, rtol=1e-6, atol=2e-6)
+    # The single-pass clusterless KDE rounds differently from the per-electrode
+    # kernels that wrote the reference, moving a few values by up to 3.1e-6;
+    # the wrong walk moves them by 0.092.
+    np.testing.assert_allclose(posterior, reference, rtol=1e-6, atol=1e-5)
 
 
 def test_saved_model_file_from_before_the_uniform_density_walk_asks_for_a_refit(
