@@ -485,6 +485,38 @@ def test_nearly_unpenalized_fit_matches_per_bin_mle_with_tiny_occupancy_bins():
     np.testing.assert_allclose(eta[has_spikes], mle, atol=1e-3)
 
 
+@pytest.mark.unit
+def test_fit_keeps_coefficients_of_a_neuron_whose_step_is_not_finite():
+    """A neuron whose Newton step is NaN keeps its coefficients, not NaN ones.
+
+    A rank-deficient, unpenalized basis gives a float32-singular Hessian, so the
+    solve returns a non-finite step that fails every halving. Zeroing that step
+    by multiplying it by 0 gave NaN coefficients; the neuron must keep its
+    (finite) warm start and the fit must report not converged.
+    """
+    basis = np.ones((3, 2))
+    counts = np.array([[1.0, 0.0], [2.0, 5.0], [3.0, 1.0]])
+    occupancy = np.ones(3)
+    hessian = sorted_spikes_mrf._penalized_hessian(
+        jnp.asarray(basis, jnp.float32),
+        jnp.ones((3, 2), jnp.float32),
+        jnp.zeros(2, jnp.float32),
+    )
+    step = jnp.linalg.solve(hessian, jnp.ones((2, 2, 1), jnp.float32))
+    assert not np.all(np.isfinite(step)), "precondition: the solve must fail"
+
+    coeffs, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        counts, occupancy, basis, np.zeros(2), penalty=0.0
+    )
+
+    assert not diagnostics["converged"]
+    assert np.all(np.isfinite(coeffs))
+    # The warm start: a constant log-rate log(total counts / total occupancy).
+    np.testing.assert_allclose(
+        eta, np.broadcast_to(np.log(counts.sum(0) / 3.0), eta.shape), rtol=1e-6
+    )
+
+
 def test_occupancy_offset_gives_finite_rate_at_zero_occupancy():
     """Occupancy enters as an exposure offset, so zero-occupancy bins yield finite
     (unconstrained, smoothly-interpolated) rates — no division blow-up."""

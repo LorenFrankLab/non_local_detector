@@ -416,8 +416,9 @@ def _newton_fit_jax(
             halving_cond, halving_body, (ones, 0, *trial(ones))
         )
         # A neuron whose step still raises the objective after every halving keeps
-        # its coefficients, and the fit is reported as not converged.
-        accepted_step = jnp.where(failed, 0.0, scale)[None, :] * step.T
+        # its coefficients, and the fit is reported as not converged. The step is
+        # masked rather than scaled by 0, which would keep a NaN or inf step.
+        accepted_step = jnp.where(failed[None, :], 0.0, scale[None, :] * step.T)
         # max_step is reported as a diagnostic only (it does not gate convergence).
         # initial=0.0 so an empty neuron axis (n_neurons == 0) reduces to 0.
         max_step = jnp.max(jnp.abs(accepted_step), initial=0.0)
