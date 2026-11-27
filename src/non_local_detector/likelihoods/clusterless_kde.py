@@ -548,38 +548,204 @@ def _tiled_position_peak(
     )
 
 
-def _position_scale_terms(
-    log_position_distance: jax.Array, log_w: jax.Array, dtype: DTypeLike
-) -> tuple[jax.Array, jax.Array]:
-    """Position peak and scaled position factor of the linear reduction.
+def _scaled_factor(
+    log_values: jax.Array, safe_peak: jax.Array, shift: Any
+) -> jax.Array:
+    """``exp(log_values - safe_peak + shift)``: a factor of the scaled GEMM.
 
-    They depend on no decoding spike, so a caller scoring many blocks of spikes
-    against one encoding model computes them once (see
-    ``_estimate_with_enc_chunking``'s ``position_terms``).
+    Mark factors are scaled by the mark kernel's peak and position factors
+    (weighted log position kernels) by each bin's peak, both shifted up by
+    ``_scaled_gemm_shift``.
+    """
+    return jnp.exp(log_values - safe_peak + shift)
+
+
+def _linear_log_marginal(
+    numerator: jax.Array,
+    mark_peak: jax.Array,
+    safe_position_peak: jax.Array,
+    shift: Any,
+) -> jax.Array:
+    """Log marginal from a scaled GEMM numerator, undoing its scales.
+
+    The fixed peaks cannot carry a NaN from the marks; the product's is kept.
+    """
+    return cast(
+        jax.Array,
+        log_nonnegative(numerator)
+        + zero_if_neginf(mark_peak)
+        + safe_position_peak[None, :]
+        - 2.0 * shift,
+    )
+
+
+def _exact_threshold(
+    mark_peak: jax.Array,
+    position_peak: jax.Array,
+    window: Any,
+    position_floor: jax.Array,
+) -> jax.Array:
+    """Return the query floor above which a spike's scaled estimate may lose mass.
+
+    A spike's linear estimate is exact above its floor when every kernel peak
+    lies within the scaled GEMM's window of that floor; a spike whose floor
+    is below this threshold is recomputed exactly.
+    """
+    return jnp.max(mark_peak + position_peak - window - position_floor)
+
+
+def _repair_group_size(encoding_rows: int, pos_tile_size: int) -> int:
+    """Return the flagged spikes per exact-repair call, which bounds its temporary."""
+    return max(
+        1,
+        min(
+            EXACT_REPAIR_SLOTS,
+            _EXACT_REPAIR_ELEMENTS // (encoding_rows * pos_tile_size),
+        ),
+    )
+
+
+def _fold_position_tiles(
+    update: Callable[[jax.Array, jax.Array, jax.Array | None], jax.Array],
+    n_bins: int,
+    pos_tile_size: int,
+    accumulated: jax.Array,
+) -> jax.Array:
+    """Fold ``update(accumulated, pos_start, is_new)`` over tiles of place bins.
+
+    A final tile that would run past the last bin starts earlier and repeats
+    bins of the previous tile; ``is_new`` marks the bins it adds. With one
+    tile ``is_new`` is None.
+    """
+    if pos_tile_size >= n_bins:
+        return update(accumulated, jnp.asarray(0), None)
+
+    def position_chunk(pos_idx: jax.Array, accumulated: jax.Array) -> jax.Array:
+        requested = pos_idx * pos_tile_size
+        pos_start = jnp.minimum(requested, n_bins - pos_tile_size)
+        is_new = pos_start + jnp.arange(pos_tile_size) >= requested
+        return update(accumulated, pos_start, is_new)
+
+    return cast(
+        jax.Array,
+        jax.lax.fori_loop(0, -(-n_bins // pos_tile_size), position_chunk, accumulated),
+    )
+
+
+def _combine_tile_columns(
+    accumulated: jax.Array,
+    values: jax.Array,
+    pos_start: jax.Array,
+    is_new: jax.Array | None,
+    combine: Callable[[jax.Array, jax.Array], jax.Array],
+) -> jax.Array:
+    """``combine`` a tile's ``values`` into its new columns of ``accumulated``."""
+    if is_new is None:
+        return combine(accumulated, values)
+    width = values.shape[1]
+    current = jax.lax.dynamic_slice_in_dim(accumulated, pos_start, width, axis=1)
+    updated = jnp.where(is_new[None, :], combine(current, values), current)
+    return jax.lax.dynamic_update_slice(
+        accumulated, updated, (jnp.zeros((), pos_start.dtype), pos_start)
+    )
+
+
+def _add_scaled_tile(
+    numerator: jax.Array,
+    queries: jax.Array,
+    encoding_marks: jax.Array,
+    waveform_stds: jax.Array,
+    mark_peak: jax.Array,
+    shift: Any,
+    position_factor: Callable[[jax.Array], jax.Array],
+    pos_tile_size: int,
+    feature_mask: jax.Array | None = None,
+) -> jax.Array:
+    """Add one encoding tile's scaled GEMM to the numerator, by position tiles.
+
+    Parameters
+    ----------
+    numerator : jax.Array, shape (n_queries, n_bins)
+        Running scaled sums.
+    queries : jax.Array, shape (n_queries, n_features)
+        Decoding marks.
+    encoding_marks : jax.Array, shape (n_samples, n_features)
+        The tile's encoding marks.
+    waveform_stds : jax.Array, shape (n_features,)
+        Mark bandwidths.
+    mark_peak : jax.Array, scalar
+        The mark kernel's peak.
+    shift : float or jax.Array
+        ``_scaled_gemm_shift`` of the encoding model.
+    position_factor : callable
+        ``position_factor(pos_start)`` gives the tile's scaled position
+        factors at ``pos_tile_size`` bins from ``pos_start``, shape
+        ``(n_samples, pos_tile_size)``.
+    pos_tile_size : int
+        Place bins per tile.
+    feature_mask : jax.Array of bool, shape (n_features,), optional
+        See ``compute_log_mark_kernel_gemm``.
 
     Returns
     -------
-    position_peak : jax.Array, shape (n_position_bins,)
-    position_factor : jax.Array, shape (n_encoding_spikes, n_position_bins)
-        ``exp(log_position + log_w - peak + shift)``, as the linear reduction
-        evaluates it.
+    numerator : jax.Array, shape (n_queries, n_bins)
     """
-    n_enc = log_position_distance.shape[0]
-    log_w = jnp.asarray(log_w, dtype)
-    position_peak = _tiled_position_peak(
-        log_position_distance,
-        log_w,
-        min(n_enc, _LOG_REDUCTION_ENCODING_ROWS),
-        dtype,
+    # Zero-weight rows have zero position factors; NaN marks propagate.
+    mark_factor = _scaled_factor(
+        compute_log_mark_kernel_gemm(
+            queries, encoding_marks, waveform_stds, feature_mask
+        ),
+        zero_if_neginf(mark_peak),
+        shift,
     )
-    shift = _scaled_gemm_shift(n_enc, jnp.float32)
-    factor = jnp.exp(
-        log_position_distance
-        + log_w[:, None]
-        - zero_if_neginf(position_peak)[None, :]
-        + shift
+
+    def update(
+        numerator: jax.Array, pos_start: jax.Array, is_new: jax.Array | None
+    ) -> jax.Array:
+        product = jnp.matmul(
+            mark_factor.T,
+            position_factor(pos_start),
+            precision=jax.lax.Precision.HIGHEST,
+        )
+        return _combine_tile_columns(numerator, product, pos_start, is_new, jnp.add)
+
+    return _fold_position_tiles(update, numerator.shape[1], pos_tile_size, numerator)
+
+
+def _add_exact_tile(
+    marginal: jax.Array,
+    queries: jax.Array,
+    encoding_marks: jax.Array,
+    waveform_stds: jax.Array,
+    log_w: jax.Array,
+    log_position: Callable[[jax.Array], jax.Array],
+    pos_tile_size: int,
+    feature_mask: jax.Array | None = None,
+) -> jax.Array:
+    """Add one encoding tile to an exact log marginal by a direct logsumexp.
+
+    ``log_position(pos_start)`` gives the tile's log position kernels at
+    ``pos_tile_size`` bins, shape ``(n_samples, pos_tile_size)``; ``log_w``
+    is each sample's log weight, ``-inf`` for samples to leave out. A group
+    of queries shares one (samples, queries, bins) temporary.
+    """
+    log_mark = compute_log_mark_kernel_gemm(
+        queries, encoding_marks, waveform_stds, feature_mask
     )
-    return position_peak, factor
+
+    def update(
+        marginal: jax.Array, pos_start: jax.Array, is_new: jax.Array | None
+    ) -> jax.Array:
+        contribution = masked_logsumexp(
+            log_mark[:, :, None]
+            + log_position(pos_start)[:, None, :]
+            + log_w[:, None, None]
+        )
+        return _combine_tile_columns(
+            marginal, contribution, pos_start, is_new, masked_logaddexp
+        )
+
+    return _fold_position_tiles(update, marginal.shape[1], pos_tile_size, marginal)
 
 
 def _estimate_with_enc_chunking(
@@ -599,7 +765,6 @@ def _estimate_with_enc_chunking(
     *,
     use_streaming: bool = False,
     position_log_normalizer: jax.Array | None = None,
-    position_terms: tuple[jax.Array, jax.Array] | None = None,
 ) -> jax.Array:
     """Log joint mark intensity, reduced over bounded encoding tiles.
 
@@ -642,7 +807,6 @@ def _estimate_with_enc_chunking(
     enc_tile_size = min(n_enc, enc_tile_size, _LOG_REDUCTION_ENCODING_ROWS)
     pos_tile_size = min(n_pos, pos_tile_size or n_pos)
     n_enc_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
-    n_pos_chunks = (n_pos + pos_tile_size - 1) // pos_tile_size
     # Tile kernels promote every input with float32; explicitly typed carries
     # keep the loops' dtypes fixed when x64 is enabled.
     position_inputs: tuple[jax.Array | None, ...] = (
@@ -683,35 +847,28 @@ def _estimate_with_enc_chunking(
         )[0, 0].astype(dtype) + jnp.max(log_w)
         if position_log_normalizer is not None:
             position_peak = position_peak - position_log_normalizer.astype(dtype)
-    elif position_terms is not None:
-        # Precomputed once per encoding model by the caller.
-        position_peak = position_terms[0]
     else:
         position_peak = _tiled_position_peak(
             cast(jax.Array, log_position_distance), log_w, enc_tile_size, dtype
         )
-    # A spike's linear estimate is exact above its floor when every kernel peak
-    # lies within the scaled GEMM's window of that floor; other spikes are
-    # recomputed exactly, in groups.
     needs_exact_row = (
-        jnp.max(
-            mark_peak
-            + position_peak
-            - _scaled_gemm_window(n_enc, jnp.float32)
-            - position_floor
+        _exact_threshold(
+            mark_peak,
+            position_peak,
+            _scaled_gemm_window(n_enc, jnp.float32),
+            position_floor,
         )
         > query_floor
     )
 
     def encoding_tile(
-        enc_idx: jax.Array | int, queries: jax.Array
+        enc_idx: jax.Array | int,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array | None]:
         requested_enc_start = enc_idx * enc_tile_size
         enc_start = jnp.minimum(requested_enc_start, n_enc - enc_tile_size)
         marks = jax.lax.dynamic_slice_in_dim(
             encoding_spike_waveform_features, enc_start, enc_tile_size
         )
-        log_mark = compute_log_mark_kernel_gemm(queries, marks, waveform_stds)
         weights = jax.lax.dynamic_slice_in_dim(log_w, enc_start, enc_tile_size)
         # Slice an overlapping final tile and mask its prefix, avoiding a
         # padded copy of the potentially very large precomputed matrix.
@@ -727,13 +884,11 @@ def _estimate_with_enc_chunking(
             if use_streaming
             else None
         )
-        return enc_start, log_mark, weights, positions
+        return enc_start, marks, weights, positions
 
-    def position_tile(
-        pos_idx: jax.Array, enc_start: jax.Array, positions: jax.Array | None
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        requested_pos_start = pos_idx * pos_tile_size
-        pos_start = jnp.minimum(requested_pos_start, n_pos - pos_tile_size)
+    def log_position_at(
+        pos_start: jax.Array, enc_start: jax.Array, positions: jax.Array | None
+    ) -> jax.Array:
         if use_streaming:
             eval_points = jax.lax.dynamic_slice_in_dim(
                 cast(jax.Array, position_eval_points), pos_start, pos_tile_size
@@ -749,118 +904,64 @@ def _estimate_with_enc_chunking(
                         position_log_normalizer.astype(dtype), pos_start, pos_tile_size
                     )[None, :]
                 )
-        else:
-            log_position = jax.lax.dynamic_slice(
-                cast(jax.Array, log_position_distance),
-                (enc_start, pos_start),
-                (enc_tile_size, pos_tile_size),
-            )
-        # An overlapping final tile repeats earlier positions; only the rest
-        # are new.
-        is_new = pos_start + jnp.arange(pos_tile_size) >= requested_pos_start
-        return pos_start, log_position, is_new
+            return cast(jax.Array, log_position)
+        return jax.lax.dynamic_slice(
+            cast(jax.Array, log_position_distance),
+            (enc_start, pos_start),
+            (enc_tile_size, pos_tile_size),
+        )
+
+    # Every tile shares the kernel-free peaks as fixed scales, so their
+    # products add linearly. The scales depend on no decoding spike. The
+    # float32 shift matches the gate's window and cannot overflow any wider
+    # dtype the operands may use.
+    shift = _scaled_gemm_shift(n_enc, jnp.float32)
+    safe_position_peak = jnp.broadcast_to(zero_if_neginf(position_peak), (n_pos,))
 
     def reduce_linearly() -> jax.Array:
-        # Every tile shares the kernel-free peaks as fixed scales, so their
-        # products add linearly. The scales depend on no decoding spike. The
-        # float32 shift matches the gate's window and cannot overflow any
-        # wider dtype the operands may use.
-        shift = _scaled_gemm_shift(n_enc, jnp.float32)
-        safe_position_peak = jnp.broadcast_to(zero_if_neginf(position_peak), (n_pos,))
-
         def process_enc_chunk(enc_idx: jax.Array, numerator: jax.Array) -> jax.Array:
-            enc_start, log_mark, weights, positions = encoding_tile(
-                enc_idx, decoding_spike_waveform_features
-            )
-            # Zero-weight rows have zero position factors; NaN marks propagate.
-            mark_factor = jnp.exp(log_mark - zero_if_neginf(mark_peak) + shift)
+            enc_start, marks, weights, positions = encoding_tile(enc_idx)
 
-            def process_position_chunk(
-                pos_idx: jax.Array, numerator: jax.Array
-            ) -> jax.Array:
-                pos_start, log_position, is_new = position_tile(
-                    pos_idx, enc_start, positions
-                )
-                if position_terms is None:
-                    peak = jax.lax.dynamic_slice_in_dim(
+            def position_factor(pos_start: jax.Array) -> jax.Array:
+                return _scaled_factor(
+                    log_position_at(pos_start, enc_start, positions) + weights[:, None],
+                    jax.lax.dynamic_slice_in_dim(
                         safe_position_peak, pos_start, pos_tile_size
-                    )
-                    position_factor = jnp.exp(
-                        log_position + weights[:, None] - peak + shift
-                    )
-                else:
-                    # The same factor, evaluated once per encoding model.
-                    position_factor = jax.lax.dynamic_slice(
-                        position_terms[1],
-                        (enc_start, pos_start),
-                        (enc_tile_size, pos_tile_size),
-                    )
-                    if n_enc % enc_tile_size:
-                        # The overlapping final tile's repeated rows (weight
-                        # -inf here) must contribute nothing.
-                        position_factor = jnp.where(
-                            jnp.isneginf(weights)[:, None], 0.0, position_factor
-                        )
-                product = jnp.matmul(
-                    mark_factor.T,
-                    position_factor,
-                    precision=jax.lax.Precision.HIGHEST,
+                    ),
+                    shift,
                 )
-                current = jax.lax.dynamic_slice_in_dim(
-                    numerator, pos_start, pos_tile_size, axis=1
-                )
-                updated = jnp.where(is_new[None, :], current + product, current)
-                return jax.lax.dynamic_update_slice(numerator, updated, (0, pos_start))
 
-            return cast(
-                jax.Array,
-                jax.lax.fori_loop(0, n_pos_chunks, process_position_chunk, numerator),
+            return _add_scaled_tile(
+                numerator,
+                decoding_spike_waveform_features,
+                marks,
+                waveform_stds,
+                mark_peak,
+                shift,
+                position_factor,
+                pos_tile_size,
             )
 
         numerator = jax.lax.fori_loop(
             0, n_enc_chunks, process_enc_chunk, jnp.zeros((n_dec, n_pos), dtype)
         )
-        # The fixed peaks cannot carry a NaN from the marks; keep the product's.
-        return (
-            log_nonnegative(numerator)
-            + zero_if_neginf(mark_peak)
-            + safe_position_peak[None, :]
-            - 2.0 * shift
-        )
+        return _linear_log_marginal(numerator, mark_peak, safe_position_peak, shift)
 
     def exact_rows(rows: jax.Array) -> jax.Array:
         # Each flagged spike is reduced by a direct logsumexp over encoding
-        # rows, with no scaling to validate; a group shares one
-        # (encoding, group, position) temporary.
+        # rows, with no scaling to validate.
         queries = decoding_spike_waveform_features[rows]
 
         def process_enc_chunk(enc_idx: jax.Array, marginal: jax.Array) -> jax.Array:
-            enc_start, log_mark, weights, positions = encoding_tile(enc_idx, queries)
-
-            def process_position_chunk(
-                pos_idx: jax.Array, marginal: jax.Array
-            ) -> jax.Array:
-                pos_start, log_position, is_new = position_tile(
-                    pos_idx, enc_start, positions
-                )
-                contribution = masked_logsumexp(
-                    log_mark[:, :, None]
-                    + log_position[:, None, :]
-                    + weights[:, None, None]
-                )
-                current = jax.lax.dynamic_slice_in_dim(
-                    marginal, pos_start, pos_tile_size, axis=1
-                )
-                combined = jnp.where(
-                    is_new[None, :],
-                    masked_logaddexp(current, contribution),
-                    current,
-                )
-                return jax.lax.dynamic_update_slice(marginal, combined, (0, pos_start))
-
-            return cast(
-                jax.Array,
-                jax.lax.fori_loop(0, n_pos_chunks, process_position_chunk, marginal),
+            enc_start, marks, weights, positions = encoding_tile(enc_idx)
+            return _add_exact_tile(
+                marginal,
+                queries,
+                marks,
+                waveform_stds,
+                weights,
+                lambda pos_start: log_position_at(pos_start, enc_start, positions),
+                pos_tile_size,
             )
 
         return cast(
@@ -873,15 +974,11 @@ def _estimate_with_enc_chunking(
             ),
         )
 
-    group_size = max(
-        1,
-        min(
-            EXACT_REPAIR_SLOTS,
-            _EXACT_REPAIR_ELEMENTS // (enc_tile_size * pos_tile_size),
-        ),
-    )
     marginal = _repair_flagged_in_groups(
-        reduce_linearly(), needs_exact_row, exact_rows, group_size
+        reduce_linearly(),
+        needs_exact_row,
+        exact_rows,
+        _repair_group_size(enc_tile_size, pos_tile_size),
     )
     return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
@@ -1745,7 +1842,6 @@ def _add_log_mark_intensities(
     tile_rows = tiles.weights.shape[1]
     first_block = blocks.first_block
     pos_tile_size = min(n_bins, pos_tile_size or n_bins)
-    n_pos_chunks = -(-n_bins // pos_tile_size)
     normalizer, occupancy = _occupancy_normalizer(log_occupancy)
     dtype = jnp.result_type(
         jnp.float32,
@@ -1762,10 +1858,7 @@ def _add_log_mark_intensities(
     mean_rates = jnp.asarray(mean_rates, dtype)
     n_features = electrodes.waveform_stds.shape[1]
     origin = jnp.zeros((1, n_features), dtype)
-    group_size = max(
-        1,
-        min(EXACT_REPAIR_SLOTS, _EXACT_REPAIR_ELEMENTS // (tile_rows * pos_tile_size)),
-    )
+    group_size = _repair_group_size(tile_rows, pos_tile_size)
 
     def log_position(tile: jax.Array, pos_start: jax.Array | int) -> jax.Array:
         """Log position kernel of one tile at ``pos_tile_size`` bins, over occupancy."""
@@ -1784,47 +1877,6 @@ def _add_log_mark_intensities(
             dtype,
         )
 
-    def position_tiles(
-        update: Callable[
-            [jax.Array, jax.Array, jax.Array, jax.Array | None], jax.Array
-        ],
-        values: Callable[[jax.Array], jax.Array],
-        accumulated: jax.Array,
-    ) -> jax.Array:
-        """Fold ``update(accumulated, values(pos_start), pos_start, is_new)`` over bin tiles."""
-        if n_pos_chunks == 1:
-            return update(accumulated, values(jnp.asarray(0)), jnp.asarray(0), None)
-
-        def position_chunk(pos_idx: jax.Array, accumulated: jax.Array) -> jax.Array:
-            requested = pos_idx * pos_tile_size
-            pos_start = jnp.minimum(requested, n_bins - pos_tile_size)
-            # An overlapping final tile repeats earlier bins; only the rest
-            # are new.
-            is_new = pos_start + jnp.arange(pos_tile_size) >= requested
-            return update(accumulated, values(pos_start), pos_start, is_new)
-
-        return cast(
-            jax.Array,
-            jax.lax.fori_loop(0, n_pos_chunks, position_chunk, accumulated),
-        )
-
-    def add_tile_columns(
-        accumulated: jax.Array,
-        values: jax.Array,
-        pos_start: jax.Array,
-        is_new: jax.Array | None,
-        combine: Callable[[jax.Array, jax.Array], jax.Array],
-    ) -> jax.Array:
-        if is_new is None:
-            return combine(accumulated, values)
-        current = jax.lax.dynamic_slice_in_dim(
-            accumulated, pos_start, pos_tile_size, axis=1
-        )
-        updated = jnp.where(is_new[None, :], combine(current, values), current)
-        return jax.lax.dynamic_update_slice(
-            accumulated, updated, (jnp.zeros((), pos_start.dtype), pos_start)
-        )
-
     gemm_shift = jnp.asarray(electrodes.gemm_shift, dtype)
 
     def add_electrode(
@@ -1839,7 +1891,6 @@ def _add_log_mark_intensities(
         mask = electrodes.feature_mask[electrode]
         shift = gemm_shift[electrode]
         mark_peak = compute_log_mark_kernel_gemm(origin, origin, stds, mask)[0, 0]
-        safe_mark_peak = zero_if_neginf(mark_peak)
 
         # The electrode's weighted log position kernels, their largest value
         # per bin and whether they can give a nonzero or NaN intensity (see
@@ -1889,14 +1940,16 @@ def _add_log_mark_intensities(
             (factors, jnp.full(n_bins, -jnp.inf, dtype), jnp.any(jnp.isnan(stds))),
         )
 
-        # As _position_scale_terms: the scaled position factor of each tile.
+        safe_peak = zero_if_neginf(peak)
+
+        # The scaled position factor of each tile.
         def scaled_tiles(
             factors: jax.Array, index: jax.Array, n_tiles: int
         ) -> jax.Array:
             weighted = jax.lax.dynamic_slice_in_dim(factors, index, n_tiles)
             return jax.lax.dynamic_update_slice_in_dim(
                 factors,
-                jnp.exp(weighted - zero_if_neginf(peak)[None, None, :] + shift),
+                _scaled_factor(weighted, safe_peak[None, None, :], shift),
                 index,
                 0,
             )
@@ -1904,15 +1957,11 @@ def _add_log_mark_intensities(
         factors = _fold_groups(
             scaled_tiles, group_tiles, jnp.zeros((), first.dtype), stop - first, factors
         )
-        safe_peak = zero_if_neginf(peak)
-        # As _estimate_with_enc_chunking: a spike is exact on the linear path
-        # when every kernel peak lies within the scaled GEMM's window of its
-        # floor.
-        exact_threshold = jnp.max(
-            mark_peak
-            + peak
-            - jnp.asarray(electrodes.gemm_window[electrode], dtype)
-            - _log_marginal_floor(mean_rates[electrode], occupancy)
+        exact_threshold = _exact_threshold(
+            mark_peak,
+            peak,
+            jnp.asarray(electrodes.gemm_window[electrode], dtype),
+            _log_marginal_floor(mean_rates[electrode], occupancy),
         )
 
         start, end = first_block[electrode], first_block[electrode + 1]
@@ -1926,39 +1975,23 @@ def _add_log_mark_intensities(
                     numerator: jax.Array, tile: jax.Array, n_tiles: int
                 ) -> jax.Array:
                     """Add the scaled GEMM over ``n_tiles`` tiles from ``tile``."""
-                    encoding_marks = jax.lax.dynamic_slice_in_dim(
-                        tiles.marks, tile, n_tiles
-                    ).reshape(n_tiles * tile_rows, n_features)
                     position_factors = jax.lax.dynamic_slice_in_dim(
                         factors, tile - first, n_tiles
                     ).reshape(n_tiles * tile_rows, n_bins)
-                    mark_factor = jnp.exp(
-                        compute_log_mark_kernel_gemm(marks, encoding_marks, stds, mask)
-                        - safe_mark_peak
-                        + shift
-                    )
-
-                    def update(
-                        numerator: jax.Array,
-                        position_factor: jax.Array,
-                        pos_start: jax.Array,
-                        is_new: jax.Array | None,
-                    ) -> jax.Array:
-                        product = jnp.matmul(
-                            mark_factor.T,
-                            position_factor,
-                            precision=jax.lax.Precision.HIGHEST,
-                        )
-                        return add_tile_columns(
-                            numerator, product, pos_start, is_new, jnp.add
-                        )
-
-                    return position_tiles(
-                        update,
+                    return _add_scaled_tile(
+                        numerator,
+                        marks,
+                        jax.lax.dynamic_slice_in_dim(
+                            tiles.marks, tile, n_tiles
+                        ).reshape(n_tiles * tile_rows, n_features),
+                        stds,
+                        mark_peak,
+                        shift,
                         lambda pos_start: jax.lax.dynamic_slice_in_dim(
                             position_factors, pos_start, pos_tile_size, axis=1
                         ),
-                        numerator,
+                        pos_tile_size,
+                        mask,
                     )
 
                 numerator = _fold_groups(
@@ -1968,49 +2001,25 @@ def _add_log_mark_intensities(
                     stop,
                     jnp.zeros((n_spikes, n_bins), dtype),
                 )
-                return (
-                    log_nonnegative(numerator)
-                    + safe_mark_peak
-                    + safe_peak[None, :]
-                    - 2.0 * shift
-                )
+                return _linear_log_marginal(numerator, mark_peak, safe_peak, shift)
 
             def exact_rows(rows: jax.Array) -> jax.Array:
                 queries = marks[rows]
-
-                def encoding_tile(tile: jax.Array, marginal: jax.Array) -> jax.Array:
-                    log_w = log_weights(tile, electrode)
-                    log_mark = compute_log_mark_kernel_gemm(
-                        queries, tiles.marks[tile], stds, mask
-                    )
-
-                    def update(
-                        marginal: jax.Array,
-                        log_position_distance: jax.Array,
-                        pos_start: jax.Array,
-                        is_new: jax.Array | None,
-                    ) -> jax.Array:
-                        contribution = masked_logsumexp(
-                            log_mark[:, :, None]
-                            + log_position_distance[:, None, :]
-                            + log_w[:, None, None]
-                        )
-                        return add_tile_columns(
-                            marginal, contribution, pos_start, is_new, masked_logaddexp
-                        )
-
-                    return position_tiles(
-                        update,
-                        lambda pos_start: log_position(tile, pos_start),
-                        marginal,
-                    )
-
                 return cast(
                     jax.Array,
                     jax.lax.fori_loop(
                         first,
                         stop,
-                        encoding_tile,
+                        lambda tile, marginal: _add_exact_tile(
+                            marginal,
+                            queries,
+                            tiles.marks[tile],
+                            stds,
+                            log_weights(tile, electrode),
+                            lambda pos_start: log_position(tile, pos_start),
+                            pos_tile_size,
+                            mask,
+                        ),
                         jnp.full((rows.shape[0], n_bins), -jnp.inf, dtype),
                     ),
                 )
