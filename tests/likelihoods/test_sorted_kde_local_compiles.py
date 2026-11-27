@@ -13,7 +13,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import sorted_spikes_kde
 from non_local_detector.likelihoods.common import (
     _KDE_BLOCK_KERNEL_BYTES,
-    COUNT_BLOCK_BYTES,
     EPS,
     KDEModel,
     kde_log_density,
@@ -23,6 +22,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
+from tests.conftest import precision_mode
 from tests.likelihoods.conftest import count_compilations
 
 pytestmark = pytest.mark.unit
@@ -141,14 +141,14 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
     """Each unit's counts are scored against its own density and mean rate:
     the full Local likelihood equals the sum of single-unit likelihoods.
 
-    The default ``block_size=10_000`` evaluates the count blocks of 14,976
-    rows in two blocks of points, and the 24 tiles in two steps; the
-    last count block is ragged and padded. The units' fields, rates and
+    The default ``block_size=10_000`` evaluates blocks of 20,000 rows in
+    two blocks of points, and the 24 tiles in two steps; the last block is
+    ragged and padded. The units' fields, rates and
     spike counts all differ, so pairing a unit's counts with another's
     density or rate would change the result by orders of magnitude more
     than rounding.
     """
-    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 14_976 * 6 * 8)
+    monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 25_000 * 6 * 8)
     sizes = []
     tiled_rows = kernel_density._tiled_kde_rows
 
@@ -169,13 +169,16 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
     monkeypatch.setattr(
         kernel_density, "_paired_log_space_kde_log_densities", record_repair
     )
-    model, time, position, spike_times = fit(6, duration=400.0, block_size=10_000)
+    model, time, position, spike_times = fit(6, duration=450.0, block_size=10_000)
     sizes.clear()
     full = predict_local(model, time, position, spike_times)
-    for n_points, n_tiles, rows, batch_size, _ in sizes:
+    # Without the point-block query (tiled_kde_point_rows), which sizes
+    # many points.
+    sizes = [size for size in sizes if size[0] < np.iinfo(np.int32).max]
+    assert [n_points for n_points, *_ in sizes] == [20_000, 20_000, 5_120]
+    for n_points, n_tiles, rows, batch_size, _ in sizes[:2]:
         assert rows < n_points
         assert batch_size < n_tiles
-    assert [n_points for n_points, *_ in sizes] == [14_976, 14_976, 10_240]
     assert 6 in repairs
 
     expected = jnp.zeros_like(full)
@@ -190,24 +193,21 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
     np.testing.assert_allclose(full, expected, rtol=1e-6, atol=1e-5)
 
 
+@pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("n_dims", [1, 2])
-def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims):
-    """At one count block of 180 units of 14 to 42,000 samples
-    (``block_size=10_000``), the density pass stays within the kernel budget
-    and the Poisson terms within the count block's bytes, at the sizes a
-    Local prediction calls them with. A 4x looser count block, row padding
-    or density-pass block exceeds them."""
-    rng = np.random.default_rng(0)
-    sizes = np.geomspace(14, 42_000, 180).astype(int)
-    models = [
-        KDEModel(std=3.0, block_size=10_000).fit(
-            rng.uniform(0, 100, (size, n_dims)).astype(np.float32)
-        )
-        for size in sizes
-    ]
-    n_rows = poisson._count_block_rows(len(models)) + 100
-    edges = np.arange(n_rows + 1) * 0.002
+def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims, x64):
+    """Each Local block of 180 units of 14 to 42,000 samples
+    (``block_size=10_000``), at the sizes a prediction calls its kernels with:
+    every ``(n_units, n_rows)`` array takes at most a 64th of the kernel
+    budget, the density pass's workspace, arguments and outputs together fit
+    the budget, and the Poisson terms hold at most five such arrays. A 4x
+    looser block, row padding or density-pass block exceeds them."""
+    unit_bytes = _KDE_BLOCK_KERNEL_BYTES // 64
     calls = {}
+    module_of = {
+        "_tiled_scaled_kde_log_densities": kernel_density,
+        "_local_kde_log_likelihood": sorted_spikes_kde,
+    }
 
     def capture(name, result):
         original = getattr(module_of[name], name)
@@ -219,54 +219,70 @@ def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims):
         monkeypatch.setattr(module_of[name], name, record)
         return original
 
-    module_of = {
-        "_tiled_scaled_kde_log_densities": kernel_density,
-        "_local_kde_log_likelihood": sorted_spikes_kde,
-    }
-    scaled = capture(
-        "_tiled_scaled_kde_log_densities",
-        lambda points, *args, **kwargs: (
-            jnp.zeros((len(models), points.shape[0])),
-            jnp.zeros((len(models), points.shape[0]), bool),
-        ),
-    )
-    local = capture(
-        "_local_kde_log_likelihood",
-        lambda log_marginals, *args: jnp.zeros(log_marginals.shape[1]),
-    )
-    environment = Environment(
-        place_bin_size=5.0, position_range=((0.0, 100.0),) * n_dims
-    ).fit_place_grid(np.array([[0.0] * n_dims, [100.0] * n_dims]))
-    n_bins = environment.place_bin_centers_.shape[0]
-    predict_sorted_spikes_kde_log_likelihood(
-        np.array([0.0, edges[-1]]),
-        np.array([[10.0] * n_dims, [90.0] * n_dims]),
-        [np.sort(rng.uniform(0, edges[-1], 20)) for _ in models],
-        environment=environment,
-        marginal_models=models,
-        occupancy_model=models[-1],
-        occupancy=None,
-        mean_rates=np.full(len(models), 2.0),
-        place_fields=np.ones((len(models), n_bins)),
-        no_spike_part_log_likelihood=np.ones(n_bins),
-        is_track_interior=np.ones(n_bins, bool),
-        disable_progress_bar=True,
-        is_local=True,
-        time_edges=edges,
-    )
-    # A full count block and the padded rest.
-    assert len(calls["_tiled_scaled_kde_log_densities"]) == 2
-
-    def workspace(function, args, kwargs):
-        return (
-            function.lower(*args, **kwargs)
-            .compile()
-            .memory_analysis()
-            .temp_size_in_bytes
+    with precision_mode(x64):
+        rng = np.random.default_rng(0)
+        sizes = np.geomspace(14, 42_000, 180).astype(int)
+        models = [
+            KDEModel(std=3.0, block_size=10_000).fit(
+                jnp.asarray(rng.uniform(0, 100, (size, n_dims)))
+            )
+            for size in sizes
+        ]
+        itemsize = jnp.zeros(()).dtype.itemsize
+        # Several full blocks and a ragged one, even with 4x larger blocks.
+        n_rows = 9 * unit_bytes // (len(models) * itemsize) + 100
+        edges = np.arange(n_rows + 1) * 0.002
+        scaled = capture(
+            "_tiled_scaled_kde_log_densities",
+            lambda points, *args, **kwargs: (
+                jnp.zeros((len(models), points.shape[0])),
+                jnp.zeros((len(models), points.shape[0]), bool),
+            ),
         )
+        local = capture(
+            "_local_kde_log_likelihood",
+            lambda log_marginals, *args: jnp.zeros(log_marginals.shape[1]),
+        )
+        environment = Environment(
+            place_bin_size=5.0, position_range=((0.0, 100.0),) * n_dims
+        ).fit_place_grid(np.array([[0.0] * n_dims, [100.0] * n_dims]))
+        n_bins = environment.place_bin_centers_.shape[0]
+        predict_sorted_spikes_kde_log_likelihood(
+            np.array([0.0, edges[-1]]),
+            np.array([[10.0] * n_dims, [90.0] * n_dims]),
+            [np.sort(rng.uniform(0, edges[-1], 20)) for _ in models],
+            environment=environment,
+            marginal_models=models,
+            occupancy_model=models[-1],
+            occupancy=None,
+            mean_rates=np.full(len(models), 2.0),
+            place_fields=np.ones((len(models), n_bins)),
+            no_spike_part_log_likelihood=np.ones(n_bins),
+            is_track_interior=np.ones(n_bins, bool),
+            disable_progress_bar=True,
+            is_local=True,
+            time_edges=edges,
+        )
+        assert len(calls["_tiled_scaled_kde_log_densities"]) >= 3
 
-    for args, kwargs in calls["_tiled_scaled_kde_log_densities"]:
-        assert workspace(scaled, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
-    for args, kwargs in calls["_local_kde_log_likelihood"]:
-        assert args[0].shape[0] * args[0].shape[1] * 8 <= COUNT_BLOCK_BYTES
-        assert workspace(local, args, kwargs) <= COUNT_BLOCK_BYTES
+        def distinct(name):
+            """One call per argument shape."""
+            by_shape = {
+                str(jax.tree_util.tree_map(jnp.shape, args)): (args, kwargs)
+                for args, kwargs in calls[name]
+            }
+            return list(by_shape.values())
+
+        def footprint(function, args, kwargs):
+            analysis = function.lower(*args, **kwargs).compile().memory_analysis()
+            return (
+                analysis.temp_size_in_bytes
+                + analysis.argument_size_in_bytes
+                + analysis.output_size_in_bytes
+            )
+
+        for args, kwargs in distinct("_tiled_scaled_kde_log_densities"):
+            assert len(models) * args[0].shape[0] * itemsize <= unit_bytes
+            assert footprint(scaled, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
+        for args, kwargs in distinct("_local_kde_log_likelihood"):
+            assert footprint(local, args, kwargs) <= 5 * unit_bytes

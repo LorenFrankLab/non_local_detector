@@ -66,10 +66,12 @@ from non_local_detector.encoding_time import (
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import NumericalWarning
 from non_local_detector.likelihoods.common import (
+    _KDE_BLOCK_KERNEL_BYTES,
     RATE_EPS_HZ,
     KDEModel,
     SpikeTimeOrder,
     _count_block_rows,
+    _quarter_octave,
     as_array,
     as_arrays,
     blocked_nonlocal_poisson_log_likelihood,
@@ -88,6 +90,7 @@ from non_local_detector.likelihoods.common import (
     prepare_kde_local_inputs,
     require_position,
     spike_counts_matrix,
+    tiled_kde_point_rows,
     validate_bandwidth,
     validate_encoding_contract,
     validate_population_lengths,
@@ -104,6 +107,44 @@ __all__ = [
     "fit_sorted_spikes_kde_encoding_model",
     "predict_sorted_spikes_kde_log_likelihood",
 ]
+
+
+# Bytes of each (n_units, n_rows) array of a Local block, in the default
+# float dtype. Beside its tile buffers (at most three quarters of
+# _KDE_BLOCK_KERNEL_BYTES, by _tiled_kde_rows; about 200 MiB measured), the
+# density pass holds about six such arrays at once (in 1-D: three
+# temporaries, two bracketing keys, the values and flags), and the Poisson
+# terms four (two temporaries, the log densities and the counts). At a 64th
+# of the budget each, the density pass's take under a tenth of it.
+_LOCAL_ARRAY_BYTES = _KDE_BLOCK_KERNEL_BYTES // 64
+
+
+def _local_block_rows(n_units: int, point_rows: int) -> int:
+    """Rows of a full Local block: the spike-count block, within ``_LOCAL_ARRAY_BYTES``.
+
+    Rounded down to whole blocks of ``point_rows``, the density pass's
+    point blocks, when there are more rows than one.
+    """
+    itemsize = jax.dtypes.canonicalize_dtype(jnp.float64).itemsize
+    limit = min(
+        _count_block_rows(n_units),
+        _LOCAL_ARRAY_BYTES // (max(n_units, 1) * itemsize),
+    )
+    limit = max(1, limit)
+    return limit // point_rows * point_rows if limit >= point_rows else limit
+
+
+def _padded_block_rows(n_rows: int, max_rows: int, point_rows: int) -> int:
+    """Rows a Local block of ``n_rows`` is evaluated at, so chunks share kernels.
+
+    Up to one point block, one of four sizes per octave (at most 25% more);
+    above it, a number of point blocks of four sizes per octave (at most 25%
+    more blocks, plus under one block); never more than ``max_rows``.
+    """
+    if n_rows <= point_rows:
+        return min(max_rows, point_rows, padded_sample_count(n_rows))
+    n_blocks = _quarter_octave(-(-n_rows // point_rows))
+    return min(max_rows, point_rows * n_blocks)
 
 
 # Every place-field and Local rate is clipped up to this many Hz.
@@ -552,9 +593,10 @@ def predict_sorted_spikes_kde_log_likelihood(
         host_durations = np.asarray(rows.durations())
         rates = jnp.asarray(mean_rates)
         unit_log_floor = _unit_log_density_floor(mean_rates)
-        # Full count blocks keep their rows; a shorter block is padded to one
-        # of four sizes per octave, so chunks share compiled kernels.
-        max_rows = _count_block_rows(len(spike_times))
+        # Full blocks keep their rows; a shorter block is padded (see
+        # _padded_block_rows), so chunks share compiled kernels.
+        point_rows = tiled_kde_point_rows(marginal_models, points.shape[1])
+        max_rows = _local_block_rows(len(spike_times), point_rows)
 
         def evaluate(start: int, stop: int) -> jax.Array:
             block = slice(start - rows.start, stop - rows.start)
@@ -567,7 +609,7 @@ def predict_sorted_spikes_kde_log_likelihood(
                 _spike_time_order=rows.spike_time_order,
             )
             n_rows = stop - start
-            n_padded = min(max_rows, padded_sample_count(n_rows))
+            n_padded = _padded_block_rows(n_rows, max_rows, point_rows)
 
             def pad(values: np.ndarray) -> np.ndarray:
                 widths = [(0, n_padded - n_rows)] + [(0, 0)] * (values.ndim - 1)
@@ -605,6 +647,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             evaluate,
             "Local Likelihood",
             disable_progress_bar=disable_progress_bar,
+            block_rows=max_rows,
         )[:, None]
     return blocked_nonlocal_poisson_log_likelihood(
         spike_times,

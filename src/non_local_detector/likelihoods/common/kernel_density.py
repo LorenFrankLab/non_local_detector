@@ -1030,6 +1030,53 @@ def kde_log_density_rows(
     return np.stack([np.asarray(row) for row in results])
 
 
+def tiled_kde_point_rows(models: Sequence["KDEModel"], n_dims: int) -> int:
+    """Points per block of :func:`kde_log_density_rows`'s tiled pass at many points.
+
+    A call with more points pads them to whole blocks of this many, so a
+    caller that chooses its point counts avoids that padding with multiples
+    of it; a call with fewer evaluates them in one block. Exact when the
+    models form one group (bandwidth, block size and dtypes), as one fit's
+    do; otherwise it is computed as if they did.
+
+    Parameters
+    ----------
+    models : sequence of KDEModel
+        Fitted KDE models, with the bandwidth and block size of the first.
+    n_dims : int
+        Point dimensions.
+
+    Returns
+    -------
+    rows : int
+        Without models, any number of points is one block.
+    """
+    many = np.iinfo(np.int32).max
+    if not models:
+        return int(many)
+    model = models[0]
+    assert model.samples_ is not None  # fitted
+    assert model.weights_ is not None  # set with samples_
+    n_tiles = [
+        max(1, -(-np.shape(cast(jax.Array, m.samples_))[0] // _KDE_SAMPLE_TILE))
+        for m in models
+    ]
+    # Zero-stride views: only shapes and dtypes are read.
+    points = np.broadcast_to(
+        np.zeros((), jax.dtypes.canonicalize_dtype(jnp.float64)), (many, n_dims)
+    )
+    rows, _, _ = _tiled_kde_rows(
+        many if model.block_size is None else model.block_size,
+        points,
+        padded_tile_count(sum(n_tiles)),
+        as_std_array(model.std, n_dims),
+        np.zeros((1, _KDE_SAMPLE_TILE, n_dims), model.samples_.dtype),
+        np.zeros((1, _KDE_SAMPLE_TILE), model.weights_.dtype),
+        max(n_tiles),
+    )
+    return rows
+
+
 def _kde_log_density_list(
     models: Sequence["KDEModel"],
     points: jax.Array,
