@@ -214,3 +214,50 @@ def _check_state_initial_conditions(
             "UniformInitialConditions does; discrete_initial_conditions "
             "weights the states.",
         )
+
+
+def _check_uniform_local_initial_conditions(
+    interior_values: np.ndarray, state_name: str, initial_conditions: object
+) -> None:
+    """Raise unless a multi-bin Local state starts uniform over its interior.
+
+    The multi-bin Local likelihood adds ``log(n_interior_bins)`` to its
+    position kernel to cancel a 1/n start in each Local bin. Any other start
+    leaves the factor uncancelled at the first time bin: a relative departure
+    ``d`` from 1/n moves the Local state's first-bin mass by up to ``d``, so
+    the departure is held to ``PROBABILITY_SUM_TOLERANCE``, the tolerance of
+    the state's sum.
+
+    Parameters
+    ----------
+    interior_values : np.ndarray, shape (n_interior_bins,)
+        The state's initial conditions at its interior bins.
+    state_name : str
+        Name of the Local state, for the error.
+    initial_conditions : object
+        The state's initial-condition object, named in the error.
+
+    Raises
+    ------
+    ValidationError
+        If an interior value departs from their mean by more than
+        ``PROBABILITY_SUM_TOLERANCE`` of it.
+    """
+    mean = interior_values.mean(dtype=np.float64)
+    departure = float(np.max(np.abs(interior_values - mean)) / mean)
+    if departure > PROBABILITY_SUM_TOLERANCE:
+        msg = (
+            f"Initial conditions of the multi-bin Local state {state_name!r} "
+            f"from {type(initial_conditions).__name__}.make_initial_conditions "
+            "must be uniform over its interior bins"
+        )
+        raise ValidationError(
+            msg,
+            expected=f"every interior value within {PROBABILITY_SUM_TOLERANCE:g} "
+            "of 1/n_interior_bins, relatively",
+            got=f"a value {departure:.3g} off the mean, relatively",
+            hint="The Local state is placed by its position kernel "
+            "(local_position_std), so its start must not prefer any bin: use "
+            "UniformInitialConditions(), or local_position_std=None for a "
+            "one-bin Local state.",
+        )
