@@ -1947,7 +1947,17 @@ def _tiled_kde_log_densities(
     # Each block has one item per tile of its model; padding blocks none.
     n_padded_blocks = padded_repair_count(n_blocks)
     block_items = pad_rows(np.diff(tile_start)[block_model], n_padded_blocks)
-    block_first_item = np.concatenate([[0], np.cumsum(block_items)]).astype(np.int32)
+    block_first_item = np.concatenate([[0], np.cumsum(block_items)])
+    # Item indices are int32 on the device; a wrapped index would write into
+    # the last block instead of being dropped.
+    if padded_repair_count(int(block_first_item[-1])) >= 2**31:
+        msg = (
+            f"The log-space KDE repair needs {int(block_first_item[-1]):,} "
+            "(tile, block) pairs, more than int32 indexing allows; decode in "
+            "more chunks."
+        )
+        raise RuntimeError(msg)
+    block_first_item = block_first_item.astype(np.int32)
     batch_size, chunk, n_items = _repair_sizes(
         padded_repair_count(int(block_first_item[-1])),
         block_size,
