@@ -124,3 +124,34 @@ def test_row_chunks_and_repeated_decodes_reuse_marked_kernels(is_local):
         for rows in chunks:
             predict(data, is_local, rows, spike_time_order)
     assert marked_kernel_compiles(compiled) == []
+
+
+@pytest.mark.parametrize("is_local", [False, True], ids=["non-local", "local"])
+def test_a_sparse_chunk_does_not_change_the_next_chunks_block_size(
+    is_local, monkeypatch
+):
+    """A dense chunk decoded after a 3-row chunk, sharing the prediction's
+    preparation, takes the block size it takes on its own and gives bitwise
+    the same values: the choice depends on the chunk, not on the chunks
+    decoded before it."""
+    from non_local_detector.likelihoods import clusterless_kde
+
+    chosen = []
+    group_sizes = clusterless_kde._group_sizes
+    monkeypatch.setattr(
+        clusterless_kde,
+        "_group_sizes",
+        lambda *args: chosen.append(group_sizes(*args)[0]) or group_sizes(*args),
+    )
+    data = recording(ELECTRODE_COUNTS[-1])
+    sparse, dense = slice(0, 3), slice(3, 6_000)
+    alone = np.asarray(predict(data, is_local, dense, SpikeTimeOrder()))
+    (rows_alone,) = chosen
+    chosen.clear()
+    spike_time_order = SpikeTimeOrder()
+    predict(data, is_local, sparse, spike_time_order)
+    after = np.asarray(predict(data, is_local, dense, spike_time_order))
+    rows_sparse, rows_after = chosen
+    assert rows_sparse < rows_alone
+    assert rows_after == rows_alone
+    np.testing.assert_array_equal(after, alone)
