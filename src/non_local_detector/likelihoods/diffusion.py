@@ -973,6 +973,34 @@ def _freeze_and_cache(
     return basis
 
 
+def cached_laplacian(
+    environment: "Environment",
+) -> tuple[scipy.sparse.csr_matrix, np.ndarray, np.ndarray]:
+    """Return the cached symmetric finite-volume Laplacian, node order, and bin sizes.
+
+    Builds and caches the environment graph and Laplacian snapshot via
+    :func:`environment_graph` on a miss, returning the same read-only arrays on
+    subsequent calls until ``Environment.fit_place_grid`` invalidates the cache.
+
+    Parameters
+    ----------
+    environment : Environment
+        A fitted environment.
+
+    Returns
+    -------
+    laplacian : scipy.sparse.csr_matrix, shape (n_interior, n_interior)
+        Symmetric finite-volume operator ``M^{-1/2} (D - C) M^{-1/2}``.
+    node_order : np.ndarray, shape (n_interior,)
+        Interior flat-bin indices in graph-node order.
+    bin_sizes : np.ndarray, shape (n_interior,)
+        Per-interior-bin volume (1D width, 2D area, ...).
+    """
+    _, node_order, bin_sizes = environment_graph(environment)
+    laplacian = cast(scipy.sparse.csr_matrix, environment.get_cached(_LAPLACIAN_KEY))
+    return laplacian, node_order, bin_sizes
+
+
 def cached_eigenbasis(
     environment: "Environment", rank: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:

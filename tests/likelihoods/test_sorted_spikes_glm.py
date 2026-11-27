@@ -1096,3 +1096,351 @@ def test_place_field_rates_request_highest_precision():
         np.full((7, 3), np.exp(4.0)),
         rtol=1e-6,
     )
+
+
+@pytest.mark.unit
+class TestSpatialSmoothnessPenalty:
+    """Whittle-Matern graph-Laplacian smoothness prior and matrix penalty."""
+
+    def test_penalty_matrix_matches_scalar_l2_penalty(self):
+        rng = np.random.default_rng(7)
+        n_time, n_coef, n_cells = 80, 6, 3
+        X = np.column_stack([np.ones(n_time), rng.normal(size=(n_time, n_coef - 1))])
+        weights = rng.uniform(0.05, 0.2, size=n_time)
+        true_beta = rng.normal(0.0, 0.4, size=(n_cells, n_coef))
+        rates = np.exp(X @ true_beta.T)
+        spikes = rng.poisson(weights[:, None] * rates).T.astype(float)
+
+        lam = 0.25
+        P = np.diag([0.0] + [lam] * (n_coef - 1))
+        coef_scalar = fit_poisson_regressions(X, spikes, weights, l2_penalty=lam)
+        coef_matrix = fit_poisson_regressions(
+            X, spikes, weights, l2_penalty=999.0, penalty_matrix=P
+        )
+        np.testing.assert_allclose(coef_matrix, coef_scalar, rtol=1e-5, atol=1e-6)
+
+        single_scalar = fit_poisson_regression(X, spikes[0], weights, l2_penalty=lam)
+        single_matrix = fit_poisson_regression(
+            X, spikes[0], weights, l2_penalty=999.0, penalty_matrix=P
+        )
+        np.testing.assert_allclose(single_matrix, single_scalar, rtol=1e-5, atol=1e-6)
+
+    def test_matrix_penalty_satisfies_kkt_optimality_and_spike_conservation(self):
+        rng = np.random.default_rng(11)
+        n_time, n_coef = 120, 7
+        X = np.column_stack(
+            [np.ones(n_time), rng.normal(0, 0.5, size=(n_time, n_coef - 1))]
+        )
+        weights = rng.uniform(0.02, 0.1, size=n_time)
+        spikes = rng.poisson(weights * 5.0, size=(2, n_time)).astype(float)
+        # Non-diagonal SPD penalty on non-intercept block (1-D second-difference + ridge)
+        A = rng.normal(size=(n_coef - 1, n_coef - 1))
+        P = np.zeros((n_coef, n_coef), dtype=np.float64)
+        P[1:, 1:] = 0.2 * (A.T @ A) + 0.1 * np.eye(n_coef - 1)
+
+        coef = np.asarray(
+            fit_poisson_regressions(X, spikes, weights, penalty_matrix=P),
+            dtype=np.float64,
+        )
+        rates = np.exp(coef @ X.T)
+        # First-order KKT optimality: -(y - w*rate) @ X + 2 * coef @ P == 0
+        grad = -((spikes - weights[None, :] * rates) @ X) + 2.0 * (coef @ P)
+        np.testing.assert_allclose(grad / weights.sum(), 0.0, atol=1e-4)
+        # Unpenalized intercept conserves total expected spike count exactly
+        np.testing.assert_allclose(
+            (weights[None, :] * rates).sum(axis=1), spikes.sum(axis=1), rtol=1e-4
+        )
+
+    @pytest.mark.parametrize(
+        ("bad_matrix", "match"),
+        [
+            (np.eye(3), "shape"),
+            (np.full((4, 4), np.nan), "finite"),
+            (
+                np.array([[0, 1, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1.0]]),
+                "symmetric",
+            ),
+            (np.diag([0.0, 1.0, -0.5, 1.0]), "positive semidefinite"),
+        ],
+    )
+    def test_invalid_penalty_matrix_raises_even_with_zero_exposure(
+        self, bad_matrix, match
+    ):
+        X = np.ones((5, 4))
+        spikes = np.zeros((1, 5))
+        weights = np.zeros(5)
+        with pytest.raises(ValidationError, match=match):
+            fit_poisson_regressions(X, spikes, weights, penalty_matrix=bad_matrix)
+
+    @pytest.mark.parametrize("bad_ell", [0.0, -5.0, np.inf, np.nan, True, "10"])
+    def test_invalid_smoothness_length_raises(
+        self, line_env_100cm, simple_spike_data, bad_ell
+    ):
+        with pytest.raises(ValidationError, match="log_rate_smoothness_length"):
+            _fit_encoding(
+                line_env_100cm,
+                simple_spike_data,
+                log_rate_smoothness_length=bad_ell,
+            )
+
+    def test_l2_penalty_and_smoothness_length_are_mutually_exclusive(
+        self, line_env_100cm, simple_spike_data
+    ):
+        with pytest.raises(ValidationError, match="cannot both be set"):
+            _fit_encoding(
+                line_env_100cm,
+                simple_spike_data,
+                l2_penalty=0.1,
+                log_rate_smoothness_length=15.0,
+            )
+
+    def test_smoothness_penalty_matrix_properties_1d_2d_3d_and_track_graph(self):
+        # 1-D grid
+        env1 = Environment(place_bin_size=5.0).fit_place_grid(
+            np.linspace(0.0, 100.0, 50)[:, None], infer_track_interior=False
+        )
+        # 2-D grid
+        gx, gy = np.meshgrid(np.linspace(0.0, 40.0, 10), np.linspace(0.0, 40.0, 10))
+        env2 = Environment(place_bin_size=5.0).fit_place_grid(
+            np.column_stack([gx.ravel(), gy.ravel()]), infer_track_interior=False
+        )
+        # 3-D grid
+        x3, y3, z3 = np.meshgrid(
+            np.linspace(0.0, 15.0, 4),
+            np.linspace(0.0, 15.0, 4),
+            np.linspace(0.0, 15.0, 4),
+        )
+        env3 = Environment(place_bin_size=5.0).fit_place_grid(
+            np.column_stack([x3.ravel(), y3.ravel(), z3.ravel()]),
+            infer_track_interior=False,
+        )
+        # Track graph
+        env_tg, _, _, _, _ = _corner_track_data()
+
+        for env, ks in [(env1, 15.0), (env2, 15.0), (env3, 10.0), (env_tg, 3.0)]:
+            centers = env.place_bin_centers_[env.is_track_interior_flat_]
+            if env.track_graph is not None:
+                design_info = sorted_spikes_glm.make_track_graph_basis(
+                    env, knot_spacing=ks
+                )
+            else:
+                design_info = sorted_spikes_glm.TensorSplineBasis(
+                    basis_positions=centers,
+                    place_bin_edges=env.place_bin_edges_,
+                    knot_spacing=ks,
+                )
+            B = np.asarray(make_spline_predict_matrix(design_info, centers))
+            P = sorted_spikes_glm.log_rate_prior_smoothness_penalty(env, B, 12.0)
+            assert P.shape == (B.shape[1], B.shape[1])
+            np.testing.assert_allclose(P, P.T, atol=1e-12)
+            np.testing.assert_array_equal(P[0, :], 0.0)
+            np.testing.assert_array_equal(P[:, 0], 0.0)
+            eigs = np.linalg.eigvalsh(P[1:, 1:])
+            assert float(eigs.min()) > 0.0
+
+        # Intercept-only basis gives zero penalty
+        P_int = sorted_spikes_glm.log_rate_prior_smoothness_penalty(
+            env1, np.ones((int(env1.is_track_interior_flat_.sum()), 1)), 10.0
+        )
+        np.testing.assert_array_equal(P_int, [[0.0]])
+
+    def test_coordinate_rescaling_invariance_cm_vs_meters(self):
+        rng = np.random.default_rng(19)
+        t = np.arange(3000) * 0.02
+        pos_cm = np.column_stack(
+            [
+                25.0 + 22.0 * np.sin(0.11 * t) * np.cos(0.03 * t),
+                25.0 + 22.0 * np.cos(0.09 * t) * np.sin(0.04 * t),
+            ]
+        )
+        rate = (
+            15.0 * np.exp(-np.sum((pos_cm - 25.0) ** 2, axis=1) / (2.0 * 8.0**2)) + 0.5
+        )
+        sp = [t[rng.random(t.size) < rate * 0.02]]
+
+        env_cm = Environment(place_bin_size=5.0).fit_place_grid(
+            pos_cm, infer_track_interior=False
+        )
+        env_m = Environment(place_bin_size=0.05).fit_place_grid(
+            pos_cm * 0.01, infer_track_interior=False
+        )
+
+        enc_cm = fit_sorted_spikes_glm_encoding_model(
+            t,
+            pos_cm,
+            sp,
+            env_cm,
+            emission_knot_spacing=10.0,
+            log_rate_smoothness_length=20.0,
+            disable_progress_bar=True,
+        )
+        enc_m = fit_sorted_spikes_glm_encoding_model(
+            t,
+            pos_cm * 0.01,
+            sp,
+            env_m,
+            emission_knot_spacing=0.10,
+            log_rate_smoothness_length=0.20,
+            disable_progress_bar=True,
+        )
+        np.testing.assert_allclose(
+            enc_cm["place_fields"], enc_m["place_fields"], rtol=1e-4, atol=1e-5
+        )
+
+    def test_degenerate_constant_axis_2d_grid_matches_1d_penalty(self):
+        x = np.linspace(2.5, 47.5, 30)
+        env1 = Environment(
+            place_bin_size=5.0, position_range=((0.0, 50.0),)
+        ).fit_place_grid(x[:, None], infer_track_interior=False)
+        env2_deg = Environment(
+            place_bin_size=(5.0, 3.7),
+            position_range=((0.0, 50.0), (0.0, 3.7)),
+            dilate=False,
+            fill_holes=False,
+        ).fit_place_grid(
+            np.column_stack([x, np.full_like(x, 1.85)]),
+            infer_track_interior=True,
+        )
+        c1 = env1.place_bin_centers_[env1.is_track_interior_flat_]
+        c2 = env2_deg.place_bin_centers_[env2_deg.is_track_interior_flat_]
+        # Only a single constant y-slice is interior, matching the 1-D bins.
+        assert np.ptp(c2[:, 1]) == 0.0
+        np.testing.assert_allclose(c2[:, 0], c1[:, 0], atol=1e-12)
+        b1 = np.asarray(
+            make_spline_predict_matrix(
+                sorted_spikes_glm.TensorSplineBasis(c1, env1.place_bin_edges_, 10.0),
+                c1,
+            )
+        )
+        p1 = sorted_spikes_glm.log_rate_prior_smoothness_penalty(env1, b1, 15.0)
+        p2 = sorted_spikes_glm.log_rate_prior_smoothness_penalty(env2_deg, b1, 15.0)
+        np.testing.assert_allclose(p2, p1, rtol=1e-12, atol=1e-12)
+
+    def test_larger_smoothness_length_reduces_dirichlet_roughness(self):
+        from non_local_detector.likelihoods.diffusion import cached_laplacian
+
+        rng = np.random.default_rng(23)
+        t = np.arange(3000) * 0.02
+        pos = np.column_stack(
+            [
+                25.0 + 23.0 * np.sin(0.13 * t) * np.cos(0.05 * t),
+                25.0 + 23.0 * np.cos(0.11 * t) * np.sin(0.06 * t),
+            ]
+        )
+        env = Environment(place_bin_size=5.0).fit_place_grid(
+            pos, infer_track_interior=False
+        )
+        rate = 10.0 * np.exp(-np.sum((pos - 25.0) ** 2, axis=1) / (2.0 * 9.0**2)) + 0.3
+        sp = [t[rng.random(t.size) < rate * 0.02]]
+
+        lap, _, bin_sizes = cached_laplacian(env)
+        roughness = []
+        for ell in [5.0, 20.0, 60.0]:
+            enc = fit_sorted_spikes_glm_encoding_model(
+                t,
+                pos,
+                sp,
+                env,
+                emission_knot_spacing=7.07,
+                log_rate_smoothness_length=ell,
+                disable_progress_bar=True,
+            )
+            f = np.log(np.asarray(enc["place_fields"][0, env.is_track_interior_flat_]))
+            wf = np.sqrt(bin_sizes) * f
+            roughness.append(float(wf @ (lap @ wf)))
+        assert roughness[0] > roughness[1] > roughness[2]
+
+    def test_sparse_2d_open_field_held_out_ll_improves_at_default_knots(self):
+        rng = np.random.default_rng(31)
+        dt = 0.02
+        n_time, split = 6000, 4000
+        t = np.arange(n_time) * dt
+        # Sparse Lissajous-like 2-D trajectory over 100x100 cm arena
+        pos = np.column_stack(
+            [
+                50.0 + 44.0 * np.sin(0.17 * t + 0.2) * np.cos(0.043 * t),
+                50.0 + 44.0 * np.cos(0.13 * t + 0.7) * np.sin(0.051 * t),
+            ]
+        )
+        env = Environment(place_bin_size=5.0).fit_place_grid(
+            pos, infer_track_interior=False
+        )
+        centers = rng.uniform(15.0, 85.0, size=(10, 2))
+        tr_sp, te_sp = [], []
+        cut = float(t[split])
+        for c in centers:
+            d2 = np.sum((pos - c[None, :]) ** 2, axis=1)
+            rate = 18.0 * np.exp(-0.5 * d2 / (12.0**2)) + 0.2
+            st = t[rng.random(n_time) < rate * dt]
+            tr_sp.append(st[st < cut])
+            te_sp.append(st[st >= cut])
+
+        te_edges = time_edges_from_centers(t[split:])
+        m_ridge = fit_sorted_spikes_glm_encoding_model(
+            t[:split], pos[:split], tr_sp, env, disable_progress_bar=True
+        )
+        m_smooth = fit_sorted_spikes_glm_encoding_model(
+            t[:split],
+            pos[:split],
+            tr_sp,
+            env,
+            log_rate_smoothness_length=25.0,
+            disable_progress_bar=True,
+        )
+        ll_ridge = float(
+            np.sum(
+                predict_sorted_spikes_glm_log_likelihood(
+                    t[split:],
+                    pos[split:],
+                    te_sp,
+                    time_edges=te_edges,
+                    is_local=True,
+                    **m_ridge,
+                )
+            )
+        )
+        ll_smooth = float(
+            np.sum(
+                predict_sorted_spikes_glm_log_likelihood(
+                    t[split:],
+                    pos[split:],
+                    te_sp,
+                    time_edges=te_edges,
+                    is_local=True,
+                    **m_smooth,
+                )
+            )
+        )
+        assert ll_smooth > ll_ridge + 50.0
+
+    def test_track_graph_and_nld_roundtrip_with_smoothness(self, tmp_path):
+        from non_local_detector import SortedSpikesDecoder
+
+        env, time, position, spike_times, place_centers = _corner_track_data(
+            environment_name=""
+        )
+        dec = SortedSpikesDecoder(
+            environments=env,
+            sorted_spikes_algorithm="sorted_spikes_glm",
+            sorted_spikes_algorithm_params={
+                "emission_knot_spacing": 2.0,
+                "log_rate_smoothness_length": 4.0,
+                "disable_progress_bar": True,
+            },
+        ).fit(position_time=time, position=position, spike_times=spike_times)
+        enc = next(iter(dec.encoding_model_.values()))
+        pf = np.asarray(enc["place_fields"])
+        linear_centers = dec.environments_[0].place_bin_centers_.ravel()
+        assert np.all(np.isfinite(pf))
+        for center, field in zip(place_centers, pf, strict=True):
+            assert abs(linear_centers[np.argmax(field)] - center) < 2.0
+
+        path = tmp_path / "smooth_glm.nld"
+        dec.save_model(path)
+        reloaded = SortedSpikesDecoder.load_model(path)
+        edges = dec.calculate_time_edges([float(time[0]), float(time[199])])
+        r1 = dec.predict(spike_times, time_edges=edges)
+        r2 = reloaded.predict(spike_times, time_edges=edges)
+        np.testing.assert_allclose(
+            r1.acausal_posterior.values, r2.acausal_posterior.values, rtol=0, atol=0
+        )

@@ -75,6 +75,7 @@ import pandas as pd
 from numpy.typing import ArrayLike
 from patsy import build_design_matrices, dmatrix
 from patsy.design_info import DesignInfo
+from scipy.special import gamma as scipy_gamma
 
 from non_local_detector._jax_typing import optimization_barrier
 from non_local_detector._warnings import user_stacklevel
@@ -103,6 +104,7 @@ from non_local_detector.likelihoods.common import (
     validate_encoding_contract,
     validate_population_lengths,
 )
+from non_local_detector.likelihoods.diffusion import cached_laplacian
 from non_local_detector.likelihoods.encoding_model import SortedSpikesEncodingModel
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
@@ -969,6 +971,197 @@ def log_rate_prior_l2_penalty(
     return mean_squared_norm / (2.0 * log_rate_prior_std**2)
 
 
+def _validate_smoothness_length(value: Any) -> float:
+    """Validate a positive finite spatial smoothness length scale."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        msg = "log_rate_smoothness_length must be a positive, finite length scale"
+        raise ValidationError(
+            msg,
+            expected="a float > 0 (position units)",
+            got=repr(value),
+        )
+    ell = float(value)
+    if not (np.isfinite(ell) and ell > 0.0):
+        msg = "log_rate_smoothness_length must be a positive, finite length scale"
+        raise ValidationError(
+            msg,
+            expected="a float > 0 (position units)",
+            got=repr(value),
+        )
+    return ell
+
+
+def _validate_penalty_matrix(
+    penalty_matrix: np.ndarray | jax.Array, n_coefficients: int
+) -> np.ndarray:
+    """Validate a symmetric positive semidefinite quadratic penalty matrix."""
+    mat = np.asarray(penalty_matrix, dtype=np.float64)
+    if mat.ndim != 2 or mat.shape != (n_coefficients, n_coefficients):
+        msg = "penalty_matrix must have shape (n_coefficients, n_coefficients)"
+        raise ValidationError(
+            msg,
+            expected=f"shape ({n_coefficients}, {n_coefficients})",
+            got=f"shape {mat.shape}",
+        )
+    if not np.all(np.isfinite(mat)):
+        msg = "penalty_matrix must contain only finite values"
+        raise ValidationError(
+            msg, expected="all finite entries", got="non-finite values"
+        )
+    if not np.allclose(mat, mat.T, rtol=1e-6, atol=1e-10):
+        msg = "penalty_matrix must be symmetric"
+        raise ValidationError(
+            msg,
+            expected="symmetric matrix (P == P.T)",
+            got=f"max |P - P.T| = {float(np.max(np.abs(mat - mat.T))):.3e}",
+        )
+    sym = 0.5 * (mat + mat.T)
+    if n_coefficients > 0:
+        min_eig = float(np.linalg.eigvalsh(sym)[0])
+        scale = max(1.0, float(np.max(np.abs(sym))))
+        if min_eig < -1e-10 * scale:
+            msg = "penalty_matrix must be positive semidefinite"
+            raise ValidationError(
+                msg,
+                expected="all eigenvalues >= 0",
+                got=f"minimum eigenvalue {min_eig:.3e}",
+            )
+    return sym
+
+
+def log_rate_prior_smoothness_penalty(
+    environment: Environment,
+    predict_matrix: np.ndarray,
+    log_rate_smoothness_length: float,
+    log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
+) -> np.ndarray:
+    r"""Whittle-Matern spatial smoothness penalty matrix on spline coefficients.
+
+    Builds the symmetric positive semidefinite quadratic penalty ``P`` such that
+    ``beta^T P beta`` approximates the negative log prior density of a
+    Whittle-Matern Gaussian process (SPDE order ``alpha = 2``, smoothness
+    ``nu = 2 - d / 2``) with correlation length ``ell = log_rate_smoothness_length``
+    and marginal standard deviation ``sigma = log_rate_prior_std`` over the
+    environment's interior bins:
+
+    .. math::
+
+        \beta_s^\top P_s \beta_s
+        = \frac{\Gamma(2 - d/2)}{2 (4\pi)^{d/2} \sigma^2}
+          \int_\Omega \left(
+              \ell^{-d} f(x)^2
+              + 2 \ell^{2-d} \|\nabla f(x)\|^2
+              + \ell^{4-d} (\Delta f(x))^2
+          \right) dx
+
+    where ``f = B[:, 1:] @ beta_s`` is the spatial log-rate deviation from the
+    unpenalized intercept (``P[0, :] = P[:, 0] = 0``). The spatial integrals and
+    Laplacian use the environment's finite-volume graph operator from
+    :func:`~non_local_detector.likelihoods.diffusion.cached_laplacian`, so the
+    penalty respects walls, non-convex interiors, track-graph junctions, and
+    unequal bin widths, and is invariant to coordinate unit rescaling and place
+    bin size. A small diagonal ridge floor (``1e-6`` of the equivalent
+    :func:`log_rate_prior_l2_penalty`) keeps ``P[1:, 1:]`` strictly positive
+    definite when basis columns outnumber interior bins.
+
+    Parameters
+    ----------
+    environment : Environment
+        Fitted spatial environment defining the interior-bin graph and volumes.
+    predict_matrix : np.ndarray, shape (n_interior_bins, n_coefficients)
+        Spline basis evaluated at the environment's interior bin centers.
+        Column 0 is the unpenalized intercept.
+    log_rate_smoothness_length : float
+        Positive finite spatial correlation length scale ``ell`` in position
+        units. Larger values enforce smoother log-rate maps.
+    log_rate_prior_std : float, optional
+        Marginal prior SD of the log-rate deviation, in nats, by default
+        ``GLM_LOG_RATE_PRIOR_STD``.
+
+    Returns
+    -------
+    penalty_matrix : np.ndarray, shape (n_coefficients, n_coefficients)
+        Symmetric positive semidefinite penalty matrix against the total log
+        likelihood, as ``fit_poisson_regressions(..., penalty_matrix=...)``
+        takes it. All zeros for an intercept-only basis.
+    """
+    ell = _validate_smoothness_length(log_rate_smoothness_length)
+    # Reuse log_rate_prior_l2_penalty for consistent log_rate_prior_std validation
+    # and the coordinate-invariant diagonal ridge floor.
+    basis = np.asarray(predict_matrix, dtype=np.float64)
+    ridge_scale = log_rate_prior_l2_penalty(basis, log_rate_prior_std)
+    n_interior, n_coefficients = basis.shape
+    penalty = np.zeros((n_coefficients, n_coefficients), dtype=np.float64)
+    if n_coefficients <= 1:
+        return penalty
+
+    laplacian, node_order, bin_sizes = cached_laplacian(environment)
+    if n_interior != len(bin_sizes):
+        msg = "predict_matrix rows do not match the environment's interior bins"
+        raise ValidationError(
+            msg,
+            expected=f"{len(bin_sizes)} rows (interior bins)",
+            got=f"{n_interior} rows",
+        )
+
+    if environment.track_graph is not None:
+        n_dims = 1
+        eff_bin_sizes = np.asarray(bin_sizes, dtype=np.float64)
+    else:
+        interior_centers = np.asarray(
+            environment.place_bin_centers_[environment.is_track_interior_flat_],
+            dtype=np.float64,
+        )
+        varying = np.ptp(interior_centers, axis=0) > 0
+        n_dims = int(np.sum(varying))
+        eff_bin_sizes = np.asarray(bin_sizes, dtype=np.float64)
+        if not np.all(varying):
+            widths = [np.diff(edge) for edge in environment.edges_]
+            interior_indices = np.unravel_index(node_order, environment.centers_shape_)
+            non_varying_scale = np.ones_like(eff_bin_sizes)
+            for axis, is_var in enumerate(varying):
+                if not is_var:
+                    non_varying_scale = (
+                        non_varying_scale * widths[axis][interior_indices[axis]]
+                    )
+            eff_bin_sizes = eff_bin_sizes / non_varying_scale
+
+    if n_dims == 0:
+        return penalty
+    if n_dims > 3:
+        msg = (
+            "Whittle-Matern smoothness penalty is only defined for spatial "
+            "dimensions 1, 2, or 3"
+        )
+        raise ValidationError(
+            msg,
+            expected="1 <= n_varying_dims <= 3",
+            got=f"{n_dims} varying spatial dimensions",
+        )
+
+    spline = basis[:, 1:]
+    weighted_spline = np.sqrt(eff_bin_sizes)[:, None] * spline
+    lap_weighted = laplacian @ weighted_spline
+    m0 = weighted_spline.T @ weighted_spline
+    m1 = weighted_spline.T @ lap_weighted
+    m2 = lap_weighted.T @ lap_weighted
+
+    scale = float(scipy_gamma(2.0 - 0.5 * n_dims)) / (
+        2.0 * ((4.0 * np.pi) ** (0.5 * n_dims)) * (float(log_rate_prior_std) ** 2)
+    )
+    p_spline = scale * (
+        (ell ** (-n_dims)) * m0
+        + 2.0 * (ell ** (2 - n_dims)) * m1
+        + (ell ** (4 - n_dims)) * m2
+    )
+    p_spline = 0.5 * (p_spline + p_spline.T)
+    p_spline[np.diag_indices_from(p_spline)] += 1e-6 * ridge_scale
+    penalty[1:, 1:] = p_spline
+    return penalty
+
+
 # Gradient inf-norm above which a fit is treated as genuinely non-converged.
 # Set well above GLM_GRADIENT_TOL, which float32 sums over long recordings
 # cannot always reach, so stopping at the precision limit does not warn.
@@ -1146,19 +1339,24 @@ def fit_poisson_regressions(
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
     *,
+    penalty_matrix: np.ndarray | None = None,
     rate_floor: float = EPS,
 ) -> jax.Array:
     """Fit weighted Poisson regressions for many cells sharing one design.
 
     Each cell maximizes its total log likelihood ``sum_i [spikes_i *
-    log(lambda_i) - weights_i * lambda_i]`` minus ``l2_penalty`` times the sum
-    of its squared non-intercept coefficients, with ``lambda =
-    max(exp(design_matrix @ coefficients), rate_floor)``. This is the
-    posterior mode under independent ``Normal(0, 1 / (2 * l2_penalty))``
-    priors on those coefficients, so the prior's weight against the data does
-    not grow with the exposure. The event and exposure terms are weighted
-    separately: ``spikes`` already carries each event's weight, so it is not
-    multiplied by ``weights`` again.
+    log(lambda_i) - weights_i * lambda_i]`` minus its quadratic coefficient
+    penalty — either ``l2_penalty`` times the sum of squared non-intercept
+    coefficients (when ``penalty_matrix`` is None) or ``beta^T penalty_matrix
+    beta`` (when ``penalty_matrix`` is given) — with ``lambda =
+    max(exp(design_matrix @ coefficients), rate_floor)``. With a diagonal
+    penalty this is the posterior mode under independent ``Normal(0, 1 / (2 *
+    l2_penalty))`` priors on the non-intercept coefficients, and with a general
+    symmetric positive semidefinite ``penalty_matrix`` it is the posterior mode
+    under a ``Normal(0, (2 * penalty_matrix)^-1)`` Gaussian prior, so the
+    prior's weight against the data does not grow with the exposure. The event
+    and exposure terms are weighted separately: ``spikes`` already carries each
+    event's weight, so it is not multiplied by ``weights`` again.
 
     All cells take damped Newton steps together. The sums over rows run
     compiled on the device in row blocks; each cell's small Newton system is
@@ -1190,7 +1388,11 @@ def fit_poisson_regressions(
     l2_penalty : float, optional
         Penalty on the sum of squared non-intercept coefficients, in nats
         against the total log likelihood (not per second of exposure), by
-        default 1e-7.
+        default 1e-7. Ignored when ``penalty_matrix`` is given.
+    penalty_matrix : np.ndarray, shape (n_coefficients, n_coefficients), optional
+        Symmetric positive semidefinite quadratic penalty matrix ``P`` for the
+        penalty ``beta^T P beta`` against the total log likelihood, by default
+        None (uses ``l2_penalty`` on non-intercept coefficients).
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
 
@@ -1204,6 +1406,11 @@ def fit_poisson_regressions(
     weights = np.asarray(weights, dtype=np.float32)
     n_cells = spikes.shape[0]
     n_time, n_coefficients = design_matrix.shape
+    penalty_mat = (
+        None
+        if penalty_matrix is None
+        else _validate_penalty_matrix(penalty_matrix, n_coefficients)
+    )
 
     # Zero total exposure means no training coverage at all, so the rate is
     # unidentified and ``sum(spikes) / sum(weights)`` is 0/0. Return an
@@ -1263,13 +1470,19 @@ def fit_poisson_regressions(
         # The penalty is on the total log likelihood, so its weight against the
         # data does not grow with the exposure. Dividing both by the exposure
         # keeps the gradient tolerances per second of exposure.
-        loss = (
-            -data + l2_penalty * np.sum(penalized * coefficients**2, axis=1)
-        ) / weight_sum
-        gradient = (
-            -data_gradient + 2 * l2_penalty * penalized * coefficients
-        ) / weight_sum
-        hessian = (data_hessian + 2 * l2_penalty * np.diag(penalized)) / weight_sum
+        if penalty_mat is None:
+            loss = (
+                -data + l2_penalty * np.sum(penalized * coefficients**2, axis=1)
+            ) / weight_sum
+            gradient = (
+                -data_gradient + 2 * l2_penalty * penalized * coefficients
+            ) / weight_sum
+            hessian = (data_hessian + 2 * l2_penalty * np.diag(penalized)) / weight_sum
+        else:
+            p_coef = coefficients @ penalty_mat
+            loss = (-data + np.sum(coefficients * p_coef, axis=1)) / weight_sum
+            gradient = (-data_gradient + 2.0 * p_coef) / weight_sum
+            hessian = (data_hessian + 2.0 * penalty_mat[None, :, :]) / weight_sum
         return loss, gradient, hessian
 
     def loss_change(coefficients: np.ndarray, step: np.ndarray) -> np.ndarray:
@@ -1305,9 +1518,14 @@ def fit_poisson_regressions(
             ),
             dtype=np.float64,
         )
-        penalty_change = l2_penalty * np.sum(
-            penalized * step * (2 * coefficients + step), axis=1
-        )
+        if penalty_mat is None:
+            penalty_change = l2_penalty * np.sum(
+                penalized * step * (2 * coefficients + step), axis=1
+            )
+        else:
+            penalty_change = np.sum(
+                step * ((2.0 * coefficients + step) @ penalty_mat), axis=1
+            )
         return cast(np.ndarray, (-data_change + penalty_change) / weight_sum)
 
     loss, gradient, hessian = evaluate(coefficients)
@@ -1416,6 +1634,7 @@ def fit_poisson_regression(
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
     *,
+    penalty_matrix: np.ndarray | None = None,
     rate_floor: float = EPS,
 ) -> jax.Array:
     """Fit a weighted Poisson regression model for one cell.
@@ -1433,7 +1652,11 @@ def fit_poisson_regression(
         Per-row exposure weight.
     l2_penalty : float, optional
         Penalty on the sum of squared non-intercept coefficients against the
-        total log likelihood, by default 1e-7.
+        total log likelihood, by default 1e-7. Ignored when ``penalty_matrix``
+        is given.
+    penalty_matrix : np.ndarray, shape (n_coefficients, n_coefficients), optional
+        Symmetric positive semidefinite quadratic penalty matrix ``P`` for the
+        penalty ``beta^T P beta``, by default None.
     rate_floor : float, optional
         Lower bound on the fitted rate, by default ``EPS``.
 
@@ -1447,6 +1670,7 @@ def fit_poisson_regression(
         np.asarray(spikes)[None],
         weights,
         l2_penalty,
+        penalty_matrix=penalty_matrix,
         rate_floor=rate_floor,
     )[0]
 
@@ -1462,6 +1686,7 @@ def fit_rate_maps(
     emission_knot_spacing: float,
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
     l2_penalty: float | None = None,
+    log_rate_smoothness_length: float | None = None,
     n_maps: int | None = None,
 ) -> tuple["TrackGraphBasis | TensorSplineBasis", jax.Array, jax.Array]:
     """Penalized Poisson GLM rate maps on the environment's spline basis.
@@ -1494,7 +1719,14 @@ def fit_rate_maps(
         given.
     l2_penalty : float, optional
         Penalty on the squared non-intercept coefficients, by default None
-        (derived from ``log_rate_prior_std``).
+        (derived from ``log_rate_prior_std``). Mutually exclusive with
+        ``log_rate_smoothness_length``.
+    log_rate_smoothness_length : float, optional
+        Optional positive spatial correlation length scale (in position units)
+        for a Whittle-Matern graph-Laplacian smoothness prior on the log-rate
+        map (see :func:`log_rate_prior_smoothness_penalty`). When None
+        (default), uses the uncoupled ridge penalty from ``l2_penalty`` or
+        ``log_rate_prior_std``. Mutually exclusive with ``l2_penalty``.
     n_maps : int, optional
         Number of rate maps; required when ``event_counts`` is callable.
 
@@ -1505,6 +1737,22 @@ def fit_rate_maps(
     interior_rates : jax.Array, shape (n_interior_bins, n_maps)
         Floored rates in Hz at the interior bin centers.
     """
+    if l2_penalty is not None and log_rate_smoothness_length is not None:
+        msg = "l2_penalty and log_rate_smoothness_length cannot both be set"
+        raise ValidationError(
+            msg,
+            expected="at most one of l2_penalty or log_rate_smoothness_length",
+            got=(
+                f"l2_penalty={l2_penalty!r}, "
+                f"log_rate_smoothness_length={log_rate_smoothness_length!r}"
+            ),
+            hint=(
+                "Pass log_rate_smoothness_length with log_rate_prior_std for a "
+                "spatial smoothness prior, or l2_penalty alone for a diagonal ridge."
+            ),
+        )
+    if log_rate_smoothness_length is not None:
+        _validate_smoothness_length(log_rate_smoothness_length)
     # Define the spline on the environment, not on the tracking: interior bin
     # centers plus the physical edge extrema of each varying dimension, so the
     # natural-spline boundaries sit at the track ends. Bins the animal never
@@ -1583,10 +1831,6 @@ def fit_rate_maps(
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
     )
-    if l2_penalty is None:
-        l2_penalty = log_rate_prior_l2_penalty(
-            np.asarray(emission_predict_matrix), log_rate_prior_std
-        )
     if fit_edges is None:
         emission_design_matrix = make_spline_predict_matrix(
             emission_design_info, fit_positions
@@ -1599,13 +1843,33 @@ def fit_rate_maps(
                 fit_positions, edge=fit_edges
             )
         )
-    coefficients = fit_poisson_regressions(
-        emission_design_matrix,
-        event_counts,
-        exposure,
-        l2_penalty=l2_penalty,
-        rate_floor=RATE_EPS_HZ,
-    )
+    if log_rate_smoothness_length is not None:
+        penalty_matrix = log_rate_prior_smoothness_penalty(
+            environment,
+            np.asarray(emission_predict_matrix),
+            log_rate_smoothness_length,
+            log_rate_prior_std=log_rate_prior_std,
+        )
+        coefficients = fit_poisson_regressions(
+            emission_design_matrix,
+            event_counts,
+            exposure,
+            l2_penalty=0.0,
+            penalty_matrix=penalty_matrix,
+            rate_floor=RATE_EPS_HZ,
+        )
+    else:
+        if l2_penalty is None:
+            l2_penalty = log_rate_prior_l2_penalty(
+                np.asarray(emission_predict_matrix), log_rate_prior_std
+            )
+        coefficients = fit_poisson_regressions(
+            emission_design_matrix,
+            event_counts,
+            exposure,
+            l2_penalty=l2_penalty,
+            rate_floor=RATE_EPS_HZ,
+        )
     interior_rates = glm_rates(
         jnp.asarray(emission_predict_matrix), jnp.asarray(coefficients)
     )  # (n_interior_bins, n_maps)
@@ -1636,6 +1900,7 @@ def fit_sorted_spikes_glm_encoding_model(
     l2_penalty: float | None = None,
     disable_progress_bar: bool = False,
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
+    log_rate_smoothness_length: float | None = None,
     encoding_time_range: ArrayLike | None = None,
     valid_position_intervals: ArrayLike | None = None,
     _encoding_support: EncodingSupport | None = None,
@@ -1693,6 +1958,15 @@ def fit_sorted_spikes_glm_encoding_model(
         ``GLM_LOG_RATE_PRIOR_STD`` (2.0: three SDs span a peak-to-baseline
         ratio of ``exp(6)``, about 400). Ignored when ``l2_penalty`` is
         given.
+    log_rate_smoothness_length : float, optional
+        Optional positive spatial correlation length scale (in position units)
+        for a Whittle-Matern graph-Laplacian smoothness prior on each neuron's
+        log-rate map (see :func:`log_rate_prior_smoothness_penalty`). Couples
+        neighboring spline basis functions across the environment's interior
+        graph so fine 2-D tensor-spline grids do not overfit sparsely sampled
+        regions, while respecting walls, track-graph junctions, and bin sizes.
+        By default None (uncoupled diagonal ridge prior). Mutually exclusive
+        with ``l2_penalty``.
     encoding_time_range : array_like, shape (2,), optional
         Acquisition start/stop in seconds, replacing the outer bounds of the
         encoding support. A range inside the samples clips it, using the
@@ -1780,6 +2054,7 @@ def fit_sorted_spikes_glm_encoding_model(
         emission_knot_spacing=emission_knot_spacing,
         log_rate_prior_std=log_rate_prior_std,
         l2_penalty=l2_penalty,
+        log_rate_smoothness_length=log_rate_smoothness_length,
     )
     place_fields = (
         jnp.zeros((len(spike_times), is_track_interior.shape[0]))

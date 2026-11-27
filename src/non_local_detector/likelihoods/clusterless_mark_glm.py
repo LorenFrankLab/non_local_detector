@@ -455,6 +455,7 @@ def fit_clusterless_mark_glm_encoding_model(
     mark_random_state: int = 0,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     log_rate_prior_std: float = GLM_LOG_RATE_PRIOR_STD,
+    log_rate_smoothness_length: float | None = None,
     spike_block_size: int = 1000,
     disable_progress_bar: bool = False,
     encoding_time_range: ArrayLike | None = None,
@@ -509,6 +510,12 @@ def fit_clusterless_mark_glm_encoding_model(
         Prior SD, in nats, of each component's log-rate deviation from its
         baseline across the interior bins, by default
         ``GLM_LOG_RATE_PRIOR_STD``.
+    log_rate_smoothness_length : float, optional
+        Optional positive spatial correlation length scale (in position units)
+        for a Whittle-Matern graph-Laplacian smoothness prior on each
+        component's log-rate map (see
+        :func:`~non_local_detector.likelihoods.sorted_spikes_glm.log_rate_prior_smoothness_penalty`).
+        By default None (uncoupled diagonal ridge prior).
     spike_block_size : int, optional
         Decode spikes scored per block at predict, by default 1000. Stored in
         the encoding model.
@@ -656,6 +663,7 @@ def fit_clusterless_mark_glm_encoding_model(
         exposure_weights[support.indices],
         emission_knot_spacing=emission_knot_spacing,
         log_rate_prior_std=log_rate_prior_std,
+        log_rate_smoothness_length=log_rate_smoothness_length,
         n_maps=sum(event[0].n_components for event in spike_events),
     )
     coefficients = np.asarray(coefficients)  # type: ignore[assignment]  # name reused for the host copy
