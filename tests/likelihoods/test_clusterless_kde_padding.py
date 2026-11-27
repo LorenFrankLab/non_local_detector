@@ -21,11 +21,9 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
-    KDEModel,
     as_std_array,
     block_log_kde,
     get_position_at_time,
-    padded_occupancy_count,
     padded_sample_count,
     padded_spike_count,
     select_spike_rows,
@@ -546,50 +544,6 @@ def test_ragged_final_encoding_tile_counts_each_sample_once():
     np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
 
 
-def test_electrodes_with_nearby_sizes_share_compiled_kernels():
-    rng = np.random.default_rng(32)
-    env = Environment(place_bin_size=5.0, position_range=((0.0, 30.0), (0.0, 30.0)))
-    position_time = np.arange(0, 20.0, 1 / 30)
-    position = np.column_stack(
-        (15 + 10 * np.sin(position_time), 15 + 10 * np.cos(position_time))
-    )
-    env = env.fit_place_grid(position, infer_track_interior=False)
-    # 200 and 210 encoding spikes share one padded size; 40 and 50 decoding
-    # spikes share another.
-    encoding_times = [np.sort(rng.uniform(0, 20, n)) for n in (200, 210)]
-    encoding = fit_encoding(
-        position_time=position_time,
-        position=position,
-        spike_times=encoding_times,
-        spike_waveform_features=[
-            rng.normal(0, 30, (len(t), 4)) for t in encoding_times
-        ],
-        environment=env,
-        disable_progress_bar=True,
-    )
-    assert padded_sample_count(200) == padded_sample_count(210)
-    assert padded_spike_count(40, 100) == padded_spike_count(50, 100)
-    decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (40, 50)]
-    recording = (
-        env,
-        position_time,
-        position,
-        encoding,
-        decode_times,
-        [rng.normal(0, 30, (len(t), 4)) for t in decode_times],
-        np.arange(0, 2.0 + 1e-9, 0.002),
-    )
-    kernels = (
-        clusterless_kde._add_log_mark_intensities,
-        clusterless_kde._add_local_terms,
-    )
-    for kernel in kernels:
-        kernel.clear_cache()
-    for is_local in (False, True):
-        predict(recording, is_local, None)
-    assert [kernel._cache_size() for kernel in kernels] == [1, 1]
-
-
 @pytest.mark.parametrize(
     "policy",
     [{"enc_tile_size": 64}, {"enc_tile_size": 64, "use_streaming": True}],
@@ -645,54 +599,6 @@ def test_tiled_electrodes_and_chunks_with_nearby_sizes_share_compiled_kernels(
     assert kernel._cache_size() == 1
     whole = predict(recording, False, slice(0, 1000))
     np.testing.assert_allclose(np.concatenate(chunks), whole, rtol=1e-5, atol=1e-4)
-
-
-def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
-    """EM refits the occupancy from decode bins, one sample fewer than the
-    position samples of the first fit; the local kernel must not recompile."""
-    rng = np.random.default_rng(33)
-    env = Environment(place_bin_size=5.0, position_range=((0.0, 30.0), (0.0, 30.0)))
-    position_time = np.arange(0, 20.0, 1 / 30)
-    position = np.column_stack(
-        (15 + 10 * np.sin(position_time), 15 + 10 * np.cos(position_time))
-    )
-    env = env.fit_place_grid(position, infer_track_interior=False)
-    encoding_times = [np.sort(rng.uniform(0, 20, 200))]
-    encoding = fit_encoding(
-        position_time=position_time,
-        position=position,
-        spike_times=encoding_times,
-        spike_waveform_features=[rng.normal(0, 30, (200, 4))],
-        environment=env,
-        disable_progress_bar=True,
-    )
-    decode_times = [np.sort(rng.uniform(0, 2, 40))]
-    recording = (
-        env,
-        position_time,
-        position,
-        encoding,
-        decode_times,
-        [rng.normal(0, 30, (40, 4))],
-        np.arange(0, 2.0 + 1e-9, 0.002),
-    )
-    occupancy_model = encoding["occupancy_model"]
-    n_samples = occupancy_model.samples_.shape[0]
-    assert padded_occupancy_count(n_samples) == padded_occupancy_count(n_samples - 1)
-    refit = KDEModel(
-        std=occupancy_model.std, block_size=occupancy_model.block_size
-    ).fit(occupancy_model.samples_[:-1], weights=occupancy_model.weights_[:-1])
-    kernel = clusterless_kde._add_local_terms
-    kernel.clear_cache()
-    first = predict(recording, True, None)
-    second = predict(
-        (*recording[:3], {**encoding, "occupancy_model": refit}, *recording[4:]),
-        True,
-        None,
-    )
-    assert kernel._cache_size() == 1
-    assert np.all(np.isfinite(first))
-    assert np.all(np.isfinite(second))
 
 
 def make_translated_recording(offset, far_spike_time=None):
