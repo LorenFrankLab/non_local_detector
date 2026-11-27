@@ -326,7 +326,7 @@ def make_isolation_recording():
     samples would move its intensity across the arena. Electrode 2 fires
     everywhere with 600 samples (three tiles) and electrode 3 (one feature)
     has 257, one more than a tile. Decoding blocks of 16 spikes split
-    electrode 1's 300 spikes over many blocks and GEMM groups.
+    electrode 1's 300 spikes over many blocks.
     """
     rng = np.random.default_rng(37)
     env = Environment(place_bin_size=4.0, position_range=((0.0, 40.0), (0.0, 40.0)))
@@ -397,24 +397,38 @@ def electrode_subset(recording, electrodes):
 
 @pytest.mark.parametrize("is_local", [False, True])
 @pytest.mark.parametrize("pos_tile_size", [None, 7])
-def test_batched_electrodes_never_mix(is_local, pos_tile_size, reduction_path):
+@pytest.mark.parametrize("block_size", [16, 128], ids=["one-block", "block-groups"])
+def test_batched_electrodes_never_mix(
+    is_local, pos_tile_size, block_size, reduction_path, monkeypatch
+):
     """One pass over every electrode gives each spike its own electrode's
     intensity: its samples, weights, feature count, bandwidths and rate.
     Rows are summed by CPU's sequential scatter and by the off-CPU
-    segmented scan.
+    segmented scan. With ``block_size=16`` every block is reduced alone;
+    with 128 the blocks are 16 spikes and up to 8 of them share a GEMM.
 
     Electrode 0 alone and electrode 1 alone peak at opposite ends of the
     arena, so a spike reduced against the other's samples would differ by
     far more than float32 rounding from the per-electrode formulation.
     """
+    sizes = []
+    group_sizes = clusterless_kde._group_sizes
+    monkeypatch.setattr(
+        clusterless_kde,
+        "_group_sizes",
+        lambda *args: sizes.append(group_sizes(*args)) or sizes[-1],
+    )
     recording = make_isolation_recording()
     recording = (
         *recording[:3],
-        {**recording[3], "pos_tile_size": pos_tile_size},
+        {**recording[3], "pos_tile_size": pos_tile_size, "block_size": block_size},
         *recording[4:],
     )
     rows = slice(0, len(recording[-1]) - 1)
     actual = predict(recording, is_local, rows)
+    ((block_rows, group_blocks, _),) = sizes
+    assert block_rows == 16
+    assert (group_blocks > 1) == (block_size > 16)
     expected = reference(recording, is_local, rows)
     assert np.all(np.isfinite(actual))
     np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
@@ -451,6 +465,33 @@ def test_marks_with_another_feature_count_than_the_encoding_are_rejected(is_loca
     )
     with pytest.raises(ValidationError, match="electrode 1"):
         predict(recording, is_local, slice(0, 100))
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_grouped_blocks_match_the_per_electrode_formulation(is_local, monkeypatch):
+    """With ``block_size=128`` the electrodes' 16-spike blocks are reduced in
+    groups of up to 8, and still match the per-electrode formulation."""
+    sizes = []
+    group_sizes = clusterless_kde._group_sizes
+    monkeypatch.setattr(
+        clusterless_kde,
+        "_group_sizes",
+        lambda *args: sizes.append(group_sizes(*args)) or sizes[-1],
+    )
+    env, position_time, position, encoding, times, marks, edges = make_recording(False)
+    recording = (
+        env,
+        position_time,
+        position,
+        {**encoding, "block_size": 128},
+        times,
+        marks,
+        edges,
+    )
+    actual = predict(recording, is_local, slice(0, 2000))
+    assert max(group_blocks for _, group_blocks, _ in sizes) > 1
+    expected = reference(recording, is_local, slice(0, 2000))
+    np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
 
 
 def test_high_dimensional_marks_use_the_logsumexp_path():
