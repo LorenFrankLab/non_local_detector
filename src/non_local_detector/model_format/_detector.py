@@ -539,6 +539,46 @@ def _blocks_a_load_would_change(
     return changed
 
 
+def _refuse_stored_blocks_into_multi_bin_local(
+    detector: "_DetectorBase", blocks: Mapping[tuple[int, int], np.ndarray]
+) -> None:
+    """Raise rather than save a block into a multi-bin Local state.
+
+    A load rebuilds a stored block as itself, and a block into a multi-bin
+    Local state must be ``Discrete`` or ``Uniform`` (see
+    ``_multi_bin_local_transition``), so the load of such a file would raise.
+    This version fits only those, which rebuild exactly and are not stored;
+    a stored one comes from a detector fitted by an earlier version.
+
+    Raises
+    ------
+    ValidationError
+        If ``blocks`` holds a block from a spatial state into a multi-bin
+        Local state.
+    """
+    if detector.local_position_std is None:
+        return
+    models = detector.observation_models
+    into_local = sorted(
+        (source, target)
+        for source, target in blocks
+        if models[target].is_local and not models[source].is_no_spike
+    )
+    if into_local:
+        msg = (
+            "The detector holds a block into the multi-bin Local state that "
+            "this version does not rebuild, so its saved file could not be loaded"
+        )
+        raise ValidationError(
+            msg,
+            got=", ".join(
+                f"continuous_transition_types[{source}][{target}]"
+                for source, target in into_local
+            ),
+            hint="Refit the detector with this version before saving it.",
+        )
+
+
 def _same_block(
     held: StateSpace,
     rebuilt: StateSpace,
@@ -917,6 +957,7 @@ def detector_documents(
         )
     blocks = _data_blocks(detector)
     blocks.update(_blocks_a_load_would_change(detector, blocks))
+    _refuse_stored_blocks_into_multi_bin_local(detector, blocks)
     state["stored_transition_blocks"] = [
         {
             "from_state": source,
