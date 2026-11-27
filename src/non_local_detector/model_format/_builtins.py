@@ -249,6 +249,7 @@ def builtin_types() -> list[BuiltinType]:
                 "log_det_whitener",
                 "contact_positions",
                 "component_peak_channels",
+                "tail_df",
             ),
             {},
         ),

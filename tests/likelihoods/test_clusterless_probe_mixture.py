@@ -1528,3 +1528,375 @@ class TestReviewRegressions:
                 )
             )
             np.testing.assert_allclose(ll_small, ll_large, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.unit
+class TestHeavyTailedProbeMixture:
+    """Tests for factored heavy-tailed ``tail_df`` support in ProbeMarkMixture."""
+
+    @pytest.mark.parametrize(
+        "bad_df", [0.0, -5.0, 2.5, 3.0, float("inf"), float("nan"), True, "6"]
+    )
+    def test_tail_df_validation_rejects_invalid_values(self, bad_df):
+        rec = _make_dense_probe_recording(
+            n_channels=8, n_units=2, duration=6.0, seed=201
+        )
+        with pytest.raises(ValidationError, match="tail_df"):
+            fit_clusterless_probe_mixture_encoding_model(
+                rec["position_time"],
+                rec["position"],
+                rec["spike_times"],
+                rec["spike_waveform_features"],
+                rec["environment"],
+                tail_df=bad_df,
+                n_mark_components=2,
+                n_em_iterations=0,
+                disable_progress_bar=True,
+            )
+
+    def test_tail_df_density_normalization_and_host_device_parity(self):
+        """Factored GSM-t x 1D-t integrates to 1 and matches JAX kernels."""
+        import jax.numpy as jnp
+        from scipy.integrate import quad
+
+        from non_local_detector.likelihoods import clusterless_probe_mixture as cpm
+
+        # 1. Exact 1-D normalization check (1 local channel, 0 off-support).
+        mix_1d = ProbeMarkMixture(
+            weights=np.array([1.0]),
+            means=np.array([[2.5]]),
+            basis=np.array([[[1.0]]]),
+            basis_variances=np.array([[3.2]]),
+            support_indices=np.array([[0]], dtype=np.int32),
+            support_mask=np.array([[True]]),
+            noise_variance=np.array([1.7]),
+            background_mean=np.array([0.0]),
+            noise_whitener=None,
+            log_det_whitener=0.0,
+            contact_positions=None,
+            component_peak_channels=np.array([0], dtype=np.int32),
+            tail_df=6.0,
+        )
+        integral_1d, _ = quad(
+            lambda x: float(
+                np.exp(mix_1d.log_component_density(np.array([[x]]))[0, 0])
+            ),
+            -200.0,
+            200.0,
+            limit=200,
+        )
+        np.testing.assert_allclose(integral_1d, 1.0, rtol=1e-7, atol=1e-7)
+
+        # 2. Exact 2-D factored normalization (1 local channel + 1 off-support 1D-t).
+        mix_2d = ProbeMarkMixture(
+            weights=np.array([1.0]),
+            means=np.array([[-1.5]]),
+            basis=np.array([[[1.0]]]),
+            basis_variances=np.array([[2.4]]),
+            support_indices=np.array([[0]], dtype=np.int32),
+            support_mask=np.array([[True]]),
+            noise_variance=np.array([1.3, 2.1]),
+            background_mean=np.array([0.0, 0.7]),
+            noise_whitener=None,
+            log_det_whitener=0.0,
+            contact_positions=None,
+            component_peak_channels=np.array([0], dtype=np.int32),
+            tail_df=5.0,
+        )
+        # Factored 2-D density p(x0, x1) = p_loc(x0) * p_off(x1): check product of 1-D integrals.
+        grid = np.linspace(-80.0, 80.0, 4001)
+        dx = float(grid[1] - grid[0])
+        pts_x0 = np.column_stack([grid, np.full_like(grid, 0.7)])
+        pts_x1 = np.column_stack([np.full_like(grid, -1.5), grid])
+        p00 = float(np.exp(mix_2d.log_component_density(np.array([[-1.5, 0.7]]))[0, 0]))
+        int_x0 = float(np.sum(np.exp(mix_2d.log_component_density(pts_x0)[:, 0])) * dx)
+        int_x1 = float(np.sum(np.exp(mix_2d.log_component_density(pts_x1)[:, 0])) * dx)
+        np.testing.assert_allclose(int_x0 * int_x1 / p00, 1.0, rtol=1e-4, atol=1e-4)
+
+        # 3. Host float64 vs JAX all-K and candidate kernels (both all_full and local).
+        rec = _make_dense_probe_recording(
+            n_channels=16, n_units=4, duration=10.0, seed=202
+        )
+        for use_geom in (False, True):
+            enc = fit_clusterless_probe_mixture_encoding_model(
+                rec["position_time"],
+                rec["position"],
+                rec["spike_times"],
+                rec["spike_waveform_features"],
+                rec["environment"],
+                contact_positions=rec["contact_positions"] if use_geom else None,
+                max_local_channels=8 if use_geom else None,
+                covariance_rank=3,
+                n_mark_components=6,
+                tail_df=6.0,
+                n_em_iterations=2,
+                em_validation_blocks=0,
+                disable_progress_bar=True,
+            )
+            mix = enc["mark_mixtures"][0]
+            assert mix is not None
+            assert mix.tail_df == 6.0
+            probe = rec["spike_waveform_features"][0][:40]
+            host_ld = mix.log_component_density(probe)
+            y = jnp.asarray(mix.whiten_marks(probe), dtype=jnp.float32)
+            k = mix.n_components
+            jax_ld = np.asarray(
+                cpm._woodbury_log_density(
+                    y,
+                    jnp.asarray(mix.means, dtype=jnp.float32),
+                    jnp.asarray(mix.basis, dtype=jnp.float32),
+                    jnp.asarray(mix.basis_variances, dtype=jnp.float32),
+                    jnp.asarray(mix.support_indices, dtype=jnp.int32),
+                    jnp.asarray(mix.support_mask),
+                    jnp.asarray(mix.noise_variance, dtype=jnp.float32),
+                    jnp.asarray(mix.background_mean, dtype=jnp.float32),
+                    jnp.ones((k,), dtype=bool),
+                    log_det_whitener=mix.log_det_whitener,
+                    all_full_support=mix.all_full_support,
+                    tail_df=mix.tail_df,
+                )
+            )
+            np.testing.assert_allclose(jax_ld, host_ld, rtol=1e-4, atol=1e-3)
+
+            cand_idx = jnp.broadcast_to(
+                jnp.arange(k, dtype=jnp.int32)[None, :], (len(probe), k)
+            )
+            cand_msk = jnp.ones((len(probe), k), dtype=bool)
+            cand_ld = np.asarray(
+                cpm._woodbury_candidate_log_density(
+                    y,
+                    cand_idx,
+                    cand_msk,
+                    jnp.asarray(mix.means, dtype=jnp.float32),
+                    jnp.asarray(mix.basis, dtype=jnp.float32),
+                    jnp.asarray(mix.basis_variances, dtype=jnp.float32),
+                    jnp.asarray(mix.support_indices, dtype=jnp.int32),
+                    jnp.asarray(mix.support_mask),
+                    jnp.asarray(mix.noise_variance, dtype=jnp.float32),
+                    jnp.asarray(mix.background_mean, dtype=jnp.float32),
+                    jnp.ones((k,), dtype=bool),
+                    log_det_whitener=mix.log_det_whitener,
+                    all_full_support=mix.all_full_support,
+                    tail_df=mix.tail_df,
+                )
+            )
+            np.testing.assert_allclose(cand_ld, host_ld, rtol=1e-4, atol=1e-3)
+
+    @pytest.mark.parametrize(
+        ("use_geom", "use_noise", "rank"),
+        [
+            (False, False, None),
+            (False, False, 2),
+            (True, False, 3),
+            (True, True, 3),
+        ],
+    )
+    def test_tail_df_em_is_monotone_across_configurations(
+        self, use_geom, use_noise, rank
+    ):
+        """ECM EM with ``tail_df=6.0`` never decreases penalized train LL."""
+        n_ch = 12 if use_geom else 4
+        rec = _make_dense_probe_recording(
+            n_channels=n_ch, n_units=3, duration=12.0, seed=203
+        )
+        noise = [np.eye(n_ch) * 20.0 + 1.0] if use_noise else None
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            rec["environment"],
+            contact_positions=rec["contact_positions"] if use_geom else None,
+            noise_covariances=noise,
+            max_local_channels=6 if use_geom else None,
+            covariance_rank=rank,
+            n_mark_components=5,
+            tail_df=6.0,
+            n_em_iterations=5,
+            em_validation_blocks=0,
+            em_tol=-1.0,
+            disable_progress_bar=True,
+        )
+        trace = enc["em_diagnostics"]["train_log_likelihood"]
+        assert len(trace) >= 3
+        assert np.all(np.diff(trace) >= -1e-4), (
+            f"Non-monotone tail_df EM trace: {trace}"
+        )
+
+    @pytest.mark.parametrize("use_geom", [False, True])
+    def test_tail_df_preserves_no_spike_tail_dominance_on_every_ray(self, use_geom):
+        """Extreme artifacts on 1 channel, S_k only, or all channels fall back to No-Spike."""
+        from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ
+
+        n_ch = 16 if use_geom else 4
+        rec = _make_dense_probe_recording(
+            n_channels=n_ch, n_units=3, duration=10.0, seed=204
+        )
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            rec["environment"],
+            contact_positions=rec["contact_positions"] if use_geom else None,
+            max_local_channels=6 if use_geom else None,
+            covariance_rank=3 if use_geom else None,
+            n_mark_components=4,
+            tail_df=4.0,
+            n_em_iterations=2,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix = enc["mark_mixtures"][0]
+        assert mix is not None
+        ref = fit_mark_references(rec["spike_waveform_features"], kernel_scale=1.0)[0]
+        assert ref is not None
+        scale = np.std(rec["spike_waveform_features"][0], axis=0) + 1.0
+        max_log_rate = float(np.max(enc["log_rate_maps"][0]))
+
+        # Build 3 extreme 80-sigma artifact rays: 1-ch, local-support-only, all-ch.
+        one_ch = np.zeros((1, n_ch))
+        one_ch[0, 0] = 80.0 * scale[0]
+        local_only = np.zeros((1, n_ch))
+        sup0 = mix.support_indices[0, mix.support_mask[0]]
+        local_only[0, sup0] = 80.0 * scale[sup0]
+        all_ch = (80.0 * scale)[None, :]
+
+        artifacts = np.vstack([one_ch, local_only, all_ch])
+        comp_ll = mix.log_component_density(artifacts) + max_log_rate
+        sig_ll = np.asarray([float(np.logaddexp.reduce(row)) for row in comp_ll])
+        bg_ll = LOG_RATE_EPS_HZ + ref.log_density(artifacts)
+        assert np.all(sig_ll < bg_ll), (
+            f"Artifact beat No-Spike: sig={sig_ll}, bg={bg_ll}"
+        )
+
+    def test_tail_df_large_df_approaches_gaussian(self):
+        """As tail_df -> inf, log_component_density converges to exact Gaussian."""
+        rec = _make_dense_probe_recording(
+            n_channels=12, n_units=3, duration=10.0, seed=205
+        )
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            rec["environment"],
+            contact_positions=rec["contact_positions"],
+            max_local_channels=6,
+            covariance_rank=3,
+            n_mark_components=4,
+            tail_df=None,
+            n_em_iterations=1,
+            em_validation_blocks=0,
+            disable_progress_bar=True,
+        )
+        mix_g = enc["mark_mixtures"][0]
+        assert mix_g is not None
+        mix_big_df = ProbeMarkMixture(
+            weights=mix_g.weights,
+            means=mix_g.means,
+            basis=mix_g.basis,
+            basis_variances=mix_g.basis_variances,
+            support_indices=mix_g.support_indices,
+            support_mask=mix_g.support_mask,
+            noise_variance=mix_g.noise_variance,
+            background_mean=mix_g.background_mean,
+            noise_whitener=mix_g.noise_whitener,
+            log_det_whitener=mix_g.log_det_whitener,
+            contact_positions=mix_g.contact_positions,
+            component_peak_channels=mix_g.component_peak_channels,
+            tail_df=1e5,
+        )
+        probe = rec["spike_waveform_features"][0][:30]
+        np.testing.assert_allclose(
+            mix_big_df.log_component_density(probe),
+            mix_g.log_component_density(probe),
+            rtol=1e-2,
+            atol=5e-2,
+        )
+
+    def test_tail_df_nld_roundtrip_and_candidate_parity(self, tmp_path):
+        """tail_df persists cleanly through .nld and candidate LUT matches all-K."""
+        rec = _make_dense_probe_recording(
+            n_channels=12, n_units=3, duration=12.0, seed=206
+        )
+        geom = ProbeGeometry(contact_positions=rec["contact_positions"][0])
+        detector = ClusterlessDecoder(
+            environments=rec["environment"],
+            sampling_frequency=100.0,
+            clusterless_algorithm="clusterless_probe_mixture",
+            clusterless_algorithm_params={
+                "contact_positions": geom,
+                "max_local_channels": 6,
+                "covariance_rank": 3,
+                "n_mark_components": 6,
+                "tail_df": 6.0,
+                "n_em_iterations": 2,
+                "em_validation_blocks": 0,
+                "disable_progress_bar": True,
+            },
+        ).fit(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+        )
+        enc = detector.encoding_model_[("", 0)]
+        mix = enc["mark_mixtures"][0]
+        assert mix is not None
+        assert mix.tail_df == 6.0
+
+        path = tmp_path / "probe_mixture_tail_df.nld"
+        detector.save_model(path)
+        loaded = ClusterlessDecoder.load_model(path)
+        loaded_mix = loaded.encoding_model_[("", 0)]["mark_mixtures"][0]
+        assert loaded_mix is not None
+        assert loaded_mix.tail_df == 6.0
+
+        edges = time_edges_from_centers(rec["position_time"][:200])
+        res_orig = detector.predict(
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            time_edges=edges,
+            position=rec["position"][:200],
+            position_time=rec["position_time"][:200],
+        )
+        res_loaded = loaded.predict(
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            time_edges=edges,
+            position=rec["position"][:200],
+            position_time=rec["position_time"][:200],
+        )
+        np.testing.assert_array_equal(
+            res_loaded.acausal_posterior.values, res_orig.acausal_posterior.values
+        )
+
+        # Also verify max_candidate_components >= K matches all-K for both local & non-local.
+        ref = fit_mark_references(rec["spike_waveform_features"], kernel_scale=1.0)
+        for is_local in (False, True):
+            ll_all = np.asarray(
+                predict_clusterless_probe_mixture_log_likelihood(
+                    rec["position_time"][:200] if is_local else None,
+                    rec["position"][:200] if is_local else None,
+                    rec["spike_times"],
+                    rec["spike_waveform_features"],
+                    time_edges=edges,
+                    mark_reference=ref,
+                    is_local=is_local,
+                    **enc,
+                )
+            )
+            ll_cand = np.asarray(
+                predict_clusterless_probe_mixture_log_likelihood(
+                    rec["position_time"][:200] if is_local else None,
+                    rec["position"][:200] if is_local else None,
+                    rec["spike_times"],
+                    rec["spike_waveform_features"],
+                    time_edges=edges,
+                    mark_reference=ref,
+                    is_local=is_local,
+                    **{**enc, "max_candidate_components": mix.n_components},
+                )
+            )
+            np.testing.assert_allclose(ll_cand, ll_all, rtol=1e-5, atol=1e-4)

@@ -53,7 +53,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.special import logsumexp
+from scipy.special import gammaincinv, logsumexp
 
 from non_local_detector._warnings import user_stacklevel
 from non_local_detector.encoding_time import (
@@ -144,6 +144,73 @@ _CANDIDATE_GATHER_ELEMENTS = 1 << 22
 _MIN_RESPONSIBILITY_MASS = 1e-8
 # Default low-rank covariance rank per component on local support.
 DEFAULT_COVARIANCE_RANK = 4
+# Stratified quantile edges for the 5-point Gamma(nu/2, nu/2) scale mixture
+# approximating Student-t heavy tails on both local supports S_k and
+# independent off-support channels while preserving exponential tail decay
+# along every coordinate and ray (strict No-Spike tail dominance).
+_TAIL_QUADRATURE_EDGES = np.array([0.0, 0.02, 0.10, 0.35, 0.70, 1.0], dtype=np.float64)
+# Strict lower bound on tail_df: must exceed MarkReference's nu=3 so the
+# heavy-tail parameterization stays strictly lighter-tailed than the No-Spike
+# reference in both the biophysical regime and the asymptotic tails.
+_MIN_TAIL_DF = 3.0
+
+
+def _validate_tail_df(tail_df: Any) -> float | None:
+    """Validate optional heavy-tail degrees of freedom (None or finite float > 3)."""
+    if tail_df is None:
+        return None
+    if isinstance(tail_df, (bool, np.bool_)) or not isinstance(
+        tail_df, (int, float, np.integer, np.floating)
+    ):
+        msg = "tail_df must be None or a finite float > 3.0"
+        raise ValidationError(msg, expected="None or float > 3.0", got=repr(tail_df))
+    val = float(tail_df)
+    if not (np.isfinite(val) and val > _MIN_TAIL_DF):
+        msg = (
+            f"tail_df must be None or a finite float strictly greater than "
+            f"{_MIN_TAIL_DF} (MarkReference degrees of freedom)"
+        )
+        raise ValidationError(msg, expected="None or float > 3.0", got=repr(tail_df))
+    return val
+
+
+def _tail_scale_quadrature(tail_df: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(log_weights, scales)`` for the 5-point Gamma scale mixture.
+
+    Uses a 5-point stratified quantile quadrature of ``Gamma(tail_df / 2,
+    tail_df / 2)`` on both each component's local support ``S_k`` and each
+    independent off-support channel ``c not in S_k``. This reproduces
+    Student-t heavy tails across biophysical burst, collision, and drift
+    amplitudes while retaining exponential tail decay along every single
+    coordinate and ray in ``R^C`` for strict ``No-Spike`` artifact dominance.
+    """
+    half_nu = 0.5 * float(tail_df)
+    weights = np.diff(_TAIL_QUADRATURE_EDGES)
+    mids = 0.5 * (_TAIL_QUADRATURE_EDGES[:-1] + _TAIL_QUADRATURE_EDGES[1:])
+    scales = np.asarray(gammaincinv(half_nu, mids) / half_nu, dtype=np.float64)
+    log_weights = np.log(weights)
+    return log_weights, scales
+
+
+def _gsm_expected_scale(
+    d2: np.ndarray,
+    dim: float,
+    log_w_q: np.ndarray,
+    log_s_q: np.ndarray,
+    scales_q: np.ndarray,
+) -> np.ndarray:
+    """Exact posterior precision scale ``E[s | d2]`` for the 5-point Gamma mixture."""
+    offsets = log_w_q + 0.5 * dim * log_s_q
+    max_t = offsets[0] - 0.5 * scales_q[0] * d2
+    for m in range(1, len(scales_q)):
+        np.maximum(max_t, offsets[m] - 0.5 * scales_q[m] * d2, out=max_t)
+    num = np.zeros_like(d2, dtype=np.float64)
+    den = np.zeros_like(d2, dtype=np.float64)
+    for m in range(len(scales_q)):
+        w = np.exp((offsets[m] - 0.5 * scales_q[m] * d2) - max_t)
+        den += w
+        num += w * scales_q[m]
+    return num / den
 
 
 def _power_of_two(n: int) -> int:
@@ -233,6 +300,13 @@ class ProbeMarkMixture:
         Physical contact coordinates if supplied, for candidate lookup tables.
     component_peak_channels : np.ndarray, shape (n_components,)
         int32 peak contact index of each component, for candidate lookup tables.
+    tail_df : float or None, optional
+        Optional heavy-tail degrees of freedom (must be ``> 3.0`` when set).
+        When None (default), components are exact Gaussians. When set, each
+        component uses a 5-point Gamma-quantile Gaussian scale mixture on its
+        local support ``S_k`` and independently on each off-support channel
+        outside ``S_k``, preserving exact normalization and exponential
+        ``No-Spike`` tail dominance on every ray.
     """
 
     weights: np.ndarray
@@ -247,6 +321,7 @@ class ProbeMarkMixture:
     log_det_whitener: float
     contact_positions: np.ndarray | None
     component_peak_channels: np.ndarray
+    tail_df: float | None = None
 
     @property
     def n_components(self) -> int:
@@ -330,7 +405,7 @@ class ProbeMarkMixture:
         return candidates, np.ones((n_ch, k_cand), dtype=bool)
 
     def log_component_density(self, marks: np.ndarray) -> np.ndarray:
-        """Evaluate ``log N(m; mu_k, Sigma_k)`` per spike and component in float64.
+        """Evaluate ``log p_k(m)`` per spike and component in float64.
 
         Parameters
         ----------
@@ -340,46 +415,9 @@ class ProbeMarkMixture:
         Returns
         -------
         log_density : np.ndarray, shape (n_spikes, n_components)
-            Exact Gaussian log-density for each spike and component.
+            Exact component log-density for each spike and component.
         """
-        y = self.whiten_marks(marks)
-        n_spikes, n_ch = y.shape
-        n_comp = self.n_components
-        inv_std = 1.0 / np.sqrt(self.noise_variance)
-        log_norm = (
-            -0.5
-            * (n_ch * np.log(2.0 * np.pi) + float(np.sum(np.log(self.noise_variance))))
-            + self.log_det_whitener
-        )
-        log_det_basis = np.sum(np.log(self.basis_variances), axis=1)
-        inv_basis_var = 1.0 / self.basis_variances
-
-        all_full = self.all_full_support
-        if not all_full:
-            bg_std = (y - self.background_mean[None, :]) * inv_std[None, :]
-        else:
-            bg_std = np.empty((0, 0), dtype=np.float64)
-
-        out = np.empty((n_spikes, n_comp), dtype=np.float64)
-        for k in range(n_comp):
-            mask_k = self.support_mask[k]
-            ch_k = self.support_indices[k, mask_k]
-            mu_k = self.means[k, mask_k]
-            q_k = self.basis[k, mask_k, :]
-            delta = (y[:, ch_k] - mu_k[None, :]) * inv_std[None, ch_k]
-            proj = delta @ q_k
-            resid = delta - proj @ q_k.T
-            d2_local = np.sum(resid * resid, axis=1) + np.sum(
-                (proj * proj) * inv_basis_var[k][None, :], axis=1
-            )
-            if all_full:
-                d2_out = 0.0
-            else:
-                out_mask = np.ones(n_ch, dtype=bool)
-                out_mask[ch_k] = False
-                d2_out = np.sum(bg_std[:, out_mask] ** 2, axis=1)
-            out[:, k] = log_norm - 0.5 * (log_det_basis[k] + d2_local + d2_out)
-        return out
+        return _log_component_density_whitened(self, self.whiten_marks(marks))
 
     def responsibilities(self, marks: np.ndarray) -> np.ndarray:
         """Posterior component responsibilities ``p(k | m)``, rows summing to 1."""
@@ -482,6 +520,7 @@ def _mark_mixture_to_probe_mixture(
     marks_whitened: np.ndarray,
     spike_weights: np.ndarray,
     initial_background: np.ndarray | None = None,
+    tail_df: float | None = None,
 ) -> ProbeMarkMixture:
     """Convert a single-group ``MarkMixture`` to a ``ProbeMarkMixture``."""
     n_comp = mixture.n_components
@@ -536,6 +575,7 @@ def _mark_mixture_to_probe_mixture(
             log_det_whitener=log_det_whitener,
             contact_positions=contact_positions,
             component_peak_channels=peaks,
+            tail_df=tail_df,
         )
 
     # Low-rank factor-analysis (or local-support) initialization from fitted
@@ -640,6 +680,7 @@ def _mark_mixture_to_probe_mixture(
         log_det_whitener=log_det_whitener,
         contact_positions=contact_positions,
         component_peak_channels=peaks,
+        tail_df=tail_df,
     )
 
 
@@ -730,6 +771,7 @@ def _initialize_probe_mixture(
     mark_max_iter: int,
     mark_tol: float,
     mark_random_state: int,
+    tail_df: float | None = None,
 ) -> ProbeMarkMixture:
     """Initialize a ``ProbeMarkMixture`` for one electrode (tiled or single-group)."""
     marks = np.asarray(marks, dtype=np.float64)
@@ -795,6 +837,7 @@ def _initialize_probe_mixture(
             log_det_whitener=log_det_whitener,
             contact_positions=contact_positions,
             component_peak_channels=np.array([peak], dtype=np.int32),
+            tail_df=tail_df,
         )
 
     init_bg = (
@@ -841,6 +884,7 @@ def _initialize_probe_mixture(
             marks_whitened=y,
             spike_weights=weights,
             initial_background=init_bg,
+            tail_df=tail_df,
         )
 
     # Multi-tile dense shank: route spikes by baseline-relative peak contact to
@@ -1004,6 +1048,7 @@ def _initialize_probe_mixture(
         log_det_whitener=log_det_whitener,
         contact_positions=contact_positions,
         component_peak_channels=peaks_arr,
+        tail_df=tail_df,
     )
 
 
@@ -1035,40 +1080,14 @@ def _woodbury_log_density(
     *,
     log_det_whitener: float = 0.0,
     all_full_support: bool = False,
+    tail_df: float | None = None,
 ) -> jax.Array:
-    """Evaluate exact Gaussian log-densities via cancellation-free orthonormal Woodbury.
+    """Evaluate exact component log-densities via cancellation-free orthonormal Woodbury.
 
-    Parameters
-    ----------
-    features : jax.Array, shape (n_spikes, n_channels)
-        Noise-whitened spike waveform features.
-    means : jax.Array, shape (n_components, c_loc)
-        Local component means on ``support_indices``.
-    basis : jax.Array, shape (n_components, c_loc, rank)
-        Orthonormal local covariance basis in ``noise_variance``-standardized
-        coordinates (zero on masked contacts and padded rank columns).
-    basis_variances : jax.Array, shape (n_components, rank)
-        Positive eigenvalues along ``basis`` (1.0 on padded columns).
-    support_indices : jax.Array, shape (n_components, c_loc)
-        int32 local channel indices.
-    support_mask : jax.Array, shape (n_components, c_loc)
-        Boolean local support mask.
-    noise_variance : jax.Array, shape (n_channels,)
-        Per-channel residual variance ``Psi``.
-    background_mean : jax.Array, shape (n_channels,)
-        Per-channel silent mean ``mu_bg``.
-    is_component : jax.Array, shape (n_components,)
-        Boolean validity mask (False for padded components).
-    log_det_whitener : float, optional
-        ``log |det noise_whitener|``, by default 0.0.
-    all_full_support : bool, optional
-        If True, skips the outside-support quadratic term (identically zero).
-
-    Returns
-    -------
-    log_density : jax.Array, shape (n_spikes, n_components)
-        Log-density per spike and component; ``-inf`` for padded components or
-        overflowing marks.
+    When ``tail_df is None`` (default), evaluates exact Gaussians. When
+    ``tail_df`` is set (``> 3.0``), evaluates the factored heavy-tailed density
+    (5-point Gamma-quantile Gaussian scale mixture on ``S_k`` times independent
+    1-D 5-point Gamma-quantile Gaussian scale mixtures outside ``S_k``).
     """
     dtype = features.dtype
     n_channels = features.shape[1]
@@ -1089,39 +1108,102 @@ def _woodbury_log_density(
     d2_local = jnp.sum(resid * resid, axis=2) + jnp.sum(
         (proj * proj) * inv_basis_var[None, :, :], axis=2
     )
-
-    if all_full_support:
-        d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
-    else:
-        bg_std = (features - background_mean[None, :]) * inv_std[None, :]
-        bg_sq = bg_std * bg_std  # (B, C)
-        outside_mask = _outside_support_mask(
-            support_indices, support_mask, n_channels, dtype
-        )  # (K, C)
-        safe_bg_sq = jnp.where(
-            jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
-        )
-        has_inf_out = (
-            jnp.matmul(
-                (~jnp.isfinite(bg_sq)).astype(dtype),
-                outside_mask.T,
-                precision=jax.lax.Precision.HIGHEST,
-            )
-            > 0.0
-        )
-        d2_outside = jnp.where(
-            has_inf_out,
-            jnp.asarray(jnp.inf, dtype=dtype),
-            jnp.matmul(safe_bg_sq, outside_mask.T, precision=jax.lax.Precision.HIGHEST),
-        )
-
-    log_norm = jnp.asarray(
-        -0.5 * n_channels * np.log(2.0 * np.pi) + log_det_whitener, dtype=dtype
-    ) - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
     log_det_basis = jnp.sum(jnp.log(basis_variances), axis=1)
-    log_density = log_norm - jnp.asarray(0.5, dtype=dtype) * (
-        log_det_basis[None, :] + d2_local + d2_outside
-    )
+
+    if tail_df is None:
+        if all_full_support:
+            d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
+        else:
+            bg_std = (features - background_mean[None, :]) * inv_std[None, :]
+            bg_sq = bg_std * bg_std  # (B, C)
+            outside_mask = _outside_support_mask(
+                support_indices, support_mask, n_channels, dtype
+            )  # (K, C)
+            safe_bg_sq = jnp.where(
+                jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
+            )
+            has_inf_out = (
+                jnp.matmul(
+                    (~jnp.isfinite(bg_sq)).astype(dtype),
+                    outside_mask.T,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                > 0.0
+            )
+            d2_outside = jnp.where(
+                has_inf_out,
+                jnp.asarray(jnp.inf, dtype=dtype),
+                jnp.matmul(
+                    safe_bg_sq, outside_mask.T, precision=jax.lax.Precision.HIGHEST
+                ),
+            )
+
+        log_norm = jnp.asarray(
+            -0.5 * n_channels * np.log(2.0 * np.pi) + log_det_whitener, dtype=dtype
+        ) - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
+        log_density = log_norm - jnp.asarray(0.5, dtype=dtype) * (
+            log_det_basis[None, :] + d2_local + d2_outside
+        )
+    else:
+        nu = float(tail_df)
+        log_w_np, scales_np = _tail_scale_quadrature(nu)
+        log_w = jnp.asarray(log_w_np, dtype=dtype)
+        scales = jnp.asarray(scales_np, dtype=dtype)
+        log_s = jnp.asarray(np.log(scales_np), dtype=dtype)
+        c_loc_k = jnp.sum(support_mask, axis=1).astype(dtype)  # (K,)
+        log_terms = (
+            log_w[None, None, :]
+            + jnp.asarray(0.5, dtype=dtype)
+            * c_loc_k[None, :, None]
+            * log_s[None, None, :]
+            - jnp.asarray(0.5, dtype=dtype)
+            * d2_local[:, :, None]
+            * scales[None, None, :]
+        )
+        log_p_loc = (
+            jax.scipy.special.logsumexp(log_terms, axis=2)
+            - jnp.asarray(0.5, dtype=dtype) * log_det_basis[None, :]
+        )
+        if all_full_support:
+            log_p_off: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
+        else:
+            bg_std = (features - background_mean[None, :]) * inv_std[None, :]
+            bg_sq = bg_std * bg_std
+            outside_mask = _outside_support_mask(
+                support_indices, support_mask, n_channels, dtype
+            )
+            safe_bg_sq = jnp.where(
+                jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
+            )
+            has_inf_out = (
+                jnp.matmul(
+                    (~jnp.isfinite(bg_sq)).astype(dtype),
+                    outside_mask.T,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                > 0.0
+            )
+            # Independent 1-D 5-point Gamma scale mixture per off-support channel.
+            off_terms = (
+                log_w[None, None, :]
+                + jnp.asarray(0.5, dtype=dtype) * log_s[None, None, :]
+                - jnp.asarray(0.5, dtype=dtype)
+                * safe_bg_sq[:, :, None]
+                * scales[None, None, :]
+            )
+            per_ch_log = jax.scipy.special.logsumexp(off_terms, axis=2)  # (B, C)
+            log_p_off = jnp.where(
+                has_inf_out,
+                jnp.asarray(-jnp.inf, dtype=dtype),
+                jnp.matmul(
+                    per_ch_log, outside_mask.T, precision=jax.lax.Precision.HIGHEST
+                ),
+            )
+        log_norm = jnp.asarray(
+            -0.5 * n_channels * np.log(2.0 * np.pi) + log_det_whitener, dtype=dtype
+        ) - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
+        log_density = log_norm + log_p_loc + log_p_off
+
     valid = is_component[None, :] & jnp.isfinite(log_density)
     return jnp.where(valid, log_density, jnp.asarray(-jnp.inf, dtype=dtype))
 
@@ -1141,28 +1223,9 @@ def _woodbury_candidate_log_density(
     *,
     log_det_whitener: float = 0.0,
     all_full_support: bool = False,
+    tail_df: float | None = None,
 ) -> jax.Array:
-    """Evaluate exact Woodbury log-densities only on per-spike candidate components.
-
-    Parameters
-    ----------
-    features : jax.Array, shape (n_spikes, n_channels)
-        Noise-whitened spike marks.
-    candidate_indices : jax.Array, shape (n_spikes, k_cand)
-        Candidate component indices per spike.
-    candidate_mask : jax.Array, shape (n_spikes, k_cand)
-        Boolean validity mask for candidate slots.
-    means, basis, basis_variances, support_indices, support_mask, noise_variance, background_mean, is_component
-        Padded component arrays (see :func:`_woodbury_log_density`).
-    log_det_whitener : float, optional
-        ``log |det noise_whitener|``.
-    all_full_support : bool, optional
-        Whether every component covers every channel.
-
-    Returns
-    -------
-    log_density : jax.Array, shape (n_spikes, k_cand)
-    """
+    """Evaluate exact Woodbury log-densities only on per-spike candidate components."""
     dtype = features.dtype
     n_channels = features.shape[1]
     inv_std = jnp.reciprocal(jnp.sqrt(noise_variance))
@@ -1190,43 +1253,111 @@ def _woodbury_candidate_log_density(
     d2_local = jnp.sum(resid * resid, axis=2) + jnp.sum(
         (proj * proj) * jnp.reciprocal(c_var), axis=2
     )
-
-    if all_full_support:
-        d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
-    else:
-        bg_std = (features - background_mean[None, :]) * inv_std[None, :]
-        bg_sq = bg_std * bg_std  # (B, C)
-        outside_mask = _outside_support_mask(
-            support_indices, support_mask, n_channels, dtype
-        )
-        c_outside = outside_mask[candidate_indices]  # (B, k_cand, C)
-        safe_bg_sq = jnp.where(
-            jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
-        )
-        has_inf_out = (
-            jnp.einsum(
-                "bc,bjc->bj",
-                (~jnp.isfinite(bg_sq)).astype(dtype),
-                c_outside,
-                precision=jax.lax.Precision.HIGHEST,
-            )
-            > 0.0
-        )
-        d2_outside = jnp.where(
-            has_inf_out,
-            jnp.asarray(jnp.inf, dtype=dtype),
-            jnp.einsum(
-                "bc,bjc->bj", safe_bg_sq, c_outside, precision=jax.lax.Precision.HIGHEST
-            ),
-        )
-
-    log_norm = jnp.asarray(
-        -0.5 * n_channels * np.log(2.0 * np.pi) + log_det_whitener, dtype=dtype
-    ) - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
     log_det_basis = jnp.sum(jnp.log(c_var), axis=2)
-    log_density = log_norm - jnp.asarray(0.5, dtype=dtype) * (
-        log_det_basis + d2_local + d2_outside
-    )
+
+    if tail_df is None:
+        if all_full_support:
+            d2_outside: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
+        else:
+            bg_std = (features - background_mean[None, :]) * inv_std[None, :]
+            bg_sq = bg_std * bg_std  # (B, C)
+            outside_mask = _outside_support_mask(
+                support_indices, support_mask, n_channels, dtype
+            )
+            c_outside = outside_mask[candidate_indices]  # (B, k_cand, C)
+            safe_bg_sq = jnp.where(
+                jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
+            )
+            has_inf_out = (
+                jnp.einsum(
+                    "bc,bjc->bj",
+                    (~jnp.isfinite(bg_sq)).astype(dtype),
+                    c_outside,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                > 0.0
+            )
+            d2_outside = jnp.where(
+                has_inf_out,
+                jnp.asarray(jnp.inf, dtype=dtype),
+                jnp.einsum(
+                    "bc,bjc->bj",
+                    safe_bg_sq,
+                    c_outside,
+                    precision=jax.lax.Precision.HIGHEST,
+                ),
+            )
+
+        log_norm = jnp.asarray(
+            -0.5 * n_channels * np.log(2.0 * np.pi) + log_det_whitener, dtype=dtype
+        ) - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
+        log_density = log_norm - jnp.asarray(0.5, dtype=dtype) * (
+            log_det_basis + d2_local + d2_outside
+        )
+    else:
+        nu = float(tail_df)
+        log_w_np, scales_np = _tail_scale_quadrature(nu)
+        log_w = jnp.asarray(log_w_np, dtype=dtype)
+        scales = jnp.asarray(scales_np, dtype=dtype)
+        log_s = jnp.asarray(np.log(scales_np), dtype=dtype)
+        c_loc_bj = jnp.sum(c_mask, axis=2).astype(dtype)  # (B, k_cand)
+        log_terms = (
+            log_w[None, None, :]
+            + jnp.asarray(0.5, dtype=dtype)
+            * c_loc_bj[:, :, None]
+            * log_s[None, None, :]
+            - jnp.asarray(0.5, dtype=dtype)
+            * d2_local[:, :, None]
+            * scales[None, None, :]
+        )
+        log_p_loc = (
+            jax.scipy.special.logsumexp(log_terms, axis=2)
+            - jnp.asarray(0.5, dtype=dtype) * log_det_basis
+        )
+        if all_full_support:
+            log_p_off: jax.Array | float = jnp.asarray(0.0, dtype=dtype)
+        else:
+            bg_std = (features - background_mean[None, :]) * inv_std[None, :]
+            bg_sq = bg_std * bg_std
+            outside_mask = _outside_support_mask(
+                support_indices, support_mask, n_channels, dtype
+            )
+            c_outside = outside_mask[candidate_indices]
+            safe_bg_sq = jnp.where(
+                jnp.isfinite(bg_sq), bg_sq, jnp.asarray(0.0, dtype=dtype)
+            )
+            has_inf_out = (
+                jnp.einsum(
+                    "bc,bjc->bj",
+                    (~jnp.isfinite(bg_sq)).astype(dtype),
+                    c_outside,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                > 0.0
+            )
+            off_terms = (
+                log_w[None, None, :]
+                + jnp.asarray(0.5, dtype=dtype) * log_s[None, None, :]
+                - jnp.asarray(0.5, dtype=dtype)
+                * safe_bg_sq[:, :, None]
+                * scales[None, None, :]
+            )
+            per_ch_log = jax.scipy.special.logsumexp(off_terms, axis=2)  # (B, C)
+            log_p_off = jnp.where(
+                has_inf_out,
+                jnp.asarray(-jnp.inf, dtype=dtype),
+                jnp.einsum(
+                    "bc,bjc->bj",
+                    per_ch_log,
+                    c_outside,
+                    precision=jax.lax.Precision.HIGHEST,
+                ),
+            )
+        log_norm = jnp.asarray(
+            -0.5 * n_channels * np.log(2.0 * np.pi) + log_det_whitener, dtype=dtype
+        ) - jnp.asarray(0.5, dtype=dtype) * jnp.sum(jnp.log(noise_variance))
+        log_density = log_norm + log_p_loc + log_p_off
+
     return jnp.where(
         c_valid & jnp.isfinite(log_density),
         log_density,
@@ -1234,7 +1365,7 @@ def _woodbury_candidate_log_density(
     )
 
 
-@partial(jax.jit, static_argnames=("all_full_support",))
+@partial(jax.jit, static_argnames=("all_full_support", "tail_df"))
 def _e_step_block(
     features: jax.Array,
     means: jax.Array,
@@ -1252,6 +1383,7 @@ def _e_step_block(
     log_det_whitener: jax.Array,
     *,
     all_full_support: bool,
+    tail_df: float | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Split-position responsibilities and weighted spike log-likelihood for one block."""
     dtype = features.dtype
@@ -1267,6 +1399,7 @@ def _e_step_block(
         is_component,
         log_det_whitener=0.0,
         all_full_support=all_full_support,
+        tail_df=tail_df,
     ) + log_det_whitener.astype(dtype)
     log_dens = jnp.where(
         is_component[None, :] & jnp.isfinite(log_dens),
@@ -1363,6 +1496,7 @@ def _e_step_electrode(
             rs_blk,
             log_det_w,
             all_full_support=all_full,
+            tail_df=mixture.tail_df,
         )
         resp_l_out[start:stop] = np.asarray(rl_blk[:n_cur], dtype=np.float64)
         resp_r_out[start:stop] = np.asarray(rr_blk[:n_cur], dtype=np.float64)
@@ -1391,6 +1525,7 @@ def _mark_m_step(
     c_loc = previous.local_width
     rank = previous.basis_rank
     all_full = previous.all_full_support
+    tail_df = previous.tail_df
     is_unconstrained_full = all_full and (
         covariance_rank is None or covariance_rank >= n_ch
     )
@@ -1400,27 +1535,45 @@ def _mark_m_step(
     total_mass = max(float(np.sum(comp_mass)), _MIN_RESPONSIBILITY_MASS)
     new_weights = np.maximum(comp_mass, 1e-12)
     new_weights = new_weights / np.sum(new_weights)
+    psi_old = previous.noise_variance
+    inv_std_old = 1.0 / np.sqrt(psi_old)
+
+    if tail_df is not None:
+        log_w_q, scales_q = _tail_scale_quadrature(tail_df)
+        log_s_q = np.log(scales_q)
 
     # 1. Update silent-channel background mean (exact closed form) when C_loc < C.
     if all_full:
         bg_mean = previous.background_mean.copy()
         silent_weight_per_spike = np.empty((0, 0), dtype=np.float64)
+        silent_scale_weight = np.empty((0, 0), dtype=np.float64)
     else:
         in_support = np.zeros((n_comp, n_ch), dtype=np.float64)
         for k in range(n_comp):
             in_support[k, previous.support_indices[k, previous.support_mask[k]]] = 1.0
         active_w = gamma @ in_support  # (N, C)
         silent_weight_per_spike = np.maximum(0.0, weights[:, None] - active_w)
-        silent_sum = np.sum(silent_weight_per_spike, axis=0)
+        if tail_df is not None:
+            # Exact E[s | y_{ic}] for the 1-D 5-point Gamma scale mixture on off-support channels.
+            bg_z2 = ((marks_whitened - previous.background_mean[None, :]) ** 2) / (
+                psi_old[None, :]
+            )
+            v_bg = _gsm_expected_scale(bg_z2, 1.0, log_w_q, log_s_q, scales_q)
+            silent_scale_weight = silent_weight_per_spike * v_bg
+        else:
+            silent_scale_weight = silent_weight_per_spike
+        silent_sum = np.sum(silent_scale_weight, axis=0)
         has_silent = silent_sum > _MIN_RESPONSIBILITY_MASS
         bg_mean = np.where(
             has_silent,
-            np.sum(silent_weight_per_spike * marks_whitened, axis=0)
+            np.sum(silent_scale_weight * marks_whitened, axis=0)
             / np.where(has_silent, silent_sum, 1.0),
             previous.background_mean,
         )
 
     # 2. Update local component means and sample covariances C_k on S_k.
+    if tail_df is not None:
+        inv_bvar_old = 1.0 / previous.basis_variances
     means = previous.means.copy()
     sample_covs: list[np.ndarray | None] = []
     for k in range(n_comp):
@@ -1431,11 +1584,42 @@ def _mark_m_step(
             sample_covs.append(None)
             continue
         g_k = gamma[:, k]
-        y_k = marks_whitened[:, ch_k]
-        mu_k = (g_k @ y_k) / n_k
-        means[k, mask_k] = mu_k
-        diff = y_k - mu_k[None, :]
-        cov_k = (diff * g_k[:, None]).T @ diff / n_k
+        if tail_df is not None:
+            # Exact E[s | y_{i, S_k}, k] on active spikes (skipping numerically zero gamma).
+            active = g_k > (1e-25 * n_k)
+            if not np.any(active):
+                sample_covs.append(None)
+                continue
+            g_act = g_k[active]
+            y_act = marks_whitened[active][:, ch_k]
+            delta_old = (y_act - previous.means[k, mask_k][None, :]) * inv_std_old[
+                None, ch_k
+            ]
+            q_old = previous.basis[k, mask_k, :]
+            proj_old = delta_old @ q_old
+            resid_old = delta_old - proj_old @ q_old.T
+            d2_k = np.sum(resid_old * resid_old, axis=1) + np.sum(
+                (proj_old * proj_old) * inv_bvar_old[k][None, :], axis=1
+            )
+            u_k = _gsm_expected_scale(
+                d2_k, float(len(ch_k)), log_w_q, log_s_q, scales_q
+            )
+            g_eff = g_act * u_k
+            eff_sum = float(np.sum(g_eff))
+            if eff_sum <= _MIN_RESPONSIBILITY_MASS:
+                sample_covs.append(None)
+                continue
+            mu_k = (g_eff @ y_act) / eff_sum
+            means[k, mask_k] = mu_k
+            diff = y_act - mu_k[None, :]
+            # Exact scale-mixture Gaussian MLE divides by unweighted mass n_k.
+            cov_k = (diff * g_eff[:, None]).T @ diff / n_k
+        else:
+            y_k = marks_whitened[:, ch_k]
+            mu_k = (g_k @ y_k) / n_k
+            means[k, mask_k] = mu_k
+            diff = y_k - mu_k[None, :]
+            cov_k = (diff * g_k[:, None]).T @ diff / n_k
         sample_covs.append(0.5 * (cov_k + cov_k.T))
 
     # 3. Unconstrained full-covariance case (all channels, full rank).
@@ -1472,11 +1656,11 @@ def _mark_m_step(
             log_det_whitener=previous.log_det_whitener,
             contact_positions=previous.contact_positions,
             component_peak_channels=previous.component_peak_channels,
+            tail_df=tail_df,
         )
 
     # 4. Factor-analysis / local-support ECM step.
     # Step 4a: Tipping-Bishop update at old Psi (guarantees exact FA-EM residual).
-    psi_old = previous.noise_variance
     full_floor = effective_reg if covariance_rank is None else None
     basis = np.zeros((n_comp, c_loc, rank), dtype=np.float64)
     basis_var = np.ones((n_comp, rank), dtype=np.float64)
@@ -1504,7 +1688,7 @@ def _mark_m_step(
         residual_ss = np.zeros(n_ch, dtype=np.float64)
         if not all_full:
             residual_ss += np.sum(
-                silent_weight_per_spike * (marks_whitened - bg_mean[None, :]) ** 2,
+                silent_scale_weight * (marks_whitened - bg_mean[None, :]) ** 2,
                 axis=0,
             )
         for k in range(n_comp):
@@ -1563,6 +1747,7 @@ def _mark_m_step(
         log_det_whitener=previous.log_det_whitener,
         contact_positions=previous.contact_positions,
         component_peak_channels=previous.component_peak_channels,
+        tail_df=tail_df,
     )
 
 
@@ -2022,29 +2207,72 @@ class _EMRun:
         )
 
 
-def _responsibilities_whitened(
+def _log_component_density_whitened(
     mixture: ProbeMarkMixture, marks_whitened: np.ndarray
 ) -> np.ndarray:
-    """Responsibilities directly from already-whitened marks (avoids re-whitening)."""
+    """Evaluate exact component log-densities ``(N, K)`` in float64 on whitened marks."""
     n_spikes, n_ch = marks_whitened.shape
     n_comp = mixture.n_components
     inv_std = 1.0 / np.sqrt(mixture.noise_variance)
-    log_norm = (
-        -0.5
-        * (n_ch * np.log(2.0 * np.pi) + float(np.sum(np.log(mixture.noise_variance))))
-        + mixture.log_det_whitener
-    )
+    log_det_psi_tot = float(np.sum(np.log(mixture.noise_variance)))
     log_det_basis = np.sum(np.log(mixture.basis_variances), axis=1)
     inv_basis_var = 1.0 / mixture.basis_variances
     all_full = mixture.all_full_support
+    tail_df = mixture.tail_df
+
     if not all_full:
         bg_std = (marks_whitened - mixture.background_mean[None, :]) * inv_std[None, :]
+        bg_sq = bg_std * bg_std
     else:
-        bg_std = np.empty((0, 0), dtype=np.float64)
+        bg_sq = np.empty((0, 0), dtype=np.float64)
+
+    if tail_df is None:
+        log_norm = (
+            -0.5 * (n_ch * np.log(2.0 * np.pi) + log_det_psi_tot)
+            + mixture.log_det_whitener
+        )
+        log_dens = np.empty((n_spikes, n_comp), dtype=np.float64)
+        for k in range(n_comp):
+            mask_k = mixture.support_mask[k]
+            ch_k = mixture.support_indices[k, mask_k]
+            delta = (
+                marks_whitened[:, ch_k] - mixture.means[k, mask_k][None, :]
+            ) * inv_std[None, ch_k]
+            q_k = mixture.basis[k, mask_k, :]
+            proj = delta @ q_k
+            resid = delta - proj @ q_k.T
+            d2_loc = np.sum(resid * resid, axis=1) + np.sum(
+                (proj * proj) * inv_basis_var[k][None, :], axis=1
+            )
+            if all_full:
+                d2_out: np.ndarray | float = 0.0
+            else:
+                out_mask = np.ones(n_ch, dtype=bool)
+                out_mask[ch_k] = False
+                d2_out = np.sum(bg_sq[:, out_mask], axis=1)
+            log_dens[:, k] = log_norm - 0.5 * (log_det_basis[k] + d2_loc + d2_out)
+        return log_dens
+
+    nu = float(tail_df)
+    log_w_q, scales_q = _tail_scale_quadrature(nu)
+    log_s_q = np.log(scales_q)
+    if not all_full:
+        off_terms = (
+            log_w_q[None, None, :]
+            + 0.5 * log_s_q[None, None, :]
+            - 0.5 * bg_sq[:, :, None] * scales_q[None, None, :]
+        )
+        per_ch_log = logsumexp(off_terms, axis=2)
+    else:
+        per_ch_log = np.empty((0, 0), dtype=np.float64)
+    log_norm = (
+        -0.5 * (n_ch * np.log(2.0 * np.pi) + log_det_psi_tot) + mixture.log_det_whitener
+    )
     log_dens = np.empty((n_spikes, n_comp), dtype=np.float64)
     for k in range(n_comp):
         mask_k = mixture.support_mask[k]
         ch_k = mixture.support_indices[k, mask_k]
+        c_loc_k = float(len(ch_k))
         delta = (marks_whitened[:, ch_k] - mixture.means[k, mask_k][None, :]) * inv_std[
             None, ch_k
         ]
@@ -2054,13 +2282,27 @@ def _responsibilities_whitened(
         d2_loc = np.sum(resid * resid, axis=1) + np.sum(
             (proj * proj) * inv_basis_var[k][None, :], axis=1
         )
+        log_terms = (
+            log_w_q[None, :]
+            + 0.5 * c_loc_k * log_s_q[None, :]
+            - 0.5 * d2_loc[:, None] * scales_q[None, :]
+        )
+        log_p_loc = logsumexp(log_terms, axis=1) - 0.5 * log_det_basis[k]
         if all_full:
-            d2_out = 0.0
+            log_p_off: np.ndarray | float = 0.0
         else:
             out_mask = np.ones(n_ch, dtype=bool)
             out_mask[ch_k] = False
-            d2_out = np.sum(bg_std[:, out_mask] ** 2, axis=1)
-        log_dens[:, k] = log_norm - 0.5 * (log_det_basis[k] + d2_loc + d2_out)
+            log_p_off = np.sum(per_ch_log[:, out_mask], axis=1)
+        log_dens[:, k] = log_norm + log_p_loc + log_p_off
+    return log_dens
+
+
+def _responsibilities_whitened(
+    mixture: ProbeMarkMixture, marks_whitened: np.ndarray
+) -> np.ndarray:
+    """Responsibilities directly from already-whitened marks (avoids re-whitening)."""
+    log_dens = _log_component_density_whitened(mixture, marks_whitened)
     log_joint = log_dens + np.log(np.maximum(mixture.weights, 1e-300))[None, :]
     return cast(
         np.ndarray,
@@ -2098,6 +2340,7 @@ def fit_clusterless_probe_mixture_encoding_model(
     neighborhood_radius: float | None = None,
     max_local_channels: int | None = DEFAULT_MAX_LOCAL_CHANNELS,
     covariance_rank: int | None = DEFAULT_COVARIANCE_RANK,
+    tail_df: float | None = None,
     n_mark_components: int = 32,
     mark_weight_concentration: float | None = None,
     mark_reg_covar: float = DEFAULT_GMM_REG_COVAR,
@@ -2154,6 +2397,14 @@ def fit_clusterless_probe_mixture_encoding_model(
         Low-rank factor dimension ``r`` per component on ``S_k``, by default 4.
         Automatically uses full covariance whenever ``covariance_rank is None``
         or ``covariance_rank >= len(S_k)`` (e.g. on tetrodes).
+    tail_df : float or None, optional
+        Optional heavy-tail degrees of freedom (must be strictly ``> 3.0`` when
+        set, e.g. ``4.0``-``8.0``). When None (default), uses exact Gaussians.
+        When set, models each component's local support ``S_k`` and each
+        independent off-support channel with a 5-point Gamma-quantile Gaussian
+        scale mixture, improving robustness to complex-spike bursts, spike
+        collisions, and overlapping MUA while preserving exact normalization
+        and exponential ``No-Spike`` tail dominance on every ray.
     n_mark_components : int, optional
         Upper bound on initial components per electrode (distributed
         proportionally across active probe tiles by spike weight when tiled,
@@ -2225,6 +2476,7 @@ def fit_clusterless_probe_mixture_encoding_model(
     validate_positive_int("em_patience", em_patience)
     validate_positive_int("em_glm_steps", em_glm_steps)
     validate_positive_int("covariance_rank", covariance_rank, allow_none=True)
+    tail_df = _validate_tail_df(tail_df)
     validate_positive_int("max_local_channels", max_local_channels, allow_none=True)
     n_em_iterations = _validate_nonnegative_int("n_em_iterations", n_em_iterations)
     em_validation_blocks = _validate_nonnegative_int(
@@ -2294,6 +2546,7 @@ def fit_clusterless_probe_mixture_encoding_model(
         "mark_max_iter": mark_max_iter,
         "mark_tol": mark_tol,
         "mark_random_state": mark_random_state,
+        "tail_df": tail_df,
     }
 
     run_common: dict[str, Any] = {
@@ -2453,6 +2706,7 @@ def fit_clusterless_probe_mixture_encoding_model(
                 log_det_whitener=mixture.log_det_whitener,
                 contact_positions=mixture.contact_positions,
                 component_peak_channels=mixture.component_peak_channels[keep],
+                tail_df=mixture.tail_df,
             )
             coef_e = full_run.coefficients[maps][keep]
             rates_e = full_run.interior_rates[:, maps][:, keep]
@@ -2561,7 +2815,7 @@ def _device_marks(marks: np.ndarray, n_rows: int) -> jax.Array:
 
 @partial(
     jax.jit,
-    static_argnames=("block_size", "indices_are_sorted", "all_full_support"),
+    static_argnames=("block_size", "indices_are_sorted", "all_full_support", "tail_df"),
     donate_argnums=0,
 )
 def _add_electrode_intensities(
@@ -2584,6 +2838,7 @@ def _add_electrode_intensities(
     block_size: int,
     indices_are_sorted: bool,
     all_full_support: bool,
+    tail_df: float | None = None,
 ) -> jax.Array:
     """Add one electrode's non-local log intensities across all K components."""
 
@@ -2604,6 +2859,7 @@ def _add_electrode_intensities(
             is_component,
             log_det_whitener=0.0,
             all_full_support=all_full_support,
+            tail_df=tail_df,
         ) + log_det_whitener.astype(block.dtype)
         log_density = jnp.where(
             is_component[None, :] & jnp.isfinite(log_density),
@@ -2635,7 +2891,7 @@ def _add_electrode_intensities(
 
 @partial(
     jax.jit,
-    static_argnames=("block_size", "indices_are_sorted", "all_full_support"),
+    static_argnames=("block_size", "indices_are_sorted", "all_full_support", "tail_df"),
     donate_argnums=0,
 )
 def _add_electrode_candidate_intensities(
@@ -2661,6 +2917,7 @@ def _add_electrode_candidate_intensities(
     block_size: int,
     indices_are_sorted: bool,
     all_full_support: bool,
+    tail_df: float | None = None,
 ) -> jax.Array:
     """Add one electrode's non-local log intensities via per-contact candidate LUT."""
 
@@ -2686,6 +2943,7 @@ def _add_electrode_candidate_intensities(
             is_component,
             log_det_whitener=0.0,
             all_full_support=all_full_support,
+            tail_df=tail_df,
         ) + log_det_whitener.astype(block.dtype)
         log_density = jnp.where(
             cand_mask & jnp.isfinite(log_density),
@@ -2717,7 +2975,7 @@ def _add_electrode_candidate_intensities(
 
 @partial(
     jax.jit,
-    static_argnames=("indices_are_sorted", "all_full_support"),
+    static_argnames=("indices_are_sorted", "all_full_support", "tail_df"),
     donate_argnums=0,
 )
 def _add_electrode_local_terms(
@@ -2738,6 +2996,7 @@ def _add_electrode_local_terms(
     *,
     indices_are_sorted: bool,
     all_full_support: bool,
+    tail_df: float | None = None,
 ) -> jax.Array:
     """Add one electrode's local spike terms across all K components."""
     log_density = _woodbury_log_density(
@@ -2752,6 +3011,7 @@ def _add_electrode_local_terms(
         is_component,
         log_det_whitener=0.0,
         all_full_support=all_full_support,
+        tail_df=tail_df,
     ) + log_det_whitener.astype(features.dtype)
     log_density = jnp.where(
         is_component[None, :] & jnp.isfinite(log_density),
@@ -2772,7 +3032,7 @@ def _add_electrode_local_terms(
 
 @partial(
     jax.jit,
-    static_argnames=("indices_are_sorted", "all_full_support"),
+    static_argnames=("indices_are_sorted", "all_full_support", "tail_df"),
     donate_argnums=0,
 )
 def _add_electrode_local_candidate_terms(
@@ -2796,6 +3056,7 @@ def _add_electrode_local_candidate_terms(
     *,
     indices_are_sorted: bool,
     all_full_support: bool,
+    tail_df: float | None = None,
 ) -> jax.Array:
     """Add one electrode's local spike terms via per-contact candidate LUT."""
     cand_k = contact_candidates[peak_channels]
@@ -2814,6 +3075,7 @@ def _add_electrode_local_candidate_terms(
         is_component,
         log_det_whitener=0.0,
         all_full_support=all_full_support,
+        tail_df=tail_df,
     ) + log_det_whitener.astype(features.dtype)
     log_density = jnp.where(
         cand_mask & jnp.isfinite(log_density),
@@ -3129,6 +3391,7 @@ def predict_clusterless_probe_mixture_log_likelihood(
                             blk_bg,
                             indices_are_sorted=spikes.selection.indices_are_sorted,
                             all_full_support=model.all_full_support,
+                            tail_df=model.mixture.tail_df,
                         ),
                     )
                 else:
@@ -3151,6 +3414,7 @@ def predict_clusterless_probe_mixture_log_likelihood(
                             blk_bg,
                             indices_are_sorted=spikes.selection.indices_are_sorted,
                             all_full_support=model.all_full_support,
+                            tail_df=model.mixture.tail_df,
                         ),
                     )
             return ll
@@ -3212,6 +3476,7 @@ def predict_clusterless_probe_mixture_log_likelihood(
                     block_size=block_size,
                     indices_are_sorted=spikes.selection.indices_are_sorted,
                     all_full_support=model.all_full_support,
+                    tail_df=model.mixture.tail_df,
                 ),
             )
 
@@ -3239,6 +3504,7 @@ def predict_clusterless_probe_mixture_log_likelihood(
                 block_size=min(spike_block_size, n_padded),
                 indices_are_sorted=spikes.selection.indices_are_sorted,
                 all_full_support=model.all_full_support,
+                tail_df=model.mixture.tail_df,
             ),
         )
 
