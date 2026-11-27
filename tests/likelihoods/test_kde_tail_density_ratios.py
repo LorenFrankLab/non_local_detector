@@ -21,17 +21,27 @@ from non_local_detector.likelihoods.clusterless_kde import (
 )
 from non_local_detector.likelihoods.common import (
     _KDE_BLOCK_KERNEL_BYTES,
+    _KDE_SAMPLE_TILE,
     LOG_EPS,
     KDEModel,
-    _batched_kde_rows,
     _compiled_scaled_kde_log_density,
     _sorted_sample_keys,
+    _tiled_kde_rows,
     kde_log_densities,
     kde_log_density,
     log_density_intensity,
     log_space_kde_log_density,
+    padded_repair_count,
+    padded_tile_count,
     true_kde_log_density,
 )
+from non_local_detector.likelihoods.common.kernel_density import (
+    _KDE_REPAIR_POINTS,
+    _paired_log_space_kde_log_densities,
+    _repair_sizes,
+    _tiled_scaled_kde_log_densities,
+)
+from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
     count_compilations,
     realistic_log_background,
@@ -510,19 +520,132 @@ def test_batched_log_densities_match_each_model(n_dims):
         )
 
 
+def _compiled_workspace(compiled):
+    return compiled.compile().memory_analysis().temp_size_in_bytes
+
+
 @pytest.mark.parametrize(
-    ("n_models", "n_samples", "block_size"),
-    [(16, 65_536, 1_024), (40, 65_536, 1_024), (3, 4_096, 100), (16, 20_000_000, 64)],
+    ("x64", "sample", "sample_dtype", "std", "point", "point_dtype"),
+    [
+        (False, 1.9, np.float32, 0.01, 2, np.int32),
+        (False, 0.9, np.float32, 0.05, 1, np.int32),
+        (True, 100.000004, np.float64, 1e-7, 100.0, np.float32),
+        (False, 100.032, np.float32, 0.001, 100.0, np.float16),
+    ],
 )
-def test_batched_kernels_share_one_model_workspace(n_models, n_samples, block_size):
-    """A batch of models together stays within one model's kernel budget."""
-    points = jax.ShapeDtypeStruct((1_024, 1), jnp.float32)
-    samples = jax.ShapeDtypeStruct((n_samples, 1), jnp.float32)
-    weights = jax.ShapeDtypeStruct((n_samples,), jnp.float32)
-    batch_size, rows = _batched_kde_rows(
-        block_size, n_models, points, samples, jnp.ones(1), weights
+def test_batched_1d_scale_keeps_sample_precision_at_other_point_dtypes(
+    x64, sample, sample_dtype, std, point, point_dtype
+):
+    """Integer or narrower points do not round the samples that set each
+    point's scale: a rounded sample moved away from the point scaled it
+    below its log kernel, and the density overflowed to ``inf``."""
+    with precision_mode(x64):
+        model = KDEModel(std=std).fit(np.array([[sample]], sample_dtype))
+        points = np.array([[point]], point_dtype)
+        (batched,) = kde_log_densities([model], points)
+        expected = kde_log_density(model, points)
+        assert np.all(np.isfinite(batched))
+        np.testing.assert_allclose(batched, expected, rtol=1e-6)
+
+
+def test_batched_log_densities_group_bandwidths_by_value_and_dtype():
+    """Bandwidths with equal bytes but different dtypes are different."""
+    samples = np.zeros((5, 1), np.float32)
+    models = [
+        KDEModel(std=np.float32(1.0)).fit(samples),
+        KDEModel(std=np.int32(np.float32(1.0).view(np.int32))).fit(samples),
+    ]
+    points = jnp.asarray([[0.0], [3.0]], jnp.float32)
+    for batched, model in zip(kde_log_densities(models, points), models, strict=True):
+        np.testing.assert_allclose(batched, kde_log_density(model, points), rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("n_models", "n_samples", "n_points"),
+    [(1_000, 10_000, 4_000), (22, 40_000, 50_000)],
+    ids=["many-models", "many-points"],
+)
+def test_tiled_kernel_workspace_stays_within_the_widest_model_pass(
+    n_models, n_samples, n_points
+):
+    """Each tiled pass, sized as ``kde_log_densities`` sizes it, stays within
+    a bounded workspace beyond four copies of its output: the scaled pass
+    within the widest model's own single-model pass at the same points, the
+    log-space repair within the kernel budget. The repair is sized for every
+    model flagged at every point, as production pads it.
+    The scaled pass's tiles also serve the repair.
+    2-D points, ``block_size=10_000``, the ``sorted_spikes_kde`` default."""
+    block_size, n_dims = 10_000, 2
+    sds = jax.ShapeDtypeStruct
+    widest = -(-n_samples // _KDE_SAMPLE_TILE)
+    points = sds((n_points, n_dims), jnp.float32)
+    std = jnp.full(n_dims, 3.0)
+
+    sample_dtype = sds((1, _KDE_SAMPLE_TILE, n_dims), jnp.float32)
+    weight_dtype = sds((1, _KDE_SAMPLE_TILE), jnp.float32)
+
+    rows, batch_size, n_tiles = _tiled_kde_rows(
+        block_size,
+        points,
+        padded_tile_count(n_models * widest),
+        std,
+        sample_dtype,
+        weight_dtype,
+        widest,
     )
-    assert 1 <= batch_size <= min(16, n_models)
-    assert rows >= 1
-    if n_samples * 4 <= _KDE_BLOCK_KERNEL_BYTES:
-        assert batch_size * rows * n_samples * 4 <= _KDE_BLOCK_KERNEL_BYTES
+    tiles = (
+        sds((n_tiles, _KDE_SAMPLE_TILE, n_dims), jnp.float32),
+        sds((n_tiles, _KDE_SAMPLE_TILE), jnp.float32),
+        sds((n_tiles,), jnp.int32),
+    )
+    scaled = _compiled_workspace(
+        _tiled_scaled_kde_log_densities.lower(
+            points,
+            *tiles,
+            sds((n_models,), jnp.int32),
+            std,
+            None,
+            rows=rows,
+            batch_size=batch_size,
+        )
+    )
+    # The repair, sized as production sizes it with every model flagged at
+    # every point: one item per tile and block of _KDE_REPAIR_POINTS points.
+    n_blocks = padded_repair_count(n_models * -(-n_points // _KDE_REPAIR_POINTS))
+    batch_size, chunk, n_items = _repair_sizes(
+        padded_repair_count(n_models * widest * -(-n_points // _KDE_REPAIR_POINTS)),
+        block_size,
+        points,
+        std,
+        sample_dtype,
+        weight_dtype,
+        widest,
+    )
+    log_space = _compiled_workspace(
+        _paired_log_space_kde_log_densities.lower(
+            sds((n_blocks, _KDE_REPAIR_POINTS, n_dims), jnp.float32),
+            sds((n_blocks,), jnp.int32),
+            sds((n_blocks + 1,), jnp.int32),
+            sds((n_blocks,), jnp.int32),
+            *tiles,
+            std,
+            n_models=n_models,
+            n_chunks=n_items // chunk,
+            chunk=chunk,
+            batch_size=batch_size,
+        )
+    )
+    outputs = 4 * n_models * n_points * 4
+    samples = sds((n_samples, n_dims), jnp.float32)
+    weights = sds((n_samples,), jnp.float32)
+    assert scaled <= outputs + _compiled_workspace(
+        _compiled_scaled_kde_log_density.lower(
+            points, samples, std, block_size, weights, None
+        )
+    )
+    # The repair is bounded by the kernel budget itself, beyond four copies
+    # of its (n_blocks, _KDE_REPAIR_POINTS) output: tighter than the
+    # single-model pass, whose workspace a looser repair sizing still fits.
+    assert log_space <= (
+        _KDE_BLOCK_KERNEL_BYTES + 4 * n_blocks * _KDE_REPAIR_POINTS * 4
+    )

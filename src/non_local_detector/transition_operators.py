@@ -1890,6 +1890,7 @@ def build_transition_operator(
                     observation_models[source],
                     observation_models[target],
                     local_position_std,
+                    block=(source, target),
                 )
             _check_block_environments(
                 transition,
