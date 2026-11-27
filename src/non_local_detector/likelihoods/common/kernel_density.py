@@ -1690,7 +1690,7 @@ def _repair_sizes(
     per entry, against about two in the single-model pass. A chunk's
     per-item terms, two buffers of ``(chunk, _KDE_REPAIR_POINTS)``, take at
     most a sixteenth of the budget. Chunks and steps are evened out, so the
-    padding is fewer items than one step per chunk.
+    padding is fewer items than one step per chunk, plus one step.
 
     Parameters
     ----------
@@ -1723,28 +1723,32 @@ def _repair_sizes(
     return batch_size, chunk, n_chunks * chunk
 
 
-@partial(jax.jit, static_argnames=("n_models", "chunk", "batch_size"))
+@partial(jax.jit, static_argnames=("n_models", "n_chunks", "chunk", "batch_size"))
 def _paired_log_space_kde_log_densities(
     block_points: jax.Array,
     block_model: jax.Array,
-    item_tile: jax.Array,
-    item_block: jax.Array,
+    block_first_item: jax.Array,
+    block_first_tile: jax.Array,
     tile_samples: jax.Array,
     tile_weights: jax.Array,
     tile_model: jax.Array,
     std: jax.Array,
     *,
     n_models: int,
+    n_chunks: int,
     chunk: int,
     batch_size: int,
 ) -> jax.Array:
     """:func:`log_kde` of each model at blocks of its own points, by tile and block.
 
-    Each item evaluates one tile at one block. Each block's offset is its
-    model's largest weighted log kernel over the block's items (a maximum,
-    independent of order); the items' sums are then added per block in a
-    fixed order on each backend (see ``deterministic_row_add``), chunk by
-    chunk.
+    Each item evaluates one tile at one block: block ``b`` holds items
+    ``block_first_item[b]`` to ``block_first_item[b + 1]``, one per tile of
+    its model from ``block_first_tile[b]``. Each chunk finds its items' blocks
+    and tiles from these starts, so no per-item index array is stored. Each
+    block's offset is its model's largest weighted log kernel over the
+    block's items (a maximum, independent of order); the items' sums are
+    then added per block in a fixed order on each backend (see
+    ``deterministic_row_add``), chunk by chunk.
 
     Parameters
     ----------
@@ -1752,17 +1756,22 @@ def _paired_log_space_kde_log_densities(
         Each block's points.
     block_model : jax.Array, shape (n_blocks,)
         Each block's model.
-    item_tile, item_block : jax.Array, shape (n_items,)
-        Each item's tile and block, nondecreasing in block. Padding items
-        have block ``n_blocks``, which the reductions drop.
+    block_first_item : jax.Array of int32, shape (n_blocks + 1,)
+        Each block's first item, nondecreasing, then the number of items.
+        Padding blocks hold no items; the items past the last, up to
+        ``n_chunks * chunk``, fall in block ``n_blocks``, which the
+        reductions drop.
+    block_first_tile : jax.Array of int32, shape (n_blocks,)
+        The first tile of each block's model.
     tile_samples, tile_weights, tile_model
         Every model's tiles, from :func:`_bucketed_tiles`.
     std : jax.Array, shape (n_dims,)
         Kernel bandwidth.
     n_models : int
         Number of models.
-    chunk, batch_size : int
-        From :func:`_repair_sizes`.
+    n_chunks, chunk, batch_size : int
+        From :func:`_repair_sizes`: ``n_chunks * chunk`` items, padding
+        included.
 
     Returns
     -------
@@ -1775,18 +1784,22 @@ def _paired_log_space_kde_log_densities(
     )
     positive = tile_weights > 0
     n_blocks = block_points.shape[0]
-    items = (
-        item_tile.reshape(-1, chunk),
-        item_block.reshape(-1, chunk),
-    )
+    last_tile = tile_samples.shape[0] - 1
+
+    def chunk_items(index: jax.Array) -> tuple[jax.Array, jax.Array]:
+        item = index * chunk + jnp.arange(chunk, dtype=jnp.int32)
+        block = jnp.searchsorted(block_first_item, item, side="right") - 1
+        known = jnp.clip(block, 0, n_blocks - 1)
+        tile = block_first_tile[known] + (item - block_first_item[known])
+        return jnp.clip(tile, 0, last_tile), block.astype(jnp.int32)
 
     def log_kernel(tile: jax.Array, block: jax.Array) -> jax.Array:
         return _log_kernel_matrix(block_points[block], tile_samples[tile], std)
 
     def offsets(
-        carry: tuple[jax.Array, jax.Array], chunk_items: tuple[jax.Array, jax.Array]
+        carry: tuple[jax.Array, jax.Array], index: jax.Array
     ) -> tuple[tuple[jax.Array, jax.Array], None]:
-        tiles, blocks = chunk_items
+        tiles, blocks = chunk_items(index)
 
         def one_item(item: tuple[jax.Array, jax.Array]) -> tuple[jax.Array, jax.Array]:
             tile, block = item
@@ -1813,14 +1826,14 @@ def _paired_log_space_kde_log_densities(
     dtype = jnp.result_type(block_points, tile_samples, std, jnp.float64)
     shape = (n_blocks, _KDE_REPAIR_POINTS)
     (offset, has_nan), _ = jax.lax.scan(
-        offsets, (jnp.full(shape, -jnp.inf, dtype), jnp.zeros(shape, dtype)), items
+        offsets,
+        (jnp.full(shape, -jnp.inf, dtype), jnp.zeros(shape, dtype)),
+        jnp.arange(n_chunks, dtype=jnp.int32),
     )
     offset = jnp.where(jnp.isfinite(offset), offset, 0.0)
 
-    def masses(
-        carry: jax.Array, chunk_items: tuple[jax.Array, jax.Array]
-    ) -> tuple[jax.Array, None]:
-        tiles, blocks = chunk_items
+    def masses(carry: jax.Array, index: jax.Array) -> tuple[jax.Array, None]:
+        tiles, blocks = chunk_items(index)
 
         def one_item(item: tuple[jax.Array, jax.Array]) -> jax.Array:
             tile, block = item
@@ -1839,7 +1852,9 @@ def _paired_log_space_kde_log_densities(
         mass = jax.lax.map(one_item, (tiles, blocks), batch_size=batch_size)
         return deterministic_row_add(carry, mass, blocks, indices_are_sorted=True), None
 
-    mass, _ = jax.lax.scan(masses, jnp.zeros(shape, dtype), items)
+    mass, _ = jax.lax.scan(
+        masses, jnp.zeros(shape, dtype), jnp.arange(n_chunks, dtype=jnp.int32)
+    )
     # As log_kde, per block.
     log_total = jnp.log(jnp.where(relative_total > 0, relative_total, 1.0))[
         block_model
@@ -1927,44 +1942,32 @@ def _tiled_kde_log_densities(
             for indices, n in zip(flagged_points, n_model_blocks, strict=True)
         ]
     ).reshape(n_blocks, size)
-    block_model = np.repeat(flagged_models, n_model_blocks)
+    block_model = np.repeat(flagged_models, n_model_blocks).astype(np.int32)
     first_block = np.cumsum([0, *n_model_blocks])
-    item_tile = np.concatenate(
-        [
-            np.tile(np.arange(tile_start[m], tile_start[m + 1]), n)
-            for m, n in zip(flagged_models, n_model_blocks, strict=True)
-        ]
-    )
-    item_block = np.concatenate(
-        [
-            np.repeat(
-                np.arange(first_block[i], first_block[i + 1]),
-                tile_start[m + 1] - tile_start[m],
-            )
-            for i, m in enumerate(flagged_models)
-        ]
-    )
+    # Each block has one item per tile of its model; padding blocks none.
     n_padded_blocks = padded_repair_count(n_blocks)
+    block_items = pad_rows(np.diff(tile_start)[block_model], n_padded_blocks)
+    block_first_item = np.concatenate([[0], np.cumsum(block_items)]).astype(np.int32)
     batch_size, chunk, n_items = _repair_sizes(
-        padded_repair_count(item_tile.size),
+        padded_repair_count(int(block_first_item[-1])),
         block_size,
         host_points,
         std,
         *host_tiles[:2],
         widest,
     )
-    padding = n_items - item_tile.size
     exact = np.asarray(
         _paired_log_space_kde_log_densities(
             jnp.asarray(host_points[pad_rows(gather, n_padded_blocks)]),
             jnp.asarray(pad_rows(block_model, n_padded_blocks)),
-            jnp.asarray(np.concatenate([item_tile, np.zeros(padding, int)])),
+            jnp.asarray(block_first_item),
             jnp.asarray(
-                np.concatenate([item_block, np.full(padding, n_padded_blocks)])
+                pad_rows(tile_start[block_model].astype(np.int32), n_padded_blocks)
             ),
             *tiles,
             std,
             n_models=n_models,
+            n_chunks=n_items // chunk,
             chunk=chunk,
             batch_size=batch_size,
         )

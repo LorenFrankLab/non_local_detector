@@ -20,10 +20,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
     mark_reference_scale,
 )
 from non_local_detector.likelihoods.common import (
+    _KDE_BLOCK_KERNEL_BYTES,
     _KDE_SAMPLE_TILE,
     LOG_EPS,
     KDEModel,
-    _compiled_log_space_kde_log_density,
     _compiled_scaled_kde_log_density,
     _sorted_sample_keys,
     _tiled_kde_rows,
@@ -568,10 +568,11 @@ def test_batched_log_densities_group_bandwidths_by_value_and_dtype():
 def test_tiled_kernel_workspace_stays_within_the_widest_model_pass(
     n_models, n_samples, n_points
 ):
-    """Each tiled pass, sized as ``kde_log_densities`` sizes it, needs no
-    more compiled workspace than the widest model's own single-model pass at
-    the same points, beyond four copies of its output. The log-space pass is
-    sized for every model flagged at every point, as production pads it.
+    """Each tiled pass, sized as ``kde_log_densities`` sizes it, stays within
+    a bounded workspace beyond four copies of its output: the scaled pass
+    within the widest model's own single-model pass at the same points, the
+    log-space repair within the kernel budget. The repair is sized for every
+    model flagged at every point, as production pads it.
     The scaled pass's tiles also serve the repair.
     2-D points, ``block_size=10_000``, the ``sorted_spikes_kde`` default."""
     block_size, n_dims = 10_000, 2
@@ -624,11 +625,12 @@ def test_tiled_kernel_workspace_stays_within_the_widest_model_pass(
         _paired_log_space_kde_log_densities.lower(
             sds((n_blocks, _KDE_REPAIR_POINTS, n_dims), jnp.float32),
             sds((n_blocks,), jnp.int32),
-            sds((n_items,), jnp.int32),
-            sds((n_items,), jnp.int32),
+            sds((n_blocks + 1,), jnp.int32),
+            sds((n_blocks,), jnp.int32),
             *tiles,
             std,
             n_models=n_models,
+            n_chunks=n_items // chunk,
             chunk=chunk,
             batch_size=batch_size,
         )
@@ -641,8 +643,9 @@ def test_tiled_kernel_workspace_stays_within_the_widest_model_pass(
             points, samples, std, block_size, weights, None
         )
     )
-    assert log_space <= 4 * n_blocks * _KDE_REPAIR_POINTS * 4 + _compiled_workspace(
-        _compiled_log_space_kde_log_density.lower(
-            points, samples, std, block_size, weights
-        )
+    # The repair is bounded by the kernel budget itself, beyond four copies
+    # of its (n_blocks, _KDE_REPAIR_POINTS) output: tighter than the
+    # single-model pass, whose workspace a looser repair sizing still fits.
+    assert log_space <= (
+        _KDE_BLOCK_KERNEL_BYTES + 4 * n_blocks * _KDE_REPAIR_POINTS * 4
     )

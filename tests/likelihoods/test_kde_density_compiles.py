@@ -169,9 +169,9 @@ def test_repair_evaluates_each_model_at_its_own_flagged_points(monkeypatch):
     items = []
     repair = kernel_density._paired_log_space_kde_log_densities
 
-    def record(block_points, block_model, item_tile, *args, **kwargs):
-        items.append(item_tile.shape[0])
-        return repair(block_points, block_model, item_tile, *args, **kwargs)
+    def record(*args, **kwargs):
+        items.append(kwargs["n_chunks"] * kwargs["chunk"])
+        return repair(*args, **kwargs)
 
     monkeypatch.setattr(kernel_density, "_paired_log_space_kde_log_densities", record)
     batched = kde_log_densities(models, grid)
