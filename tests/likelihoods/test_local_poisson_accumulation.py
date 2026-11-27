@@ -18,7 +18,6 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     KDEModel,
     kde_log_density,
-    log_density_intensity,
     poisson,
 )
 from tests.conftest import precision_mode
@@ -364,7 +363,13 @@ def test_no_spike_rate_gradient_keeps_physical_exposure(x64):
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("n_rows", [0, 1, 17])
 @pytest.mark.parametrize("case", ["ordinary", "missing", "zero_occupancy"])
-def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows, case):
+def test_compiled_local_kde_matches_probability_space_rates_away_from_tails(
+    x64, n_rows, case
+):
+    """Each unit is scored against its own density and mean rate (0, 1e-10,
+    2 and 7.5 Hz). The reference is the probability-space rate,
+    ``mean_rate * density / occupancy``, which equals the kernel's log-ratio
+    rate away from occupancy tails; zero occupancy floors the rate."""
     rng = np.random.default_rng(7362)
     with precision_mode(x64):
         points = jnp.asarray(rng.normal(size=(n_rows, 2)))
@@ -386,23 +391,23 @@ def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows,
         means = jnp.asarray([0.0, 1e-10, 2.0, 7.5])
         durations = jnp.full(n_rows, 0.002)
         log_marginals = jnp.stack([kde_log_density(model, points) for model in models])
+        occupancy = jnp.exp(log_occupancy)
         expected = jnp.zeros(n_rows)
-        for unit in range(len(models)):
-            rate = jnp.clip(
-                jnp.exp(
-                    log_density_intensity(
-                        means[unit], log_marginals[unit], log_occupancy
-                    )
-                ),
-                min=RATE_EPS_HZ,
-                max=None,
+        for unit, model in enumerate(models):
+            marginal = model.predict(points)
+            rate = means[unit] * jnp.where(
+                occupancy > 0,
+                marginal / jnp.where(occupancy > 0, occupancy, 1.0),
+                EPS,
             )
-            rate = rate * durations
+            rate = jnp.where(jnp.isnan(occupancy) | jnp.isnan(marginal), jnp.nan, rate)
+            rate = jnp.clip(rate, min=RATE_EPS_HZ, max=None) * durations
             expected += jax.scipy.special.xlogy(counts[:, unit], rate) - rate
         actual = sorted_spikes_kde._local_kde_log_likelihood(
             log_marginals, log_occupancy, counts, means, durations
         )
-        # Float32 allows compiled-versus-eager rounding (see above).
+        # Float32 allows compiled-versus-eager rounding (see above) and the
+        # rounding of the log ratio.
         np.testing.assert_allclose(
             actual, expected, **tolerance(x64, LOCAL_KDE_FLOAT32)
         )

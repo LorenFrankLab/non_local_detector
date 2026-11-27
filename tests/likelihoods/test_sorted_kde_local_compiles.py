@@ -1,5 +1,6 @@
 """The sorted-spikes KDE Local likelihood compiles a few times per decode."""
 
+import re
 from collections import Counter
 from itertools import pairwise
 
@@ -314,3 +315,160 @@ def test_bracketing_keys_match_a_search_for_each_point():
             left[model], model_keys[np.clip(index - 1, 0, last)]
         )
         np.testing.assert_array_equal(right[model], model_keys[np.clip(index, 0, last)])
+
+
+def lowered_op_count(function, args, kwargs):
+    """Operations in a jitted function's lowered program, whatever its shapes."""
+    return len(re.findall(r"stablehlo\.\w+", function.lower(*args, **kwargs).as_text()))
+
+
+def test_local_kernel_graphs_do_not_grow_with_unit_count(monkeypatch):
+    """The Local kernels lower to the same program for 8 and 40 units of
+    spike counts spread over seven octaves. Before, the Local kernel held an
+    evaluation loop per padded spike count, so its graph grew with them."""
+    names = {
+        "_tiled_scaled_kde_log_densities": kernel_density,
+        "_local_kde_log_likelihood": sorted_spikes_kde,
+    }
+    op_counts = []
+    for n_units in (8, 40):
+        model, time, position, spike_times = fit(n_units, position_std=4.0)
+        calls = {}
+        with monkeypatch.context() as patch:
+            for name, module in names.items():
+                original = getattr(module, name)
+
+                def record(
+                    *args, _name=name, _original=original, _calls=calls, **kwargs
+                ):
+                    _calls.setdefault(_name, (_original, args, kwargs))
+                    return _original(*args, **kwargs)
+
+                patch.setattr(module, name, record)
+            predict_local(model, time, position, spike_times)
+        op_counts.append(
+            {name: lowered_op_count(*call) for name, call in calls.items()}
+        )
+    assert op_counts[0] == op_counts[1], op_counts
+
+
+def flags_from_scaled_pass(monkeypatch, models, points, log_floor):
+    """The flags the scaled pass returns, before any log-space repair."""
+    flags = []
+    original = kernel_density._tiled_scaled_kde_log_densities
+
+    def record(*args, **kwargs):
+        values, needs_log_space = original(*args, **kwargs)
+        flags.append(np.asarray(needs_log_space))
+        return values, needs_log_space
+
+    with monkeypatch.context() as patch:
+        patch.setattr(kernel_density, "_tiled_scaled_kde_log_densities", record)
+        kernel_density.kde_log_density_rows(models, points, log_floor=log_floor)
+    (needs_log_space,) = flags
+    return needs_log_space
+
+
+def test_log_floor_unflags_only_points_whose_density_is_below_it(monkeypatch):
+    """A flagged point is left unflagged only where its true density (from
+    the single-model log-space evaluation) is below its floor. In 2-D the
+    scaled pass shifts by the kernel's peak, so points about 12 bandwidths
+    or more from all of a model's samples are flagged (1-D shifts by the
+    nearest sample, and rarely flags). Points 10 to 15 bandwidths away put
+    true densities just below the bound, within its factor of four; with
+    floors from 3 below to 3 above each true log density, every unflagged
+    point's floor is above it, and some are unflagged. NaN and ``-inf``
+    floors leave the flags unchanged."""
+    rng = np.random.default_rng(11)
+    models = [
+        KDEModel(std=1.0, block_size=10_000).fit(
+            jnp.asarray(rng.normal(0.0, 0.05, (size, 2)), jnp.float32)
+        )
+        for size in (1, 3, 20)
+    ]
+    radius = rng.uniform(10.0, 15.0, 2_000)
+    angle = rng.uniform(0.0, 2 * np.pi, radius.size)
+    points = jnp.asarray(
+        np.column_stack((radius * np.cos(angle), radius * np.sin(angle))), jnp.float32
+    )
+    no_floor = flags_from_scaled_pass(monkeypatch, models, points, None)
+    assert no_floor.any()
+    n_unflagged = 0
+    for unit, model in enumerate(models):
+        true = np.asarray(kde_log_density(model, points), np.float64)
+        margin = rng.uniform(-3.0, 3.0, true.size)
+        unit_terms = np.full(len(models), np.inf)
+        unit_terms[unit] = 0.0
+        flags = flags_from_scaled_pass(
+            monkeypatch, models, points, (unit_terms, true + margin)
+        )
+        unflagged = no_floor[unit] & ~flags[unit]
+        assert (margin[unflagged] > 0).all()
+        n_unflagged += unflagged.sum()
+        for floor in (np.nan, -np.inf):
+            flags = flags_from_scaled_pass(
+                monkeypatch, models, points, (unit_terms, np.full(true.size, floor))
+            )
+            np.testing.assert_array_equal(flags[unit], no_floor[unit])
+    assert n_unflagged > 0
+
+
+def test_log_floor_skips_repairs_without_changing_the_local_likelihood(monkeypatch):
+    """On a 2-D recording with deep occupancy tails, the Local likelihood is
+    bit-identical with and without the rate floor, which removes some but
+    not all of the log-space repairs."""
+    model, time, position, spike_times = fit(40, position_std=4.0)
+    rows_with_floor = sorted_spikes_kde.kde_log_density_rows
+    items = []
+    repair = kernel_density._paired_log_space_kde_log_densities
+
+    def record_repair(*args, **kwargs):
+        items.append(int(np.asarray(args[2])[-1]))
+        return repair(*args, **kwargs)
+
+    monkeypatch.setattr(
+        kernel_density, "_paired_log_space_kde_log_densities", record_repair
+    )
+    with_floor = np.asarray(predict_local(model, time, position, spike_times))
+    items_with_floor = sum(items)
+    items.clear()
+    monkeypatch.setattr(
+        sorted_spikes_kde,
+        "kde_log_density_rows",
+        lambda *args, log_floor=None, **kwargs: rows_with_floor(*args, **kwargs),
+    )
+    without_floor = np.asarray(predict_local(model, time, position, spike_times))
+    items_without_floor = sum(items)
+    np.testing.assert_array_equal(with_floor, without_floor)
+    assert 0 < items_with_floor < items_without_floor, (
+        items_with_floor,
+        items_without_floor,
+    )
+
+
+def test_log_floor_leaves_every_local_rate_bit_identical():
+    """The rates the Local kernel forms from the floored densities equal,
+    bit for bit, those from fully repaired densities, at every unit and row
+    of the same 2-D recording: a skipped density's rate is the clip either
+    way. (The likelihood check above cannot see rates far below 1e-6 Hz.)"""
+    model, _, position, _ = fit(40, position_std=4.0)
+    points = jnp.asarray(position, jnp.float32)
+    log_occupancy = np.asarray(kde_log_density(model["occupancy_model"], points))
+    unit_floor = sorted_spikes_kde._unit_log_density_floor(model["mean_rates"])
+    rates = []
+    for log_floor in (None, (unit_floor, log_occupancy)):
+        log_marginals = kernel_density.kde_log_density_rows(
+            model["marginal_models"], points, log_floor=log_floor
+        )
+        rates.append(
+            np.asarray(
+                sorted_spikes_kde._kde_rates(
+                    jnp.asarray(model["mean_rates"])[:, None],
+                    jnp.asarray(log_marginals),
+                    jnp.asarray(log_occupancy)[None, :],
+                )
+            )
+        )
+    np.testing.assert_array_equal(rates[0], rates[1])
+    # Not vacuous: the clip is active at some units and rows.
+    assert (rates[0] == sorted_spikes_kde._RATE_FLOOR_HZ).mean() > 0.01
