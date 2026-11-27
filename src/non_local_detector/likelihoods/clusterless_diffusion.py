@@ -91,7 +91,6 @@ from non_local_detector.likelihoods.clusterless_spikes import (
 )
 from non_local_detector.likelihoods.common import (
     DEFAULT_WAVEFORM_STD,
-    EPS,
     LOG_RATE_EPS_HZ,
     SpikeTimeOrder,
     as_array,
@@ -456,7 +455,7 @@ def fit_clusterless_diffusion_encoding_model(
             full_to_local,
         )
 
-    # ---- occupancy pi = H O / (sum w_pos * dV), floored at EPS ----
+    # ---- occupancy pi = H O / (sum w_pos * dV), floored at 0 ----
     active = exposure_weights > 0
     occupancy_field = np.bincount(
         sample_bins[active], weights=exposure_weights[active], minlength=n_interior
@@ -540,7 +539,11 @@ def fit_clusterless_diffusion_encoding_model(
         memory_budget,
     )
     safe_weight_sum = weight_sum if weight_sum > 0 else 1.0
-    occupancy = np.clip(diffused[:, 0] / (safe_weight_sum * bin_sizes), EPS, None)
+    # Floored at 0, not at a small positive constant: occupancy is a density
+    # in 1 / length**d, so an absolute floor is resolved or not depending on
+    # the position units (an unvisited bin of a 1 m arena in micrometres
+    # passed ``resolved_occupancy``). Unvisited bins stay unresolved.
+    occupancy = np.clip(diffused[:, 0] / (safe_weight_sum * bin_sizes), 0.0, None)
     summed_ground_process_intensity = np.zeros((n_interior,))
     spike_fields_hat = iter(diffused[:, 1:].T)
     for mean_rate, w_total in zip(mean_rates, weight_total, strict=True):
@@ -810,12 +813,13 @@ def log_intensity_scale(
     log_scale : array, shape (n_bins,)
     """
     occupancy = jnp.asarray(occupancy)
+    resolved = resolved_occupancy(occupancy)
     return jnp.where(
-        resolved_occupancy(occupancy),
+        resolved,
         log_density_intensity(
             mean_rate,
             -jnp.log(weight_total * jnp.asarray(bin_sizes)),
-            jnp.log(occupancy),
+            jnp.log(jnp.where(resolved, occupancy, 1.0)),
         ),
         -jnp.inf,
     )
