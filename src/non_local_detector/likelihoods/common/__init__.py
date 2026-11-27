@@ -59,7 +59,7 @@ from non_local_detector.likelihoods.common.kernel_density import (
     prepare_kde_local_inputs,
     prepared_kde_log_densities,
     prepared_kde_log_density,
-    tiled_kde_point_rows,
+    tiled_kde_block,
     traced_block_kde,
     true_kde_log_density,
 )
@@ -274,7 +274,7 @@ __all__ = [
     "spike_counts_matrix",
     "spike_row_ids",
     "sum_spikes_into_rows",
-    "tiled_kde_point_rows",
+    "tiled_kde_block",
     "traced_block_kde",
     "true_kde_log_density",
     "validate_bandwidth",

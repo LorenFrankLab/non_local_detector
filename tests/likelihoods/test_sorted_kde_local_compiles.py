@@ -142,22 +142,23 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
     """Each unit's counts are scored against its own density and mean rate:
     the full Local likelihood equals the sum of single-unit likelihoods.
 
-    The default ``block_size=10_000`` evaluates blocks of 20,000 rows in
-    two blocks of points, and the 24 tiles in two steps; the last block is
-    ragged and padded. The units' fields, rates and
+    With the default ``block_size=10_000`` and a spike-count block of
+    24,960 rows, the density pass evaluates blocks of 24,960 rows in three
+    blocks of 8,320 points, and the 24 tiles in two steps; the last block
+    (20,040 rows) is padded to three point blocks. The units' fields, rates and
     spike counts all differ, so pairing a unit's counts with another's
     density or rate would change the result by orders of magnitude more
     than rounding.
     """
     monkeypatch.setattr(poisson, "COUNT_BLOCK_BYTES", 25_000 * 6 * 8)
     sizes = []
-    tiled_rows = kernel_density._tiled_kde_rows
+    scaled_pass = kernel_density._tiled_scaled_kde_log_densities
 
-    def record_sizes(block_size, points, n_tiles, *args):
-        sizes.append(
-            (points.shape[0], n_tiles, *tiled_rows(block_size, points, n_tiles, *args))
+    def record_sizes(points, tile_samples, *args, rows, batch_size):
+        sizes.append((points.shape[0], tile_samples.shape[0], rows, batch_size))
+        return scaled_pass(
+            points, tile_samples, *args, rows=rows, batch_size=batch_size
         )
-        return sizes[-1][2:]
 
     repairs = []
     repair = kernel_density._paired_log_space_kde_log_densities
@@ -166,19 +167,16 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
         repairs.append(kwargs["n_models"])
         return repair(*args, **kwargs)
 
-    monkeypatch.setattr(kernel_density, "_tiled_kde_rows", record_sizes)
+    monkeypatch.setattr(kernel_density, "_tiled_scaled_kde_log_densities", record_sizes)
     monkeypatch.setattr(
         kernel_density, "_paired_log_space_kde_log_densities", record_repair
     )
     model, time, position, spike_times = fit(6, duration=450.0, block_size=10_000)
     sizes.clear()
     full = predict_local(model, time, position, spike_times)
-    # Without the point-block query (tiled_kde_point_rows), which sizes
-    # many points.
-    sizes = [size for size in sizes if size[0] < np.iinfo(np.int32).max]
-    assert [n_points for n_points, *_ in sizes] == [20_000, 20_000, 5_120]
-    for n_points, n_tiles, rows, batch_size, _ in sizes[:2]:
-        assert rows < n_points
+    assert [n_points for n_points, *_ in sizes] == [24_960, 24_960]
+    for _, n_tiles, rows, batch_size in sizes:
+        assert rows == 8_320
         assert batch_size < n_tiles
     assert 6 in repairs
 
@@ -194,16 +192,19 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
     np.testing.assert_allclose(full, expected, rtol=1e-6, atol=1e-5)
 
 
+@pytest.mark.parametrize("block_size", [300, 10_000])
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("n_dims", [1, 2])
-def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims, x64):
-    """Each Local block of 180 units of 14 to 42,000 samples
-    (``block_size=10_000``), at the sizes a prediction calls its kernels with:
-    every ``(n_units, n_rows)`` array takes at most a 64th of the kernel
-    budget, the density pass's workspace, arguments and outputs together fit
-    the budget, and the Poisson terms hold at most five such arrays. A 4x
-    looser block, row padding or density-pass block exceeds them."""
-    unit_bytes = _KDE_BLOCK_KERNEL_BYTES // 64
+def test_local_workspace_stays_within_the_kernel_budget(
+    monkeypatch, n_dims, x64, block_size
+):
+    """Each Local block of 180 units of 14 to 42,000 samples, at the sizes a
+    prediction calls its kernels with: the density pass's and the Poisson
+    terms' workspace, arguments and outputs each fit the kernel budget, and
+    a full block is at most the spike-count block. At ``block_size=300`` in
+    float32 the spike-count block binds (23,296 rows, less than one row per
+    point block); elsewhere the budget does. A 4x looser count of the pass's (unit, row) arrays, or a 4x
+    larger spike-count block, exceeds the budget."""
     calls = {}
     module_of = {
         "_tiled_scaled_kde_log_densities": kernel_density,
@@ -224,14 +225,14 @@ def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims, x64
         rng = np.random.default_rng(0)
         sizes = np.geomspace(14, 42_000, 180).astype(int)
         models = [
-            KDEModel(std=3.0, block_size=10_000).fit(
+            KDEModel(std=3.0, block_size=block_size).fit(
                 jnp.asarray(rng.uniform(0, 100, (size, n_dims)))
             )
             for size in sizes
         ]
-        itemsize = jnp.zeros(()).dtype.itemsize
-        # Several full blocks and a ragged one, even with 4x larger blocks.
-        n_rows = 9 * unit_bytes // (len(models) * itemsize) + 100
+        # Two spike-count blocks and a ragged one.
+        count_rows = poisson._count_block_rows(len(models))
+        n_rows = 2 * count_rows + 100
         edges = np.arange(n_rows + 1) * 0.002
         scaled = capture(
             "_tiled_scaled_kde_log_densities",
@@ -254,7 +255,7 @@ def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims, x64
             [np.sort(rng.uniform(0, edges[-1], 20)) for _ in models],
             environment=environment,
             marginal_models=models,
-            occupancy_model=models[-1],
+            occupancy_model=models[0],
             occupancy=None,
             mean_rates=np.full(len(models), 2.0),
             place_fields=np.ones((len(models), n_bins)),
@@ -283,10 +284,16 @@ def test_local_workspace_stays_within_the_kernel_budget(monkeypatch, n_dims, x64
             )
 
         for args, kwargs in distinct("_tiled_scaled_kde_log_densities"):
-            assert len(models) * args[0].shape[0] * itemsize <= unit_bytes
+            assert args[0].shape[0] <= count_rows
             assert footprint(scaled, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
         for args, kwargs in distinct("_local_kde_log_likelihood"):
-            assert footprint(local, args, kwargs) <= 5 * unit_bytes
+            assert footprint(local, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
+        if block_size == 300 and not x64:
+            # Whole point blocks lose fewer rows than there are blocks.
+            largest = max(
+                args[0].shape[0] for args, _ in calls["_tiled_scaled_kde_log_densities"]
+            )
+            assert largest > count_rows - count_rows // 200
 
 
 def test_bracketing_keys_match_a_search_for_each_point():

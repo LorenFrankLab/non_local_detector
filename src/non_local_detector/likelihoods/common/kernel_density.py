@@ -1035,14 +1035,71 @@ def kde_log_density_rows(
     return np.stack([np.asarray(row) for row in results])
 
 
-def tiled_kde_point_rows(models: Sequence["KDEModel"], n_dims: int) -> int:
-    """Points per block of :func:`kde_log_density_rows`'s tiled pass at many points.
+# (model, point) arrays the tiled pass holds at once, in units of the float
+# itemsize. 1-D: the per-point scale and two more temporaries, the two
+# bracketing keys, the values and the flags (measured 6.3 on CPU in float32
+# and float64); 2-D and up: one temporary, the values and the flags
+# (measured 2.3).
+_PASS_POINT_ARRAYS_1D = 7
+_PASS_POINT_ARRAYS = 3
 
-    A call with more points pads them to whole blocks of this many, so a
-    caller that chooses its point counts avoids that padding with multiples
-    of it; a call with fewer evaluates them in one block. Exact when the
-    models form one group (bandwidth, block size and dtypes), as one fit's
-    do; otherwise it is computed as if they did.
+# The pass's smaller temporaries beside its tile buffers (measured 1 to 6 MiB).
+_PASS_SLACK_BYTES = _KDE_BLOCK_KERNEL_BYTES // 32
+
+
+def _tiled_pass_bytes(
+    n_points: int,
+    block_size: int,
+    n_models: int,
+    n_dims: int,
+    n_tiles: int,
+    widest: int,
+    std: jax.Array,
+    sample_dtype: np.dtype,
+    weight_dtype: np.dtype,
+) -> tuple[int, int]:
+    """Bytes the tiled pass of ``n_models`` holds at ``n_points``, and its point block.
+
+    Counts its tile buffers as :func:`_tiled_kde_rows` sizes them (the
+    per-tile sums of a block of points and one step's kernel matrix), its
+    tile arguments, its ``(n_models, n_points)`` arrays and
+    ``_PASS_SLACK_BYTES``.
+    """
+    # Zero-stride views: only shapes and dtypes are read.
+    points = np.broadcast_to(
+        np.zeros((), jax.dtypes.canonicalize_dtype(jnp.float64)), (n_points, n_dims)
+    )
+    tile_samples = np.zeros((1, _KDE_SAMPLE_TILE, n_dims), sample_dtype)
+    tile_weights = np.zeros((1, _KDE_SAMPLE_TILE), weight_dtype)
+    rows, batch_size, n_pass_tiles = _tiled_kde_rows(
+        block_size, points, n_tiles, std, tile_samples, tile_weights, widest
+    )
+    itemsize = _kernel_itemsize(points, tile_samples, std, tile_weights)
+    point_arrays = _PASS_POINT_ARRAYS_1D if n_dims == 1 else _PASS_POINT_ARRAYS
+    n_bytes = (
+        itemsize * rows * (n_pass_tiles + batch_size * _KDE_SAMPLE_TILE)
+        + itemsize * n_pass_tiles * _KDE_SAMPLE_TILE * (n_dims + 1)
+        + 4 * n_pass_tiles
+        + itemsize * point_arrays * n_models * n_points
+        + _PASS_SLACK_BYTES
+    )
+    return n_bytes, rows
+
+
+def tiled_kde_block(
+    models: Sequence["KDEModel"], n_dims: int, max_points: int
+) -> tuple[int, int]:
+    """Points per call, and per point block, at which :func:`kde_log_density_rows` fits the budget.
+
+    The call's points take what ``_KDE_BLOCK_KERNEL_BYTES`` leaves beside the
+    pass's own tile buffers and arguments, counting every
+    ``(n_models, n_points)`` array the pass holds (see
+    :func:`_tiled_pass_bytes`). The point count is then split into whole
+    point blocks: ``n_points = m * block`` with ``m`` blocks of at most the
+    pass's own block, which loses fewer than ``m`` points of the largest
+    count that fits. Evaluated with block size ``block``, the pass pads no
+    points. Exact when the models form one group (bandwidth, block size and
+    dtypes), as one fit's do; otherwise it is computed as if they did.
 
     Parameters
     ----------
@@ -1050,36 +1107,57 @@ def tiled_kde_point_rows(models: Sequence["KDEModel"], n_dims: int) -> int:
         Fitted KDE models, with the bandwidth and block size of the first.
     n_dims : int
         Point dimensions.
+    max_points : int
+        Most points per call.
 
     Returns
     -------
-    rows : int
-        Without models, any number of points is one block.
+    n_points, block : int
+        ``n_points <= max_points`` is a multiple of ``block``; at least one
+        point when even one exceeds the budget.
     """
-    many = np.iinfo(np.int32).max
     if not models:
-        return int(many)
+        return max_points, max_points
     model = models[0]
     assert model.samples_ is not None  # fitted
     assert model.weights_ is not None  # set with samples_
-    n_tiles = [
+    model_tiles = [
         max(1, -(-np.shape(cast(jax.Array, m.samples_))[0] // _KDE_SAMPLE_TILE))
         for m in models
     ]
-    # Zero-stride views: only shapes and dtypes are read.
-    points = np.broadcast_to(
-        np.zeros((), jax.dtypes.canonicalize_dtype(jnp.float64)), (many, n_dims)
-    )
-    rows, _, _ = _tiled_kde_rows(
-        many if model.block_size is None else model.block_size,
-        points,
-        padded_tile_count(sum(n_tiles)),
-        as_std_array(model.std, n_dims),
-        np.zeros((1, _KDE_SAMPLE_TILE, n_dims), model.samples_.dtype),
-        np.zeros((1, _KDE_SAMPLE_TILE), model.weights_.dtype),
-        max(n_tiles),
-    )
-    return rows
+
+    sample_dtype, weight_dtype = model.samples_.dtype, model.weights_.dtype
+    std = as_std_array(model.std, n_dims)
+
+    def pass_bytes(n_points: int) -> tuple[int, int]:
+        return _tiled_pass_bytes(
+            n_points,
+            n_points if model.block_size is None else model.block_size,
+            len(models),
+            n_dims,
+            padded_tile_count(sum(model_tiles)),
+            max(model_tiles),
+            std,
+            sample_dtype,
+            weight_dtype,
+        )
+
+    # The bytes grow with the points: the largest count that fits, by
+    # bisection.
+    fits, too_many = 1, max_points + 1
+    if pass_bytes(max_points)[0] <= _KDE_BLOCK_KERNEL_BYTES:
+        fits = max_points
+    else:
+        while too_many - fits > 1:
+            middle = (fits + too_many) // 2
+            if pass_bytes(middle)[0] <= _KDE_BLOCK_KERNEL_BYTES:
+                fits = middle
+            else:
+                too_many = middle
+    point_block = pass_bytes(fits)[1]
+    n_blocks = -(-fits // point_block)
+    block = fits // n_blocks
+    return n_blocks * block, block
 
 
 def _kde_log_density_list(

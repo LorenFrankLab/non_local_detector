@@ -81,6 +81,7 @@ from non_local_detector.likelihoods.common import (
     kde_log_densities,
     kde_log_density,
     kde_log_density_rows,
+    kde_model_with_block_size,
     log_density_intensity,
     pad_rows,
     padded_sample_count,
@@ -90,7 +91,7 @@ from non_local_detector.likelihoods.common import (
     prepare_kde_local_inputs,
     require_position,
     spike_counts_matrix,
-    tiled_kde_point_rows,
+    tiled_kde_block,
     validate_bandwidth,
     validate_encoding_contract,
     validate_population_lengths,
@@ -109,29 +110,25 @@ __all__ = [
 ]
 
 
-# Bytes of each (n_units, n_rows) array of a Local block, in the default
-# float dtype. Beside its tile buffers (at most three quarters of
-# _KDE_BLOCK_KERNEL_BYTES, by _tiled_kde_rows; about 200 MiB measured), the
-# density pass holds about six such arrays at once (in 1-D: three
-# temporaries, two bracketing keys, the values and flags), and the Poisson
-# terms four (two temporaries, the log densities and the counts). At a 64th
-# of the budget each, the density pass's take under a tenth of it.
-_LOCAL_ARRAY_BYTES = _KDE_BLOCK_KERNEL_BYTES // 64
+# (n_units, n_rows) arrays the Poisson terms hold at once: two temporaries,
+# the log densities and the counts, and one to spare.
+_POISSON_UNIT_ARRAYS = 5
 
 
-def _local_block_rows(n_units: int, point_rows: int) -> int:
-    """Rows of a full Local block: the spike-count block, within ``_LOCAL_ARRAY_BYTES``.
+def _local_block_rows(models: list[KDEModel], n_dims: int) -> tuple[int, int]:
+    """Rows of a full Local block, and the density pass's point block for it.
 
-    Rounded down to whole blocks of ``point_rows``, the density pass's
-    point blocks, when there are more rows than one.
+    At most the spike-count block, the rows whose Poisson arrays fit
+    ``_KDE_BLOCK_KERNEL_BYTES``, and the rows whose density pass fits it
+    (see ``tiled_kde_block``); a whole number of point blocks.
     """
     itemsize = jax.dtypes.canonicalize_dtype(jnp.float64).itemsize
+    n_units = max(len(models), 1)
     limit = min(
         _count_block_rows(n_units),
-        _LOCAL_ARRAY_BYTES // (max(n_units, 1) * itemsize),
+        _KDE_BLOCK_KERNEL_BYTES // (_POISSON_UNIT_ARRAYS * n_units * itemsize),
     )
-    limit = max(1, limit)
-    return limit // point_rows * point_rows if limit >= point_rows else limit
+    return tiled_kde_block(models, n_dims, max(1, limit))
 
 
 def _padded_block_rows(n_rows: int, max_rows: int, point_rows: int) -> int:
@@ -595,8 +592,12 @@ def predict_sorted_spikes_kde_log_likelihood(
         unit_log_floor = _unit_log_density_floor(mean_rates)
         # Full blocks keep their rows; a shorter block is padded (see
         # _padded_block_rows), so chunks share compiled kernels.
-        point_rows = tiled_kde_point_rows(marginal_models, points.shape[1])
-        max_rows = _local_block_rows(len(spike_times), point_rows)
+        max_rows, point_rows = _local_block_rows(marginal_models, points.shape[1])
+        # The density pass evaluates the models in blocks of point_rows.
+        block_models = [
+            kde_model_with_block_size(model, point_rows, rows.spike_time_order)
+            for model in marginal_models
+        ]
 
         def evaluate(start: int, stop: int) -> jax.Array:
             block = slice(start - rows.start, stop - rows.start)
@@ -626,7 +627,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             row_log_floor = block_log_occupancy.copy()
             row_log_floor[n_rows:] = np.inf
             log_marginals = kde_log_density_rows(
-                marginal_models,
+                block_models,
                 pad(points[block]),
                 log_floor=(unit_log_floor, row_log_floor),
                 spike_time_order=rows.spike_time_order,
