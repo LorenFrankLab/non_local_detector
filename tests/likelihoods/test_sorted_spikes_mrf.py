@@ -486,6 +486,44 @@ def test_nearly_unpenalized_fit_matches_per_bin_mle_with_tiny_occupancy_bins():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("counts", "occupancy", "penalty_weights", "rate_scale"),
+    [
+        # One bin with MLE log-rate log(100 / 1e-11) = 29.93, just under the clip (30).
+        ([[100.0], [1.0]], [1e-11, 1.0], [0.0, 1.0], 1.0),
+        # Clip at 30 + log(500) = 36.21; MLE log(50 / 1e-14) = 36.15.
+        ([[50.0], [1.0]], [1e-14, 1.0], [0.0, 1.0], 500.0),
+    ],
+)
+def test_fit_converges_when_a_bin_mle_is_just_inside_the_clip(
+    counts, occupancy, penalty_weights, rate_scale
+):
+    """A bin whose MLE log-rate sits just under the clip converges to it quickly.
+
+    From the warm start that bin's curvature is ~1e-11, so the full Newton step
+    overshoots the clip by hundreds. A linear (tangent) continuation past the
+    clip made that overshoot cheap, the halving test accepted it, and each later
+    iteration brought the bin back by only ``1 - counts / mu_clip`` (0.06 here),
+    so the fit stopped at ``max_iter`` still ~300 past the clip.
+    """
+    counts = np.array(counts)
+    occupancy = np.array(occupancy)
+    _, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        counts,
+        occupancy,
+        np.eye(2),
+        np.array(penalty_weights),
+        penalty=1e-4,
+        rate_scale=rate_scale,
+    )
+    assert diagnostics["converged"]
+    assert diagnostics["n_iter"] < 30
+    assert eta[0, 0] == pytest.approx(np.log(counts[0, 0] / occupancy[0]), abs=1e-3)
+    # The 1e-4 penalty on bin 1 moves its optimum off log(1 / 1) = 0 by ~1e-4.
+    assert eta[1, 0] == pytest.approx(0.0, abs=1e-2)
+
+
+@pytest.mark.unit
 def test_fit_keeps_coefficients_of_a_neuron_whose_step_is_not_finite():
     """A neuron whose Newton step is NaN keeps its coefficients, not NaN ones.
 

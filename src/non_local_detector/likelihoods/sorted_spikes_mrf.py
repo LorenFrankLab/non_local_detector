@@ -109,6 +109,8 @@ __all__ = [
 _FIT_DTYPE = jnp.float32
 # Clip the linear predictor before exponentiating to avoid overflow during IRLS.
 _ETA_CLIP = 30.0
+# Furthest (in log-rate) one Newton step may carry a bin past the clip.
+_CLIP_OVERSHOOT = 1.0
 # Max Newton step-halvings per iteration (mgcv gam.fit3 style monotone-descent guard).
 _MAX_STEP_HALVINGS = 30
 # Ridge added to the Hessian diagonal for numerical stability.
@@ -311,43 +313,42 @@ def _newton_fit_jax(
     algebra (GPU-ready). Returns ``(coeffs, eta, mu, n_iter, max_step, converged)``.
     """
     n_bins = basis.shape[0]
-    n_neurons = counts.shape[1]
     tol = jnp.maximum(
         tol, _FIT_TOL_FLOOR
     )  # float32-safe floor on the relative-objective decrease
 
     log_rate_scale = jnp.log(rate_scale)
+    lower = -_ETA_CLIP + log_rate_scale
+    upper = _ETA_CLIP + log_rate_scale
 
     def clip_eta(eta: jax.Array) -> jax.Array:
-        return jnp.clip(eta, -_ETA_CLIP + log_rate_scale, _ETA_CLIP + log_rate_scale)
+        return jnp.clip(eta, lower, upper)
 
-    def overshoot_of(eta: jax.Array) -> jax.Array:
-        """Rise of each bin's tangent past the clip, zero inside it."""
-        # Past the clip a bin's term is continued along its tangent where the
-        # tangent rises away from the clip (its optimum is inside), and left
-        # flat where it falls (its optimum is past the clip). That is the
-        # convex envelope of the clipped term: the objective stays convex with
-        # the optimum of the unclipped one inside the clip, so a step that
-        # overshoots the clip is pulled back instead of left on a flat region.
-        # The tangent's slope is mu - counts at the clip, from the clip's
-        # constant mean rather than mu, so fits inside the clip compute mu
-        # exactly as they would without the extension.
-        upper = _ETA_CLIP + log_rate_scale
-        mean_at_clip = occupancy[:, None] * jnp.exp(
-            jnp.where(eta > upper, upper, -_ETA_CLIP + log_rate_scale)
+    # A bin's term is held flat past the clip only on the side where its own
+    # maximum-likelihood log-rate, log(counts / occupancy), lies beyond the clip:
+    # there the clipped term is already at its best and the returned rate is the
+    # clip's. On the other side the exact Poisson term continues past the clip,
+    # so the objective is convex and its optimum is the unclipped one wherever
+    # that lies inside the clip. Each step may carry a bin from inside the clip
+    # at most _CLIP_OVERSHOOT past it on a side that is not flat (see
+    # newton_body). (n_bins, n_neurons)
+    flat_above = counts > occupancy[:, None] * jnp.exp(upper)
+    flat_below = counts < occupancy[:, None] * jnp.exp(lower)
+
+    def held_eta(eta: jax.Array) -> jax.Array:
+        """Return the log-rate each bin's term is scored at: eta, held at a flat side."""
+        return jnp.where(
+            flat_above & (eta > upper),
+            upper,
+            jnp.where(flat_below & (eta < lower), lower, eta),
         )
-        return (mean_at_clip - counts) * (eta - clip_eta(eta))
 
     def penalized_neg_loglik(coeffs: jax.Array, eta: jax.Array) -> jax.Array:
-        # The likelihood of the clipped predictor, the one mu and the returned
-        # rates use, with the tangent extension past the clip.
-        clipped_eta = clip_eta(eta)
-        mu = occupancy[:, None] * jnp.exp(clipped_eta)
-        loglik = jnp.sum(counts * (clipped_eta - log_rate_scale) - mu, axis=0)
-        # Summed apart: zero for every bin inside the clip.
-        extension = jnp.sum(jnp.maximum(overshoot_of(eta), 0.0), axis=0)
+        held = held_eta(eta)
+        mu = occupancy[:, None] * jnp.exp(held)
+        loglik = jnp.sum(counts * (held - log_rate_scale) - mu, axis=0)
         penalty_term = 0.5 * jnp.sum(penalty_diag[:, None] * coeffs**2, axis=0)
-        return -loglik + extension + penalty_term
+        return -loglik + penalty_term
 
     # Warm start each neuron from a constant log-rate (fast, convex problem).
     total_occupancy = jnp.maximum(occupancy.sum(), 1e-9 / rate_scale)
@@ -357,12 +358,12 @@ def _newton_fit_jax(
 
     def newton_cond(state: _NewtonState) -> jax.Array:
         _coeffs, iteration, _max_step, rel_decrease, _failed = state
-        # Converge on the penalized objective (-loglik + penalty), not the coefficient
-        # step. The MRF's eigenmode basis has an unpenalized null mode (a constant
-        # log-rate per component); when many bins are empty (an undersampled arena)
-        # that mode is unconstrained, so its coefficient drifts forever and
-        # ``max|step|`` never settles -- even though ``exp(eta)`` (the actual place
-        # field) has converged.
+        # Converge on the penalized objective (penalized_neg_loglik), not the
+        # coefficient step. The MRF's eigenmode basis has an unpenalized null mode
+        # (a constant log-rate per component); when many bins are empty (an
+        # undersampled arena) that mode is unconstrained, so its coefficient drifts
+        # forever and ``max|step|`` never settles -- even though ``exp(eta)`` (the
+        # actual place field) has converged.
         # The objective is monotone (step-halving enforces descent) and stable under
         # that harmless null-space drift, so it detects true convergence where a
         # coefficient-step test cannot.
@@ -371,21 +372,38 @@ def _newton_fit_jax(
     def newton_body(state: _NewtonState) -> _NewtonState:
         coeffs, iteration, _max_step, _rel, _failed = state
         eta = _matmul(basis, coeffs)
-        clipped_eta = clip_eta(eta)
-        mu = occupancy[:, None] * jnp.exp(clipped_eta)
-        # A clipped bin on the flat part of its term adds nothing to the
-        # gradient; on the tangent extension it adds the tangent's slope,
-        # counts - mu at the clip. Its curvature is kept: the Hessian stays
-        # positive definite, so the step is a descent direction of the convex
-        # objective, and masking it as well made a 1600-bin, rank-200 fit 12%
-        # slower on CPU.
-        moves = (clipped_eta == eta) | (overshoot_of(eta) > 0)
+        held = held_eta(eta)
+        mu = occupancy[:, None] * jnp.exp(held)
+        # A bin held on a flat side adds nothing to the gradient. Its curvature
+        # (mu at the clip) is kept: the Hessian stays positive definite, so the
+        # step is a descent direction of the convex objective, and masking it as
+        # well made a 1600-bin, rank-200 fit 12% slower on CPU.
         grad = (
-            _matmul(basis.T, jnp.where(moves, counts - mu, 0.0))
+            _matmul(basis.T, jnp.where(held == eta, counts - mu, 0.0))
             - penalty_diag[:, None] * coeffs
         )
         hessian = _penalized_hessian(basis, mu, penalty_diag)
         step = jnp.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
+
+        # A tiny-occupancy bin has curvature ~occupancy * rate, so its Newton step
+        # can move its log-rate by 1e11: more than step-halving can bring back, and
+        # far past the clip. Shorten each neuron's step so no bin that starts
+        # inside the clip ends more than _CLIP_OVERSHOOT past it on a side that is
+        # not flat. The bin that sets the cap still moves at least _CLIP_OVERSHOOT,
+        # so the cap cannot shrink a step to nothing; it is inactive unless a full
+        # step would carry a bin that far past the clip.
+        eta_step = _matmul(basis, step.T)  # (n_bins, n_neurons)
+        rises = ~flat_above & (eta <= upper) & (eta_step > 0)
+        falls = ~flat_below & (eta >= lower) & (eta_step < 0)
+        room = jnp.where(
+            rises, upper + _CLIP_OVERSHOOT - eta, lower - _CLIP_OVERSHOOT - eta
+        )
+        capped = rises | falls
+        max_scale = jnp.min(
+            jnp.where(capped, room / jnp.where(capped, eta_step, 1.0), jnp.inf),
+            axis=0,
+            initial=1.0,
+        )
 
         # (n_neurons,), current coeffs
         objective = penalized_neg_loglik(coeffs, eta)
@@ -411,9 +429,8 @@ def _newton_fit_jax(
             scale = jnp.where(is_worse, 0.5 * scale, scale)
             return (scale, halvings + 1, *trial(scale))
 
-        ones = jnp.ones(n_neurons, basis.dtype)
         scale, _, trial_objective, failed = lax.while_loop(
-            halving_cond, halving_body, (ones, 0, *trial(ones))
+            halving_cond, halving_body, (max_scale, 0, *trial(max_scale))
         )
         # A neuron whose step still raises the objective after every halving keeps
         # its coefficients, and the fit is reported as not converged. The step is
@@ -488,8 +505,10 @@ def mrf_penalized_poisson_fit(
     max_iter : int, optional
         Maximum Newton iterations, by default 100.
     tol : float, optional
-        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
-        fit stops when the objective improves by less than this, by default 1e-10.
+        Relative tolerance on the decrease of the penalized objective (the negative
+        Poisson log-likelihood plus the penalty, each bin's log-rate held at the rate
+        clip on the side where its maximum-likelihood rate lies beyond it); the fit
+        stops when the objective improves by less than this, by default 1e-10.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every candidate fit (the caller
@@ -621,8 +640,10 @@ def mrf_reml_objective(
     max_iter : int, optional
         Maximum Newton iterations per candidate fit, by default 100.
     tol : float, optional
-        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
-        fit stops when the objective improves by less than this, by default 1e-10.
+        Relative tolerance on the decrease of the penalized objective (the negative
+        Poisson log-likelihood plus the penalty, each bin's log-rate held at the rate
+        clip on the side where its maximum-likelihood rate lies beyond it); the fit
+        stops when the objective improves by less than this, by default 1e-10.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every evaluation.
@@ -702,8 +723,10 @@ def select_penalty_by_reml(
     max_iter : int, optional
         Maximum Newton iterations per candidate fit, by default 100.
     tol : float, optional
-        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
-        fit stops when the objective improves by less than this, by default 1e-10.
+        Relative tolerance on the decrease of the penalized objective (the negative
+        Poisson log-likelihood plus the penalty, each bin's log-rate held at the rate
+        clip on the side where its maximum-likelihood rate lies beyond it); the fit
+        stops when the objective improves by less than this, by default 1e-10.
 
     rate_scale : float, optional
         Positive conversion from reference rate units to fitted rate units,
@@ -914,8 +937,10 @@ def fit_sorted_spikes_mrf_encoding_model(
         Maximum Newton iterations for both REML candidate fits and the final fit, by
         default 100.
     tol : float, optional
-        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
-        fit stops when the objective improves by less than this, by default 1e-10.
+        Relative tolerance on the decrease of the penalized objective (the negative
+        Poisson log-likelihood plus the penalty, each bin's log-rate held at the rate
+        clip on the side where its maximum-likelihood rate lies beyond it); the fit
+        stops when the objective improves by less than this, by default 1e-10.
     log_penalty_bounds : tuple[float, float], optional
         REML search interval for ``log(lambda)`` when ``penalty`` is None, by default
         (-8.0, 20.0).
