@@ -20,6 +20,24 @@ def padded_sample_count(n_samples: int) -> int:
     return 16 if n_samples <= 16 else _quarter_octave(n_samples)
 
 
+def padded_tile_count(n_tiles: int) -> int:
+    """Return the padded number of KDE sample tiles: four sizes per octave, <=25% padding.
+
+    Batched KDE passes over different models, chunks and fitted sample counts
+    then compile for few tile counts.
+    """
+    return _quarter_octave(max(n_tiles, 1))
+
+
+def padded_repair_count(n: int) -> int:
+    """Return the padded block or item count of a KDE log-space repair: a power of two.
+
+    Repairs of different flagged sets (row chunks, refits) then compile for
+    few sizes; at most half the padded work is padding.
+    """
+    return 1 << (max(n, 1) - 1).bit_length()
+
+
 def padded_occupancy_count(n_samples: int) -> int:
     """Occupancy KDE samples: 64 sizes per octave, at most 1/64 padding.
 

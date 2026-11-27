@@ -547,7 +547,7 @@ def make_translated_recording(offset, far_spike_time=None):
         environment=env,
         disable_progress_bar=True,
     )
-    # 70 and 100 decoding spikes, each padded to 128 rows.
+    # 70 and 100 decoding spikes, evaluated together padded to 256 rows.
     decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (70, 100)]
     decode_marks = [rng.normal(0, 30, (len(t), 4)) for t in decode_times]
     decode_position = position
@@ -571,7 +571,7 @@ def make_translated_recording(offset, far_spike_time=None):
 
 @pytest.fixture
 def local_occupancy(monkeypatch):
-    """Each Local occupancy pass at the decoding spikes, one per electrode.
+    """Each Local occupancy pass at the decoding spikes, one for all electrodes.
 
     Records ``(points, log_density, repaired_rows)``: the rows of ``points``
     that the pass re-evaluated in log space.
@@ -614,7 +614,7 @@ def test_padding_rows_far_from_the_origin_are_not_repaired(local_occupancy):
     local_occupancy.clear()
     with count_compilations() as compiled:
         actual = predict(translated, True, None)
-    assert [rows.size for _, _, rows in local_occupancy] == [0, 0]
+    assert [rows.size for _, _, rows in local_occupancy] == [0]
     assert compiled == []
     expected = reference(translated, True, slice(0, len(translated[-1]) - 1))
     assert np.all(np.isfinite(actual))
@@ -631,11 +631,9 @@ def test_decoding_spike_far_from_all_occupancy_is_repaired(local_occupancy):
     recording = make_translated_recording(105.0, far_spike_time=far_spike_time)
     actual = predict(recording, True, None)
     far_position = recording[2][far_spike_time]
-    n_real = [len(times) for times in recording[4]]
-    assert len(local_occupancy) == len(n_real)
-    for (_, _, rows), n in zip(local_occupancy, n_real, strict=True):
-        assert np.all(rows < n)
-    points, values, rows = local_occupancy[0]
+    n_real = sum(len(times) for times in recording[4])
+    ((points, values, rows),) = local_occupancy
+    assert np.all(rows < n_real)
     (far_row,) = np.flatnonzero(np.all(points == far_position, axis=1))
     assert far_row in rows
 
