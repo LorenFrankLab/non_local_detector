@@ -749,6 +749,57 @@ def _add_exact_tile(
     return _fold_position_tiles(update, marginal.shape[1], pos_tile_size, marginal)
 
 
+def _repaired_log_joint(
+    linear_marginal: jax.Array,
+    exact_threshold: jax.Array,
+    log_background: jax.Array,
+    exact_rows: Callable[[jax.Array], jax.Array],
+    group_size: int,
+    mean_rate: float | jax.Array,
+    occupancy: jax.Array,
+    dtype: DTypeLike,
+) -> jax.Array:
+    """Log joint intensity from a scaled estimate, with flagged spikes made exact.
+
+    A spike whose floor ``log_background + log(eps)`` lies below
+    ``exact_threshold`` may have lost mass in the scaled GEMM; its marginal
+    is recomputed by ``exact_rows``, in groups of ``group_size`` (see
+    ``_repair_flagged_in_groups``).
+    """
+    query_floor = jnp.asarray(log_background, dtype) + np.log(finfo(dtype).eps)
+    marginal = _repair_flagged_in_groups(
+        linear_marginal, exact_threshold > query_floor, exact_rows, group_size
+    )
+    return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
+
+
+def _supported_spike_terms(
+    supported: jax.Array,
+    decoding_features: jax.Array,
+    estimate: Callable[[], jax.Array],
+    mean_rate: float | jax.Array,
+    occupancy: jax.Array,
+    log_background: jax.Array,
+    dtype: DTypeLike | None = None,
+) -> jax.Array:
+    """Each spike's term ``logaddexp(log intensity, log_background)``.
+
+    ``estimate()`` gives the log joint intensity. An encoding model without
+    support (see ``_encoding_supported``) scores the background without
+    reducing, unless a decoding mark is NaN, which must propagate.
+    """
+    log_joint = jax.lax.cond(
+        supported | jnp.any(jnp.isnan(decoding_features)),
+        estimate,
+        lambda: _log_joint_from_log_marginal(
+            jnp.full((decoding_features.shape[0], occupancy.shape[0]), -jnp.inf, dtype),
+            mean_rate,
+            occupancy,
+        ),
+    )
+    return jnp.logaddexp(log_joint, log_background[:, None])
+
+
 def _estimate_with_enc_chunking(
     decoding_spike_waveform_features: jax.Array,
     encoding_spike_waveform_features: jax.Array,
@@ -827,7 +878,6 @@ def _estimate_with_enc_chunking(
     )
     # A weakly typed weight would turn strong inside the loop bodies.
     log_w = jnp.asarray(log_w, dtype)
-    query_floor = jnp.asarray(log_background, dtype) + np.log(finfo(dtype).eps)
     position_floor = _log_marginal_floor(mean_rate, occupancy)
 
     # Every log kernel is at most its peak: the Gaussian normalizer for marks
@@ -852,14 +902,11 @@ def _estimate_with_enc_chunking(
         position_peak = _tiled_position_peak(
             cast(jax.Array, log_position_distance), log_w, enc_tile_size, dtype
         )
-    needs_exact_row = (
-        _exact_threshold(
-            mark_peak,
-            position_peak,
-            _scaled_gemm_window(n_enc, jnp.float32),
-            position_floor,
-        )
-        > query_floor
+    exact_threshold = _exact_threshold(
+        mark_peak,
+        position_peak,
+        _scaled_gemm_window(n_enc, jnp.float32),
+        position_floor,
     )
 
     def encoding_tile(
@@ -975,13 +1022,16 @@ def _estimate_with_enc_chunking(
             ),
         )
 
-    marginal = _repair_flagged_in_groups(
+    return _repaired_log_joint(
         reduce_linearly(),
-        needs_exact_row,
+        exact_threshold,
+        log_background,
         exact_rows,
         _repair_group_size(enc_tile_size, pos_tile_size),
+        mean_rate,
+        occupancy,
+        dtype,
     )
-    return _log_joint_from_log_marginal(marginal, mean_rate, occupancy)
 
 
 def _encoding_supported(
@@ -1030,8 +1080,9 @@ def _score_spikes(
     -------
     log_terms : jax.Array, shape (n_decoding_spikes, n_position_bins)
     """
-    log_joint = jax.lax.cond(
-        supported | jnp.any(jnp.isnan(decoding_features)),
+    return _supported_spike_terms(
+        supported,
+        decoding_features,
         lambda: _estimate_with_enc_chunking(
             decoding_features,
             encoding_features,
@@ -1045,13 +1096,10 @@ def _score_spikes(
             log_background,
             **reduction_options,
         ),
-        lambda: _log_joint_from_log_marginal(
-            jnp.full((decoding_features.shape[0], occupancy.shape[0]), -jnp.inf),
-            mean_rate,
-            occupancy,
-        ),
+        mean_rate,
+        occupancy,
+        log_background,
     )
-    return jnp.logaddexp(log_joint, log_background[:, None])
 
 
 def estimate_log_joint_mark_intensity(
@@ -2022,13 +2070,11 @@ def _add_log_mark_intensities(
                 - (normalizer[None, None, :])
             )
             weighted = (log_position_distance + log_w[:, :, None]).astype(dtype)
-            supported |= (
-                jnp.any(jnp.isfinite(log_w))
-                | jnp.any(jnp.isnan(log_w))
-                | jnp.any(
-                    jnp.isnan(jax.lax.dynamic_slice_in_dim(tiles.marks, tile, n_tiles))
-                )
-                | jnp.any(jnp.isnan(log_position_distance))
+            supported |= _encoding_supported(
+                log_w,
+                jax.lax.dynamic_slice_in_dim(tiles.marks, tile, n_tiles),
+                stds,
+                log_position_distance,
             )
             return (
                 jax.lax.dynamic_update_slice_in_dim(factors, weighted, tile - first, 0),
@@ -2128,30 +2174,24 @@ def _add_log_mark_intensities(
                     ),
                 )
 
-            def estimate() -> jax.Array:
-                query_floor = jnp.asarray(background, dtype) + np.log(finfo(dtype).eps)
-                marginal = _repair_flagged_in_groups(
+            return _supported_spike_terms(
+                supported,
+                marks,
+                lambda: _repaired_log_joint(
                     reduce_linearly(),
-                    exact_threshold > query_floor,
+                    exact_threshold,
+                    background,
                     exact_rows,
                     group_size,
-                )
-                return _log_joint_from_log_marginal(
-                    marginal, mean_rates[electrode], occupancy
-                )
-
-            # As _score_spikes: spikes of an electrode that cannot give a
-            # nonzero or NaN intensity have the background alone.
-            log_joint = jax.lax.cond(
-                supported | jnp.any(jnp.isnan(marks)),
-                estimate,
-                lambda: _log_joint_from_log_marginal(
-                    jnp.full((n_spikes, n_bins), -jnp.inf, dtype),
                     mean_rates[electrode],
                     occupancy,
+                    dtype,
                 ),
+                mean_rates[electrode],
+                occupancy,
+                background,
+                dtype,
             )
-            return jnp.logaddexp(log_joint, background[:, None])
 
         def add_blocks(total: jax.Array, block: jax.Array, n_blocks: int) -> jax.Array:
             """Add the terms of ``n_blocks`` blocks from ``block`` to their rows."""
