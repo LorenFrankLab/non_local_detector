@@ -979,14 +979,21 @@ def kde_log_densities(
     log_densities : list of jax.Array, shape (n_points,)
         In the order of ``models``.
     """
-    return [jnp.asarray(row) for row in kde_log_density_rows(models, points)]
+    return [
+        jnp.asarray(row) for row in _kde_log_density_list(models, jnp.asarray(points))
+    ]
+
+
+# Per-model and per-point terms of a log-density floor, added: see
+# kde_log_density_rows.
+LogFloor = tuple[np.ndarray, np.ndarray]
 
 
 def kde_log_density_rows(
     models: Sequence["KDEModel"],
     points: jax.Array | np.ndarray,
     *,
-    log_floor: np.ndarray | None = None,
+    log_floor: LogFloor | None = None,
 ) -> np.ndarray:
     """:func:`kde_log_densities` as one host array, one row per model.
 
@@ -996,28 +1003,46 @@ def kde_log_density_rows(
         Fitted KDE models.
     points : array, shape (n_points, n_dims) or (n_points,)
         Points at which every model is evaluated.
-    log_floor : np.ndarray, shape (n_models, n_points), optional
-        Log densities below which the caller does not need the value. A
-        flagged point is not evaluated in log space when its density is
-        certainly below its floor (see :func:`_tiled_scaled_kde_log_densities`):
-        it keeps its scaled-pass value, which is then below the floor too,
-        possibly ``-inf``. A floor of ``inf`` marks a padding point. By default
-        every flagged point is evaluated in log space. Models that are not
-        exactly ``KDEModel`` ignore it.
+    log_floor : (np.ndarray, np.ndarray), shapes (n_models,) and (n_points,), optional
+        Per-model and per-point terms whose sum is the log density below
+        which the caller does not need a model's value at a point. A flagged
+        point is not evaluated in log space when its density is certainly
+        below its floor (see :func:`_tiled_scaled_kde_log_densities`): it
+        keeps its scaled-pass value, which is then below the floor too,
+        possibly ``-inf``. A point term of ``inf`` marks a padding point; a
+        NaN floor (``inf`` plus ``-inf``) leaves the point flagged. By
+        default every flagged point is evaluated in log space. Models that
+        are not exactly ``KDEModel`` ignore it.
 
     Returns
     -------
     log_densities : np.ndarray, shape (n_models, n_points)
-        In the order of ``models``.
+        In the order of ``models``, in their common dtype.
     """
     points = jnp.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
-    results: list[np.ndarray] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
+    results = _kde_log_density_list(models, points, log_floor)
+    if not results:
+        return np.empty(
+            (0, points.shape[0]), jax.dtypes.canonicalize_dtype(jnp.float64)
+        )
+    return np.stack([np.asarray(row) for row in results])
+
+
+def _kde_log_density_list(
+    models: Sequence["KDEModel"],
+    points: jax.Array,
+    log_floor: LogFloor | None = None,
+) -> list[np.ndarray | jax.Array]:
+    """Each model's log densities in its own dtype; see :func:`kde_log_density_rows`."""
+    if points.ndim == 1:
+        points = points[:, None]
+    results: list[np.ndarray | jax.Array] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
     groups: dict[tuple[Any, ...], list[int]] = {}
     for index, model in enumerate(models):
         if type(model) is not KDEModel:
-            results[index] = np.asarray(kde_log_density(model, points))
+            results[index] = kde_log_density(model, points)
             continue
         if model.samples_ is None:
             msg = "This KDE instance is not fitted yet."
@@ -1039,15 +1064,13 @@ def kde_log_density_rows(
             [np.asarray(models[i].weights_) for i in members],
             as_std_array(models[members[0]].std, points.shape[1]),
             block_size,
-            log_floor=None if log_floor is None else log_floor[members],
+            log_floor=None
+            if log_floor is None
+            else (np.asarray(log_floor[0])[members], log_floor[1]),
         )
         for row, index in enumerate(members):
             results[index] = values[row]
-    if not results:
-        return np.empty(
-            (0, points.shape[0]), jax.dtypes.canonicalize_dtype(jnp.float64)
-        )
-    return np.stack(results)
+    return results
 
 
 def log_space_kde_log_density(
@@ -1618,7 +1641,7 @@ def _tiled_scaled_kde_log_densities(
     counts: jax.Array,
     std: jax.Array,
     bracketing_keys: tuple[jax.Array, jax.Array] | None,
-    log_floor: jax.Array | None = None,
+    log_floor: tuple[jax.Array, jax.Array] | None = None,
     *,
     rows: int,
     batch_size: int,
@@ -1643,15 +1666,17 @@ def _tiled_scaled_kde_log_densities(
     bracketing_keys : (left, right) of jax.Array, each shape (n_models, n_points), or None
         From :func:`_bracketing_keys` for 1D points: the exact per-point
         scale. None scales by the kernel's peak.
-    log_floor : jax.Array, shape (n_models, n_points), optional
-        A flagged point is left unflagged when its true log density is
+    log_floor : (jax.Array, jax.Array), shapes (n_models,) and (n_points,), optional
+        Per-model and per-point terms of a log-density floor, added. A
+        flagged point is left unflagged when its true log density is
         certainly below its floor. A flagged scaled sum is below the loss
-        bound. Each sample's term that flushed below ``tiny`` lost less than
-        ``tiny``, and rounding at most halves the sum and doubles its
-        normalizer (true below 4 million tiles per model). So the true
-        density is below four times the bound plus ``tiny`` per sample,
-        shifted and normalized as the values are. NaN floors leave points
-        flagged.
+        bound ``lost``. Each sample's term that flushed below ``tiny`` lost
+        less than ``tiny``, and rounding at most halves the sum of the rest
+        and doubles its normalizer (true while ``n_tiles + 256`` additions
+        lose less than a factor of two: below about 10 million tiles, 2.6e9
+        samples, per model). So the true density is below
+        ``exp(scale) * (4 * lost + 2 * n * tiny) / relative_total``. NaN
+        floors leave points flagged.
     rows, batch_size : int
         From :func:`_tiled_kde_rows`.
 
@@ -1716,11 +1741,13 @@ def _tiled_scaled_kde_log_densities(
     )
     needs_log_space = (scaled < lost[:, None]) & has_mass
     if log_floor is not None:
-        bound = 4 * lost + counts.astype(scaled.dtype) * finfo(scaled.dtype).tiny
+        bound = 4 * lost + 2 * counts.astype(scaled.dtype) * finfo(scaled.dtype).tiny
         upper = (peak if scale is None else scale) + jnp.log(
             bound / jnp.where(relative_total > 0, relative_total, 1.0)
         )[:, None]
-        needs_log_space = needs_log_space & ~(upper < log_floor)
+        model_floor, point_floor = log_floor
+        floor = model_floor[:, None] + point_floor[None, :]
+        needs_log_space = needs_log_space & ~(upper < floor)
     return values, needs_log_space
 
 
@@ -1929,7 +1956,7 @@ def _tiled_kde_log_densities(
     std: jax.Array,
     block_size: int,
     *,
-    log_floor: np.ndarray | None = None,
+    log_floor: LogFloor | None = None,
 ) -> np.ndarray:
     """Return the true log densities of KDEs sharing a bandwidth, on the host.
 
@@ -1952,7 +1979,7 @@ def _tiled_kde_log_densities(
         Kernel bandwidth.
     block_size : int
         Evaluation points per block.
-    log_floor : np.ndarray, shape (n_models, n_points), optional
+    log_floor : (np.ndarray, np.ndarray), shapes (n_models,) and (n_points,), optional
         See :func:`kde_log_density_rows`.
 
     Returns
@@ -1980,7 +2007,9 @@ def _tiled_kde_log_densities(
         jnp.asarray([np.shape(s)[0] for s in samples]),
         std,
         bracketing_keys,
-        None if log_floor is None else jnp.asarray(log_floor),
+        None
+        if log_floor is None
+        else (jnp.asarray(log_floor[0]), jnp.asarray(log_floor[1])),
         rows=rows,
         batch_size=batch_size,
     )

@@ -106,6 +106,10 @@ __all__ = [
 ]
 
 
+# Every place-field and Local rate is clipped up to this many Hz.
+_RATE_FLOOR_HZ = RATE_EPS_HZ
+
+
 def _kde_rates(
     mean_rates: jax.Array | float,
     log_marginals: jax.Array,
@@ -133,9 +137,33 @@ def _kde_rates(
     """
     return jnp.clip(
         jnp.exp(log_density_intensity(mean_rates, log_marginals, log_occupancy)),
-        min=RATE_EPS_HZ,
+        min=_RATE_FLOOR_HZ,
         max=None,
     )
+
+
+def _unit_log_density_floor(mean_rates: np.ndarray) -> np.ndarray:
+    """Per-unit term of the log density below which a rate is surely clipped.
+
+    A density below ``log(_RATE_FLOOR_HZ / 2) - log(mean_rate) + log_occupancy``
+    gives a rate below half of the clip in :func:`_kde_rates`, so its exact
+    value does not change the result; the factor 2 leaves room for the
+    rounding of the floor and of the log ratio.
+
+    Parameters
+    ----------
+    mean_rates : np.ndarray, shape (n_units,)
+        Mean firing rates in Hz.
+
+    Returns
+    -------
+    log_floor : np.ndarray, shape (n_units,)
+        ``inf`` for silent units, whose rate is the clip whatever the density.
+    """
+    with np.errstate(divide="ignore"):
+        log_mean_rates: np.ndarray = np.log(np.asarray(mean_rates, float))
+    log_floor: np.ndarray = np.log(_RATE_FLOOR_HZ / 2) - log_mean_rates
+    return log_floor
 
 
 @jax.jit
@@ -523,11 +551,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         host_log_occupancy = np.asarray(log_occupancy)
         host_durations = np.asarray(rows.durations())
         rates = jnp.asarray(mean_rates)
-        # log(RATE_EPS_HZ / 2) - log(mean rate): +inf for silent neurons.
-        with np.errstate(divide="ignore"):
-            log_half_rate_floor = (
-                np.log(RATE_EPS_HZ / 2) - np.log(np.asarray(mean_rates, float))
-            )[:, None]
+        unit_log_floor = _unit_log_density_floor(mean_rates)
         # Full count blocks keep their rows; a shorter block is padded to one
         # of four sizes per octave, so chunks share compiled kernels.
         max_rows = _count_block_rows(len(spike_times))
@@ -552,14 +576,17 @@ def predict_sorted_spikes_kde_log_likelihood(
             # Every neuron's true log density at the rows' positions, in one
             # tiled pass whose kernels compile for the total number of sample
             # tiles, not for each neuron's sample count. Densities whose rate
-            # is certainly below half of RATE_EPS_HZ, where rates are
-            # floored, need no log-space evaluation. Padding rows repeat the
-            # last row, are never evaluated in log space and are dropped.
+            # is surely clipped need no log-space evaluation; their floor is
+            # the unit's term plus the row's log occupancy, added on the
+            # device. Padding rows repeat the last row, are never evaluated
+            # in log space (an infinite floor) and are dropped.
             block_log_occupancy = pad(host_log_occupancy[block])
-            log_floor = log_half_rate_floor + block_log_occupancy[None, :]
-            log_floor[:, n_rows:] = np.inf
+            row_log_floor = block_log_occupancy.copy()
+            row_log_floor[n_rows:] = np.inf
             log_marginals = kde_log_density_rows(
-                marginal_models, pad(points[block]), log_floor=log_floor
+                marginal_models,
+                pad(points[block]),
+                log_floor=(unit_log_floor, row_log_floor),
             )
             log_likelihood = _local_kde_log_likelihood(
                 log_marginals,
