@@ -82,7 +82,7 @@ def test_nonlocal_pass_workspace_stays_within_the_kernel_budget(
     tiles, terms, per_electrode = tiles_and_terms(samples, n_position_dims)
     widest = max(per_electrode)
     rows, group_blocks, group_tiles = clusterless_kde._nonlocal_sizes(
-        spikes, per_electrode, BLOCK_SIZE, n_bins, 4, widest, (spikes, per_electrode)
+        spikes, per_electrode, BLOCK_SIZE, n_bins, 4, widest
     )
     with precision_mode(False):
         compiled = clusterless_kde._add_log_mark_intensities.lower(
@@ -122,7 +122,7 @@ def test_local_pass_workspace_stays_within_the_kernel_budget():
     )
     tiles, terms, per_electrode = tiles_and_terms(samples, n_position_dims)
     rows, group_blocks, group_tiles = clusterless_kde._local_sizes(
-        spikes, per_electrode, BLOCK_SIZE, max(per_electrode), (spikes, per_electrode)
+        spikes, per_electrode, BLOCK_SIZE, max(per_electrode)
     )
     with precision_mode(False):
         compiled = clusterless_kde._add_local_terms.lower(

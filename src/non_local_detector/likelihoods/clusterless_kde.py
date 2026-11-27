@@ -41,7 +41,6 @@ from non_local_detector.likelihoods.common import (
     EXACT_REPAIR_SLOTS,
     LOG_EPS,
     RATE_REFERENCE_SECONDS,
-    DecodeRows,
     KDEModel,
     SpikeTimeOrder,
     _log_kernel_matrix,
@@ -1538,7 +1537,6 @@ def _nonlocal_sizes(
     n_bins: int,
     itemsize: int,
     widest_tiles: int,
-    expected: tuple[Sequence[int], Sequence[int]],
 ) -> tuple[int, int, int]:
     """Sizes of the batched non-local pass.
 
@@ -1565,8 +1563,6 @@ def _nonlocal_sizes(
         Bytes per float of the pass.
     widest_tiles : int
         Tiles of the electrode with the most, spikes or not.
-    expected : (sequence of int, sequence of int)
-        Expected spike and tile counts for the chunk (see ``_block_rows``).
 
     Returns
     -------
@@ -1587,7 +1583,7 @@ def _nonlocal_sizes(
     row_limit = max(
         16, (_KDE_BLOCK_KERNEL_BYTES - group_tiles * tile_bytes) // row_bytes
     )
-    return _group_sizes(n_spikes, n_tiles, block_size, row_limit, group_tiles, expected)
+    return _group_sizes(n_spikes, n_tiles, block_size, row_limit, group_tiles)
 
 
 def _local_sizes(
@@ -1595,7 +1591,6 @@ def _local_sizes(
     n_tiles: Sequence[int],
     block_size: int,
     widest_tiles: int,
-    expected: tuple[Sequence[int], Sequence[int]],
 ) -> tuple[int, int, int]:
     """Sizes of the Local pass.
 
@@ -1614,8 +1609,6 @@ def _local_sizes(
         The requested spikes per block.
     widest_tiles : int
         Tiles of the electrode with the most, spikes or not.
-    expected : (sequence of int, sequence of int)
-        Expected spike and tile counts for the chunk (see ``_block_rows``).
 
     Returns
     -------
@@ -1630,7 +1623,7 @@ def _local_sizes(
         _KDE_BLOCK_KERNEL_BYTES
         // (_LOCAL_TILE_BUFFERS * group_tiles * _KDE_SAMPLE_TILE * itemsize),
     )
-    return _group_sizes(n_spikes, n_tiles, block_size, row_limit, group_tiles, expected)
+    return _group_sizes(n_spikes, n_tiles, block_size, row_limit, group_tiles)
 
 
 def _group_sizes(
@@ -1639,7 +1632,6 @@ def _group_sizes(
     block_size: int,
     row_limit: int,
     group_tiles: int,
-    expected: tuple[Sequence[int], Sequence[int]],
 ) -> tuple[int, int, int]:
     """Block rows and the largest groups of blocks and tiles of a batched pass.
 
@@ -1647,7 +1639,7 @@ def _group_sizes(
     and ``_GROUP_BLOCKS`` blocks, at most the padded block count; both group
     sizes are powers of two.
     """
-    block_rows = _block_rows(n_spikes, n_tiles, block_size, row_limit, expected)
+    block_rows = _block_rows(n_spikes, n_tiles, block_size, row_limit)
     n_blocks = padded_block_count(sum(-(-n // block_rows) for n in n_spikes))
     group_blocks = _power_of_two_below(
         min(_GROUP_BLOCKS, min(block_size, row_limit) // block_rows, n_blocks)
@@ -1660,7 +1652,6 @@ def _block_rows(
     n_tiles: Sequence[int],
     block_size: int,
     row_limit: int,
-    expected: tuple[Sequence[int], Sequence[int]],
 ) -> int:
     """Spikes per block of a batched pass, shared by every electrode.
 
@@ -1669,10 +1660,8 @@ def _block_rows(
     largest of 16, 64, 256, ... (powers of four) below
     ``min(block_size, row_limit)``, or that cap itself, that adds at most a
     quarter to the (spike, tile) pairs the pass reduces; the smallest of them
-    when none does. The size the same rule picks for the ``expected`` spike
-    counts of a chunk this long is preferred when it meets the bound, so
-    chunks of one decode share compiled passes. The choice depends on the
-    chunk alone, not on the chunks decoded before it.
+    when none does. The choice depends on the chunk alone, not on the chunks
+    decoded before it.
 
     Parameters
     ----------
@@ -1684,10 +1673,6 @@ def _block_rows(
         The requested spikes per block.
     row_limit : int
         The most rows whose buffers fit the pass's budget.
-    expected : (sequence of int, sequence of int)
-        Spike and tile counts of the electrodes for a chunk of the same
-        number of rows at the decode's mean rates (see
-        ``_expected_chunk_spikes``).
 
     Returns
     -------
@@ -1697,70 +1682,15 @@ def _block_rows(
     sizes = [
         size for size in (16 << 2 * k for k in range(cap.bit_length())) if size < cap
     ]
-    smallest = (sizes or [cap])[0]
-
-    def meeting(spikes: Sequence[int], tiles: Sequence[int]) -> list[int]:
-        pairs = sum(n * t for n, t in zip(spikes, tiles, strict=True))
-        return [
-            size
-            for size in (*sizes, cap)
-            if 4
-            * sum(-(-n // size) * size * t for n, t in zip(spikes, tiles, strict=True))
-            <= 5 * pairs
-        ]
-
-    own = meeting(n_spikes, n_tiles)
-    preferred = max(meeting(*expected) or [smallest])
-    if preferred in own:
-        return preferred
-    return max(own or [smallest])
-
-
-def _expected_chunk_spikes(
-    rows: DecodeRows,
-    spike_times: Sequence[ArrayLike],
-    n_tiles: np.ndarray,
-) -> tuple[list[int], list[int]]:
-    """Spike and tile counts of the electrodes for a chunk of ``rows``'s length.
-
-    Each electrode's spikes over the whole decode, scaled to the chunk's
-    share of its rows and rounded up; electrodes without decoding spikes are
-    left out. They set a preferred block size (see ``_block_rows``) from the
-    decode and the chunk's length alone.
-
-    Parameters
-    ----------
-    rows : DecodeRows
-        The chunk's rows within the full decode grid.
-    spike_times : sequence of array, each shape (n_spikes,)
-        Every electrode's decoding spike times.
-    n_tiles : np.ndarray of int, shape (n_electrodes,)
-        Each electrode's encoding tiles.
-
-    Returns
-    -------
-    spikes, tiles : list of int
-    """
-    edges = rows.time_edges
-
-    def build() -> np.ndarray:
-        counts = []
-        for times in spike_times:
-            values, _ = rows.spike_time_order.get(times)
-            counts.append(
-                int(np.count_nonzero((values >= edges[0]) & (values <= edges[-1])))
-            )
-        return np.asarray(counts)
-
-    totals = rows.spike_time_order.memo(
-        "clusterless_kde_decode_spike_counts", (*spike_times, edges), build
-    )
-    share = (rows.stop - rows.start) / max(len(edges) - 1, 1)
-    keep = np.flatnonzero(totals)
-    return (
-        [max(1, int(np.ceil(totals[e] * share))) for e in keep],
-        [int(n_tiles[e]) for e in keep],
-    )
+    pairs = sum(n * t for n, t in zip(n_spikes, n_tiles, strict=True))
+    meeting = [
+        size
+        for size in (*sizes, cap)
+        if 4
+        * sum(-(-n // size) * size * t for n, t in zip(n_spikes, n_tiles, strict=True))
+        <= 5 * pairs
+    ]
+    return max(meeting or [(sizes or [cap])[0]])
 
 
 def _spike_blocks(
@@ -3161,7 +3091,6 @@ def predict_clusterless_kde_log_likelihood(
                 interior_place_bin_centers.shape[0],
                 log_likelihood.dtype.itemsize,
                 widest_tiles,
-                _expected_chunk_spikes(rows, spike_times, n_tiles),
             )
             blocks, _ = _spike_blocks(
                 [
@@ -3457,7 +3386,6 @@ def compute_local_log_likelihood(
             [int(n_tiles[electrode]) for electrode, *_ in spikes],
             block_size,
             int(n_tiles.max()),
-            _expected_chunk_spikes(rows, spike_times, n_tiles),
         )
         blocks, (block_positions, block_log_occupancy) = _spike_blocks(
             spikes,

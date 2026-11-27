@@ -116,10 +116,10 @@ def test_row_chunks_and_repeated_decodes_reuse_marked_kernels(is_local):
     with count_compilations() as compiled:
         for rows in chunks:
             predict(data, is_local, rows, spike_time_order)
-    # Measured 4 on CPU (block sizes and padded block counts, both powers
-    # of four, vary with each chunk's spikes); main compiled 72 and 88. The
+    # Measured 6 on CPU: each chunk's own spikes set its block size and
+    # padded block count (both powers of four); main compiled 72 and 88. The
     # bound leaves room for a different data mix.
-    assert 1 <= len(marked_kernel_compiles(compiled)) <= 6, compiled
+    assert 1 <= len(marked_kernel_compiles(compiled)) <= 8, compiled
     with count_compilations() as compiled:
         for rows in chunks:
             predict(data, is_local, rows, spike_time_order)
