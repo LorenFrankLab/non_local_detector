@@ -80,10 +80,14 @@ def _recording(geometry, seed=0):
     scope="module",
     params=[
         (algorithm, geometry)
-        for algorithm in ("sorted_spikes_glm", "clusterless_mark_glm")
+        for algorithm in (
+            "sorted_spikes_glm",
+            "clusterless_mark_glm",
+            "clusterless_flow_mixture",
+        )
         for geometry in ("1d", "2d", "plus-maze")
     ],
-    ids=lambda param: f"{param[0].split('_')[0]}-{param[1]}",
+    ids=lambda param: f"{param[0]}-{param[1]}",
 )
 def fitted(request):
     """A fitted non-local detector, its spike data, and predict arguments."""

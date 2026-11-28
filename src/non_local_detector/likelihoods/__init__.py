@@ -14,6 +14,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     clusterless_diffusion,
+    clusterless_flow_mixture,
     clusterless_gmm,
     clusterless_kde,
     clusterless_mark_glm,
@@ -22,6 +23,11 @@ from non_local_detector.likelihoods.clusterless_diffusion import (
     ClusterlessDiffusionEncodingModel,
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
+)
+from non_local_detector.likelihoods.clusterless_flow_mixture import (
+    ClusterlessFlowMixtureEncodingModel,
+    fit_clusterless_flow_mixture_encoding_model,
+    predict_clusterless_flow_mixture_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_gmm import (
     ClusterlessGMMEncodingModel,
@@ -367,6 +373,14 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         ClusterlessMarkGLMEncodingModel,
         execution_settings=frozenset({"spike_block_size", "disable_progress_bar"}),
         mark_reference_scale=clusterless_mark_glm.mark_reference_scale,
+    ),
+    # Model checking does not implement the flow mixture's intensity.
+    "clusterless_flow_mixture": ClusterlessLikelihoodAlgorithm(
+        fit_clusterless_flow_mixture_encoding_model,
+        predict_clusterless_flow_mixture_log_likelihood,
+        ClusterlessFlowMixtureEncodingModel,
+        execution_settings=frozenset({"spike_block_size", "disable_progress_bar"}),
+        mark_reference_scale=clusterless_flow_mixture.mark_reference_scale,
     ),
 }
 

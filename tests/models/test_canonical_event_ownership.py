@@ -234,6 +234,7 @@ CLUSTERLESS_ALGORITHMS = [
     "clusterless_gmm",
     "clusterless_diffusion",
     "clusterless_mark_glm",
+    "clusterless_flow_mixture",
 ]
 
 
@@ -249,7 +250,7 @@ def gapped_clusterless_run(clusterless_two_run_sim):
 @pytest.mark.integration
 # A fully masked electrode is fitted as zero-rate on purpose, and each backend says so.
 @pytest.mark.filterwarnings(
-    r"ignore:(Clusterless (GMM|mark GLM).{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
+    r"ignore:(Clusterless (GMM|mark GLM|flow mixture).{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
 )
 @pytest.mark.parametrize("algorithm", CLUSTERLESS_ALGORITHMS)
 def test_clusterless_exposure_uses_full_timeline_mask(
@@ -283,9 +284,9 @@ def test_clusterless_exposure_uses_full_timeline_mask(
     ]
     np.testing.assert_allclose(model["mean_rates"], expected_rates, rtol=1e-5)
 
-    if algorithm == "clusterless_mark_glm":
+    if algorithm in ("clusterless_mark_glm", "clusterless_flow_mixture"):
         # No occupancy is stored: exposure enters each rate map's GLM fit, and
-        # test_clusterless_mark_glm checks zero weights against a subset fit.
+        # dedicated tests check zero weights against a subset fit.
         return
     fit = _CLUSTERLESS_ALGORITHMS[algorithm].fit
     dt = np.median(np.diff(sim.position_time))
@@ -314,10 +315,10 @@ def test_clusterless_exposure_uses_full_timeline_mask(
 # The test asserts the "no training samples" warning; the backend's zero-exposure
 # and zero-rate electrode warnings are the same condition seen from the fit.
 @pytest.mark.filterwarnings(
-    r"ignore:Clusterless (diffusion|GMM|KDE|mark GLM) encoding has zero training exposure:UserWarning"
+    r"ignore:Clusterless (diffusion|GMM|KDE|mark GLM|flow mixture) encoding has zero training exposure:UserWarning"
 )
 @pytest.mark.filterwarnings(
-    r"ignore:(Clusterless (GMM|mark GLM).{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
+    r"ignore:(Clusterless (GMM|mark GLM|flow mixture).{2})?electrode \d+ (has zero total encoding weight|has no effective encoding spikes):UserWarning"
 )
 @pytest.mark.parametrize("algorithm", CLUSTERLESS_ALGORITHMS)
 def test_clusterless_group_without_training_coverage(gapped_clusterless_run, algorithm):

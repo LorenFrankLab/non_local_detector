@@ -20,7 +20,7 @@ The `non_local_detector` package provides state-of-the-art algorithms for:
 
 ### Key Features
 
-- 🔬 **Multiple Likelihood Models**: GLM, KDE, GMM, diffusion/MRF and mark-mixture GLM approaches for both sorted and clusterless spike data
+- 🔬 **Multiple Likelihood Models**: GLM, KDE, GMM, diffusion/MRF, mark-mixture GLM, and flow-warped mark-mixture approaches for both sorted and clusterless spike data
 - ⚡ **JAX-Powered**: GPU-accelerated computations for large-scale analyses
 - 🎯 **Scikit-learn Compatible**: Familiar fit/predict interface for easy integration
 - 📊 **Rich Visualizations**: Built-in plotting functions for results analysis
@@ -180,7 +180,7 @@ intervals, and downstream pipeline changes.
 
 1. **Likelihood Models** (`non_local_detector.likelihoods`), selected with `sorted_spikes_algorithm` or `clusterless_algorithm`
    - Sorted spikes: `sorted_spikes_glm`, `sorted_spikes_kde`, `sorted_spikes_diffusion`, `sorted_spikes_mrf`
-   - Clusterless: `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion`, `clusterless_mark_glm` (a mark mixture with a Poisson GLM rate map per component)
+   - Clusterless: `clusterless_kde`, `clusterless_gmm`, `clusterless_diffusion`, `clusterless_mark_glm` (a mark mixture with a Poisson GLM rate map per component), `clusterless_flow_mixture` (an invertible normalizing-flow-warped low-rank-plus-diagonal mark mixture with optional probe-local coupling; requires `non_local_detector[neural]`)
 
 2. **State Transition Models**
    - **Continuous**: `RandomWalk`, `RandomWalkDirection1`, `RandomWalkDirection2`, `EmpiricalMovement`, `Identity`, `Uniform`, `Discrete`

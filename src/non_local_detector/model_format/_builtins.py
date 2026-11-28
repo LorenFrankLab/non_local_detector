@@ -92,6 +92,9 @@ def builtin_types() -> list[BuiltinType]:
     )
     from non_local_detector.environment import Environment
     from non_local_detector.initial_conditions import UniformInitialConditions
+    from non_local_detector.likelihoods.clusterless_flow_mixture import (
+        FlowMarkMixture,
+    )
     from non_local_detector.likelihoods.clusterless_mark_glm import MarkMixture
     from non_local_detector.likelihoods.common.kernel_density import KDEModel
     from non_local_detector.likelihoods.gmm import GaussianMixtureModel
@@ -151,6 +154,7 @@ def builtin_types() -> list[BuiltinType]:
         KDEModel: "nld.KDEModel",
         GaussianMixtureModel: "nld.GaussianMixtureModel",
         MarkMixture: "nld.MarkMixture",
+        FlowMarkMixture: "nld.FlowMarkMixture",
         MarkReference: "nld.MarkReference",
         TrackGraphBasis: "nld.TrackGraphBasis",
         TensorSplineBasis: "nld.TensorSplineBasis",
@@ -228,6 +232,39 @@ def builtin_types() -> list[BuiltinType]:
             _with_fitted_fields(GaussianMixtureModel, gmm_init, gmm_fitted),
         ),
         (MarkMixture, ("weights", "means", "precisions_cholesky"), {}),
+        (
+            FlowMarkMixture,
+            (
+                "weights",
+                "means",
+                "basis",
+                "basis_variances",
+                "noise_variance",
+                "input_mean",
+                "input_scale",
+                "noise_whitener",
+                "log_det_input",
+                "flow_mode",
+                "n_flow_layers",
+                "n_spline_bins",
+                "spline_bound",
+                "elementwise_params",
+                "w1",
+                "b1",
+                "w2",
+                "b2",
+                "w_out",
+                "b_out",
+                "cayley_matrices",
+                "cond_masks",
+                "cond_nbr_indices",
+                "cond_nbr_masks",
+                "trans_indices",
+                "trans_valid",
+                "cond_geom",
+            ),
+            {},
+        ),
         (MarkReference, ("location", "scale", "degrees_of_freedom"), {}),
         (
             TrackGraphBasis,

@@ -38,6 +38,7 @@ EXPECTED_DEFAULTS = {
     "clusterless_gmm": {},
     "clusterless_diffusion": {},
     "clusterless_mark_glm": {},
+    "clusterless_flow_mixture": {},
 }
 
 # Fit arguments the detector supplies itself, not from the algorithm params.

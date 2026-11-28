@@ -128,6 +128,13 @@ def _decoder(algorithm, *, calibration=False, sampling_frequency=500.0):
             gmm_components_occupancy=1,
             gmm_components_joint=1,
         )
+    if algorithm == "clusterless_flow_mixture":
+        params.update(
+            n_flow_layers=2,
+            n_em_iterations=2,
+            flow_steps_per_em=5,
+            em_validation_blocks=0,
+        )
     if algorithm in _SORTED_SPIKES_ALGORITHMS:
         return SortedSpikesDecoder(
             sorted_spikes_algorithm=algorithm,
