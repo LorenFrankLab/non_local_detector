@@ -132,10 +132,17 @@ depends on `chunk_size` and the grid, not on the recording length. On the
 | Host memory | 110 GB | 71 GB (the posterior, held in memory) | 14 GB |
 | 3 iterations, after compilation | 501 s | 272 s | |
 
-`replay_cache_bytes` keeps forward-pass rows in host memory so the backward
-replay does not recompute them; by default up to 16 GiB, or half the available
-host memory if smaller (counting a container's memory limit). Chunks beyond
-the budget are recomputed, so a smaller budget costs time, not correctness.
+Each E-step keeps forward-pass rows so the backward replay does not recompute
+them, and with `estimate_encoding_model=False` the first E-step also keeps the
+likelihood rows, which every later E-step reuses instead of evaluating the
+likelihood again. Kept rows go on the device while it reports memory free
+beyond a reserve for the filter and smoother's workspace (eight chunks of rows
+or a quarter of the device's limit, whichever is larger; nothing on CPU), then
+in host memory within `replay_cache_bytes`: by default up to 16 GiB, or half
+the available host memory if smaller (counting a container's memory limit).
+Chunks beyond both are recomputed, so smaller budgets cost time, not
+correctness. On the recording above each set of rows is 9.36 GB, so with the
+encoding model fixed an E-step keeps up to 18.7 GB.
 
 "auto" runs dense EM when the float32 interior transition is at most 16 MiB,
 the full transition (every state bin, float64) fits

@@ -791,8 +791,10 @@ class _EMMixin:
         host memory on CPU (see ``_dense_em_memory``; unchecked when unknown).
         The dense matrix comes from the fitted operator, which matches the
         dense constructor. When memory alone rules dense EM out, it warns:
-        structured EM recomputes the likelihood on every E-step, which made EM
-        about 9x slower per E-step on a 567k-bin clusterless track decode.
+        structured EM filters in chunks and evaluates the likelihood again in
+        every E-step when the encoding model is re-estimated, or for rows that
+        fit neither its device nor its host budget, which made EM about 9x
+        slower per E-step on a 567k-bin clusterless track decode.
 
         Parameters
         ----------
@@ -816,7 +818,9 @@ class _EMMixin:
                 f"because dense EM needs about {working / 1e9:.1f} GB of {where} "
                 f"memory for {n_time} time bins x {n_bins} state bins, more than "
                 f"half of the {limit / 1e9:.1f} GB available. Structured EM "
-                "bounds memory by recomputing the likelihood on every E-step, "
+                "bounds memory by filtering in chunks; it evaluates the "
+                "likelihood again in every E-step when the encoding model is "
+                "re-estimated, or for rows that do not fit its memory budgets, "
                 "which can make EM several times slower. The estimate is "
                 "approximate: if dense EM fits, pass "
                 'transition_representation="dense" to estimate_parameters.',
@@ -937,8 +941,11 @@ class _EMMixin:
             M-steps use the expected transition statistics accumulated in
             the replay. The final E-step returns the same outputs as dense
             EM, held in memory unless ``result_path`` is given. ``n_chunks``
-            must then be 1 and ``cache_likelihood`` has no effect: each
-            uncached chunk evaluates the likelihood twice (see
+            must then be 1 and ``cache_likelihood`` has no effect. With
+            ``estimate_encoding_model=False`` the likelihood rows of the first
+            E-step are kept and reused by every later one, where they fit;
+            each chunk whose rows are not kept is evaluated in every E-step,
+            twice when its forward-pass rows are not kept either (see
             ``replay_cache_bytes``). By default None, which sizes chunks so one
             chunk of float32 likelihoods takes about 256 MiB.
         result_path : str or Path, optional
@@ -950,12 +957,16 @@ class _EMMixin:
             lists every iteration; the store itself records the final one.
             ``store_log_likelihood`` cannot be combined with it.
         replay_cache_bytes : int, optional
-            Structured-transition EM only: host memory for keeping each
+            Structured-transition EM only: host memory for kept rows: each
             E-step's forward-pass rows (filtered rows, or likelihoods when the
             final outputs need them), so the backward replay does not filter
-            and evaluate them again. Chunks beyond the budget are recomputed.
-            By default None, which uses 16 GiB or half the available host
-            memory (counting a container's limit), whichever is smaller.
+            and evaluate them again, and, with a fixed encoding model, the
+            likelihood rows later E-steps reuse. Rows go on the device first,
+            while it reports memory free beyond a reserve for the filter and
+            smoother (never on CPU), then in host memory within this budget;
+            chunks beyond both are recomputed. By default None, which uses
+            16 GiB or half the available host memory (counting a container's
+            limit), whichever is smaller.
         encoding_fit_arguments : dict, optional
             Arguments of ``_validated_inputs``, except ``weights``,
             that the encoding M-step refits with. Required with

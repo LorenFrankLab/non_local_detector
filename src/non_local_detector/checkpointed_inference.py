@@ -235,6 +235,7 @@ def default_device_cache_bytes(chunk_bytes: int) -> int:
     Returns
     -------
     device_cache_bytes : int
+        Device budget for kept rows in bytes, at least 0.
     """
     stats = jax.local_devices()[0].memory_stats()
     if not stats or "bytes_limit" not in stats:

@@ -116,14 +116,17 @@ the default, at about the same speed. Pass a smaller `chunk_size` to fit a
 smaller budget.
 
 The replay evaluates each chunk's likelihood again unless the forward pass kept
-it: `replay_cache_bytes` keeps forward-pass rows in host memory, `n_bins` float32
-values per row, by default up to 16 GiB or half the available host memory,
-whichever is smaller. When no likelihood or predictive output is requested the
-filtered rows are kept, so a cached chunk is also not filtered again; otherwise
-the likelihood is kept. Chunks beyond the budget are recomputed, so a smaller
-budget costs time, not correctness. The peak memory figures above were measured
-without the cache; with it, host memory grows by up to the budget. Pass
-`replay_cache_bytes=0` to keep the previous host footprint. `checkpoint_dir` chooses
+it, `n_bins` float32 values per row. When no likelihood or predictive output is
+requested the filtered rows are kept, so a kept chunk is also not filtered
+again; otherwise the likelihood is kept. Rows go on the device while it reports
+memory free beyond a reserve for the filter and smoother's workspace (eight
+chunks of rows or a quarter of the device's limit, whichever is larger; nothing
+on CPU), then in host memory within `replay_cache_bytes`, by default up to
+16 GiB or half the available host memory, whichever is smaller. Chunks beyond
+both are recomputed, so smaller budgets cost time, not correctness. The peak
+memory figures above were measured without kept rows; with them, device and
+host memory grow by up to those budgets. Pass `replay_cache_bytes=0` to keep
+the previous host footprint. `checkpoint_dir` chooses
 where temporary boundary files are written; files are removed after success or
 failure. Supplying `result_path` also persists compact outputs when desired.
 
