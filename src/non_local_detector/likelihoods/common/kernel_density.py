@@ -996,7 +996,7 @@ def kde_log_density_rows(
     log_floor: LogFloor | None = None,
     tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
 ) -> jax.Array:
-    """:func:`kde_log_densities` as one host array, one row per model.
+    """:func:`kde_log_densities` as one array, one row per model.
 
     Parameters
     ----------
