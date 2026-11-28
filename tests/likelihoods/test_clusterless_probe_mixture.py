@@ -168,6 +168,30 @@ class TestProbeGeometry:
                 noise_covariance=np.zeros((4, 4)),
             )
 
+    def test_numerically_singular_noise_covariance_is_rejected(self):
+        """A common-average-referenced covariance has a zero eigenvalue that
+        rounds to a tiny positive one; its whitener would amplify float noise."""
+        from non_local_detector.likelihoods.probe_geometry import (
+            validate_noise_covariance,
+        )
+
+        n_channels = 16
+        depth = 30.0 * np.arange(n_channels)
+        spatial = np.exp(-np.abs(depth[:, None] - depth[None, :]) / 60.0)
+        single_reference = 64.0 * (0.5 + 0.3 * spatial + 0.2 * np.eye(n_channels))
+        car = np.eye(n_channels) - 1.0 / n_channels
+        common_average = car @ single_reference @ car
+        eigvals = np.linalg.eigvalsh(0.5 * (common_average + common_average.T))
+        assert eigvals[-1] / eigvals[0] > 1e12 or eigvals[0] <= 0.0
+        validate_noise_covariance(single_reference, n_channels)
+        with pytest.raises(ValidationError, match="ill-conditioned"):
+            validate_noise_covariance(common_average, n_channels)
+        with pytest.raises(ValidationError, match="ill-conditioned"):
+            ProbeGeometry(
+                contact_positions=_make_two_column_probe(n_channels),
+                noise_covariance=common_average + 1e-7 * np.eye(n_channels),
+            )
+
     def test_auto_neighborhoods_and_tiling_on_dense_probe(self):
         pos = _make_two_column_probe(32, pitch=20.0)
         indices, mask, radius = compute_local_neighborhoods(pos, max_local_channels=12)

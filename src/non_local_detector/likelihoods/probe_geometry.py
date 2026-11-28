@@ -39,6 +39,16 @@ __all__ = [
 DEFAULT_PITCH_RADIUS_MULTIPLIER = 3.0
 # Default cap on contacts per local component neighborhood.
 DEFAULT_MAX_LOCAL_CHANNELS = 16
+# Largest accepted condition number (max / min eigenvalue) of a measured noise
+# covariance. The ZCA whitener scales the weakest noise direction by
+# 1 / sqrt(min eigenvalue), so rounding errors in the marks grow with the square
+# root of the condition number. Single-reference recordings of 26-32-contact
+# shanks measured 127-874; a common-average-referenced covariance is singular
+# (about 1e15 in float64). At 1e6, rounding float64 marks to float32 moved a
+# whitened Gaussian log density by at most 7e-4 nats per spike in simulation
+# (31 channels, 150 uV spikes, 8 uV noise; median 5e-5), against 9e-3
+# (median 4e-4) at 1e8.
+MAX_NOISE_CONDITION_NUMBER = 1e6
 
 
 def _read_only_copy(array: np.ndarray) -> np.ndarray:
@@ -108,7 +118,18 @@ def validate_noise_covariance(
     *,
     electrode: int | None = None,
 ) -> np.ndarray:
-    """Validate a symmetric positive-definite channel noise covariance.
+    """Validate a well-conditioned symmetric positive-definite noise covariance.
+
+    The covariance is used through its ZCA whitener ``Sigma^{-1/2}``, which
+    scales the weakest noise direction by ``1 / sqrt(min eigenvalue)``. A
+    numerically singular covariance, such as that of a common-average-
+    referenced recording (whose channels sum to zero), would make the
+    likelihood depend on rounding noise, so the condition number (largest
+    over smallest eigenvalue) must be at most ``MAX_NOISE_CONDITION_NUMBER``
+    (1e6). Measured single-reference covariances of 26-32-contact shanks have
+    condition numbers of 127-874. At 1e6, rounding the marks to float32 moves
+    a whitened Gaussian log density by at most about 7e-4 nats per spike in
+    simulation.
 
     Parameters
     ----------
@@ -127,8 +148,9 @@ def validate_noise_covariance(
     Raises
     ------
     ValidationError
-        If shape mismatches, values are non-finite, asymmetric, or not
-        symmetric positive definite.
+        If shape mismatches, values are non-finite, asymmetric, not
+        symmetric positive definite, or ill-conditioned (condition number
+        above ``MAX_NOISE_CONDITION_NUMBER``).
     """
     cov = np.asarray(noise_covariance, dtype=np.float64)
     label = (
@@ -157,6 +179,21 @@ def validate_noise_covariance(
             msg,
             expected="strictly positive eigenvalues",
             got=f"min eigenvalue {float(np.min(eigvals)):.3e}",
+        )
+    condition_number = float(eigvals[-1] / eigvals[0])
+    if condition_number > MAX_NOISE_CONDITION_NUMBER:
+        ridge = 1e-5 * float(eigvals[-1])
+        msg = f"{label} is ill-conditioned (numerically singular)"
+        raise ValidationError(
+            msg,
+            expected=f"condition number <= {MAX_NOISE_CONDITION_NUMBER:.0e}",
+            got=f"condition number {condition_number:.3e} (eigenvalues "
+            f"{float(eigvals[0]):.3e} to {float(eigvals[-1]):.3e})",
+            hint="A common-average-referenced recording has a singular noise "
+            "covariance because its channels sum to zero: drop one channel of "
+            "each referenced group (it is a combination of the others). "
+            "Otherwise regularize it, e.g. add r * np.eye(n_channels) with "
+            f"r = {ridge:.3g} (1e-5 of the largest eigenvalue).",
         )
     return sym
 

@@ -2401,8 +2401,11 @@ def fit_clusterless_probe_mixture_encoding_model(
         or None (dense full-group support).
     noise_covariances : sequence of array_like or None, or None, optional
         Optional per-electrode measured channel noise covariance matrices (each
-        shape ``(n_channels, n_channels)`` SPD). Applied via symmetric ZCA
-        whitening.
+        shape ``(n_channels, n_channels)`` SPD with condition number at most
+        1e6; see :func:`~non_local_detector.likelihoods.probe_geometry.validate_noise_covariance`).
+        Applied via symmetric ZCA whitening. A common-average-referenced
+        recording has a singular covariance and is refused: drop one channel
+        of each referenced group or regularize the covariance.
     neighborhood_radius : float or None, optional
         Physical contact radius for each component's local support ``S_k``.
         By default None (auto-inferred as 3x median nearest-neighbor pitch).
