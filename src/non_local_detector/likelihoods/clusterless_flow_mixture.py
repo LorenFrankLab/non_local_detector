@@ -54,6 +54,7 @@ from __future__ import annotations
 import importlib
 import warnings
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, NamedTuple, cast
@@ -2599,6 +2600,24 @@ def _pad_latent_params_for_flow(
     )
 
 
+class _FoldTrainingSpikes(NamedTuple):
+    """One fold's training spikes, Layer 0 standardization, and initialization seeds."""
+
+    spikes: np.ndarray  # (n_electrode_spikes,) bool, the fold's training spikes
+    left_share: np.ndarray  # (n_fold_spikes,)
+    right_share: np.ndarray  # (n_fold_spikes,)
+    weights: np.ndarray  # (n_fold_spikes,)
+    marks: np.ndarray  # (n_fold_spikes, n_features)
+    input_mean: np.ndarray  # (n_features,)
+    input_scale: np.ndarray  # (n_features,)
+    noise_whitener: np.ndarray | None  # (n_features, n_features)
+    log_det_input: float
+    min_latent_var: np.ndarray  # (n_features,)
+    u: np.ndarray  # (n_fold_spikes, n_features), standardized marks
+    rng: np.random.Generator  # seeds the flow initialization after mixture_seed
+    mixture_seed: int
+
+
 class _ElectrodeFoldState:
     """Mutable state of one electrode on one training fold during Flow-EM."""
 
@@ -2837,12 +2856,11 @@ def _fit_single_electrode_flow_em(
 
     base_seed = 0 if random_state is None else int(random_state)
 
-    def _build_fold_state(
+    def _fold_training_spikes(
         fold_idx: int,
         train_mask_sup: np.ndarray,
-        val_mask_sup: np.ndarray | None,
         train_prepared: PreparedRateMapBasis,
-    ) -> _ElectrodeFoldState | None:
+    ) -> _FoldTrainingSpikes | None:
         sp_train, fold_ls, fold_rs = _partition_fold_shares(
             left_pos, right_pos, left_share, right_share, train_mask_sup
         )
@@ -2851,30 +2869,62 @@ def _fit_single_electrode_flow_em(
             return None
 
         fold_marks = marks_eff[sp_train]
-        fold_l_pos = left_pos[sp_train]
-        fold_r_pos = right_pos[sp_train]
-        fold_l_cells = sample_cells[np.maximum(fold_l_pos, 0)]
-        fold_r_cells = sample_cells[np.maximum(fold_r_pos, 0)]
-
         in_mean, in_scale, whitener, ld_in, min_lvar = _fit_input_standardization(
             fold_marks,
             fold_w,
             mark_reg_covar=mark_reg_covar,
             noise_covariance=noise_covariance,
         )
-        u_tr = _standardize_host(fold_marks, in_mean, in_scale, whitener)
-
         rng_init = np.random.default_rng(base_seed * 1009 + electrode * 37 + fold_idx)
-        weights_0, means_0, basis_0, bvar_0, nvar_0 = _initialize_latent_mixture(
-            u_tr,
-            fold_w,
+        return _FoldTrainingSpikes(
+            spikes=sp_train,
+            left_share=fold_ls,
+            right_share=fold_rs,
+            weights=fold_w,
+            marks=fold_marks,
+            input_mean=in_mean,
+            input_scale=in_scale,
+            noise_whitener=whitener,
+            log_det_input=ld_in,
+            min_latent_var=min_lvar,
+            u=_standardize_host(fold_marks, in_mean, in_scale, whitener),
+            rng=rng_init,
+            mixture_seed=int(rng_init.integers(0, 2**31 - 1)),
+        )
+
+    def _initial_mixture(
+        fold: _FoldTrainingSpikes,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return _initialize_latent_mixture(
+            fold.u,
+            fold.weights,
             n_mark_components=n_mark_components,
             covariance_rank=covariance_rank,
-            min_latent_var=min_lvar,
-            random_state=int(rng_init.integers(0, 2**31 - 1)),
+            min_latent_var=fold.min_latent_var,
+            random_state=fold.mixture_seed,
         )
+
+    def _build_fold_state(
+        fold: _FoldTrainingSpikes,
+        initial_mixture: tuple[
+            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+        ],
+        val_mask_sup: np.ndarray | None,
+        train_prepared: PreparedRateMapBasis,
+    ) -> _ElectrodeFoldState:
+        fold_marks = fold.marks
+        fold_w = fold.weights
+        fold_ls = fold.left_share
+        fold_rs = fold.right_share
+        u_tr = fold.u
+        fold_l_pos = left_pos[fold.spikes]
+        fold_r_pos = right_pos[fold.spikes]
+        fold_l_cells = sample_cells[np.maximum(fold_l_pos, 0)]
+        fold_r_cells = sample_cells[np.maximum(fold_r_pos, 0)]
+
+        weights_0, means_0, basis_0, bvar_0, nvar_0 = initial_mixture
         flow_params_0 = _init_identity_flow_params(
-            topology, n_features, flow_hidden_units, rng_init
+            topology, n_features, flow_hidden_units, fold.rng
         )
         opt_state_0 = (
             optimizer.init(flow_params_0) if topology.flow_mode != "identity" else None
@@ -2927,11 +2977,11 @@ def _fit_single_electrode_flow_em(
             left_cells=fold_l_cells,
             right_cells=fold_r_cells,
             train_prepared=train_prepared,
-            input_mean=in_mean,
-            input_scale=in_scale,
-            noise_whitener=whitener,
-            log_det_input=ld_in,
-            min_latent_var=min_lvar,
+            input_mean=fold.input_mean,
+            input_scale=fold.input_scale,
+            noise_whitener=fold.noise_whitener,
+            log_det_input=fold.log_det_input,
+            min_latent_var=fold.min_latent_var,
             topology=topology,
             flow_params=flow_params_0,
             opt_state=opt_state_0,
@@ -3181,14 +3231,38 @@ def _fit_single_electrode_flow_em(
         )
         state.coefficients = np.asarray(coeffs_j, dtype=np.float64)
 
+    # Training spikes of the full fit and, with inner validation, of each fold.
+    all_sup_mask = np.ones(len(encoding_positions), dtype=bool)
+    full_fold = _fold_training_spikes(0, all_sup_mask, full_prepared)
+    assert full_fold is not None
+    run_validation = (
+        n_em_iterations > 0 and bool(fold_specs) and marks_eff.shape[0] >= 4
+    )
+    val_folds: list[
+        tuple[_FoldTrainingSpikes, np.ndarray, PreparedRateMapBasis, np.ndarray]
+    ] = []
+    if run_validation:
+        for f_idx, (tr_mask, val_mask, tr_prep, val_cell_exp) in enumerate(fold_specs):
+            fold = _fold_training_spikes(f_idx + 1, tr_mask, tr_prep)
+            if fold is not None:
+                val_folds.append((fold, val_mask, tr_prep, val_cell_exp))
+
+    # Each initial mixture is an independent scikit-learn fit on its own
+    # training spikes with its own seed; NumPy releases the GIL in its array
+    # work, so fitting them concurrently gives the same mixtures sooner.
+    init_folds = [full_fold] + [fold for fold, _, _, _ in val_folds]
+    with ThreadPoolExecutor(max_workers=len(init_folds)) as pool:
+        initial_mixtures = list(pool.map(_initial_mixture, init_folds))
+
     # Determine iteration count via blocked inner validation (when requested).
     val_trace: list[float] = []
-    if n_em_iterations > 0 and fold_specs and marks_eff.shape[0] >= 4:
-        fold_states: list[tuple[_ElectrodeFoldState, np.ndarray]] = []
-        for f_idx, (tr_mask, val_mask, tr_prep, val_cell_exp) in enumerate(fold_specs):
-            st = _build_fold_state(f_idx + 1, tr_mask, val_mask, tr_prep)
-            if st is not None:
-                fold_states.append((st, val_cell_exp))
+    if run_validation:
+        fold_states: list[tuple[_ElectrodeFoldState, np.ndarray]] = [
+            (_build_fold_state(fold, init, val_mask, tr_prep), val_cell_exp)
+            for (fold, val_mask, tr_prep, val_cell_exp), init in zip(
+                val_folds, initial_mixtures[1:], strict=True
+            )
+        ]
 
         if fold_states:
             best_iter = 0
@@ -3218,9 +3292,7 @@ def _fit_single_electrode_flow_em(
         chosen_iterations = int(n_em_iterations)
 
     # Final fit on full training data for chosen_iterations.
-    all_sup_mask = np.ones(len(encoding_positions), dtype=bool)
-    full_state = _build_fold_state(0, all_sup_mask, None, full_prepared)
-    assert full_state is not None
+    full_state = _build_fold_state(full_fold, initial_mixtures[0], None, full_prepared)
     train_trace: list[float] = [_score_fold_train(full_state)]
 
     for it in range(1, chosen_iterations + 1):
