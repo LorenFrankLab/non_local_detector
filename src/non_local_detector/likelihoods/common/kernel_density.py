@@ -9,7 +9,6 @@ from typing import Any, TypeVar, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.nn import logsumexp
 from numpy.typing import NDArray
 
 from non_local_detector._jax_typing import finfo, optimization_barrier
@@ -102,7 +101,10 @@ def gaussian_pdf(x: jax.Array, mean: jax.Array, sigma: jax.Array) -> jax.Array:
 
 
 def _log_kernel_matrix(
-    eval_points: jax.Array, samples: jax.Array, std: jax.Array
+    eval_points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    mask: jax.Array | None = None,
 ) -> jax.Array:
     """Log Gaussian kernel matrix summed over dimensions.
 
@@ -118,6 +120,8 @@ def _log_kernel_matrix(
         Kernel centers.
     std : jax.Array, shape (n_dims,)
         Kernel standard deviation in each dimension.
+    mask : jax.Array of bool, shape (n_dims,), optional
+        The dimensions to sum, by default all; the others add exactly zero.
 
     Returns
     -------
@@ -125,12 +129,15 @@ def _log_kernel_matrix(
         ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``.
     """
     log_kernel = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
-        log_kernel += log_gaussian_pdf(
+    for dim, (dim_eval, dim_samp, dim_std) in enumerate(
+        zip(eval_points.T, samples.T, std, strict=True)
+    ):
+        term = log_gaussian_pdf(
             jnp.expand_dims(dim_eval, axis=0),
             jnp.expand_dims(dim_samp, axis=1),
             dim_std,
         )
+        log_kernel += term if mask is None else jnp.where(mask[dim], term, 0.0)
     return log_kernel
 
 
@@ -2538,112 +2545,3 @@ def log_density_intensity(
         jnp.isneginf(log_occupancy) | jnp.isneginf(log_density) | (mean_rate == 0.0)
     ) & ~jnp.isnan(result)
     return jnp.where(no_support, -jnp.inf, result)
-
-
-def local_kde_log_ratio(
-    positions: jax.Array,
-    marks: jax.Array,
-    encoding_positions: jax.Array,
-    encoding_marks: jax.Array,
-    position_std: jax.Array,
-    mark_std: jax.Array,
-    log_occupancy: jax.Array,
-    weights: jax.Array,
-    block_size: int,
-) -> jax.Array:
-    """Compute the joint KDE/occupancy log ratio, dividing position kernels before adding marks.
-
-    Keeping the mark term separate preserves its normalizer when position log
-    densities are large enough that adding it would round it away in float32.
-    Evaluation blocking retains the shared KDE kernel-workspace limit.
-
-    Parameters
-    ----------
-    positions : jax.Array, shape (n_eval, n_position_dims)
-        Positions at which to evaluate the ratio.
-    marks : jax.Array, shape (n_eval, n_features)
-        Waveform features (marks) at the evaluation points.
-    encoding_positions : jax.Array, shape (n_encoding, n_position_dims)
-        Positions of the encoding spikes.
-    encoding_marks : jax.Array, shape (n_encoding, n_features)
-        Waveform features (marks) of the encoding spikes.
-    position_std : jax.Array, shape (n_position_dims,)
-        Position kernel standard deviation.
-    mark_std : jax.Array, shape (n_features,)
-        Waveform-feature kernel standard deviation.
-    log_occupancy : jax.Array, shape (n_eval,)
-        Log occupancy density at ``positions``.
-    weights : jax.Array, shape (n_encoding,)
-        Weight of each encoding spike; zero weights drop the spike.
-    block_size : int
-        Maximum number of evaluation points per block.
-
-    Returns
-    -------
-    log_ratio : jax.Array, shape (n_eval,)
-        Log of the weighted joint KDE divided by the occupancy density at each
-        evaluation point, normalized by the sum of ``weights``; ``-inf`` where
-        the occupancy is zero or the weights sum to zero.
-    """
-    n_position_dims = positions.shape[1]
-    points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
-    samples = jnp.concatenate((encoding_positions, encoding_marks), axis=1)
-    std = jnp.concatenate((position_std, mark_std))
-
-    def kernel(
-        query: jax.Array, samples: jax.Array, std: jax.Array, weights: jax.Array
-    ) -> jax.Array:
-        """Evaluate the log ratio of one block of query rows."""
-
-        def supported(_: None) -> jax.Array:
-            """Evaluate the ratio for a query with positive total weight."""
-            log_occ = query[:, -1]
-            safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
-            log_position = (
-                _log_kernel_matrix(
-                    query[:, :n_position_dims],
-                    samples[:, :n_position_dims],
-                    std[:n_position_dims],
-                )
-                - safe_occ[None, :]
-            )
-            log_marks = _log_kernel_matrix(
-                query[:, n_position_dims:-1],
-                samples[:, n_position_dims:],
-                std[n_position_dims:],
-            )
-            safe_weights = jnp.where(weights > 0.0, weights, 1.0)
-            log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
-            ratio = logsumexp(
-                log_position + log_marks + log_weights[:, None], axis=0
-            ) - jnp.log(jnp.sum(weights))
-            return jnp.where(jnp.isneginf(log_occ), -jnp.inf, ratio)
-
-        return cast(
-            jax.Array,
-            jax.lax.cond(
-                jnp.sum(weights) > 0.0,
-                supported,
-                lambda _: jnp.full(query.shape[0], -jnp.inf),
-                None,
-            ),
-        )
-
-    def blocked(
-        query: jax.Array,
-        samples: jax.Array,
-        std: jax.Array,
-        rows: int,
-        weights: jax.Array,
-    ) -> jax.Array:
-        """Evaluate the log ratio of ``query`` in blocks of ``rows`` rows."""
-        return jnp.concatenate(
-            [
-                kernel(query[start : start + rows], samples, std, weights)
-                for start in range(0, query.shape[0], rows)
-            ]
-        )
-
-    if points.shape[0] == 0:
-        return jnp.zeros(0)
-    return _traced_blocks(blocked, kernel, points, samples, std, block_size, weights)

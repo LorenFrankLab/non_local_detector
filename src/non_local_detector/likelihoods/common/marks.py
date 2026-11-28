@@ -97,6 +97,7 @@ def compute_log_mark_kernel_gemm(
     decoding_features: jax.Array,
     encoding_features: jax.Array,
     waveform_stds: jax.Array,
+    feature_mask: jax.Array | None = None,
 ) -> jax.Array:
     """Stable log Gaussian mark kernel for the GEMM marginal paths.
 
@@ -118,6 +119,11 @@ def compute_log_mark_kernel_gemm(
         Waveform features for encoding spikes.
     waveform_stds : jax.Array, shape (n_features,)
         Standard deviations for each feature dimension.
+    feature_mask : jax.Array of bool, shape (n_features,), optional
+        The features that count, by default all. Every other feature must
+        hold the same value in both operands, such as zero padding: it then
+        adds exactly zero to each squared distance, and the normalizer
+        leaves it out.
 
     Returns
     -------
@@ -133,9 +139,15 @@ def compute_log_mark_kernel_gemm(
 
     # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
     # Factor of 2 because we have sum of log(sigma), not log(sigma^2)
-    log_norm_const = -0.5 * (
-        n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
-    )
+    if feature_mask is None:
+        log_norm_const = -0.5 * (
+            n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
+        )
+    else:
+        log_norm_const = -0.5 * (
+            jnp.sum(feature_mask) * jnp.log(2.0 * jnp.pi)
+            + 2.0 * jnp.sum(jnp.where(feature_mask, jnp.log(waveform_stds), 0.0))
+        )
 
     feature_dtype = jnp.result_type(
         decoding_features, encoding_features, waveform_stds, jnp.float32

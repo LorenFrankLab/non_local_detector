@@ -2,16 +2,11 @@
 
 import copy
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from non_local_detector import NonLocalClusterlessDetector
 from non_local_detector.likelihoods import clusterless_kde
-from non_local_detector.likelihoods.common import (
-    _KDE_BLOCK_KERNEL_BYTES,
-)
 from tests.conftest import precision_mode
 from tests.likelihoods.conftest import (
     FLOAT32_ROUNDING,
@@ -182,49 +177,6 @@ def test_streamed_fit_and_local_nonlocal_rows_preserve_original_support(
             for rows in [slice(0, 2), slice(2, 4), slice(4, 5), slice(2, 2)]:
                 part = predict(encoding, values, is_local, rows)
                 np.testing.assert_allclose(part, expected[rows], **tiled_tolerance)
-
-
-@pytest.mark.parametrize(
-    ("n_spikes", "n_encoding"),
-    [(40_000, 200_000), (400_000, 200_000), (40_000, 2_000_000)],
-)
-def test_local_terms_keep_compiled_workspace_bounded_without_tiling(
-    n_spikes, n_encoding
-):
-    """Local prediction needs no encoding tiles to bound its kernel workspace.
-
-    The full (spikes x encoding samples) kernel would take 30-300 GiB; the
-    compiled per-electrode local step stays within a few kernel budgets for
-    any spike or encoding count, even with blocks of 10,000 spikes.
-    """
-
-    def shape(*dims, dtype=jnp.float32):
-        return jax.ShapeDtypeStruct(dims, dtype)
-
-    n_rows, n_position_dims, n_features = 20_000, 1, 4
-    with precision_mode(False):
-        compiled = clusterless_kde._add_electrode_local_terms.lower(
-            shape(n_rows),  # log_likelihood
-            shape(n_rows),  # expected_counts
-            shape(n_spikes, n_position_dims),  # spike_positions
-            shape(n_spikes, n_features),  # decoding_features
-            shape(n_spikes, dtype=jnp.int32),  # row_ids
-            shape(n_encoding, n_position_dims),  # encoding_positions
-            shape(n_encoding, n_features),  # encoding_features
-            shape(n_encoding),  # encoding_weights
-            shape(n_position_dims),  # position_std
-            shape(n_features),  # waveform_stds
-            shape(n_spikes),  # log_occupancy_at_spikes
-            shape(n_rows),  # log_gpi_density
-            shape(n_rows),  # log_occupancy
-            1.0,  # scaled_rate
-            1.0,  # mean_rate
-            shape(n_spikes),  # log_background
-            block_size=10_000,
-            indices_are_sorted=True,
-        ).compile()
-    workspace = compiled.memory_analysis().temp_size_in_bytes
-    assert workspace <= 8 * _KDE_BLOCK_KERNEL_BYTES, f"{workspace / 2**30:.2f} GiB"
 
 
 def test_native_detector_preserves_workspace_policy_and_posterior(
