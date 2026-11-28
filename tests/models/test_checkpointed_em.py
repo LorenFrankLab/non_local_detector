@@ -607,6 +607,39 @@ def _record_passes(monkeypatch):
     return passes
 
 
+def test_failed_final_e_step_releases_the_kept_likelihood_rows(monkeypatch):
+    """A final E-step that raises leaves no kept rows behind its traceback."""
+    from non_local_detector import checkpointed_inference
+
+    driver = checkpointed_inference.checkpointed_forward_backward
+    stores = []
+
+    def failing_final_pass(*args, **kwargs):
+        if kwargs["transition_statistics"] is None:
+            stores.append((kwargs["kept_likelihoods"], len(kwargs["kept_likelihoods"])))
+            msg = "final E-step failed"
+            raise RuntimeError(msg)
+        return driver(*args, **kwargs)
+
+    monkeypatch.setattr(
+        checkpointed_inference, "checkpointed_forward_backward", failing_final_pass
+    )
+    model, data = _recording("sorted")
+    with pytest.raises(RuntimeError, match="final E-step failed"):
+        _fit(
+            model,
+            data,
+            transition_representation="structured",
+            chunk_size=50,
+            estimate_encoding_model=False,
+        )
+    ((store, n_kept_at_failure),) = stores
+    # The final E-step held all six chunks; the traceback's frames keep this
+    # dict, so it must be emptied, not just dropped.
+    assert n_kept_at_failure == 6
+    assert store == {}
+
+
 @pytest.mark.parametrize("dims", [1, 2])
 @pytest.mark.parametrize("estimate_encoding_model", [False, True])
 def test_structured_em_evaluates_a_fixed_likelihood_once(

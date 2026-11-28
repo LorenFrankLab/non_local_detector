@@ -1067,7 +1067,10 @@ class _EMMixin:
             final = self._em_final_e_step(settings, state)
         finally:
             # Release the kept rows (possibly most of the device) even when
-            # the final E-step raises and a traceback keeps this frame.
+            # the final E-step raises: emptying the store frees them although
+            # the traceback's driver and E-step frames still hold the dict.
+            if state.kept_likelihoods is not None:
+                state.kept_likelihoods.clear()
             state.kept_likelihoods = None
         traces = state.traces(final.posterior.marginal_log_likelihood)
 

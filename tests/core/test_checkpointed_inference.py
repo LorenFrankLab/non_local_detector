@@ -303,12 +303,35 @@ def test_device_budget_is_free_memory_less_a_workspace_reserve(
     assert checkpointed.default_device_cache_bytes(chunk_bytes) == expected
 
 
-def test_device_budget_reads_the_device_new_arrays_go_to():
-    import non_local_detector.checkpointed_inference as checkpointed
+_DEFAULT_DEVICE_CHECK = """
+import jax
+from non_local_detector.checkpointed_inference import _default_device
 
-    cpu = jax.devices("cpu")[0]
-    with jax.default_device(cpu):
-        assert checkpointed._default_device() == cpu
+second = jax.devices("cpu")[1]
+assert jax.local_devices()[0] != second
+with jax.default_device(second):
+    assert _default_device() == second, _default_device()
+"""
+
+
+def test_device_budget_reads_the_device_new_arrays_go_to():
+    """The budget follows ``jax.default_device``, not the first local device.
+
+    Runs in a subprocess with two host devices, which must be set before JAX
+    starts.
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {
+        **os.environ,
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=2",
+        "JAX_PLATFORMS": "cpu",
+    }
+    subprocess.run(
+        [sys.executable, "-c", _DEFAULT_DEVICE_CHECK], env=env, check=True, timeout=120
+    )
 
 
 def test_kept_likelihoods_are_reused_by_later_calls():
