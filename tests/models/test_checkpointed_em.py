@@ -549,7 +549,10 @@ def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
 def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, family):
     """The replay reuses forward-pass rows; results are bitwise equal."""
     from non_local_detector import checkpointed_inference
+    from non_local_detector.models import _checkpointed
 
+    # Host memory only: rows kept on a GPU would also skip evaluations.
+    monkeypatch.setattr(_checkpointed, "default_device_cache_bytes", lambda _: 0)
     driver = checkpointed_inference.checkpointed_forward_backward
 
     def run(**kwargs):
@@ -903,8 +906,8 @@ def test_auto_em_device_memory_boundary(monkeypatch):
 def test_auto_em_warns_when_memory_alone_rules_out_dense_em(reason, monkeypatch):
     """Falling back to structured EM for memory is slow, so auto says so.
 
-    Structured EM recomputes the likelihood every E-step, so a memory-driven
-    fallback can cost several times the run time. It warns, naming the
+    Structured EM can evaluate the likelihood again in every E-step, so a
+    memory-driven fallback can cost several times the run time. It warns, naming the
     estimate, the limit and how to choose dense EM; a large transition (the
     intended speed choice) and a dense EM that fits stay silent.
     """

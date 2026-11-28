@@ -600,6 +600,10 @@ class _EMState:
         The last M-step's largest transition-probability change.
     run_log_likelihoods : np.ndarray, shape (n_time, n_interior_state_bins), or None
         A likelihood computed in this run that the next E-step can reuse.
+    kept_likelihoods : dict or None
+        Structured EM with a fixed encoding model: the likelihood rows of
+        each chunk that its E-steps keep and reuse, on the device or in host
+        memory (``checkpointed_forward_backward``).
     transition_statistics : np.ndarray or None
         The last discrete M-step's expected transition statistics.
     monotonicity_violations : list of int
@@ -617,6 +621,7 @@ class _EMState:
     objective_change: float = np.inf
     transition_change: float = np.inf
     run_log_likelihoods: np.ndarray | None = None
+    kept_likelihoods: dict[int, Any] | None = None
     transition_statistics: np.ndarray | None = None
     monotonicity_violations: list[int] = field(default_factory=list)
 
@@ -1000,7 +1005,15 @@ class _EMMixin:
             encoding_fit_arguments=encoding_fit_arguments,
         )
         self._em_reset_fitted_attributes()
-        state = _EMState()
+        # Without encoding refits the likelihood is the same in every E-step,
+        # so structured EM keeps its rows where they fit.
+        state = _EMState(
+            kept_likelihoods=(
+                {}
+                if settings.checkpointed and not settings.estimate_encoding_model
+                else None
+            )
+        )
 
         while not state.converged and (state.n_iter < settings.max_iter):
             e_step = self._em_e_step(settings, state)
@@ -1035,6 +1048,7 @@ class _EMMixin:
             self._em_warn_not_converged(settings, state)
 
         final = self._em_final_e_step(settings, state)
+        state.kept_likelihoods = None
         traces = state.traces(final.posterior.marginal_log_likelihood)
 
         # Set after the final E-step, which evaluates the returned parameters
@@ -1312,6 +1326,7 @@ class _EMMixin:
                 cast("int", settings.chunk_size),  # resolved when checkpointed
                 transition_statistics=settings.transition_statistics,
                 replay_cache_bytes=cast("int", settings.replay_cache_bytes),
+                kept_likelihoods=state.kept_likelihoods,
             )
             acausal_state_probabilities = e_step.dataset[
                 "acausal_state_probabilities"
@@ -1720,6 +1735,7 @@ class _EMMixin:
                 # The store is complete before its marginal log-likelihood
                 # reaches this method, so it writes the traces itself.
                 em_attrs=lambda marginal: {**em_attrs, **state.traces(marginal)},
+                kept_likelihoods=state.kept_likelihoods,
             )
             return _EMFinalEStep(
                 _PosteriorOutputs(
@@ -1743,6 +1759,7 @@ class _EMMixin:
                 cast("int", settings.chunk_size),  # resolved when checkpointed
                 outputs=outputs,
                 replay_cache_bytes=cast("int", settings.replay_cache_bytes),
+                kept_likelihoods=state.kept_likelihoods,
             )
             values = {name: final.dataset[name].values for name in final.dataset}
             return _EMFinalEStep(

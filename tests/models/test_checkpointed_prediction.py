@@ -492,7 +492,10 @@ def test_checkpointed_prediction_replay_cache(
 ):
     """The replay reuses forward-pass rows: identical results, fewer evaluations."""
     from non_local_detector import checkpointed_inference
+    from non_local_detector.models import _checkpointed
 
+    # Host memory only: rows kept on a GPU would also skip evaluations.
+    monkeypatch.setattr(_checkpointed, "default_device_cache_bytes", lambda _: 0)
     driver = checkpointed_inference.checkpointed_forward_backward
 
     def run(name, **kwargs):

@@ -1,7 +1,7 @@
 """Exact single-sequence forward/backward replay with disk boundary checkpoints.
 
-At most two likelihood/forward/smoothed chunks are live: host work for one
-chunk overlaps device work for the next. Selected output rows
+Besides the rows kept for the replay, at most two likelihood/forward/smoothed
+chunks are live: host work for one chunk overlaps device work for the next. Selected output rows
 remain conditioned on the complete recording. First-pass evidence increments
 are summed in host float64 by default, preserving the state-probability dtype
 and arithmetic. Explicit reference mode retains the original cumulative carry.
@@ -207,6 +207,67 @@ def default_replay_cache_bytes() -> int:
     if available is None:
         return DEFAULT_REPLAY_CACHE_BYTES
     return int(min(DEFAULT_REPLAY_CACHE_BYTES, available // 2))
+
+
+# Device memory left for the filter, smoother and likelihood workspace when
+# rows are kept on the device: the larger of this many chunks of likelihood
+# rows (structured EM on an A100 peaked at about five, 1.3 GiB for chunks of
+# 268 MB) and this fraction of the device's allocation limit.
+_DEVICE_WORKSPACE_CHUNKS = 8
+_DEVICE_RESERVED_FRACTION = 0.25
+
+
+def default_device_cache_bytes(chunk_bytes: int) -> int:
+    """Return the device memory free for keeping rows, in bytes.
+
+    This is the memory the default device reports free (its allocation limit
+    less the bytes in use) less a reserve for the filter, smoother and
+    likelihood workspace: ``_DEVICE_WORKSPACE_CHUNKS`` chunks of rows or a
+    quarter of the limit, whichever is larger. It is 0 when the backend
+    reports no memory statistics, as on CPU, where arrays live in the host
+    memory that ``replay_cache_bytes`` budgets.
+
+    Parameters
+    ----------
+    chunk_bytes : int
+        Bytes of one chunk of likelihood rows.
+
+    Returns
+    -------
+    device_cache_bytes : int
+    """
+    stats = jax.local_devices()[0].memory_stats()
+    if not stats or "bytes_limit" not in stats:
+        return 0
+    limit = int(stats["bytes_limit"])
+    free = limit - int(stats.get("bytes_in_use", 0))
+    reserve = max(
+        _DEVICE_WORKSPACE_CHUNKS * int(chunk_bytes),
+        int(limit * _DEVICE_RESERVED_FRACTION),
+    )
+    return max(free - reserve, 0)
+
+
+@dataclass
+class _RowBudget:
+    """Bytes left for keeping rows on the device and in host memory.
+
+    Rows go on the device while they fit there, then in host memory while
+    they fit there, and are otherwise recomputed when needed again.
+    """
+
+    device: int
+    host: int
+
+    def place(self, nbytes: int) -> str | None:
+        """Charge ``nbytes`` to a budget; return "device", "host" or None."""
+        if nbytes <= self.device:
+            self.device -= nbytes
+            return "device"
+        if nbytes <= self.host:
+            self.host -= nbytes
+            return "host"
+        return None
 
 
 def default_chunk_size(n_bins: int, dtype: DTypeLike = np.float32) -> int:
@@ -417,6 +478,8 @@ def checkpointed_forward_backward(
     evidence_accumulation: EvidenceAccumulation = "stable",
     transition_statistics: TransitionStatistics | None = None,
     replay_cache_bytes: int = 0,
+    device_cache_bytes: int = 0,
+    kept_likelihoods: dict[int, Any] | None = None,
 ) -> CheckpointedResult:
     """Filter once, replay each chunk in reverse, and emit exact requested rows.
 
@@ -463,13 +526,26 @@ def checkpointed_forward_backward(
     store's metadata; a callable is given the pass's marginal log-likelihood
     and returns them, for attributes that depend on it.
 
-    ``replay_cache_bytes`` keeps each forward-pass chunk that still fits in the
-    remaining budget in host memory, and the replay uses those instead of
-    recomputing. When the outputs need only filtered rows (no likelihood or
-    predictive output), the filtered rows are kept, so a cached chunk skips both
-    its second likelihood evaluation and its replayed forward pass; otherwise
-    the prepared likelihood is kept. Either costs ``n_bins`` values per row. By
-    default (0) every chunk is filtered and evaluated twice.
+    The forward pass keeps chunks' rows for the replay, which uses them
+    instead of recomputing. When the outputs need only filtered rows (no
+    likelihood or predictive output), the filtered rows are kept, so a kept
+    chunk skips both its second likelihood evaluation and its replayed forward
+    pass; otherwise the prepared likelihood is kept. Either costs ``n_bins``
+    values per row. Each chunk's rows go on the device while they fit the
+    remaining ``device_cache_bytes``, then in host memory while they fit the
+    remaining ``replay_cache_bytes``; otherwise they are recomputed. By
+    default (both 0) every chunk is filtered and evaluated twice.
+
+    ``kept_likelihoods`` is a caller's store of prepared likelihood rows,
+    keyed by chunk start, for later calls over the same rows with the same
+    callback, ``is_missing``, ``chunk_size`` and ``dtype``, as structured EM's
+    E-steps with a fixed encoding model make. Chunks it holds are not
+    evaluated; the rows of chunks evaluated in this call are added to it,
+    before the chunk's filtered rows, under the same budgets. Its host rows
+    count against ``replay_cache_bytes``. Its device rows count against
+    nothing here, as the caller sizes ``device_cache_bytes`` from the memory
+    the device reports free (``default_device_cache_bytes``), which excludes
+    them.
 
     Global diagnostic masks
     cost two bytes per recording row while computing; exact NumPy index arrays
@@ -563,6 +639,13 @@ def checkpointed_forward_backward(
     replay_cache_bytes : int, optional
         Host memory budget for keeping forward-pass chunks to avoid
         recomputation in the replay, by default 0 (no cache).
+    device_cache_bytes : int, optional
+        Device memory budget for kept rows, used before the host budget, by
+        default 0.
+    kept_likelihoods : dict, optional
+        A caller's store of likelihood rows kept across calls (see above). By
+        default None, which keeps likelihood rows for this call's replay
+        only, and only when the outputs need them.
 
     Returns
     -------
@@ -617,18 +700,22 @@ def checkpointed_forward_backward(
             hint="'counts' sums the expected discrete transitions over the "
             "recording; 'responses' keeps them per row.",
         )
-    if (
-        isinstance(replay_cache_bytes, bool)
-        or not isinstance(replay_cache_bytes, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
-        or replay_cache_bytes < 0
+    for name, nbytes in (
+        ("replay_cache_bytes", replay_cache_bytes),
+        ("device_cache_bytes", device_cache_bytes),
     ):
-        msg = "replay_cache_bytes must be a nonnegative integer"
-        raise ValidationError(
-            msg,
-            expected="an integer number of bytes, at least 0",
-            got=repr(replay_cache_bytes),
-            hint="Pass 0 to recompute every chunk in the replay.",
-        )
+        if (
+            isinstance(nbytes, bool)
+            or not isinstance(nbytes, (int, np.integer))  # type: ignore[redundant-expr]  # runtime check of caller input
+            or nbytes < 0
+        ):
+            msg = f"{name} must be a nonnegative integer"
+            raise ValidationError(
+                msg,
+                expected="an integer number of bytes, at least 0",
+                got=repr(nbytes),
+                hint="Pass 0 to keep no rows there.",
+            )
     if output_mode not in ("compact", "spatial"):
         msg = "output_mode must be compact or spatial"
         raise ValidationError(
@@ -855,6 +942,7 @@ def checkpointed_forward_backward(
         "checkpoint_bytes": 0,
         "checkpoint_cache_entries": 1,
         "replay_cache_bytes": 0,
+        "replay_cache_device_bytes": 0,
         "global_gradients_supported": False,
     }
 
@@ -948,8 +1036,26 @@ def checkpointed_forward_backward(
                 "predictive_posterior",
                 "predictive_state_probabilities",
             }
-            cached_rows: dict[int, NDArray[Any]] = {}
-            cached_likelihoods: dict[int, NDArray[Any]] = {}
+            cached_rows: dict[int, Any] = {}
+            # Prepared likelihood rows: the caller's, kept across calls, or
+            # this pass's, kept for its replay when an output needs them.
+            persistent = kept_likelihoods is not None
+            likelihood_rows: dict[int, Any] = (
+                kept_likelihoods if kept_likelihoods is not None else {}
+            )
+            keep_likelihoods = persistent or not cache_rows
+            budget = _RowBudget(
+                device=int(device_cache_bytes),
+                host=max(
+                    int(replay_cache_bytes)
+                    - sum(
+                        rows.nbytes
+                        for rows in likelihood_rows.values()
+                        if isinstance(rows, np.ndarray)
+                    ),
+                    0,
+                ),
+            )
 
             def finish_forward_chunk(
                 start: int,
@@ -959,16 +1065,18 @@ def checkpointed_forward_backward(
                 degenerate: Any,
                 nan: Any,
                 checksum: jax.Array,
-                cached: jax.Array | None,
+                kept: list[tuple[dict[int, Any], jax.Array, str]],
                 increments: Any,
             ) -> Any:
                 """Pull one dispatched chunk's results to the host and checkpoint it."""
                 nonlocal n_nan
-                if cached is not None:
-                    (cached_rows if cache_rows else cached_likelihoods)[start] = (
-                        np.asarray(cached)
-                    )
-                    diagnostics["replay_cache_bytes"] += cached.nbytes
+                for store, rows, place in kept:
+                    if place == "device":
+                        store[start] = rows
+                        diagnostics["replay_cache_device_bytes"] += rows.nbytes
+                    else:
+                        store[start] = np.asarray(rows)
+                        diagnostics["replay_cache_bytes"] += rows.nbytes
                 checkpoint = folder / f"{start}.npz"
                 np.savez(
                     checkpoint,
@@ -992,13 +1100,25 @@ def checkpointed_forward_backward(
                 # Each chunk's host work runs after the next chunk is dispatched,
                 # so device computation overlaps host transfers and disk writes.
                 pending = None
-                planned = 0
                 for start in boundaries:
                     stop = min(start + chunk_size, n_time)
                     nbytes = (stop - start) * n_bins * dtype.itemsize
-                    cache = planned + nbytes <= replay_cache_bytes
-                    planned += nbytes if cache else 0
-                    values, degenerate, nan, checksum = likelihood(start, stop)
+                    # Arrays to keep, with where each goes; likelihood rows
+                    # are placed before the chunk's filtered rows.
+                    kept: list[tuple[dict[int, Any], jax.Array, str]] = []
+                    if start in likelihood_rows:
+                        # Rows an earlier call kept, prepared again for the
+                        # diagnostic masks and checksum.
+                        values, degenerate, nan, checksum = _prepare_chunk(
+                            jnp.asarray(likelihood_rows[start]),
+                            jnp.asarray(missing[start:stop]),
+                        )
+                    else:
+                        values, degenerate, nan, checksum = likelihood(start, stop)
+                        place = budget.place(nbytes) if keep_likelihoods else None
+                        if place is not None:
+                            kept.append((likelihood_rows, values, place))
+                    rows_place = budget.place(nbytes) if cache_rows else None
                     chunk = (
                         start,
                         stop,
@@ -1014,19 +1134,21 @@ def checkpointed_forward_backward(
                         values,
                         None if weights is None else jnp.asarray(weights[start:stop]),
                         transition_operator,
-                        keep_rows=cache and cache_rows,
+                        keep_rows=rows_place is not None,
                         keep_predictive=False,
                         keep_increments=evidence_accumulation == "stable",
                     )
-                    if cache and cache_rows:
-                        cached, _, increments = out
+                    if rows_place is not None:
+                        filtered, _, increments = out
+                        kept.append((cached_rows, filtered, rows_place))
+                        del filtered
                     else:
-                        cached, increments = (values if cache else None), out
+                        increments = out
                     if pending is not None:
                         yield finish_forward_chunk(*pending)
-                    # Kept until the chunk finishes and is copied to the host.
-                    pending = (*chunk, cached, increments)
-                    del values, cached
+                    # Kept until the chunk finishes and its rows are stored.
+                    pending = (*chunk, kept, increments)
+                    del values, kept
                 if pending is not None:
                     yield finish_forward_chunk(*pending)
 
@@ -1063,8 +1185,12 @@ def checkpointed_forward_backward(
                     values = predictive = None
                     checksum = expected_checksum
                 else:
-                    if start in cached_likelihoods:
-                        values = jnp.asarray(cached_likelihoods.pop(start))
+                    if start in likelihood_rows:
+                        values = jnp.asarray(
+                            likelihood_rows[start]
+                            if persistent
+                            else likelihood_rows.pop(start)
+                        )
                         checksum = expected_checksum
                     else:
                         values, _, _, checksum = likelihood(start, stop)
