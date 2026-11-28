@@ -87,7 +87,7 @@ and set its options with `sorted_spikes_algorithm_params` or
 | clusterless | `clusterless_gmm` | Gaussian mixture over position and waveform features |
 | clusterless | `clusterless_diffusion` | like `clusterless_kde`, with the graph heat kernel over position |
 | clusterless | `clusterless_mark_glm` | mixture over waveform features with a Poisson GLM rate map per component |
-| clusterless | `clusterless_flow_mixture` | invertible normalizing-flow-warped low-rank-plus-diagonal mark mixture with joint Flow-EM and optional probe-local coupling (requires `non_local_detector[neural]`) |
+| clusterless | `clusterless_flow_mixture` | invertible normalizing-flow-warped low-rank-plus-diagonal mark mixture with joint Flow-EM and optional probe-local coupling (requires `non_local_detector[neural]`; pass measured `noise_covariances` for multi-contact shanks) |
 
 Fitted firing rates are in Hz.
 

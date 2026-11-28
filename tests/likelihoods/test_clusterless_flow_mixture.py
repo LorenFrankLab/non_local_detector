@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import jax
@@ -16,7 +17,11 @@ from non_local_detector import (
     Environment,
     NonLocalClusterlessDetector,
 )
-from non_local_detector.exceptions import DataQualityWarning, ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.clusterless_flow_mixture import (
     FlowMarkMixture,
@@ -841,6 +846,47 @@ def test_validation_rejects_invalid_flow_parameters():
         fit_clusterless_flow_mixture_encoding_model(
             time, pos, sp_t, sp_m, env, contact_positions=[np.zeros((3, 2))]
         )
+
+
+@pytest.mark.unit
+def test_multichannel_electrodes_without_noise_covariance_warn_once():
+    """One ParameterWarning names every >4-channel electrode without noise covariance."""
+    env = _make_1d_env(20.0, 5.0)
+    time = np.linspace(0.0, 10.0, 201)
+    pos = np.linspace(0.0, 20.0, 201)[:, None]
+    rng = np.random.default_rng(0)
+    n_channels = [4, 6, 8]
+    sp_t = [np.sort(rng.uniform(0.0, 10.0, 40)) for _ in n_channels]
+    sp_m = [rng.normal(size=(40, n)) for n in n_channels]
+
+    def noise_covariance_warnings(**kwargs):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fit_clusterless_flow_mixture_encoding_model(
+                time,
+                pos,
+                sp_t,
+                sp_m,
+                env,
+                n_mark_components=2,
+                n_em_iterations=0,
+                **kwargs,
+            )
+        return [
+            w
+            for w in caught
+            if issubclass(w.category, ParameterWarning)
+            and "noise covariance" in str(w.message)
+        ]
+
+    caught = noise_covariance_warnings()
+    assert len(caught) == 1
+    assert "electrodes [1, 2]" in str(caught[0].message)
+
+    caught = noise_covariance_warnings(
+        noise_covariances=[None, np.eye(6), 2.0 * np.eye(8)]
+    )
+    assert caught == []
 
 
 @pytest.mark.unit

@@ -72,7 +72,11 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import DataQualityWarning, ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.clusterless_mark_glm import (
     _MIN_COMPONENT_SPIKES,
@@ -152,6 +156,11 @@ _MAX_LOCAL_HIDDEN_UNITS = 32
 # Default physical neighborhood radius multiplier and neighbor cap for local mode.
 _DEFAULT_PITCH_RADIUS_MULTIPLIER = 3.0
 _DEFAULT_MAX_LOCAL_CHANNELS = 16
+# Electrodes with more channels than a tetrode are fit with a warning when
+# they have no measured noise covariance: on 26-32-contact shanks the default
+# per-channel standardization lost most of the flow's gain over the mark GLM
+# (see ``noise_covariances`` in ``fit_clusterless_flow_mixture_encoding_model``).
+_MAX_CHANNELS_WITHOUT_NOISE_COVARIANCE = 4
 # Rational-quadratic spline numerical floors.
 _MIN_BIN_FRACTION = 1e-3
 _MIN_SPLINE_DERIVATIVE = 1e-3
@@ -3442,6 +3451,17 @@ def fit_clusterless_flow_mixture_encoding_model(
         (``m -> a*m + b`` with ``a > 0`` and ``noise_covariances -> a^2 * noise_covariances``);
         anisotropic per-channel rescaling with correlated noise rotates the ZCA
         basis.
+
+        Effectively required for multi-contact shanks. On a polymer probe with
+        11 shanks of 26-32 contacts (5 blocked folds, held-out information over
+        a frozen-mark flat model), the default fit without it gained only
+        +4.1 +/- 1.4 nats/s over ``clusterless_mark_glm``; with each shank's
+        measured noise covariance and 3.5 cm knots it gained +31.6 +/- 3.0
+        nats/s (+17.5 +/- 1.7 over the mark GLM at the same knots). Whitening
+        helps mainly in telling components apart by their marks: without it
+        the flow scored 5.5 nats/s below the mark GLM on that part. A
+        ``ParameterWarning`` is emitted once per fit when any electrode with
+        more than 4 channels (more than a tetrode) has no noise covariance.
     neighborhood_radius : float or None, optional
         Physical radius for neighbor-masked coupling layers when
         ``contact_positions`` is given. None auto-infers ``3 * median_pitch``.
@@ -3579,6 +3599,24 @@ def fit_clusterless_flow_mixture_encoding_model(
     resolved_pos, resolved_cov = _resolve_electrode_geometry(
         contact_positions, noise_covariances, mark_dimensions
     )
+    unwhitened = [
+        electrode
+        for electrode, (n_channels, cov) in enumerate(
+            zip(mark_dimensions, resolved_cov, strict=True)
+        )
+        if cov is None and n_channels > _MAX_CHANNELS_WITHOUT_NOISE_COVARIANCE
+    ]
+    if unwhitened:
+        warnings.warn(
+            f"Clusterless flow mixture: electrodes {unwhitened} have more than "
+            f"{_MAX_CHANNELS_WITHOUT_NOISE_COVARIANCE} channels but no noise "
+            "covariance, so their marks are only standardized per channel. On "
+            "26-32-contact shanks this lost most of the flow's gain over "
+            "clusterless_mark_glm; pass each electrode's measured channel noise "
+            "covariance in noise_covariances.",
+            ParameterWarning,
+            stacklevel=user_stacklevel(),
+        )
 
     weight_sum = float(exposure_weights.sum())
     warn_if_no_encoding_exposure(

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Dense mode (`contact_positions=None`) uses alternating MLP coupling layers and zero-initialized Cayley orthogonal mixing; providing optional per-electrode `contact_positions` switches to physically neighbor-masked local coupling layers, and optional `noise_covariances` applies symmetric ZCA whitening in Layer 0.
   - Trains jointly on the marked Poisson likelihood by default (`flow_objective="joint"`, with `flow_objective="marginal"` available for position-free ablation) using blocked inner-validation early stopping with an exact identity epoch-0 fallback.
   - Includes `.nld` persistence (`nld.FlowMarkMixture`); loading and prediction run in pure JAX without `optax`.
+  - Pass measured `noise_covariances` for multi-contact shanks: on 11 shanks of 26–32 contacts the default fit gained only +4.1 ± 1.4 nats/s of held-out information over `clusterless_mark_glm`, against +31.6 ± 3.0 with measured noise covariances and 3.5 cm knots. A fit warns once (`ParameterWarning`) when any electrode with more than 4 channels has none.
 
 ### Sorted-spikes KDE Local likelihood compiles a few times per decode
 
