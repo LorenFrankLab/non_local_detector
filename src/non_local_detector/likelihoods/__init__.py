@@ -375,17 +375,13 @@ _CLUSTERLESS_ALGORITHMS: dict[str, ClusterlessLikelihoodAlgorithm] = {
         mark_reference_scale=clusterless_mark_glm.mark_reference_scale,
     ),
     # Model checking does not implement the probe mixture's intensity.
+    # ``max_candidate_components`` is not an execution setting: below an
+    # electrode's component count it changes the log likelihood.
     "clusterless_probe_mixture": ClusterlessLikelihoodAlgorithm(
         fit_clusterless_probe_mixture_encoding_model,
         predict_clusterless_probe_mixture_log_likelihood,
         ClusterlessProbeMixtureEncodingModel,
-        execution_settings=frozenset(
-            {
-                "spike_block_size",
-                "max_candidate_components",
-                "disable_progress_bar",
-            }
-        ),
+        execution_settings=frozenset({"spike_block_size", "disable_progress_bar"}),
         mark_reference_scale=clusterless_probe_mixture.mark_reference_scale,
     ),
 }

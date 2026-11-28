@@ -486,10 +486,6 @@ _INVALID_SETTINGS = {
     ],
     "clusterless_probe_mixture": [
         ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
-        (
-            {"max_candidate_components": 0},
-            "max_candidate_components must be None or a positive integer",
-        ),
     ],
 }
 

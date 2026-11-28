@@ -36,9 +36,9 @@ mixture followed by warm-started generalized EM (joint position-mark
 responsibilities, exact monotone factor-analysis mark M-step, and warm-started
 damped Newton GLM rate-map updates on a cached position-cell basis), with
 blocked inner-validation early stopping and exact iteration-0 fallback. At
-prediction time, an optional ``max_candidate_components`` execution setting
-builds a static per-peak-contact lookup table for sub-linear scoring on
-Neuropixels-scale component counts.
+prediction time, an optional ``max_candidate_components`` approximation
+scores each spike against only the components nearest its peak contact, for
+sub-linear scoring on Neuropixels-scale component counts.
 """
 
 from __future__ import annotations
@@ -231,10 +231,10 @@ def _validate_nonnegative_int(name: str, value: Any) -> int:
     return int(value)
 
 
-def _validate_execution_settings(
+def _validate_predict_options(
     spike_block_size: Any, max_candidate_components: Any
 ) -> None:
-    """Validate prediction execution settings at both fit and predict."""
+    """Validate the options predict reads, at both fit and predict."""
     validate_positive_int("spike_block_size", spike_block_size)
     validate_positive_int(
         "max_candidate_components", max_candidate_components, allow_none=True
@@ -2468,11 +2468,16 @@ def fit_clusterless_probe_mixture_encoding_model(
     spike_block_size : int, optional
         Decode spikes scored per block at predict, by default 1000.
     max_candidate_components : int or None, optional
-        Maximum candidate components scored per decode spike using a static
-        per-peak-contact lookup table, by default None (evaluate all K).
-        Requires ``contact_positions`` for every electrode, because the table
-        ranks components by the distance of their peak contact to the
-        spike's peak contact.
+        An approximation for speed on electrodes with many components: at
+        predict, score each decode spike against only this many components,
+        those whose peak contacts are nearest the spike's peak contact (a
+        static per-contact lookup table), by default None (score all K).
+        Exact when it is at least an electrode's number of components;
+        smaller values drop the other components from each spike's mark
+        density and change the log likelihood. Requires ``contact_positions``
+        for every electrode, because the table is defined by contact
+        geometry. A model parameter, not an execution setting: a detector
+        uses the value recorded at fit until it is refit.
     disable_progress_bar : bool, optional
         Stored for prediction's progress bars, by default False.
     encoding_time_range : array_like, shape (2,), optional
@@ -2488,7 +2493,7 @@ def fit_clusterless_probe_mixture_encoding_model(
         Fitted encoding model dict accepted by
         :func:`predict_clusterless_probe_mixture_log_likelihood`.
     """
-    _validate_execution_settings(spike_block_size, max_candidate_components)
+    _validate_predict_options(spike_block_size, max_candidate_components)
     validate_positive_int("n_mark_components", n_mark_components)
     validate_positive_int("mark_fit_max_spikes", mark_fit_max_spikes)
     validate_positive_int("mark_max_iter", mark_max_iter)
@@ -3193,9 +3198,11 @@ def predict_clusterless_probe_mixture_log_likelihood(
     spike_block_size : int, optional
         Decode spikes scored per block, by default 1000.
     max_candidate_components : int or None, optional
-        Maximum candidate components scored per decode spike using a static
-        per-peak-contact lookup table. By default None (evaluate all K).
-        Requires mixtures fit with ``contact_positions``.
+        Score each decode spike against only this many components, those
+        whose peak contacts are nearest the spike's peak contact, from the
+        fit. By default None (score all K). An approximation unless it is at
+        least each electrode's number of components. Requires mixtures fit
+        with ``contact_positions``.
     disable_progress_bar : bool, optional
         Hide per-electrode progress bar, by default False.
     row_slice : slice or None, optional
@@ -3227,7 +3234,7 @@ def predict_clusterless_probe_mixture_log_likelihood(
         Float32 log likelihood per requested time bin.
     """
     validate_encoding_contract(rate_units, environment, environment_grid)
-    _validate_execution_settings(spike_block_size, max_candidate_components)
+    _validate_predict_options(spike_block_size, max_candidate_components)
     rows = prepare_decode_rows(time_edges, row_slice, _time_grid, _spike_time_order)
     spike_times = as_arrays(spike_times)
     spike_waveform_features = as_arrays(spike_waveform_features)

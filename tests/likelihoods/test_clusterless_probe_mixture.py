@@ -1921,6 +1921,23 @@ class TestCandidateComponents:
                 disable_progress_bar=True,
             )
 
+    def test_invalid_max_candidate_components_is_rejected_at_fit(self):
+        rec = _make_dense_probe_recording(n_channels=8, n_units=2, duration=6.0)
+        with pytest.raises(
+            ValidationError,
+            match="max_candidate_components must be None or a positive integer",
+        ):
+            fit_clusterless_probe_mixture_encoding_model(
+                rec["position_time"],
+                rec["position"],
+                rec["spike_times"],
+                rec["spike_waveform_features"],
+                rec["environment"],
+                contact_positions=rec["contact_positions"],
+                max_candidate_components=0,
+                disable_progress_bar=True,
+            )
+
     def test_candidate_lookup_refuses_a_mixture_without_contact_positions(self):
         """Without geometry there is no peak-contact table to restrict candidates."""
         env, time, position, spikes, marks = _make_overlapping_marks_recording()
@@ -1945,3 +1962,53 @@ class TestCandidateComponents:
                 mark_reference=ref,
                 **{**enc, "max_candidate_components": 1},
             )
+
+    def test_max_candidate_components_changed_after_fit_waits_for_refit(self):
+        """It changes results, so it is a model parameter: a detector keeps the
+        fitted value until the next fit instead of passing the new one to predict."""
+        rec = _make_dense_probe_recording(
+            n_channels=12, n_units=3, duration=12.0, seed=206
+        )
+        params = {
+            "contact_positions": rec["contact_positions"],
+            "max_local_channels": 6,
+            "covariance_rank": 3,
+            "n_mark_components": 6,
+            "n_em_iterations": 0,
+            "disable_progress_bar": True,
+        }
+        decoder = ClusterlessDecoder(
+            environments=rec["environment"],
+            sampling_frequency=100.0,
+            clusterless_algorithm="clusterless_probe_mixture",
+            clusterless_algorithm_params=params,
+        ).fit(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+        )
+        (enc,) = decoder.encoding_model_.values()
+        assert enc["mark_mixtures"][0].n_components > 1
+        edges = time_edges_from_centers(rec["position_time"][:200])
+
+        def log_likelihood():
+            return decoder.predict(
+                rec["spike_times"],
+                rec["spike_waveform_features"],
+                time_edges=edges,
+                return_outputs="log_likelihood",
+            ).log_likelihood
+
+        before = log_likelihood()
+        decoder.clusterless_algorithm_params = {
+            **params,
+            "max_candidate_components": 1,
+        }
+        np.testing.assert_array_equal(log_likelihood(), before)
+        assert (
+            "max_candidate_components"
+            not in _CLUSTERLESS_ALGORITHMS[
+                "clusterless_probe_mixture"
+            ].execution_settings
+        )
