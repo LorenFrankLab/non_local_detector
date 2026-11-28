@@ -62,7 +62,11 @@ from non_local_detector.encoding_time import (
     warn_if_no_encoding_exposure,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.exceptions import DataQualityWarning, ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods.clusterless_gmm import DEFAULT_GMM_REG_COVAR
 from non_local_detector.likelihoods.clusterless_mark_glm import (
     _MIN_COMPONENT_SPIKES,
@@ -144,6 +148,13 @@ _CANDIDATE_GATHER_ELEMENTS = 1 << 22
 _MIN_RESPONSIBILITY_MASS = 1e-8
 # Default low-rank covariance rank per component on local support.
 DEFAULT_COVARIANCE_RANK = 4
+# Electrodes with more channels than this get a warning when fit without
+# measured noise covariances. On tetrodes (4 channels) every component's full
+# covariance spans all channels and the fit matched the mark GLM (j16: 87.3
+# nats/s of held-out information both); on 26-32-contact shanks (RS58) it lost
+# 4.0 nats/s to the mark GLM without measured noise and gained 10.9-20.7 with
+# it.
+_MAX_CHANNELS_WITHOUT_NOISE = 4
 # Stratified quantile edges for the 5-point Gamma(nu/2, nu/2) scale mixture
 # approximating Student-t heavy tails on both local supports S_k and
 # independent off-support channels while preserving exponential tail decay
@@ -2406,7 +2417,15 @@ def fit_clusterless_probe_mixture_encoding_model(
         1e6; see :func:`~non_local_detector.likelihoods.probe_geometry.validate_noise_covariance`).
         Applied via symmetric ZCA whitening. A common-average-referenced
         recording has a singular covariance and is refused: drop one channel
-        of each referenced group or regularize the covariance.
+        of each referenced group or regularize the covariance. Effectively
+        required for multi-contact shanks: without it the shared residual
+        variance is learned from the spikes and absorbs correlated noise and
+        neighbouring units' amplitudes. On a 31-contact polymer shank the fit
+        without it lost 4.0 nats/s of held-out information to
+        ``clusterless_mark_glm``, and with covariances measured from
+        spike-free samples it gained 10.9-20.7 nats/s, so a fit warns
+        (``ParameterWarning``, once) when an electrode with more than 4
+        channels has none.
     neighborhood_radius : float or None, optional
         Physical contact radius for each component's local support ``S_k``.
         By default None (auto-inferred as 3x median nearest-neighbor pitch).
@@ -2573,6 +2592,24 @@ def fit_clusterless_probe_mixture_encoding_model(
             got=f"none for electrodes {missing_geometry}",
             hint="Pass contact_positions, or set max_candidate_components=None "
             "to score every component.",
+        )
+    unmeasured_noise = [
+        electrode
+        for electrode, (n_channels, covariance) in enumerate(
+            zip(mark_dimensions, resolved_covariances, strict=True)
+        )
+        if covariance is None and n_channels > _MAX_CHANNELS_WITHOUT_NOISE
+    ]
+    if unmeasured_noise:
+        warnings.warn(
+            f"Clusterless probe mixture: electrodes {unmeasured_noise} have more "
+            f"than {_MAX_CHANNELS_WITHOUT_NOISE} channels and no "
+            "noise_covariances, so the shared residual variance is learned from "
+            "the spikes and absorbs correlated noise and neighbouring units. "
+            "Pass measured noise covariances (from spike-free samples of the "
+            "same recording) for multi-contact shanks.",
+            ParameterWarning,
+            stacklevel=user_stacklevel(),
         )
 
     is_track_interior = environment.is_track_interior_flat_

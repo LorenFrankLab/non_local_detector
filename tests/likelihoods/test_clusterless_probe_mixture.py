@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 from scipy.stats import multivariate_normal
 
 from non_local_detector import ClusterlessDecoder, Environment, time_edges_from_centers
-from non_local_detector.exceptions import DataQualityWarning, ValidationError
+from non_local_detector.exceptions import (
+    DataQualityWarning,
+    ParameterWarning,
+    ValidationError,
+)
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.clusterless_mark_glm import (
     fit_clusterless_mark_glm_encoding_model,
@@ -23,6 +29,13 @@ from non_local_detector.likelihoods.probe_geometry import (
     ProbeGeometry,
     build_probe_tiles,
     compute_local_neighborhoods,
+)
+
+# The simulated shanks here (8-32 channels) are mostly fit without measured
+# noise. The warning that asks for it is tested in TestMeasuredNoiseWarning and
+# is incidental everywhere else.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Clusterless probe mixture. electrodes .* no noise_covariances:UserWarning"
 )
 
 
@@ -2129,3 +2142,45 @@ class TestCandidateComponents:
                 "clusterless_probe_mixture"
             ].execution_settings
         )
+
+
+@pytest.mark.unit
+class TestMeasuredNoiseWarning:
+    """Many-channel electrodes fit without measured noise get one warning."""
+
+    def _fit(self, rec, **params):
+        return fit_clusterless_probe_mixture_encoding_model(
+            rec["position_time"],
+            rec["position"],
+            rec["spike_times"],
+            rec["spike_waveform_features"],
+            rec["environment"],
+            **{
+                "n_mark_components": 2,
+                "n_em_iterations": 0,
+                "disable_progress_bar": True,
+                **params,
+            },
+        )
+
+    def test_one_warning_per_fit_names_every_many_channel_electrode(self):
+        rec = _make_dense_probe_recording(n_channels=8, n_units=2, duration=6.0)
+        rec["spike_times"] = rec["spike_times"] * 2
+        rec["spike_waveform_features"] = rec["spike_waveform_features"] * 2
+        with pytest.warns(ParameterWarning, match="noise_covariances") as record:
+            # Inner validation builds several fits; the warning is per call.
+            self._fit(rec, n_em_iterations=1, em_validation_blocks=2)
+        messages = [
+            str(w.message) for w in record if issubclass(w.category, ParameterWarning)
+        ]
+        assert len(messages) == 1
+        assert "electrodes [0, 1]" in messages[0]
+
+    def test_no_warning_with_measured_noise_or_on_tetrodes(self):
+        rec = _make_dense_probe_recording(n_channels=8, n_units=2, duration=6.0)
+        with warnings.catch_warnings():
+            # Overrides this module's filter for the warning.
+            warnings.simplefilter("error", ParameterWarning)
+            self._fit(rec, noise_covariances=[25.0 * np.eye(8)])
+            rec["spike_waveform_features"] = [rec["spike_waveform_features"][0][:, :4]]
+            self._fit(rec)
