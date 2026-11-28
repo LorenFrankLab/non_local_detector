@@ -9,7 +9,6 @@ from typing import Any, TypeVar, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.nn import logsumexp
 from numpy.typing import NDArray
 
 from non_local_detector._jax_typing import finfo, optimization_barrier
@@ -102,7 +101,10 @@ def gaussian_pdf(x: jax.Array, mean: jax.Array, sigma: jax.Array) -> jax.Array:
 
 
 def _log_kernel_matrix(
-    eval_points: jax.Array, samples: jax.Array, std: jax.Array
+    eval_points: jax.Array,
+    samples: jax.Array,
+    std: jax.Array,
+    mask: jax.Array | None = None,
 ) -> jax.Array:
     """Log Gaussian kernel matrix summed over dimensions.
 
@@ -118,6 +120,8 @@ def _log_kernel_matrix(
         Kernel centers.
     std : jax.Array, shape (n_dims,)
         Kernel standard deviation in each dimension.
+    mask : jax.Array of bool, shape (n_dims,), optional
+        The dimensions to sum, by default all; the others add exactly zero.
 
     Returns
     -------
@@ -125,12 +129,15 @@ def _log_kernel_matrix(
         ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``.
     """
     log_kernel = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
-        log_kernel += log_gaussian_pdf(
+    for dim, (dim_eval, dim_samp, dim_std) in enumerate(
+        zip(eval_points.T, samples.T, std, strict=True)
+    ):
+        term = log_gaussian_pdf(
             jnp.expand_dims(dim_eval, axis=0),
             jnp.expand_dims(dim_samp, axis=1),
             dim_std,
         )
+        log_kernel += term if mask is None else jnp.where(mask[dim], term, 0.0)
     return log_kernel
 
 
@@ -979,14 +986,216 @@ def kde_log_densities(
     log_densities : list of jax.Array, shape (n_points,)
         In the order of ``models``.
     """
-    points = jnp.asarray(points)
+    return [
+        jnp.asarray(row) for row in _kde_log_density_list(models, jnp.asarray(points))
+    ]
+
+
+# Per-model and per-point terms of a log-density floor, added: see
+# kde_log_density_rows.
+LogFloor = tuple[np.ndarray, np.ndarray]
+
+
+def kde_log_density_rows(
+    models: Sequence["KDEModel"],
+    points: jax.Array | np.ndarray,
+    *,
+    log_floor: LogFloor | None = None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
+) -> jax.Array:
+    """:func:`kde_log_densities` as one array, one row per model.
+
+    Parameters
+    ----------
+    models : sequence of KDEModel
+        Fitted KDE models.
+    points : array, shape (n_points, n_dims) or (n_points,)
+        Points at which every model is evaluated.
+    log_floor : (np.ndarray, np.ndarray), shapes (n_models,) and (n_points,), optional
+        Per-model and per-point terms whose sum is the log density below
+        which the caller does not need a model's value at a point. A flagged
+        point is not evaluated in log space when its density is certainly
+        below its floor (see :func:`_tiled_scaled_kde_log_densities`): it
+        keeps its scaled-pass value, which is then below the floor too,
+        possibly ``-inf``. A point term of ``inf`` marks a padding point; a
+        NaN floor (``inf`` plus ``-inf``) leaves the point flagged. By
+        default every flagged point is evaluated in log space. Models that
+        are not exactly ``KDEModel`` ignore it.
+    tiles : dict, optional
+        The caller's store of the models' sample tiles and sorted 1D keys,
+        filled on first use: calls that pass the same dict with the same
+        ``models`` and point dimensions build and move them to the device
+        once. By default each call builds its own.
+
+    Returns
+    -------
+    log_densities : jax.Array, shape (n_models, n_points)
+        In the order of ``models``, in their common dtype. When the models
+        form one group, as one fit's do, and nothing needs log space, the
+        values never leave the device.
+    """
+    # Host points stay on the host: the pass's host work reads them there.
+    points = points if isinstance(points, jax.Array) else np.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
-    results: list[jax.Array] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
+    groups, others = _model_groups(models, points)
+    if not others and len(groups) == 1:
+        ((key, members),) = groups.items()
+        if members == list(range(len(models))):
+            return jnp.asarray(
+                _group_log_densities(models, members, key[0], points, log_floor, tiles)
+            )
+    results = _kde_log_density_list(models, points, log_floor, tiles)
+    if not results:
+        return jnp.empty(
+            (0, points.shape[0]), jax.dtypes.canonicalize_dtype(jnp.float64)
+        )
+    return jnp.asarray(np.stack([np.asarray(row) for row in results]))
+
+
+# (model, point) arrays the tiled pass holds at once, in units of the float
+# itemsize. 1-D: the per-point scale and two more temporaries, the two
+# bracketing keys, the values and the flags (measured 6.3 on CPU in float32
+# and float64); 2-D and up: one temporary, the values and the flags
+# (measured 2.3).
+_PASS_POINT_ARRAYS_1D = 7
+_PASS_POINT_ARRAYS = 3
+
+# The pass's smaller temporaries beside its tile buffers (measured 1 to 6 MiB).
+_PASS_SLACK_BYTES = _KDE_BLOCK_KERNEL_BYTES // 32
+
+
+def _tiled_pass_bytes(
+    n_points: int,
+    block_size: int,
+    n_models: int,
+    n_dims: int,
+    n_tiles: int,
+    widest: int,
+    std: jax.Array,
+    sample_dtype: np.dtype,
+    weight_dtype: np.dtype,
+) -> tuple[int, int]:
+    """Bytes the tiled pass of ``n_models`` holds at ``n_points``, and its point block.
+
+    Counts its tile buffers as :func:`_tiled_kde_rows` sizes them (the
+    per-tile sums of a block of points and one step's kernel matrix), its
+    tile arguments, its ``(n_models, n_points)`` arrays and
+    ``_PASS_SLACK_BYTES``.
+    """
+    # Zero-stride views: only shapes and dtypes are read.
+    points = np.broadcast_to(
+        np.zeros((), jax.dtypes.canonicalize_dtype(jnp.float64)), (n_points, n_dims)
+    )
+    tile_samples = np.zeros((1, _KDE_SAMPLE_TILE, n_dims), sample_dtype)
+    tile_weights = np.zeros((1, _KDE_SAMPLE_TILE), weight_dtype)
+    rows, batch_size, n_pass_tiles = _tiled_kde_rows(
+        block_size, points, n_tiles, std, tile_samples, tile_weights, widest
+    )
+    itemsize = _kernel_itemsize(points, tile_samples, std, tile_weights)
+    point_arrays = _PASS_POINT_ARRAYS_1D if n_dims == 1 else _PASS_POINT_ARRAYS
+    n_bytes = (
+        itemsize * rows * (n_pass_tiles + batch_size * _KDE_SAMPLE_TILE)
+        + itemsize * n_pass_tiles * _KDE_SAMPLE_TILE * (n_dims + 1)
+        + 4 * n_pass_tiles
+        + itemsize * point_arrays * n_models * n_points
+        + _PASS_SLACK_BYTES
+    )
+    return n_bytes, rows
+
+
+def tiled_kde_block(
+    models: Sequence["KDEModel"], n_dims: int, max_points: int
+) -> tuple[int, int]:
+    """Points per call, and per point block, at which :func:`kde_log_density_rows` fits the budget.
+
+    The call's points take what ``_KDE_BLOCK_KERNEL_BYTES`` leaves beside the
+    pass's own tile buffers and arguments, counting every
+    ``(n_models, n_points)`` array the pass holds (see
+    :func:`_tiled_pass_bytes`). The point count is then split into whole
+    point blocks: ``n_points = m * block`` with ``m`` blocks of at most the
+    pass's own block, which loses fewer than ``m`` points of the largest
+    count that fits. Evaluated with block size ``block``, the pass pads no
+    points. Exact when the models form one group (bandwidth, block size and
+    dtypes), as one fit's do; otherwise it is computed as if they did.
+
+    Parameters
+    ----------
+    models : sequence of KDEModel
+        Fitted KDE models, with the bandwidth and block size of the first.
+    n_dims : int
+        Point dimensions.
+    max_points : int
+        Most points per call.
+
+    Returns
+    -------
+    n_points, block : int
+        ``n_points <= max_points`` is a multiple of ``block``; at least one
+        point when even one exceeds the budget.
+    """
+    if not models:
+        return max_points, max_points
+    model = models[0]
+    assert model.samples_ is not None  # fitted
+    assert model.weights_ is not None  # set with samples_
+    model_tiles = [
+        max(1, -(-np.shape(cast(jax.Array, m.samples_))[0] // _KDE_SAMPLE_TILE))
+        for m in models
+    ]
+
+    sample_dtype, weight_dtype = model.samples_.dtype, model.weights_.dtype
+    std = as_std_array(model.std, n_dims)
+
+    def pass_bytes(n_points: int) -> tuple[int, int]:
+        return _tiled_pass_bytes(
+            n_points,
+            n_points if model.block_size is None else model.block_size,
+            len(models),
+            n_dims,
+            padded_tile_count(sum(model_tiles)),
+            max(model_tiles),
+            std,
+            sample_dtype,
+            weight_dtype,
+        )
+
+    # The bytes grow with the points: the largest count that fits, by
+    # bisection.
+    fits, too_many = 1, max_points + 1
+    if pass_bytes(max_points)[0] <= _KDE_BLOCK_KERNEL_BYTES:
+        fits = max_points
+    else:
+        while too_many - fits > 1:
+            middle = (fits + too_many) // 2
+            if pass_bytes(middle)[0] <= _KDE_BLOCK_KERNEL_BYTES:
+                fits = middle
+            else:
+                too_many = middle
+    point_block = pass_bytes(fits)[1]
+    n_blocks = -(-fits // point_block)
+    block = fits // n_blocks
+    return n_blocks * block, block
+
+
+def _model_groups(
+    models: Sequence["KDEModel"], points: jax.Array | np.ndarray
+) -> tuple[dict[tuple[Any, ...], list[int]], list[int]]:
+    """Group exact ``KDEModel`` models that share one tiled pass.
+
+    Returns
+    -------
+    groups : dict
+        By block size, bandwidth and sample and weight dtypes: the members'
+        indices, in order. The key's first entry is the block size.
+    others : list of int
+        Models that are not exactly ``KDEModel``.
+    """
     groups: dict[tuple[Any, ...], list[int]] = {}
+    others: list[int] = []
     for index, model in enumerate(models):
         if type(model) is not KDEModel:
-            results[index] = kde_log_density(model, points)
+            others.append(index)
             continue
         if model.samples_ is None:
             msg = "This KDE instance is not fitted yet."
@@ -1001,16 +1210,60 @@ def kde_log_densities(
             np.dtype(model.weights_.dtype).str,
         )
         groups.setdefault(key, []).append(index)
-    for (block_size, *_), members in groups.items():
-        values = _tiled_kde_log_densities(
-            points,
+    return groups, others
+
+
+def _group_log_densities(
+    models: Sequence["KDEModel"],
+    members: list[int],
+    block_size: int,
+    points: jax.Array | np.ndarray,
+    log_floor: LogFloor | None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None,
+) -> jax.Array | np.ndarray:
+    """One group's tiled pass (see :func:`_tiled_kde_log_densities`), with its tiles."""
+    if tiles is None:
+        tiles = {}
+    tiles_key = (points.shape[1], *members)
+    if tiles_key not in tiles:
+        tiles[tiles_key] = _GroupTiles.build(
             [np.asarray(models[i].samples_) for i in members],
             [np.asarray(models[i].weights_) for i in members],
-            as_std_array(models[members[0]].std, points.shape[1]),
-            block_size,
+            one_dimensional=points.shape[1] == 1,
+        )
+    return _tiled_kde_log_densities(
+        points,
+        tiles[tiles_key],
+        as_std_array(models[members[0]].std, points.shape[1]),
+        block_size,
+        log_floor=None
+        if log_floor is None
+        else (np.asarray(log_floor[0])[members], log_floor[1]),
+    )
+
+
+def _kde_log_density_list(
+    models: Sequence["KDEModel"],
+    points: jax.Array | np.ndarray,
+    log_floor: LogFloor | None = None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
+) -> list[np.ndarray | jax.Array]:
+    """Each model's log densities in its own dtype; see :func:`kde_log_density_rows`."""
+    if points.ndim == 1:
+        points = points[:, None]
+    results: list[np.ndarray | jax.Array] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
+    groups, others = _model_groups(models, points)
+    for index in others:
+        results[index] = kde_log_density(models[index], jnp.asarray(points))
+    if tiles is None:
+        tiles = {}
+    for (block_size, *_), members in groups.items():
+        # Copied to the host: device indexing compiles a kernel per shape.
+        values = np.asarray(
+            _group_log_densities(models, members, block_size, points, log_floor, tiles)
         )
         for row, index in enumerate(members):
-            results[index] = jnp.asarray(values[row])
+            results[index] = values[row]
     return results
 
 
@@ -1115,52 +1368,91 @@ def _nearer_key_log_kernel(
     return cast(jax.Array, log_gaussian_pdf(points, nearest, std[0]))
 
 
-def _bracketing_keys(
-    points: np.ndarray,
-    samples: Sequence[np.ndarray],
-    weights: Sequence[np.ndarray],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Each model's sorted 1D keys just below and at or above each point, on the host.
+def _sorted_model_keys(
+    samples: Sequence[np.ndarray], weights: Sequence[np.ndarray]
+) -> list[np.ndarray]:
+    """Each model's sorted 1D keys for :func:`_bracketing_keys`, on the host.
 
-    The neighbours :func:`_nearest_sample_log_kernel` finds on the device,
-    for several models at once: :func:`_sorted_sample_keys` per model, then
-    a binary search. The keys are copied, so the device computes the same
-    scale from them.
+    As :func:`_sorted_sample_keys` per model, in the samples' common dtype (a
+    floating one for integer samples): samples without positive weight are
+    ``inf``.
 
     Parameters
     ----------
-    points : np.ndarray, shape (n_points,)
-        Evaluation coordinates, in the device dtype; any numeric dtype.
     samples : sequence of np.ndarray, each shape (n_samples, 1)
         Each model's samples.
     weights : sequence of np.ndarray, each shape (n_samples,)
-        Each model's weights; samples without positive weight are ``inf``.
+        Each model's weights.
 
     Returns
     -------
-    left, right : np.ndarray, shape (n_models, n_points)
-        In the samples' dtype (a floating one for integer samples), so the
-        keys are the sample coordinates whatever the points' dtype; ``inf``
-        for a model without samples.
+    keys : list of np.ndarray, each shape (n_samples,)
     """
     key_dtype = np.result_type(*(np.asarray(s).dtype for s in samples), np.float16)
-    left = np.full((len(samples), points.size), np.inf, key_dtype)
-    right = left.copy()
-    for model, (model_samples, model_weights) in enumerate(
-        zip(samples, weights, strict=True)
-    ):
-        if model_samples.shape[0] == 0:
-            continue
-        keys = np.sort(
+    return [
+        np.sort(
             np.where(model_weights > 0, model_samples[:, 0], np.inf).astype(
                 key_dtype, copy=False
             )
         )
-        index = np.searchsorted(keys, points)
-        last = keys.size - 1
-        left[model] = keys[np.clip(index - 1, 0, last)]
-        right[model] = keys[np.clip(index, 0, last)]
-    return left, right
+        for model_samples, model_weights in zip(samples, weights, strict=True)
+    ]
+
+
+@jax.jit
+def _bracketing_keys(
+    sorted_points: jax.Array,
+    order: jax.Array,
+    keys: jax.Array,
+    key_model: jax.Array,
+    key_start: jax.Array,
+    key_count: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Each model's sorted 1D keys just below and at or above each point, on the device.
+
+    The neighbours :func:`_nearest_sample_log_kernel` finds, for several
+    models at once. A point's index among a model's sorted keys is the
+    number of its keys below the point: a running count, over the sorted
+    points, of where each key falls among them (one search per key, and an
+    integer count, so the same keys as a search per point; NaN points sort
+    last and count every key, as in NumPy).
+
+    Parameters
+    ----------
+    sorted_points : jax.Array, shape (n_points,)
+        Evaluation coordinates in ascending order (NumPy's order: NaN last).
+    order : jax.Array of int32, shape (n_points,)
+        The position of each sorted point among the points.
+    keys : jax.Array, shape (n_keys,)
+        Every model's sorted keys (see :func:`_sorted_model_keys`), model
+        after model; at least one.
+    key_model : jax.Array of int32, shape (n_keys,)
+        Each key's model.
+    key_start, key_count : jax.Array of int32, shape (n_models,)
+        Each model's first key and number of keys.
+
+    Returns
+    -------
+    left, right : jax.Array, shape (n_models, n_points)
+        In the points' order; ``inf`` for a model without keys.
+    """
+    n_models, n_points = key_start.shape[0], sorted_points.shape[0]
+    where = jnp.searchsorted(sorted_points, keys, side="right")
+    below = (
+        jnp.zeros((n_models, n_points + 1), jnp.int32)
+        .at[key_model, where]
+        .add(1, indices_are_sorted=True)
+    )
+    index = jnp.cumsum(below, axis=1)[:, :n_points]
+    last = (key_count - 1)[:, None]
+    empty = (key_count == 0)[:, None]
+
+    def neighbour(position: jax.Array) -> jax.Array:
+        found = keys[key_start[:, None] + jnp.clip(position, 0, last)]
+        in_sorted_order = jnp.where(empty, jnp.inf, found)
+        return jnp.zeros_like(in_sorted_order).at[:, order].set(in_sorted_order)
+
+    return neighbour(index - 1), neighbour(index)
 
 
 def _kde_log_scale(
@@ -1578,6 +1870,7 @@ def _tiled_scaled_kde_log_densities(
     counts: jax.Array,
     std: jax.Array,
     bracketing_keys: tuple[jax.Array, jax.Array] | None,
+    log_floor: tuple[jax.Array, jax.Array] | None = None,
     *,
     rows: int,
     batch_size: int,
@@ -1602,6 +1895,17 @@ def _tiled_scaled_kde_log_densities(
     bracketing_keys : (left, right) of jax.Array, each shape (n_models, n_points), or None
         From :func:`_bracketing_keys` for 1D points: the exact per-point
         scale. None scales by the kernel's peak.
+    log_floor : (jax.Array, jax.Array), shapes (n_models,) and (n_points,), optional
+        Per-model and per-point terms of a log-density floor, added. A
+        flagged point is left unflagged when its true log density is
+        certainly below its floor. A flagged scaled sum is below the loss
+        bound ``lost``. Each sample's term that flushed below ``tiny`` lost
+        less than ``tiny``, and rounding at most halves the sum of the rest
+        and doubles its normalizer (true while ``n_tiles + 256`` additions
+        lose less than a factor of two: below about 10 million tiles, 2.6e9
+        samples, per model). So the true density is below
+        ``exp(scale) * (4 * lost + 2 * n * tiny) / relative_total``. NaN
+        floors leave points flagged.
     rows, batch_size : int
         From :func:`_tiled_kde_rows`.
 
@@ -1664,7 +1968,16 @@ def _tiled_scaled_kde_log_densities(
     values = jnp.where(
         jnp.isnan(total)[:, None], jnp.nan, jnp.where(has_mass, values, -jnp.inf)
     )
-    return values, (scaled < lost[:, None]) & has_mass
+    needs_log_space = (scaled < lost[:, None]) & has_mass
+    if log_floor is not None:
+        bound = 4 * lost + 2 * counts.astype(scaled.dtype) * finfo(scaled.dtype).tiny
+        upper = (peak if scale is None else scale) + jnp.log(
+            bound / jnp.where(relative_total > 0, relative_total, 1.0)
+        )[:, None]
+        model_floor, point_floor = log_floor
+        floor = model_floor[:, None] + point_floor[None, :]
+        needs_log_space = needs_log_space & ~(upper < floor)
+    return values, needs_log_space
 
 
 # Points per block of a model's own flagged points in the log-space repair.
@@ -1865,14 +2178,85 @@ def _paired_log_space_kde_log_densities(
     return jnp.where(has_nan > 0, jnp.nan, values)
 
 
+@dataclass
+class _GroupTiles:
+    """A group of models' tiles and sorted 1D keys, built once per prediction.
+
+    Attributes
+    ----------
+    host : (np.ndarray, np.ndarray, np.ndarray)
+        From :func:`_sample_tiles`.
+    widest : int
+        Tiles of the model with the most.
+    counts : np.ndarray, shape (n_models,)
+        Each model's number of samples.
+    keys : list of np.ndarray or None
+        From :func:`_sorted_model_keys`, for 1D points.
+    device_keys : tuple of jax.Array or None
+        The keys moved to the device once, for :func:`_bracketing_keys`:
+        every model's keys in one array, each key's model, and each model's
+        first key and key count; None without keys or before first use.
+    device : dict
+        The tiles on the device, by padded tile count (see
+        :func:`_bucketed_tiles`).
+    """
+
+    host: tuple[np.ndarray, np.ndarray, np.ndarray]
+    widest: int
+    counts: np.ndarray
+    keys: list[np.ndarray] | None
+    device: dict[int, tuple[jax.Array, jax.Array, jax.Array]] = field(
+        default_factory=dict
+    )
+    device_keys: tuple[jax.Array, jax.Array, jax.Array, jax.Array] | None = None
+
+    @classmethod
+    def build(
+        cls,
+        samples: Sequence[np.ndarray],
+        weights: Sequence[np.ndarray],
+        *,
+        one_dimensional: bool,
+    ) -> "_GroupTiles":
+        """Cut the models' samples into tiles and, for 1D points, sort their keys."""
+        host = _sample_tiles(samples, weights)
+        return cls(
+            host=host,
+            widest=int(np.bincount(host[2]).max()),
+            counts=np.asarray([np.shape(s)[0] for s in samples]),
+            keys=_sorted_model_keys(samples, weights) if one_dimensional else None,
+        )
+
+    def keys_on_device(self) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Return the sorted 1D keys as :func:`_bracketing_keys` takes them, moved once."""
+        assert self.keys is not None  # 1D points with at least one key
+        if self.device_keys is None:
+            count = np.asarray([k.size for k in self.keys], np.int32)
+            start = np.concatenate([[0], np.cumsum(count)[:-1]]).astype(np.int32)
+            self.device_keys = (
+                jnp.asarray(np.concatenate(self.keys)),
+                jnp.asarray(np.repeat(np.arange(count.size, dtype=np.int32), count)),
+                jnp.asarray(start),
+                jnp.asarray(count),
+            )
+        return self.device_keys
+
+    def on_device(self, n_padded: int) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the tiles padded to ``n_padded``, moved to the device once."""
+        if n_padded not in self.device:
+            self.device[n_padded] = _bucketed_tiles(*self.host, n_padded)
+        return self.device[n_padded]
+
+
 def _tiled_kde_log_densities(
-    points: jax.Array,
-    samples: Sequence[np.ndarray],
-    weights: Sequence[np.ndarray],
+    points: jax.Array | np.ndarray,
+    group: _GroupTiles,
     std: jax.Array,
     block_size: int,
-) -> np.ndarray:
-    """Return the true log densities of KDEs sharing a bandwidth, on the host.
+    *,
+    log_floor: LogFloor | None = None,
+) -> jax.Array | np.ndarray:
+    """Return the true log densities of KDEs sharing a bandwidth.
 
     One tiled scaled pass for every model, then one log-space pass that
     evaluates each flagged model at its own flagged points only (see
@@ -1883,49 +2267,64 @@ def _tiled_kde_log_densities(
 
     Parameters
     ----------
-    points : jax.Array, shape (n_points, n_dims), n_points >= 1
+    points : array, shape (n_points, n_dims), n_points >= 1
         Evaluation points.
-    samples : sequence of np.ndarray, each shape (n_samples, n_dims)
-        Each model's samples.
-    weights : sequence of np.ndarray, each shape (n_samples,)
-        Each model's weights.
+    group : _GroupTiles
+        The models' tiles and, for 1D points, sorted keys.
     std : jax.Array, shape (n_dims,)
         Kernel bandwidth.
     block_size : int
         Evaluation points per block.
+    log_floor : (np.ndarray, np.ndarray), shapes (n_models,) and (n_points,), optional
+        See :func:`kde_log_density_rows`.
 
     Returns
     -------
-    log_densities : np.ndarray, shape (n_models, n_points)
+    log_densities : jax.Array or np.ndarray, shape (n_models, n_points)
+        On the device when no point needed log space, otherwise the host
+        array the repair wrote into.
     """
+    n_models = group.counts.size
     if points.shape[0] == 0:
-        return np.full((len(samples), 0), LOG_EPS)
+        return np.full((n_models, 0), LOG_EPS)
     host_points = np.asarray(points)
-    n_models = len(samples)
-    host_tiles = _sample_tiles(samples, weights)
-    widest = int(np.bincount(host_tiles[2]).max())
+    host_tiles = group.host
+    widest = group.widest
     n_tiles = padded_tile_count(host_tiles[2].size)
     rows, batch_size, n_pass_tiles = _tiled_kde_rows(
         block_size, points, n_tiles, std, *host_tiles[:2], widest
     )
-    tiles = _bucketed_tiles(*host_tiles, n_pass_tiles)
+    tiles = group.on_device(n_pass_tiles)
     bracketing_keys = None
-    if points.shape[1] == 1:
-        left, right = _bracketing_keys(host_points[:, 0], samples, weights)
-        bracketing_keys = (jnp.asarray(left), jnp.asarray(right))
+    if group.keys is not None:
+        if sum(k.size for k in group.keys) == 0:
+            no_keys = jnp.full((n_models, points.shape[0]), jnp.inf, points.dtype)
+            bracketing_keys = (no_keys, no_keys)
+        else:
+            # Sorted on the host (an XLA sort compiles slowly on GPU); the
+            # search runs on the device.
+            order = np.argsort(host_points[:, 0], kind="stable").astype(np.int32)
+            bracketing_keys = _bracketing_keys(
+                jnp.asarray(host_points[order, 0]),
+                jnp.asarray(order),
+                *group.keys_on_device(),
+            )
     values, needs_log_space = _tiled_scaled_kde_log_densities(
         points,
         *tiles,
-        jnp.asarray([np.shape(s)[0] for s in samples]),
+        jnp.asarray(group.counts),
         std,
         bracketing_keys,
+        None
+        if log_floor is None
+        else (jnp.asarray(log_floor[0]), jnp.asarray(log_floor[1])),
         rows=rows,
         batch_size=batch_size,
     )
+    if not bool(jnp.any(needs_log_space)):
+        return cast(jax.Array, values)
     # Copied to the host: device indexing compiles a kernel per shape.
     values, needs_log_space = np.array(values), np.asarray(needs_log_space)
-    if not needs_log_space.any():
-        return values
     # Each flagged model is evaluated at its own flagged points only, in
     # blocks of _KDE_REPAIR_POINTS (the last repeats its last point): one
     # item per tile and block. Blocks and items are padded to powers of two,
@@ -2146,112 +2545,3 @@ def log_density_intensity(
         jnp.isneginf(log_occupancy) | jnp.isneginf(log_density) | (mean_rate == 0.0)
     ) & ~jnp.isnan(result)
     return jnp.where(no_support, -jnp.inf, result)
-
-
-def local_kde_log_ratio(
-    positions: jax.Array,
-    marks: jax.Array,
-    encoding_positions: jax.Array,
-    encoding_marks: jax.Array,
-    position_std: jax.Array,
-    mark_std: jax.Array,
-    log_occupancy: jax.Array,
-    weights: jax.Array,
-    block_size: int,
-) -> jax.Array:
-    """Compute the joint KDE/occupancy log ratio, dividing position kernels before adding marks.
-
-    Keeping the mark term separate preserves its normalizer when position log
-    densities are large enough that adding it would round it away in float32.
-    Evaluation blocking retains the shared KDE kernel-workspace limit.
-
-    Parameters
-    ----------
-    positions : jax.Array, shape (n_eval, n_position_dims)
-        Positions at which to evaluate the ratio.
-    marks : jax.Array, shape (n_eval, n_features)
-        Waveform features (marks) at the evaluation points.
-    encoding_positions : jax.Array, shape (n_encoding, n_position_dims)
-        Positions of the encoding spikes.
-    encoding_marks : jax.Array, shape (n_encoding, n_features)
-        Waveform features (marks) of the encoding spikes.
-    position_std : jax.Array, shape (n_position_dims,)
-        Position kernel standard deviation.
-    mark_std : jax.Array, shape (n_features,)
-        Waveform-feature kernel standard deviation.
-    log_occupancy : jax.Array, shape (n_eval,)
-        Log occupancy density at ``positions``.
-    weights : jax.Array, shape (n_encoding,)
-        Weight of each encoding spike; zero weights drop the spike.
-    block_size : int
-        Maximum number of evaluation points per block.
-
-    Returns
-    -------
-    log_ratio : jax.Array, shape (n_eval,)
-        Log of the weighted joint KDE divided by the occupancy density at each
-        evaluation point, normalized by the sum of ``weights``; ``-inf`` where
-        the occupancy is zero or the weights sum to zero.
-    """
-    n_position_dims = positions.shape[1]
-    points = jnp.concatenate((positions, marks, log_occupancy[:, None]), axis=1)
-    samples = jnp.concatenate((encoding_positions, encoding_marks), axis=1)
-    std = jnp.concatenate((position_std, mark_std))
-
-    def kernel(
-        query: jax.Array, samples: jax.Array, std: jax.Array, weights: jax.Array
-    ) -> jax.Array:
-        """Evaluate the log ratio of one block of query rows."""
-
-        def supported(_: None) -> jax.Array:
-            """Evaluate the ratio for a query with positive total weight."""
-            log_occ = query[:, -1]
-            safe_occ = jnp.where(jnp.isneginf(log_occ), 0.0, log_occ)
-            log_position = (
-                _log_kernel_matrix(
-                    query[:, :n_position_dims],
-                    samples[:, :n_position_dims],
-                    std[:n_position_dims],
-                )
-                - safe_occ[None, :]
-            )
-            log_marks = _log_kernel_matrix(
-                query[:, n_position_dims:-1],
-                samples[:, n_position_dims:],
-                std[n_position_dims:],
-            )
-            safe_weights = jnp.where(weights > 0.0, weights, 1.0)
-            log_weights = jnp.where(weights > 0.0, jnp.log(safe_weights), -jnp.inf)
-            ratio = logsumexp(
-                log_position + log_marks + log_weights[:, None], axis=0
-            ) - jnp.log(jnp.sum(weights))
-            return jnp.where(jnp.isneginf(log_occ), -jnp.inf, ratio)
-
-        return cast(
-            jax.Array,
-            jax.lax.cond(
-                jnp.sum(weights) > 0.0,
-                supported,
-                lambda _: jnp.full(query.shape[0], -jnp.inf),
-                None,
-            ),
-        )
-
-    def blocked(
-        query: jax.Array,
-        samples: jax.Array,
-        std: jax.Array,
-        rows: int,
-        weights: jax.Array,
-    ) -> jax.Array:
-        """Evaluate the log ratio of ``query`` in blocks of ``rows`` rows."""
-        return jnp.concatenate(
-            [
-                kernel(query[start : start + rows], samples, std, weights)
-                for start in range(0, query.shape[0], rows)
-            ]
-        )
-
-    if points.shape[0] == 0:
-        return jnp.zeros(0)
-    return _traced_blocks(blocked, kernel, points, samples, std, block_size, weights)

@@ -1,7 +1,5 @@
 """Preserve local/No-Spike Poisson arithmetic while batching dispatches."""
 
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -19,6 +17,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     KDEModel,
+    kde_log_density,
     poisson,
 )
 from tests.conftest import precision_mode
@@ -211,7 +210,9 @@ def local_kde_reference(models, kwargs):
 def test_large_local_kde_request_uses_bounded_compiled_blocks(monkeypatch, block_size):
     models, kwargs = local_kde_problem(3000, block_size)
     small_count_blocks(monkeypatch, len(models))
-    rows = record_rows(monkeypatch, sorted_spikes_kde, "_local_kde_log_likelihood")
+    rows = record_rows(
+        monkeypatch, sorted_spikes_kde, "_local_kde_log_likelihood", argument=1
+    )
     result = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**kwargs)
     assert max(rows) == 64
     assert sum(rows) == 3000
@@ -226,30 +227,6 @@ def test_local_kde_rows_do_not_depend_on_count_blocks(monkeypatch):
     small_count_blocks(monkeypatch, len(models))
     blocked = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**kwargs)
     np.testing.assert_array_equal(blocked, unblocked)
-
-
-def test_compiled_local_kde_graph_does_not_grow_with_rows():
-    model = KDEModel(std=1.0, block_size=100).fit(jnp.ones((3, 1)))
-    groups, block_sizes, order = sorted_spikes_kde._kde_leaf_groups([model], 1)
-
-    def n_equations(n_rows):
-        jaxpr = jax.make_jaxpr(
-            partial(
-                sorted_spikes_kde._local_kde_log_likelihood.__wrapped__,
-                block_sizes=block_sizes,
-            )
-        )(
-            jnp.zeros((n_rows, 1)),
-            jnp.ones(n_rows),
-            jnp.zeros((n_rows, 1), dtype=int),
-            jnp.ones(1),
-            jnp.ones(n_rows),
-            groups,
-            order,
-        )
-        return len(jaxpr.jaxpr.eqns)
-
-    assert n_equations(4096) == n_equations(1050)
 
 
 @pytest.mark.parametrize("x64", [False, True])
@@ -352,32 +329,6 @@ def test_local_glm_blocks_read_their_own_design_rows(monkeypatch):
     np.testing.assert_array_equal(blocked, full[37:337])
 
 
-@pytest.mark.parametrize("x64", [False, True])
-def test_compiled_local_kde_accepts_vector_positions(x64):
-    with precision_mode(x64):
-        points = jnp.linspace(0, 1, 17)
-        model = KDEModel(std=1.0, block_size=7).fit(jnp.array([0.0, 0.5, 1.0]))
-        occupancy = model.predict(points)
-        counts = jnp.ones((17, 1))
-        means = jnp.array([2.0])
-        durations = jnp.full(17, 0.002)
-        groups, block_sizes, order = sorted_spikes_kde._kde_leaf_groups([model], 1)
-        actual = sorted_spikes_kde._local_kde_log_likelihood(
-            points,
-            occupancy,
-            counts,
-            means,
-            durations,
-            groups,
-            order,
-            block_sizes=block_sizes,
-        )
-        expected = (
-            jax.scipy.special.xlogy(counts[:, 0], 2.0 * durations) - 2.0 * durations
-        )
-        np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
-
-
 def test_no_spike_dispatch_does_not_scale_with_population(patch_and_retrace):
     original = jax.scipy.special.xlogy
     calls = []
@@ -412,7 +363,13 @@ def test_no_spike_rate_gradient_keeps_physical_exposure(x64):
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("n_rows", [0, 1, 17])
 @pytest.mark.parametrize("case", ["ordinary", "missing", "zero_occupancy"])
-def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows, case):
+def test_compiled_local_kde_matches_probability_space_rates_away_from_tails(
+    x64, n_rows, case
+):
+    """Each unit is scored against its own density and mean rate (0, 1e-10,
+    2 and 7.5 Hz). The reference is the probability-space rate,
+    ``mean_rate * density / occupancy``, which equals the kernel's log-ratio
+    rate away from occupancy tails; zero occupancy floors the rate."""
     rng = np.random.default_rng(7362)
     with precision_mode(x64):
         points = jnp.asarray(rng.normal(size=(n_rows, 2)))
@@ -425,35 +382,35 @@ def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows,
             )
             for size, std in zip([0, 1, 7, 19], [1.0, 0.75, 1.25, 2.0], strict=True)
         ]
-        occupancy = jnp.asarray(rng.uniform(0.01, 0.5, n_rows))
+        log_occupancy = jnp.log(jnp.asarray(rng.uniform(0.01, 0.5, n_rows)))
+        if case == "missing" and n_rows:
+            log_occupancy = log_occupancy.at[0].set(jnp.nan)
         if case == "zero_occupancy":
-            occupancy = jnp.zeros(n_rows)
+            log_occupancy = jnp.full(n_rows, -jnp.inf)
         counts = jnp.asarray(rng.integers(0, 3, size=(n_rows, 4)))
         means = jnp.asarray([0.0, 1e-10, 2.0, 7.5])
         durations = jnp.full(n_rows, 0.002)
+        log_marginals = jnp.stack([kde_log_density(model, points) for model in models])
+        occupancy = jnp.exp(log_occupancy)
         expected = jnp.zeros(n_rows)
         for unit, model in enumerate(models):
             marginal = model.predict(points)
-            marginal = jnp.where(jnp.isnan(marginal), 0.0, marginal)
             rate = means[unit] * jnp.where(
                 occupancy > 0,
                 marginal / jnp.where(occupancy > 0, occupancy, 1.0),
                 EPS,
             )
+            rate = jnp.where(jnp.isnan(occupancy) | jnp.isnan(marginal), jnp.nan, rate)
             rate = jnp.clip(rate, min=RATE_EPS_HZ, max=None) * durations
             expected += jax.scipy.special.xlogy(counts[:, unit], rate) - rate
-        groups, block_sizes, order = sorted_spikes_kde._kde_leaf_groups(models, 2)
         actual = sorted_spikes_kde._local_kde_log_likelihood(
-            points,
-            occupancy,
-            counts,
-            means,
-            durations,
-            groups,
-            order,
-            block_sizes=block_sizes,
+            log_marginals, log_occupancy, counts, means, durations
         )
-        # Float32 allows compiled-versus-eager rounding (see above).
+        # Float32 allows compiled-versus-eager rounding (see above) and the
+        # rounding of the log ratio.
         np.testing.assert_allclose(
             actual, expected, **tolerance(x64, LOCAL_KDE_FLOAT32)
         )
+        if case == "missing" and n_rows:
+            assert np.isnan(actual[0])
+            assert np.isfinite(actual[1:]).all()

@@ -115,3 +115,31 @@ The remaining GPU overhead (up to 11% at the default block size, 0.1 ms for the
 smallest workload) is the sequential encoding tiles that bound memory. After the
 floor, outputs differ from the previous reduction by at most 8.8e-5 nats on these
 fixtures, and from a float64 brute-force reduction by at most 1.4e-5 nats.
+
+## Default predict path: every electrode in one pass
+
+Without `enc_tile_size`, `predict_clusterless_kde_log_likelihood` does not call
+a kernel per electrode. Every electrode's encoding samples are cut into tiles of
+256 rows, its marks are padded with zero features to the most any electrode has
+(they add exactly zero to each squared distance, and the mark normalizer counts
+only the electrode's own features), and its decoding spikes are cut into blocks
+of one shared size. One compiled pass loops over the electrodes. For each, it
+forms the scaled position factors of its tiles once, then reduces each group of
+its blocks over its own tiles with the window, gate and exact repair above,
+using its own weights, bandwidths, mean rate and background. Groups of up to 8
+blocks and 8 tiles (2,048 samples) share one GEMM, within the kernel budget.
+The scaled-sum bounds use the electrode's own sample count; padding rows have
+zero weight. The Local path is batched the same way, with a logsumexp over each
+electrode's tiles carried by a running maximum.
+
+The opt-in `enc_tile_size` and `use_streaming` paths still reduce one
+electrode per call, with the same per-tile steps (scaled factors, one tile's
+scaled GEMM over position tiles, one tile of the exact logsumexp, the gate and
+the repair); only the loops that drive them differ.
+
+The pass compiles for the block size, the padded block count (a power of four)
+and the padded tile count (four sizes per octave), not for each electrode's
+spike, sample or feature count, so a decode compiles it a few times however
+many electrodes it has. The block size is chosen so that padding adds at most
+a quarter to the (spike, tile) pairs reduced; the choice depends on the chunk
+alone. Its memory and padding bounds are listed in the CHANGELOG.

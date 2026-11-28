@@ -29,6 +29,16 @@ def padded_tile_count(n_tiles: int) -> int:
     return _quarter_octave(max(n_tiles, 1))
 
 
+def padded_block_count(n_blocks: int) -> int:
+    """Return the padded number of spike blocks of a batched electrode pass: a power of four.
+
+    The pass never reduces the padding blocks, which only hold a few numbers
+    per spike, so row chunks with different spike counts share few compiled
+    passes.
+    """
+    return 1 << 2 * -(-(max(n_blocks, 1) - 1).bit_length() // 2)
+
+
 def padded_repair_count(n: int) -> int:
     """Return the padded block or item count of a KDE log-space repair: a power of two.
 

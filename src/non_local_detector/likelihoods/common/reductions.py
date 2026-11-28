@@ -335,3 +335,50 @@ def deterministic_row_add(
     start = (jnp.zeros((), column_start.dtype), column_start)
     current = jax.lax.dynamic_slice(output, start, tile.shape)
     return jax.lax.dynamic_update_slice(output, current + tile, start)
+
+
+def deterministic_row_accumulate(
+    output: jax.Array,
+    values: jax.Array,
+    row_ids: jax.Array,
+    *,
+    indices_are_sorted: bool = False,
+) -> jax.Array:
+    """Add each spike's values to its row of ``output``, in a fixed order.
+
+    A loop that adds many blocks of spikes into one running ``output`` pays
+    only for the rows of each block. On CPU, where XLA scatter applies
+    updates in order, each spike is added in place, one after another.
+    Elsewhere the block's row totals are formed by a segmented scan and
+    added once each (see ``deterministic_row_add``).
+
+    Parameters
+    ----------
+    output : jax.Array, shape (n_rows,) or (n_rows, n_columns)
+        Running sums.
+    values : jax.Array, shape (n,) or (n, n_columns)
+        One row of values per spike.
+    row_ids : jax.Array, shape (n,), int
+        Row of each spike, in ``[0, n_rows]``; ``n_rows`` is dropped.
+    indices_are_sorted : bool
+        True only when ``row_ids`` is verified nondecreasing.
+
+    Returns
+    -------
+    output : jax.Array, same shape as ``output``
+    """
+    values = values.astype(output.dtype)
+    if _reduces_sequentially(values):
+        return output.at[row_ids].add(
+            values, mode="drop", indices_are_sorted=indices_are_sorted
+        )
+    if output.ndim == 1:
+        return deterministic_row_add(
+            output[:, None],
+            values[:, None],
+            row_ids,
+            indices_are_sorted=indices_are_sorted,
+        )[:, 0]
+    return deterministic_row_add(
+        output, values, row_ids, indices_are_sorted=indices_are_sorted
+    )
