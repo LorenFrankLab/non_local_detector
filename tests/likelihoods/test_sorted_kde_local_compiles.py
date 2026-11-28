@@ -199,8 +199,9 @@ def test_local_workspace_stays_within_the_kernel_budget(
     monkeypatch, n_dims, x64, block_size
 ):
     """Each Local block of 180 units of 14 to 42,000 samples, at the sizes a
-    prediction calls its kernels with: the density pass's and the Poisson
-    terms' workspace, arguments and outputs each fit the kernel budget, and
+    prediction calls its kernels with: the density pass's, the 1-D
+    bracketing keys' and the Poisson terms' workspace, arguments and outputs
+    each fit the kernel budget, and
     a full block is at most the spike-count block. At ``block_size=300`` in
     float32 the spike-count block binds (23,296 rows, less than one row per
     point block); elsewhere the budget does. A 4x looser count of the pass's (unit, row) arrays, or a 4x
@@ -209,6 +210,7 @@ def test_local_workspace_stays_within_the_kernel_budget(
     module_of = {
         "_tiled_scaled_kde_log_densities": kernel_density,
         "_local_kde_log_likelihood": sorted_spikes_kde,
+        "_bracketing_keys": kernel_density,
     }
 
     def capture(name, result):
@@ -244,6 +246,12 @@ def test_local_workspace_stays_within_the_kernel_budget(
         local = capture(
             "_local_kde_log_likelihood",
             lambda log_marginals, *args: jnp.zeros(log_marginals.shape[1]),
+        )
+        bracketing = capture(
+            "_bracketing_keys",
+            lambda sorted_points, order, *args: (
+                (jnp.zeros((len(models), sorted_points.shape[0])),) * 2
+            ),
         )
         environment = Environment(
             place_bin_size=5.0, position_range=((0.0, 100.0),) * n_dims
@@ -288,6 +296,9 @@ def test_local_workspace_stays_within_the_kernel_budget(
             assert footprint(scaled, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
         for args, kwargs in distinct("_local_kde_log_likelihood"):
             assert footprint(local, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
+        if n_dims == 1:
+            for args, kwargs in distinct("_bracketing_keys"):
+                assert footprint(bracketing, args, kwargs) <= _KDE_BLOCK_KERNEL_BYTES
         if block_size == 300 and not x64:
             # Whole point blocks lose fewer rows than there are blocks.
             largest = max(
@@ -297,9 +308,10 @@ def test_local_workspace_stays_within_the_kernel_budget(
 
 
 def test_bracketing_keys_match_a_search_for_each_point():
-    """Both searches (per key for models with fewer keys than points, per
-    point otherwise) find the keys a direct search of each point finds,
-    with ties, repeated points, infinite keys and NaN or infinite points."""
+    """The device search (a running count of keys below the sorted points)
+    finds the keys a NumPy search of each point finds, for models with
+    fewer and more keys than points, with ties, repeated points, infinite
+    keys and NaN or infinite points."""
     rng = np.random.default_rng(3)
     points = np.round(rng.uniform(-5, 5, 200), 1).astype(np.float32)
     points[[3, 50]] = np.nan
@@ -309,8 +321,15 @@ def test_bracketing_keys_match_a_search_for_each_point():
         for n in (0, 1, 30, 199, 200, 1_000)
     ]
     weights = [np.where(rng.uniform(size=len(s)) < 0.1, 0.0, 1.0) for s in samples]
-    keys = kernel_density._sorted_model_keys(samples, weights)
-    left, right = kernel_density._bracketing_keys(points, keys)
+    group = kernel_density._GroupTiles.build(samples, weights, one_dimensional=True)
+    keys = group.keys
+    order = np.argsort(points, kind="stable").astype(np.int32)
+    left, right = (
+        np.asarray(side)
+        for side in kernel_density._bracketing_keys(
+            jnp.asarray(points[order]), jnp.asarray(order), *group.keys_on_device()
+        )
+    )
     for model, model_keys in enumerate(keys):
         if model_keys.size == 0:
             assert np.isinf(left[model]).all()

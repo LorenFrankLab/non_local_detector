@@ -1346,51 +1346,60 @@ def _sorted_model_keys(
     ]
 
 
+@jax.jit
 def _bracketing_keys(
-    points: np.ndarray, keys: Sequence[np.ndarray]
-) -> tuple[np.ndarray, np.ndarray]:
-    """Each model's sorted 1D keys just below and at or above each point, on the host.
+    sorted_points: jax.Array,
+    order: jax.Array,
+    keys: jax.Array,
+    key_model: jax.Array,
+    key_start: jax.Array,
+    key_count: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Each model's sorted 1D keys just below and at or above each point, on the device.
 
-    The neighbours :func:`_nearest_sample_log_kernel` finds on the device,
-    for several models at once, by a binary search of each model's keys.
-    The keys are copied, so the device computes the same scale from them.
+    The neighbours :func:`_nearest_sample_log_kernel` finds, for several
+    models at once. A point's index among a model's sorted keys is the
+    number of its keys below the point: a running count, over the sorted
+    points, of where each key falls among them (one search per key, and an
+    integer count, so the same keys as a search per point; NaN points sort
+    last and count every key, as in NumPy).
 
     Parameters
     ----------
-    points : np.ndarray, shape (n_points,)
-        Evaluation coordinates, in the device dtype; any numeric dtype.
-    keys : sequence of np.ndarray, each shape (n_samples,)
-        From :func:`_sorted_model_keys`.
+    sorted_points : jax.Array, shape (n_points,)
+        Evaluation coordinates in ascending order (NumPy's order: NaN last).
+    order : jax.Array of int32, shape (n_points,)
+        The position of each sorted point among the points.
+    keys : jax.Array, shape (n_keys,)
+        Every model's sorted keys (see :func:`_sorted_model_keys`), model
+        after model; at least one.
+    key_model : jax.Array of int32, shape (n_keys,)
+        Each key's model.
+    key_start, key_count : jax.Array of int32, shape (n_models,)
+        Each model's first key and number of keys.
 
     Returns
     -------
-    left, right : np.ndarray, shape (n_models, n_points)
-        In the keys' dtype, so the keys are the sample coordinates whatever
-        the points' dtype; ``inf`` for a model without samples.
+    left, right : jax.Array, shape (n_models, n_points)
+        In the points' order; ``inf`` for a model without keys.
     """
-    key_dtype = np.result_type(*(model_keys.dtype for model_keys in keys))
-    left = np.full((len(keys), points.size), np.inf, key_dtype)
-    right = left.copy()
-    # The points are searched in sorted order, which reads the keys in
-    # order. A point's index is the number of keys below it: for a model
-    # with fewer keys than points, a running count of where each key falls
-    # among the sorted points, one search per key instead of per point.
-    order = np.argsort(points, kind="stable")
-    sorted_points = points[order]
-    for model, model_keys in enumerate(keys):
-        if model_keys.size == 0:
-            continue
-        if model_keys.size < points.size:
-            where = np.searchsorted(sorted_points, model_keys, side="right")
-            index = np.cumsum(np.bincount(where, minlength=points.size + 1))[
-                : points.size
-            ]
-        else:
-            index = np.searchsorted(model_keys, sorted_points)
-        last = model_keys.size - 1
-        left[model, order] = model_keys[np.clip(index - 1, 0, last)]
-        right[model, order] = model_keys[np.clip(index, 0, last)]
-    return left, right
+    n_models, n_points = key_start.shape[0], sorted_points.shape[0]
+    where = jnp.searchsorted(sorted_points, keys, side="right")
+    below = (
+        jnp.zeros((n_models, n_points + 1), jnp.int32)
+        .at[key_model, where]
+        .add(1, indices_are_sorted=True)
+    )
+    index = jnp.cumsum(below, axis=1)[:, :n_points]
+    last = (key_count - 1)[:, None]
+    empty = (key_count == 0)[:, None]
+
+    def neighbour(position: jax.Array) -> jax.Array:
+        found = keys[key_start[:, None] + jnp.clip(position, 0, last)]
+        in_sorted_order = jnp.where(empty, jnp.inf, found)
+        return jnp.zeros_like(in_sorted_order).at[:, order].set(in_sorted_order)
+
+    return neighbour(index - 1), neighbour(index)
 
 
 def _kde_log_scale(
@@ -2130,6 +2139,10 @@ class _GroupTiles:
         Each model's number of samples.
     keys : list of np.ndarray or None
         From :func:`_sorted_model_keys`, for 1D points.
+    device_keys : tuple of jax.Array or None
+        The keys moved to the device once, for :func:`_bracketing_keys`:
+        every model's keys in one array, each key's model, and each model's
+        first key and key count; None without keys or before first use.
     device : dict
         The tiles on the device, by padded tile count (see
         :func:`_bucketed_tiles`).
@@ -2142,6 +2155,7 @@ class _GroupTiles:
     device: dict[int, tuple[jax.Array, jax.Array, jax.Array]] = field(
         default_factory=dict
     )
+    device_keys: tuple[jax.Array, jax.Array, jax.Array, jax.Array] | None = None
 
     @classmethod
     def build(
@@ -2159,6 +2173,20 @@ class _GroupTiles:
             counts=np.asarray([np.shape(s)[0] for s in samples]),
             keys=_sorted_model_keys(samples, weights) if one_dimensional else None,
         )
+
+    def keys_on_device(self) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Return the sorted 1D keys as :func:`_bracketing_keys` takes them, moved once."""
+        assert self.keys is not None  # 1D points with at least one key
+        if self.device_keys is None:
+            count = np.asarray([k.size for k in self.keys], np.int32)
+            start = np.concatenate([[0], np.cumsum(count)[:-1]]).astype(np.int32)
+            self.device_keys = (
+                jnp.asarray(np.concatenate(self.keys)),
+                jnp.asarray(np.repeat(np.arange(count.size, dtype=np.int32), count)),
+                jnp.asarray(start),
+                jnp.asarray(count),
+            )
+        return self.device_keys
 
     def on_device(self, n_padded: int) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Return the tiles padded to ``n_padded``, moved to the device once."""
@@ -2214,8 +2242,18 @@ def _tiled_kde_log_densities(
     tiles = group.on_device(n_pass_tiles)
     bracketing_keys = None
     if group.keys is not None:
-        left, right = _bracketing_keys(host_points[:, 0], group.keys)
-        bracketing_keys = (jnp.asarray(left), jnp.asarray(right))
+        if sum(k.size for k in group.keys) == 0:
+            no_keys = jnp.full((n_models, points.shape[0]), jnp.inf, points.dtype)
+            bracketing_keys = (no_keys, no_keys)
+        else:
+            # Sorted on the host (an XLA sort compiles slowly on GPU); the
+            # search runs on the device.
+            order = np.argsort(host_points[:, 0], kind="stable").astype(np.int32)
+            bracketing_keys = _bracketing_keys(
+                jnp.asarray(host_points[order, 0]),
+                jnp.asarray(order),
+                *group.keys_on_device(),
+            )
     values, needs_log_space = _tiled_scaled_kde_log_densities(
         points,
         *tiles,
