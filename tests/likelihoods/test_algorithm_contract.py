@@ -357,6 +357,7 @@ def test_type_check_reports_a_wrong_value():
 _PER_ALGORITHM_KEY_TYPES = {
     # Each algorithm's own fitted density model.
     "gpi_models",
+    "mark_mixtures",
     "occupancy_model",
     # The fit's bandwidth parameters, whose accepted forms differ: the KDE
     # stores position_std as a per-dimension vector, diffusion as a scalar
@@ -446,6 +447,7 @@ _CHANGED_SETTINGS = {
     # Far below the dense kernel, so the kernel is built one column per tile.
     "clusterless_diffusion": {"block_size": 7, "memory_budget": 64},
     "clusterless_mark_glm": {"spike_block_size": 7},
+    "clusterless_probe_mixture": {"spike_block_size": 7},
 }
 # A fit parameter that is not an execution setting, changed after fitting:
 # prediction must ignore it until the next fit.
@@ -458,6 +460,7 @@ _CHANGED_FIT_PARAMETER = {
     "clusterless_gmm": {"gmm_components_joint": 2},
     "clusterless_diffusion": {"position_std": 0.3},
     "clusterless_mark_glm": {"n_mark_components": 2},
+    "clusterless_probe_mixture": {"n_mark_components": 2},
 }
 # An invalid value of each algorithm's execution settings, and the start of
 # the message it raises.
@@ -479,6 +482,9 @@ _INVALID_SETTINGS = {
         ({"memory_budget": 0}, "memory_budget must be a positive integer"),
     ],
     "clusterless_mark_glm": [
+        ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
+    ],
+    "clusterless_probe_mixture": [
         ({"spike_block_size": 0}, "spike_block_size must be a positive integer"),
     ],
 }

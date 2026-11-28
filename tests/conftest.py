@@ -62,6 +62,7 @@ tiny_fixture_warnings = [
     pytest.mark.filterwarnings("ignore:position_std \\(:UserWarning"),
     pytest.mark.filterwarnings("ignore:Clusterless GMM:UserWarning"),
     pytest.mark.filterwarnings("ignore:Clusterless mark GLM:UserWarning"),
+    pytest.mark.filterwarnings("ignore:Clusterless probe mixture:UserWarning"),
     pytest.mark.filterwarnings(
         "ignore:Number of distinct clusters:sklearn.exceptions.ConvergenceWarning"
     ),

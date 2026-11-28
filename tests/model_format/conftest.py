@@ -62,6 +62,8 @@ def algorithm_params(algorithm):
         params["penalty"] = 1.0
     if algorithm == "clusterless_gmm":
         params.update(gmm_components_occupancy=4, gmm_components_joint=4)
+    if algorithm == "clusterless_probe_mixture":
+        params.update(n_em_iterations=2, em_validation_blocks=0)
     return params
 
 

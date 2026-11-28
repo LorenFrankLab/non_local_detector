@@ -172,6 +172,7 @@ print(
 # | `clusterless_gmm` | Gaussian mixture over position and waveform features | `gmm_components_joint` (64), `gmm_components_occupancy` (32) |
 # | `clusterless_diffusion` | the clusterless KDE with graph diffusion over position | `position_std`, `waveform_std` |
 # | `clusterless_mark_glm` | mixture over waveform features with a Poisson GLM rate map per component | `n_mark_components` (32, an upper bound), `emission_knot_spacing` |
+# | `clusterless_probe_mixture` | for multi-contact probes: mark mixture whose components have low-rank-plus-noise covariances on nearby contacts, with jointly fitted Poisson GLM rate maps | `noise_covariances` (none; measure them for shanks of more than 4 channels), `contact_positions` (none: every component spans all channels), `n_mark_components` (32) |
 #
 # The parameters are those of each algorithm's fit function, for example
 # `non_local_detector.likelihoods.sorted_spikes_kde.fit_sorted_spikes_kde_encoding_model`

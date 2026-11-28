@@ -87,6 +87,7 @@ and set its options with `sorted_spikes_algorithm_params` or
 | clusterless | `clusterless_gmm` | Gaussian mixture over position and waveform features |
 | clusterless | `clusterless_diffusion` | like `clusterless_kde`, with the graph heat kernel over position |
 | clusterless | `clusterless_mark_glm` | mixture over waveform features with a Poisson GLM rate map per component |
+| clusterless | `clusterless_probe_mixture` | probe-localized low-rank-plus-noise mark mixture with jointly fitted Poisson GLM rate maps for high-density probes |
 
 Fitted firing rates are in Hz.
 

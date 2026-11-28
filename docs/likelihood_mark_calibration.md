@@ -61,8 +61,9 @@ at position `x`, and `f(m | x)` is a Gaussian mixture over marks:
   Refit models trained before this correction to use a consistent process.
 
 The transforms read which algorithm fitted the encoding model from its
-`algorithm` entry. `clusterless_mark_glm` is not supported: the transforms raise
-`ValueError` for it before reading the rest of the encoding model.
+`algorithm` entry. `clusterless_mark_glm` and `clusterless_probe_mixture` are
+not supported: the transforms raise `ValueError` for them before reading the
+rest of the encoding model.
 
 All intensities and CDFs come from the stored encoding model, in float64
 NumPy and log space. Mixture weights stay in log space while the mixture is

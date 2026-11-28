@@ -410,6 +410,7 @@ def test_detector_with_no_units(sorted_recording, tmp_path):
         "clusterless_kde",
         "clusterless_gmm",
         "clusterless_mark_glm",
+        "clusterless_probe_mixture",
         "clusterless_diffusion",
     ],
 )

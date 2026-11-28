@@ -93,9 +93,13 @@ def builtin_types() -> list[BuiltinType]:
     from non_local_detector.environment import Environment
     from non_local_detector.initial_conditions import UniformInitialConditions
     from non_local_detector.likelihoods.clusterless_mark_glm import MarkMixture
+    from non_local_detector.likelihoods.clusterless_probe_mixture import (
+        ProbeMarkMixture,
+    )
     from non_local_detector.likelihoods.common.kernel_density import KDEModel
     from non_local_detector.likelihoods.gmm import GaussianMixtureModel
     from non_local_detector.likelihoods.mark_reference import MarkReference
+    from non_local_detector.likelihoods.probe_geometry import ProbeGeometry
     from non_local_detector.likelihoods.sorted_spikes_glm import (
         TensorSplineBasis,
         TrackGraphBasis,
@@ -151,6 +155,8 @@ def builtin_types() -> list[BuiltinType]:
         KDEModel: "nld.KDEModel",
         GaussianMixtureModel: "nld.GaussianMixtureModel",
         MarkMixture: "nld.MarkMixture",
+        ProbeMarkMixture: "nld.ProbeMarkMixture",
+        ProbeGeometry: "nld.ProbeGeometry",
         MarkReference: "nld.MarkReference",
         TrackGraphBasis: "nld.TrackGraphBasis",
         TensorSplineBasis: "nld.TensorSplineBasis",
@@ -228,6 +234,30 @@ def builtin_types() -> list[BuiltinType]:
             _with_fitted_fields(GaussianMixtureModel, gmm_init, gmm_fitted),
         ),
         (MarkMixture, ("weights", "means", "precisions_cholesky"), {}),
+        (
+            ProbeMarkMixture,
+            (
+                "weights",
+                "means",
+                "basis",
+                "basis_variances",
+                "support_indices",
+                "support_mask",
+                "noise_variance",
+                "background_mean",
+                "noise_whitener",
+                "log_det_whitener",
+                "contact_positions",
+                "component_peak_channels",
+                "tail_df",
+            ),
+            {},
+        ),
+        (
+            ProbeGeometry,
+            ("contact_positions", "shank_ids", "noise_covariance", "shank_order"),
+            {},
+        ),
         (MarkReference, ("location", "scale", "degrees_of_freedom"), {}),
         (
             TrackGraphBasis,
