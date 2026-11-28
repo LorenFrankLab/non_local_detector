@@ -255,7 +255,7 @@ def builtin_types() -> list[BuiltinType]:
         ),
         (
             ProbeGeometry,
-            ("contact_positions", "shank_ids", "noise_covariance"),
+            ("contact_positions", "shank_ids", "noise_covariance", "shank_order"),
             {},
         ),
         (MarkReference, ("location", "scale", "degrees_of_freedom"), {}),

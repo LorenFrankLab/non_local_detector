@@ -232,22 +232,35 @@ class ProbeGeometry:
     """Physical contact layout and optional channel noise covariance of a probe.
 
     Can describe a single shank (``shank_ids=None``) or a multi-shank probe
-    (``shank_ids`` assigning each contact to a shank). Stored as read-only
-    NumPy arrays so instances pickle and round-trip cleanly in ``model_format``.
+    (``shank_ids`` assigning each contact to a shank). A fit treats each shank
+    as one electrode, so a multi-shank probe also names the shank of each
+    electrode, in the detector's electrode order, with ``shank_order``. Stored
+    as read-only NumPy arrays so instances pickle and round-trip cleanly in
+    ``model_format``.
 
     Attributes
     ----------
     contact_positions : np.ndarray, shape (n_contacts, n_probe_dims)
         Physical coordinates of each contact (e.g. microns).
     shank_ids : np.ndarray or None, shape (n_contacts,), optional
-        Integer shank identifier per contact, by default None (single shank).
+        Shank identifier (integer or string) per contact, by default None
+        (single shank).
     noise_covariance : np.ndarray or None, shape (n_contacts, n_contacts), optional
         Measured channel noise covariance, by default None.
+    shank_order : np.ndarray or None, shape (n_electrodes,), optional
+        The shank id of each electrode, in the order of the electrodes'
+        ``spike_times`` and ``spike_waveform_features``: electrode ``e`` is
+        the shank ``shank_order[e]``, with its contacts in the order they
+        appear in ``contact_positions``. Ids must be distinct and present in
+        ``shank_ids``; shanks left out are not used. Required when
+        ``shank_ids`` names more than one shank, so the mapping never depends
+        on how the ids sort. By default None.
     """
 
     contact_positions: np.ndarray
     shank_ids: np.ndarray | None = None
     noise_covariance: np.ndarray | None = None
+    shank_order: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         positions = validate_contact_positions(self.contact_positions)
@@ -271,24 +284,53 @@ class ProbeGeometry:
             cov = validate_noise_covariance(self.noise_covariance, n_contacts)
             object.__setattr__(self, "noise_covariance", _read_only_copy(cov))
 
-    def split_by_shank(
-        self, shank_order: Sequence[object] | None = None
-    ) -> tuple[list[np.ndarray], list[np.ndarray | None]]:
-        """Split positions and noise covariance into one entry per shank.
+        if self.shank_order is not None:
+            if self.shank_ids is None:
+                msg = "shank_order requires shank_ids"
+                raise ValidationError(
+                    msg,
+                    hint="Pass shank_ids (one per contact), or omit "
+                    "shank_order for a single shank.",
+                )
+            order = np.asarray(self.shank_order)
+            if order.ndim != 1 or order.size == 0:
+                msg = "shank_order must be a non-empty 1-D sequence of shank ids"
+                raise ValidationError(
+                    msg, expected="shape (n_electrodes,)", got=f"shape {order.shape}"
+                )
+            missing = [
+                shank for shank in order.tolist() if not np.any(self.shank_ids == shank)
+            ]
+            if missing:
+                msg = "shank_order names shanks that are not in shank_ids"
+                raise ValidationError(
+                    msg,
+                    expected=f"ids among {np.unique(self.shank_ids).tolist()}",
+                    got=f"{missing}",
+                )
+            if np.unique(order).size != order.size:
+                msg = "shank_order must name each shank at most once"
+                raise ValidationError(msg, got=f"{order.tolist()}")
+            order_copy = np.array(order, copy=True)
+            order_copy.setflags(write=False)
+            object.__setattr__(self, "shank_order", order_copy)
 
-        Parameters
-        ----------
-        shank_order : sequence, optional
-            Explicit ordering of shank identifiers. By default sorted unique
-            values of ``shank_ids`` (or a single-element list when
-            ``shank_ids`` is None).
+    def split_by_shank(self) -> tuple[list[np.ndarray], list[np.ndarray | None]]:
+        """Split positions and noise covariance into one entry per electrode.
 
         Returns
         -------
         positions_per_shank : list of np.ndarray
-            Per-shank contact coordinates, each shape ``(n_shank_contacts, n_probe_dims)``.
+            Contact coordinates of each shank in ``shank_order`` (or of the
+            single shank), each shape ``(n_shank_contacts, n_probe_dims)``.
         noise_per_shank : list of np.ndarray or None
-            Per-shank diagonal blocks of ``noise_covariance`` (or None entries).
+            Matching diagonal blocks of ``noise_covariance`` (or None entries).
+
+        Raises
+        ------
+        ValidationError
+            If ``shank_ids`` names more than one shank and ``shank_order`` is
+            None.
         """
         if self.shank_ids is None:
             return (
@@ -299,18 +341,25 @@ class ProbeGeometry:
                     else np.array(self.noise_covariance, copy=True)
                 ],
             )
-        unique_shanks = (
-            list(np.unique(self.shank_ids))
-            if shank_order is None
-            else list(shank_order)
-        )
+        if self.shank_order is not None:
+            shanks = self.shank_order.tolist()
+        else:
+            shanks = np.unique(self.shank_ids).tolist()
+            if len(shanks) > 1:
+                msg = (
+                    "A ProbeGeometry with several shanks needs shank_order, the "
+                    "shank id of each electrode in electrode order"
+                )
+                raise ValidationError(
+                    msg,
+                    got=f"shank_ids naming {len(shanks)} shanks and shank_order=None",
+                    hint="Pass shank_order=[shank id of electrode 0, of electrode "
+                    "1, ...], in the order of spike_times.",
+                )
         positions_list: list[np.ndarray] = []
         noise_list: list[np.ndarray | None] = []
-        for shank in unique_shanks:
+        for shank in shanks:
             idx = np.flatnonzero(self.shank_ids == shank)
-            if idx.size == 0:
-                msg = f"shank_order contains shank {shank!r} not present in shank_ids"
-                raise ValidationError(msg)
             positions_list.append(np.array(self.contact_positions[idx], copy=True))
             if self.noise_covariance is None:
                 noise_list.append(None)
@@ -331,8 +380,8 @@ def resolve_probe_geometry(
     Parameters
     ----------
     contact_positions : sequence of array_like or None, ProbeGeometry, or None
-        Per-electrode contact coordinates, a ``ProbeGeometry`` to split across
-        shanks, or None.
+        Per-electrode contact coordinates, a ``ProbeGeometry`` whose shanks
+        are the electrodes in its ``shank_order``, or None.
     noise_covariances : sequence of array_like or None, or None
         Optional per-electrode channel noise covariances. Overrides any
         covariance attached to a ``ProbeGeometry``.

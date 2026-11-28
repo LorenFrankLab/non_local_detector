@@ -2397,8 +2397,9 @@ def fit_clusterless_probe_mixture_encoding_model(
         default None (uniform).
     contact_positions : sequence of array_like or None, ProbeGeometry, or None, optional
         Per-electrode physical contact coordinates (each shape
-        ``(n_channels, n_probe_dims)``), a ``ProbeGeometry`` to split by shank,
-        or None (dense full-group support).
+        ``(n_channels, n_probe_dims)``), a ``ProbeGeometry`` whose
+        ``shank_order`` names the shank of each electrode (required for more
+        than one shank), or None (dense full-group support).
     noise_covariances : sequence of array_like or None, or None, optional
         Optional per-electrode measured channel noise covariance matrices (each
         shape ``(n_channels, n_channels)`` SPD with condition number at most

@@ -148,7 +148,10 @@ class TestProbeGeometry:
         noise[6, 7] = noise[7, 6] = 0.5
 
         geom = ProbeGeometry(
-            contact_positions=pos, shank_ids=shank_ids, noise_covariance=noise
+            contact_positions=pos,
+            shank_ids=shank_ids,
+            noise_covariance=noise,
+            shank_order=[0, 1],
         )
         pos_list, cov_list = geom.split_by_shank()
         assert len(pos_list) == 2
@@ -156,6 +159,60 @@ class TestProbeGeometry:
         assert pos_list[1].shape == (4, 2)
         np.testing.assert_allclose(cov_list[0], noise[:6, :6])
         np.testing.assert_allclose(cov_list[1], noise[6:, 6:])
+
+    def test_shanks_map_to_electrodes_in_shank_order(self):
+        """String shank ids sort lexically ("10" before "2"); electrode e must
+        receive the shank the user names at position e, not a sorted one."""
+        from non_local_detector.likelihoods.probe_geometry import (
+            resolve_probe_geometry,
+        )
+
+        n_shanks = 12
+        shank = _make_two_column_probe(4, pitch=20.0)
+        pos = np.vstack([shank + np.array([250.0 * i, 0.0]) for i in range(n_shanks)])
+        shank_ids = np.repeat([str(i) for i in range(n_shanks)], 4)
+        noise = np.kron(np.diag(1.0 + np.arange(n_shanks)), np.eye(4))
+        # Contacts interleaved across shanks, as some channel maps order them.
+        order = np.argsort(np.tile(np.arange(4), n_shanks), kind="stable")
+        geom = ProbeGeometry(
+            contact_positions=pos[order],
+            shank_ids=shank_ids[order],
+            noise_covariance=noise[np.ix_(order, order)],
+            shank_order=[str(i) for i in range(n_shanks)],
+        )
+        positions, covariances = resolve_probe_geometry(geom, None, [4] * n_shanks)
+        for electrode in range(n_shanks):
+            np.testing.assert_array_equal(
+                positions[electrode], shank + np.array([250.0 * electrode, 0.0])
+            )
+            np.testing.assert_array_equal(
+                covariances[electrode], (1.0 + electrode) * np.eye(4)
+            )
+
+    def test_multi_shank_geometry_requires_shank_order(self):
+        geom = ProbeGeometry(
+            contact_positions=_make_two_column_probe(8),
+            shank_ids=np.repeat(["a", "b"], 4),
+        )
+        with pytest.raises(ValidationError, match="shank_order"):
+            geom.split_by_shank()
+        with pytest.raises(ValidationError, match="shank_order"):
+            ProbeGeometry(
+                contact_positions=_make_two_column_probe(8),
+                shank_ids=np.repeat(["a", "b"], 4),
+                shank_order=["a", "a"],
+            )
+        with pytest.raises(ValidationError, match="shank_order"):
+            ProbeGeometry(
+                contact_positions=_make_two_column_probe(8),
+                shank_ids=np.repeat(["a", "b"], 4),
+                shank_order=["a", "c"],
+            )
+        single = ProbeGeometry(
+            contact_positions=_make_two_column_probe(4), shank_ids=["a"] * 4
+        )
+        (positions,), _ = single.split_by_shank()
+        np.testing.assert_array_equal(positions, _make_two_column_probe(4))
 
     def test_probe_geometry_rejects_bad_inputs(self):
         with pytest.raises(ValidationError, match="2-D"):
@@ -975,6 +1032,42 @@ class TestEdgeCasesAndInvariants:
         np.testing.assert_array_equal(
             res_loaded.acausal_posterior.values, res_orig.acausal_posterior.values
         )
+
+    def test_nld_round_trip_keeps_multi_shank_order(self, tmp_path):
+        """A multi-shank ProbeGeometry with string ids saves and reloads its
+        shank_order, so the reloaded detector maps the same shanks."""
+        rec = _make_dense_probe_recording(n_channels=8, n_units=2, duration=8.0)
+        marks = rec["spike_waveform_features"][0]
+        positions = rec["contact_positions"][0]
+        # Electrode 0 is shank "10" (contacts 4-7), electrode 1 shank "2".
+        geom = ProbeGeometry(
+            contact_positions=positions,
+            shank_ids=np.repeat(["2", "10"], 4),
+            shank_order=["10", "2"],
+        )
+        spikes = rec["spike_times"] * 2
+        features = [marks[:, 4:], marks[:, :4]]
+        detector = ClusterlessDecoder(
+            environments=rec["environment"],
+            sampling_frequency=100.0,
+            clusterless_algorithm="clusterless_probe_mixture",
+            clusterless_algorithm_params={
+                "contact_positions": geom,
+                "n_mark_components": 2,
+                "n_em_iterations": 0,
+                "disable_progress_bar": True,
+            },
+        ).fit(rec["position_time"], rec["position"], spikes, features)
+        mixtures = detector.encoding_model_[("", 0)]["mark_mixtures"]
+        np.testing.assert_array_equal(mixtures[0].contact_positions, positions[4:])
+        np.testing.assert_array_equal(mixtures[1].contact_positions, positions[:4])
+
+        path = tmp_path / "probe_mixture_shanks.nld"
+        detector.save_model(path)
+        loaded = ClusterlessDecoder.load_model(path)
+        loaded_geom = loaded.clusterless_algorithm_params["contact_positions"]
+        assert loaded_geom.shank_order.tolist() == ["10", "2"]
+        assert loaded_geom.shank_ids.tolist() == geom.shank_ids.tolist()
 
     def test_no_jax_recompilation_across_varying_spike_counts(self):
         """Repeated decode chunks with varying spike counts share compiled kernels."""
