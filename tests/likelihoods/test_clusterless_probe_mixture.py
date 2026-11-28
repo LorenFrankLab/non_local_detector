@@ -1900,3 +1900,48 @@ class TestHeavyTailedProbeMixture:
                 )
             )
             np.testing.assert_allclose(ll_cand, ll_all, rtol=1e-5, atol=1e-4)
+
+
+@pytest.mark.unit
+class TestCandidateComponents:
+    """``max_candidate_components`` is an approximation tied to contact geometry."""
+
+    def test_max_candidate_components_requires_contact_positions_at_fit(self):
+        env, time, position, spikes, marks = _make_overlapping_marks_recording()
+        with pytest.raises(ValidationError, match="requires contact_positions"):
+            fit_clusterless_probe_mixture_encoding_model(
+                time,
+                position,
+                spikes,
+                marks,
+                env,
+                max_candidate_components=1,
+                n_mark_components=2,
+                n_em_iterations=0,
+                disable_progress_bar=True,
+            )
+
+    def test_candidate_lookup_refuses_a_mixture_without_contact_positions(self):
+        """Without geometry there is no peak-contact table to restrict candidates."""
+        env, time, position, spikes, marks = _make_overlapping_marks_recording()
+        enc = fit_clusterless_probe_mixture_encoding_model(
+            time,
+            position,
+            spikes,
+            marks,
+            env,
+            n_mark_components=2,
+            n_em_iterations=0,
+            disable_progress_bar=True,
+        )
+        ref = fit_mark_references(marks, kernel_scale=1.0)
+        with pytest.raises(ValidationError, match="requires contact_positions"):
+            predict_clusterless_probe_mixture_log_likelihood(
+                None,
+                None,
+                spikes,
+                marks,
+                time_edges=time_edges_from_centers(time[:100]),
+                mark_reference=ref,
+                **{**enc, "max_candidate_components": 1},
+            )

@@ -379,29 +379,45 @@ class ProbeMarkMixture:
         Returns
         -------
         candidates : np.ndarray of int32, shape (n_channels, k_cand)
-            Component indices ranked closest to each contact (or by descending
-            weight when ``contact_positions`` is None).
+            Component indices whose peak contacts are closest to each contact
+            (ties broken by descending weight).
         candidate_mask : np.ndarray of bool, shape (n_channels, k_cand)
             True for real components.
+
+        Raises
+        ------
+        ValidationError
+            If the mixture was fit without ``contact_positions``: the table is
+            defined by contact geometry, and without it a spike would be
+            scored only against components chosen without regard to its own
+            peak contact.
         """
+        if self.contact_positions is None:
+            msg = (
+                "max_candidate_components requires contact_positions: the "
+                "candidate table ranks components by the distance of their peak "
+                "contact to the spike's peak contact"
+            )
+            raise ValidationError(
+                msg,
+                expected="max_candidate_components=None for a mixture fit "
+                "without contact_positions",
+                got=f"max_candidate_components={max_candidates!r}",
+                hint="Refit with contact_positions, or set "
+                "max_candidate_components=None to score every component.",
+            )
         n_comp = self.n_components
         n_ch = self.n_channels
         k_cand = min(int(max_candidates), n_comp)
-        if self.contact_positions is not None:
-            comp_pos = self.contact_positions[self.component_peak_channels]
-            diff = self.contact_positions[:, None, :] - comp_pos[None, :, :]
-            dist = np.sqrt(np.sum(diff * diff, axis=-1))  # (C, K)
-            candidates = np.empty((n_ch, k_cand), dtype=np.int32)
-            neg_weights = -self.weights
-            indices = np.arange(n_comp)
-            for c in range(n_ch):
-                order = np.lexsort((indices, neg_weights, dist[c]))
-                candidates[c] = order[:k_cand]
-        else:
-            order = np.lexsort((np.arange(n_comp), -self.weights))[:k_cand]
-            candidates = np.broadcast_to(
-                order.astype(np.int32)[None, :], (n_ch, k_cand)
-            ).copy()
+        comp_pos = self.contact_positions[self.component_peak_channels]
+        diff = self.contact_positions[:, None, :] - comp_pos[None, :, :]
+        dist = np.sqrt(np.sum(diff * diff, axis=-1))  # (C, K)
+        candidates = np.empty((n_ch, k_cand), dtype=np.int32)
+        neg_weights = -self.weights
+        indices = np.arange(n_comp)
+        for c in range(n_ch):
+            order = np.lexsort((indices, neg_weights, dist[c]))
+            candidates[c] = order[:k_cand]
         return candidates, np.ones((n_ch, k_cand), dtype=bool)
 
     def log_component_density(self, marks: np.ndarray) -> np.ndarray:
@@ -2454,6 +2470,9 @@ def fit_clusterless_probe_mixture_encoding_model(
     max_candidate_components : int or None, optional
         Maximum candidate components scored per decode spike using a static
         per-peak-contact lookup table, by default None (evaluate all K).
+        Requires ``contact_positions`` for every electrode, because the table
+        ranks components by the distance of their peak contact to the
+        spike's peak contact.
     disable_progress_bar : bool, optional
         Stored for prediction's progress bars, by default False.
     encoding_time_range : array_like, shape (2,), optional
@@ -2528,6 +2547,24 @@ def fit_clusterless_probe_mixture_encoding_model(
     resolved_positions, resolved_covariances = resolve_probe_geometry(
         contact_positions, noise_covariances, mark_dimensions
     )
+    missing_geometry = [
+        electrode
+        for electrode, positions in enumerate(resolved_positions)
+        if positions is None
+    ]
+    if max_candidate_components is not None and missing_geometry:
+        msg = (
+            "max_candidate_components requires contact_positions for every "
+            "electrode: the candidate table ranks components by the distance of "
+            "their peak contact to the spike's peak contact"
+        )
+        raise ValidationError(
+            msg,
+            expected="contact positions for every electrode",
+            got=f"none for electrodes {missing_geometry}",
+            hint="Pass contact_positions, or set max_candidate_components=None "
+            "to score every component.",
+        )
 
     is_track_interior = environment.is_track_interior_flat_
     interior_place_bin_centers = jnp.asarray(
@@ -3158,6 +3195,7 @@ def predict_clusterless_probe_mixture_log_likelihood(
     max_candidate_components : int or None, optional
         Maximum candidate components scored per decode spike using a static
         per-peak-contact lookup table. By default None (evaluate all K).
+        Requires mixtures fit with ``contact_positions``.
     disable_progress_bar : bool, optional
         Hide per-electrode progress bar, by default False.
     row_slice : slice or None, optional

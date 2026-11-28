@@ -40,7 +40,6 @@ _TILED_PREDICT_OVERRIDES = {
         {"enc_tile_size": 64, "use_streaming": True},
         {"pos_tile_size": 9},
     ],
-    "clusterless_probe_mixture": [{"max_candidate_components": 64}],
 }
 VARIANTS = [
     (name, overrides)

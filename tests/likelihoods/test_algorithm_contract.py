@@ -447,10 +447,7 @@ _CHANGED_SETTINGS = {
     # Far below the dense kernel, so the kernel is built one column per tile.
     "clusterless_diffusion": {"block_size": 7, "memory_budget": 64},
     "clusterless_mark_glm": {"spike_block_size": 7},
-    "clusterless_probe_mixture": {
-        "spike_block_size": 7,
-        "max_candidate_components": 64,
-    },
+    "clusterless_probe_mixture": {"spike_block_size": 7},
 }
 # A fit parameter that is not an execution setting, changed after fitting:
 # prediction must ignore it until the next fit.
