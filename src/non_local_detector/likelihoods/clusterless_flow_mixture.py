@@ -3484,7 +3484,11 @@ def fit_clusterless_flow_mixture_encoding_model(
         log-likelihood; ``"marginal"`` trains it on position-free mark density.
     n_em_iterations : int, optional
         Maximum alternating Flow-EM outer iterations (0 = identity flow), by
-        default 30.
+        default 30. On the 26-32-contact shanks above, inner validation chose
+        all 30 iterations on every electrode in every fold, so the default
+        bound those fits and they are probably slightly under-converged; the
+        number each electrode used is in
+        ``em_diagnostics["per_electrode"][e]["n_iterations"]`` of the result.
     flow_steps_per_em : int, optional
         Number of ``optax`` AdamW steps per outer EM iteration, by default 20.
     flow_learning_rate : float, optional
