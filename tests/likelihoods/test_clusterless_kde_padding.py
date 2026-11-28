@@ -7,6 +7,7 @@ from scipy.special import logsumexp
 
 import non_local_detector.likelihoods.common.kernel_density as kernel_density
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
     _log_joint_from_log_marginal,
@@ -20,11 +21,9 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
-    KDEModel,
     as_std_array,
     block_log_kde,
     get_position_at_time,
-    padded_occupancy_count,
     padded_sample_count,
     padded_spike_count,
     select_spike_rows,
@@ -317,6 +316,182 @@ def test_degenerate_electrodes_match_the_per_electrode_formulation(is_local):
     np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
 
 
+def make_isolation_recording():
+    """Electrodes with alike marks whose encoding spikes lie in different places.
+
+    Electrode 0 (two features) fires only left of x = 15 cm and electrode 1
+    (four) only right of x = 25 cm, so a spike reduced against the other's
+    samples would move its intensity across the arena. Electrode 2 fires
+    everywhere with 600 samples (three tiles) and electrode 3 (one feature)
+    has 257, one more than a tile. Decoding blocks of 16 spikes split
+    electrode 1's 300 spikes over many blocks.
+    """
+    rng = np.random.default_rng(37)
+    env = Environment(place_bin_size=4.0, position_range=((0.0, 40.0), (0.0, 40.0)))
+    position_time = np.arange(0, 30.0, 1 / 30)
+    position = np.column_stack(
+        (20 + 18 * np.sin(position_time / 2), 20 + 15 * np.cos(position_time / 5))
+    )
+    env = env.fit_place_grid(position, infer_track_interior=False)
+    fires = [
+        position[:, 0] < 15.0,
+        position[:, 0] > 25.0,
+        np.ones(len(position_time), bool),
+        np.ones(len(position_time), bool),
+    ]
+    counts, n_features = (150, 400, 600, 257), (2, 4, 4, 1)
+    encoding_times = [
+        np.sort(rng.choice(position_time[where], n))
+        for where, n in zip(fires, counts, strict=True)
+    ]
+    encoding_marks = [
+        rng.normal(0, 10, (len(t), d))
+        for t, d in zip(encoding_times, n_features, strict=True)
+    ]
+    decode_counts = (30, 300, 5, 70)
+    decode_times = [np.sort(rng.uniform(0, 4, n)) for n in decode_counts]
+    decode_marks = [
+        rng.normal(0, 10, (n, d))
+        for n, d in zip(decode_counts, n_features, strict=True)
+    ]
+    encoding = fit_encoding(
+        position_time=position_time,
+        position=position,
+        spike_times=encoding_times,
+        spike_waveform_features=encoding_marks,
+        environment=env,
+        position_std=3.0,
+        waveform_std=10.0,
+        block_size=16,
+        disable_progress_bar=True,
+    )
+    edges = np.arange(0, 4.0 + 1e-9, 0.002)
+    return env, position_time, position, encoding, decode_times, decode_marks, edges
+
+
+def electrode_subset(recording, electrodes):
+    """The recording with only ``electrodes``, keeping every other model term."""
+    env, position_time, position, encoding, times, marks, edges = recording
+    per_electrode = (
+        "encoding_spike_waveform_features",
+        "encoding_positions",
+        "encoding_weights",
+        "gpi_models",
+        "mark_reference",
+        "mark_dimensions",
+    )
+    subset = {key: [encoding[key][e] for e in electrodes] for key in per_electrode}
+    subset["mean_rates"] = np.asarray(encoding["mean_rates"])[electrodes]
+    return (
+        env,
+        position_time,
+        position,
+        {**encoding, **subset},
+        [times[e] for e in electrodes],
+        [marks[e] for e in electrodes],
+        edges,
+    )
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("pos_tile_size", [None, 7])
+@pytest.mark.parametrize("block_size", [16, 128], ids=["one-block", "block-groups"])
+def test_batched_electrodes_never_mix(
+    is_local, pos_tile_size, block_size, reduction_path, monkeypatch
+):
+    """One pass over every electrode gives each spike its own electrode's
+    intensity: its samples, weights, feature count, bandwidths and rate.
+    Rows are summed by CPU's sequential scatter and by the off-CPU
+    segmented scan. With ``block_size=16`` every block is reduced alone;
+    with 128 the blocks are 16 spikes and up to 8 of them share a GEMM.
+
+    Electrode 0 alone and electrode 1 alone peak at opposite ends of the
+    arena, so a spike reduced against the other's samples would differ by
+    far more than float32 rounding from the per-electrode formulation.
+    """
+    sizes = []
+    group_sizes = clusterless_kde._group_sizes
+    monkeypatch.setattr(
+        clusterless_kde,
+        "_group_sizes",
+        lambda *args: sizes.append(group_sizes(*args)) or sizes[-1],
+    )
+    recording = make_isolation_recording()
+    recording = (
+        *recording[:3],
+        {**recording[3], "pos_tile_size": pos_tile_size, "block_size": block_size},
+        *recording[4:],
+    )
+    rows = slice(0, len(recording[-1]) - 1)
+    actual = predict(recording, is_local, rows)
+    ((block_rows, group_blocks, _),) = sizes
+    assert block_rows == 16
+    assert (group_blocks > 1) == (block_size > 16)
+    expected = reference(recording, is_local, rows)
+    assert np.all(np.isfinite(actual))
+    np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
+    if not is_local:
+        bins = recording[0].place_bin_centers_
+        left, right = (
+            np.asarray(reference(electrode_subset(recording, [e]), False, rows))
+            for e in (0, 1)
+        )
+        assert bins[np.argmax(left.sum(axis=0)), 0] < 20.0
+        assert bins[np.argmax(right.sum(axis=0)), 0] > 20.0
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_marks_with_another_feature_count_than_the_encoding_are_rejected(is_local):
+    """Marks are padded to the most features of any electrode, so a decoding
+    mark with fewer features than its encoding marks must be refused rather
+    than padded; without a mark reference nothing else checks it."""
+    env, position_time, position, encoding, times, marks, edges = (
+        make_isolation_recording()
+    )
+    references = list(encoding["mark_reference"])
+    references[1] = None
+    marks = list(marks)
+    marks[1] = marks[1][:, :2]
+    recording = (
+        env,
+        position_time,
+        position,
+        {**encoding, "mark_reference": references},
+        times,
+        marks,
+        edges,
+    )
+    with pytest.raises(ValidationError, match="electrode 1"):
+        predict(recording, is_local, slice(0, 100))
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_grouped_blocks_match_the_per_electrode_formulation(is_local, monkeypatch):
+    """With ``block_size=128`` the electrodes' 16-spike blocks are reduced in
+    groups of up to 8, and still match the per-electrode formulation."""
+    sizes = []
+    group_sizes = clusterless_kde._group_sizes
+    monkeypatch.setattr(
+        clusterless_kde,
+        "_group_sizes",
+        lambda *args: sizes.append(group_sizes(*args)) or sizes[-1],
+    )
+    env, position_time, position, encoding, times, marks, edges = make_recording(False)
+    recording = (
+        env,
+        position_time,
+        position,
+        {**encoding, "block_size": 128},
+        times,
+        marks,
+        edges,
+    )
+    actual = predict(recording, is_local, slice(0, 2000))
+    assert max(group_blocks for _, group_blocks, _ in sizes) > 1
+    expected = reference(recording, is_local, slice(0, 2000))
+    np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
+
+
 def test_high_dimensional_marks_use_the_logsumexp_path():
     """Above eight waveform dimensions the kernels take the logsumexp branch."""
     recording = make_recording(False, waveform_dims=(9, 9, 10))
@@ -367,50 +542,6 @@ def test_ragged_final_encoding_tile_counts_each_sample_once():
     expected = reference(recording, False, slice(0, 1000))
     assert np.all(np.isfinite(actual))
     np.testing.assert_allclose(actual, expected, **PER_ELECTRODE_FLOAT32)
-
-
-def test_electrodes_with_nearby_sizes_share_compiled_kernels():
-    rng = np.random.default_rng(32)
-    env = Environment(place_bin_size=5.0, position_range=((0.0, 30.0), (0.0, 30.0)))
-    position_time = np.arange(0, 20.0, 1 / 30)
-    position = np.column_stack(
-        (15 + 10 * np.sin(position_time), 15 + 10 * np.cos(position_time))
-    )
-    env = env.fit_place_grid(position, infer_track_interior=False)
-    # 200 and 210 encoding spikes share one padded size; 40 and 50 decoding
-    # spikes share another.
-    encoding_times = [np.sort(rng.uniform(0, 20, n)) for n in (200, 210)]
-    encoding = fit_encoding(
-        position_time=position_time,
-        position=position,
-        spike_times=encoding_times,
-        spike_waveform_features=[
-            rng.normal(0, 30, (len(t), 4)) for t in encoding_times
-        ],
-        environment=env,
-        disable_progress_bar=True,
-    )
-    assert padded_sample_count(200) == padded_sample_count(210)
-    assert padded_spike_count(40, 100) == padded_spike_count(50, 100)
-    decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (40, 50)]
-    recording = (
-        env,
-        position_time,
-        position,
-        encoding,
-        decode_times,
-        [rng.normal(0, 30, (len(t), 4)) for t in decode_times],
-        np.arange(0, 2.0 + 1e-9, 0.002),
-    )
-    kernels = (
-        clusterless_kde._add_electrode_log_mark_intensities,
-        clusterless_kde._add_electrode_local_terms,
-    )
-    for kernel in kernels:
-        kernel.clear_cache()
-    for is_local in (False, True):
-        predict(recording, is_local, None)
-    assert [kernel._cache_size() for kernel in kernels] == [1, 1]
 
 
 @pytest.mark.parametrize(
@@ -468,54 +599,6 @@ def test_tiled_electrodes_and_chunks_with_nearby_sizes_share_compiled_kernels(
     assert kernel._cache_size() == 1
     whole = predict(recording, False, slice(0, 1000))
     np.testing.assert_allclose(np.concatenate(chunks), whole, rtol=1e-5, atol=1e-4)
-
-
-def test_occupancy_refit_with_one_fewer_sample_reuses_the_local_kernel():
-    """EM refits the occupancy from decode bins, one sample fewer than the
-    position samples of the first fit; the local kernel must not recompile."""
-    rng = np.random.default_rng(33)
-    env = Environment(place_bin_size=5.0, position_range=((0.0, 30.0), (0.0, 30.0)))
-    position_time = np.arange(0, 20.0, 1 / 30)
-    position = np.column_stack(
-        (15 + 10 * np.sin(position_time), 15 + 10 * np.cos(position_time))
-    )
-    env = env.fit_place_grid(position, infer_track_interior=False)
-    encoding_times = [np.sort(rng.uniform(0, 20, 200))]
-    encoding = fit_encoding(
-        position_time=position_time,
-        position=position,
-        spike_times=encoding_times,
-        spike_waveform_features=[rng.normal(0, 30, (200, 4))],
-        environment=env,
-        disable_progress_bar=True,
-    )
-    decode_times = [np.sort(rng.uniform(0, 2, 40))]
-    recording = (
-        env,
-        position_time,
-        position,
-        encoding,
-        decode_times,
-        [rng.normal(0, 30, (40, 4))],
-        np.arange(0, 2.0 + 1e-9, 0.002),
-    )
-    occupancy_model = encoding["occupancy_model"]
-    n_samples = occupancy_model.samples_.shape[0]
-    assert padded_occupancy_count(n_samples) == padded_occupancy_count(n_samples - 1)
-    refit = KDEModel(
-        std=occupancy_model.std, block_size=occupancy_model.block_size
-    ).fit(occupancy_model.samples_[:-1], weights=occupancy_model.weights_[:-1])
-    kernel = clusterless_kde._add_electrode_local_terms
-    kernel.clear_cache()
-    first = predict(recording, True, None)
-    second = predict(
-        (*recording[:3], {**encoding, "occupancy_model": refit}, *recording[4:]),
-        True,
-        None,
-    )
-    assert kernel._cache_size() == 1
-    assert np.all(np.isfinite(first))
-    assert np.all(np.isfinite(second))
 
 
 def make_translated_recording(offset, far_spike_time=None):

@@ -306,6 +306,7 @@ def concatenate_row_blocks(
     desc: str,
     *,
     disable_progress_bar: bool,
+    block_rows: int | None = None,
 ) -> jax.Array:
     """Concatenate ``evaluate(start, stop)`` over spike-count row blocks.
 
@@ -322,13 +323,17 @@ def concatenate_row_blocks(
         Progress bar label.
     disable_progress_bar : bool
         Whether to hide the progress bar.
+    block_rows : int, optional
+        Rows per block, at most the spike-count block's; by default the
+        spike-count block's, ``_count_block_rows(n_neurons)``.
 
     Returns
     -------
     result : jax.Array, shape (row_stop - row_start, ...)
         One-dimensional zeros when no rows are requested.
     """
-    block_rows = _count_block_rows(n_neurons)
+    if block_rows is None:
+        block_rows = _count_block_rows(n_neurons)
     blocks = [
         evaluate(start, min(start + block_rows, row_stop))
         for start in tqdm(
