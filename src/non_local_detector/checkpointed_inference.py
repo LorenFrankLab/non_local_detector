@@ -217,15 +217,23 @@ _DEVICE_WORKSPACE_CHUNKS = 8
 _DEVICE_RESERVED_FRACTION = 0.25
 
 
+def _default_device() -> Any:
+    """Return the device ``jnp.asarray`` places new arrays on."""
+    return next(iter(jnp.zeros(()).devices()))
+
+
 def default_device_cache_bytes(chunk_bytes: int) -> int:
     """Return the device memory free for keeping rows, in bytes.
 
-    This is the memory the default device reports free (its allocation limit
-    less the bytes in use) less a reserve for the filter, smoother and
-    likelihood workspace: ``_DEVICE_WORKSPACE_CHUNKS`` chunks of rows or a
-    quarter of the limit, whichever is larger. It is 0 when the backend
-    reports no memory statistics, as on CPU, where arrays live in the host
-    memory that ``replay_cache_bytes`` budgets.
+    This is the memory JAX's default device (where ``jnp.asarray`` places
+    rows) reports free, its allocation limit less the bytes in use, less a
+    reserve for the filter, smoother and likelihood workspace:
+    ``_DEVICE_WORKSPACE_CHUNKS`` chunks of rows or a quarter of the limit,
+    whichever is larger. It is 0 when the device reports no memory
+    statistics, as on CPU, where arrays live in the host memory that
+    ``replay_cache_bytes`` budgets. JAX's figures do not see memory other
+    processes hold on the same GPU, so on a shared GPU this can exceed what
+    is physically free.
 
     Parameters
     ----------
@@ -237,7 +245,7 @@ def default_device_cache_bytes(chunk_bytes: int) -> int:
     device_cache_bytes : int
         Device budget for kept rows in bytes, at least 0.
     """
-    stats = jax.local_devices()[0].memory_stats()
+    stats = _default_device().memory_stats()
     if not stats or "bytes_limit" not in stats:
         return 0
     limit = int(stats["bytes_limit"])
@@ -534,8 +542,11 @@ def checkpointed_forward_backward(
     pass; otherwise the prepared likelihood is kept. Either costs ``n_bins``
     values per row. Each chunk's rows go on the device while they fit the
     remaining ``device_cache_bytes``, then in host memory while they fit the
-    remaining ``replay_cache_bytes``; otherwise they are recomputed. By
-    default (both 0) every chunk is filtered and evaluated twice.
+    remaining ``replay_cache_bytes``; otherwise they are recomputed. Each
+    chunk's likelihood rows are placed before its filtered rows, so when the
+    budgets run out the last chunks keep neither. ``replay_cache_bytes=0``
+    keeps no rows anywhere, whatever ``device_cache_bytes`` is, and by default
+    (0) every chunk is filtered and evaluated twice.
 
     ``kept_likelihoods`` is a caller's store of prepared likelihood rows,
     keyed by chunk start, for later calls over the same rows with the same
@@ -639,10 +650,11 @@ def checkpointed_forward_backward(
         None.
     replay_cache_bytes : int, optional
         Host memory budget for keeping forward-pass chunks to avoid
-        recomputation in the replay, by default 0 (no cache).
+        recomputation in the replay, by default 0, which keeps no rows on
+        the device either.
     device_cache_bytes : int, optional
-        Device memory budget for kept rows, used before the host budget, by
-        default 0.
+        Device memory budget for kept rows, used before the host budget and
+        ignored when ``replay_cache_bytes`` is 0, by default 0.
     kept_likelihoods : dict, optional
         A caller's store of likelihood rows kept across calls (see above). By
         default None, which keeps likelihood rows for this call's replay
@@ -1045,8 +1057,9 @@ def checkpointed_forward_backward(
                 kept_likelihoods if kept_likelihoods is not None else {}
             )
             keep_likelihoods = persistent or not cache_rows
+            # replay_cache_bytes=0 keeps no rows, on the device either.
             budget = _RowBudget(
-                device=int(device_cache_bytes),
+                device=int(device_cache_bytes) if replay_cache_bytes else 0,
                 host=max(
                     int(replay_cache_bytes)
                     - sum(

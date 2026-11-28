@@ -235,9 +235,12 @@ def _counted_problem():
 
 @pytest.mark.parametrize(
     ("device_chunks", "host_chunks", "kept", "evaluations"),
-    # The last chunk holds one row, a quarter of a full chunk.
+    # The last chunk holds one row, a quarter of a full chunk. A zero host
+    # budget keeps nothing, on the device either; 0.1 is a positive host
+    # budget too small for any chunk.
     [
-        (4, 0, (3.25, 0), 4),
+        (4, 0.1, (3.25, 0), 4),
+        (4, 0, (0, 0), 8),
         (0, 4, (0, 3.25), 4),
         (2, 1, (2, 1), 5),
         (0, 0, (0, 0), 8),
@@ -260,7 +263,7 @@ def test_kept_rows_go_on_the_device_then_in_host_memory(
     result = run(
         return_outputs=outputs,
         device_cache_bytes=device_chunks * chunk,
-        replay_cache_bytes=host_chunks * chunk,
+        replay_cache_bytes=int(host_chunks * chunk),
     )
     assert len(calls) == result.diagnostics["likelihood_evaluations"] == evaluations
     assert (
@@ -270,6 +273,42 @@ def test_kept_rows_go_on_the_device_then_in_host_memory(
     for name in outputs:
         np.testing.assert_array_equal(result.dataset[name], reference.dataset[name])
     assert result.marginal_log_likelihood == reference.marginal_log_likelihood
+
+
+@pytest.mark.parametrize(
+    ("stats", "chunk_bytes", "expected"),
+    [
+        # No memory statistics, as on CPU: nothing on the device.
+        (None, 10, 0),
+        ({}, 10, 0),
+        ({"bytes_in_use": 100}, 10, 0),
+        # The reserve is a quarter of the limit (250) ...
+        ({"bytes_limit": 1000, "bytes_in_use": 100}, 10, 650),
+        # ... or eight chunks of rows, whichever is larger (400).
+        ({"bytes_limit": 1000, "bytes_in_use": 100}, 50, 500),
+        # Memory in use beyond the reserve leaves no budget.
+        ({"bytes_limit": 1000, "bytes_in_use": 900}, 10, 0),
+    ],
+)
+def test_device_budget_is_free_memory_less_a_workspace_reserve(
+    monkeypatch, stats, chunk_bytes, expected
+):
+    import non_local_detector.checkpointed_inference as checkpointed
+
+    class FakeDevice:
+        def memory_stats(self):
+            return stats
+
+    monkeypatch.setattr(checkpointed, "_default_device", FakeDevice)
+    assert checkpointed.default_device_cache_bytes(chunk_bytes) == expected
+
+
+def test_device_budget_reads_the_device_new_arrays_go_to():
+    import non_local_detector.checkpointed_inference as checkpointed
+
+    cpu = jax.devices("cpu")[0]
+    with jax.default_device(cpu):
+        assert checkpointed._default_device() == cpu
 
 
 def test_kept_likelihoods_are_reused_by_later_calls():
@@ -305,6 +344,7 @@ def test_kept_likelihoods_are_reused_by_later_calls():
     third = run(
         return_outputs=outputs,
         device_cache_bytes=4 * chunk,
+        replay_cache_bytes=1,
         kept_likelihoods=kept,
     )
     assert calls == [8, 9]

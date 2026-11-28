@@ -48,6 +48,32 @@ if TYPE_CHECKING:
     import non_local_detector.models.base
 
 
+# The likelihood and state-probability dtype both entry points pass the driver.
+_DRIVER_DTYPE = np.float32
+
+
+def _device_cache_bytes(chunk_size: int, n_rows: int, n_bins: int) -> int:
+    """Device budget for kept rows, given one chunk's likelihood rows.
+
+    Parameters
+    ----------
+    chunk_size : int
+        Rows per checkpoint chunk.
+    n_rows : int
+        Decode bins of the recording.
+    n_bins : int
+        Interior state bins per row.
+
+    Returns
+    -------
+    device_cache_bytes : int
+        ``default_device_cache_bytes`` for one chunk of ``_DRIVER_DTYPE`` rows.
+    """
+    return default_device_cache_bytes(
+        min(chunk_size, n_rows) * n_bins * np.dtype(_DRIVER_DTYPE).itemsize
+    )
+
+
 def _driver_outputs(requested_outputs: set[str], *, spatial: bool) -> set[str]:
     """Forward-backward outputs to compute for canonical ``return_outputs``.
 
@@ -276,9 +302,6 @@ class _CheckpointedPredictionMixin:
         )
         interior = self.state_space_.is_track_interior
         output_names = set(outputs)
-        chunk_bytes = (
-            min(chunk_size, len(centers)) * int(np.count_nonzero(interior)) * 4
-        )
         return checkpointed_forward_backward(
             edges,
             self.initial_conditions_[interior],
@@ -290,10 +313,12 @@ class _CheckpointedPredictionMixin:
             chunk_size=chunk_size,
             output_mode="spatial" if output_names & _SPATIAL else "compact",
             return_outputs=output_names,
-            dtype=np.float32,
+            dtype=_DRIVER_DTYPE,
             transition_statistics=transition_statistics,
             replay_cache_bytes=replay_cache_bytes,
-            device_cache_bytes=default_device_cache_bytes(chunk_bytes),
+            device_cache_bytes=_device_cache_bytes(
+                chunk_size, len(centers), int(np.count_nonzero(interior))
+            ),
             kept_likelihoods=kept_likelihoods,
             **self._checkpointed_transition_args(
                 self.discrete_state_transitions_, len(centers)
@@ -322,9 +347,10 @@ class _CheckpointedPredictionMixin:
 
         ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
         Kept rows go on the device first, within
-        ``default_device_cache_bytes()``. ``em_attrs`` maps this pass's
-        marginal log-likelihood to EM's attributes, which a result store keeps
-        with the rest so that ``load_results`` returns them.
+        ``default_device_cache_bytes()``, unless ``replay_cache_bytes`` is 0.
+        ``em_attrs`` maps this pass's marginal log-likelihood to EM's
+        attributes, which a result store keeps with the rest so that
+        ``load_results`` returns them.
         ``kept_likelihoods`` are EM's likelihood rows kept across E-steps.
 
         Returns
@@ -369,7 +395,7 @@ class _CheckpointedPredictionMixin:
         states = state_space.interior_state_ind
         if chunk_size is None:
             chunk_size = default_chunk_size(
-                cast("int", np.count_nonzero(interior)), np.float32
+                cast("int", np.count_nonzero(interior)), _DRIVER_DTYPE
             )
         discrete = (
             self.discrete_state_transitions_
@@ -469,7 +495,7 @@ class _CheckpointedPredictionMixin:
             checkpoint_dir=checkpoint_dir,
             return_outputs=outputs,
             selected_rows=selected,
-            dtype=np.float32,
+            dtype=_DRIVER_DTYPE,
             max_read_bytes=max_read_bytes,
             result_attrs=(
                 attrs
@@ -477,8 +503,8 @@ class _CheckpointedPredictionMixin:
                 else lambda marginal: {**attrs, **em_attrs(marginal)}
             ),
             replay_cache_bytes=replay_cache_bytes,
-            device_cache_bytes=default_device_cache_bytes(
-                min(chunk_size, len(centers)) * int(np.count_nonzero(interior)) * 4
+            device_cache_bytes=_device_cache_bytes(
+                chunk_size, len(centers), int(np.count_nonzero(interior))
             ),
             kept_likelihoods=kept_likelihoods,
             **transition_args,

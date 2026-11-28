@@ -793,8 +793,9 @@ class _EMMixin:
         dense constructor. When memory alone rules dense EM out, it warns:
         structured EM filters in chunks and evaluates the likelihood again in
         every E-step when the encoding model is re-estimated, or for rows that
-        fit neither its device nor its host budget, which made EM about 9x
-        slower per E-step on a 567k-bin clusterless track decode.
+        fit neither its device nor its host budget. When every E-step
+        evaluated it, EM was about 9x slower per E-step than dense EM on a
+        567k-bin clusterless track decode.
 
         Parameters
         ----------
@@ -962,11 +963,15 @@ class _EMMixin:
             final outputs need them), so the backward replay does not filter
             and evaluate them again, and, with a fixed encoding model, the
             likelihood rows later E-steps reuse. Rows go on the device first,
-            while it reports memory free beyond a reserve for the filter and
-            smoother (never on CPU), then in host memory within this budget;
-            chunks beyond both are recomputed. By default None, which uses
-            16 GiB or half the available host memory (counting a container's
-            limit), whichever is smaller.
+            while JAX reports memory free there beyond a reserve for the filter
+            and smoother's workspace (never on CPU), then in host memory within
+            this budget; chunks beyond both are recomputed. A positive value
+            caps host memory only; 0 keeps no rows, on the device either. JAX's
+            figures do not see memory other processes hold on a shared GPU, so
+            rows can be placed where there is no room: pass 0 there, or limit
+            JAX's share of the device (``XLA_PYTHON_CLIENT_MEM_FRACTION``). By
+            default None, which uses 16 GiB or half the available host memory
+            (counting a container's limit), whichever is smaller.
         encoding_fit_arguments : dict, optional
             Arguments of ``_validated_inputs``, except ``weights``,
             that the encoding M-step refits with. Required with
@@ -1058,8 +1063,12 @@ class _EMMixin:
         if not state.converged:
             self._em_warn_not_converged(settings, state)
 
-        final = self._em_final_e_step(settings, state)
-        state.kept_likelihoods = None
+        try:
+            final = self._em_final_e_step(settings, state)
+        finally:
+            # Release the kept rows (possibly most of the device) even when
+            # the final E-step raises and a traceback keeps this frame.
+            state.kept_likelihoods = None
         traces = state.traces(final.posterior.marginal_log_likelihood)
 
         # Set after the final E-step, which evaluates the returned parameters

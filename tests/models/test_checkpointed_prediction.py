@@ -117,7 +117,7 @@ def _placed_prediction(model, predict, tmp_path, output_mode, budgets):
             inference_mode="checkpointed",
             output_mode=output_mode,
             chunk_size=20,
-            replay_cache_bytes=host_chunks * chunk_bytes,
+            replay_cache_bytes=int(host_chunks * chunk_bytes),
             return_outputs="all" if output_mode == "spatial" else None,
             **extra,
         )
@@ -137,11 +137,15 @@ def test_checkpointed_prediction_row_placement_does_not_change_results(
     """
     model, fit, predict = checkpoint_recording(family, dims)
     model.fit(**fit, transition_representation="structured")
-    reference, _ = _placed_prediction(model, predict, tmp_path, output_mode, (0, 0))
+    # replay_cache_bytes=0 keeps no rows, on the device either.
+    reference, _ = _placed_prediction(model, predict, tmp_path, output_mode, (100, 0))
     # Five chunks of 20 rows: each is evaluated twice without a kept array.
     assert reference.attrs["likelihood_evaluations"] == 10
+    assert reference.attrs["replay_cache_device_bytes"] == 0
+    # (device, host) budgets in chunks; 0.01 is a positive host budget too
+    # small for any chunk.
     for budgets, evaluations, kept in [
-        ((100, 0), 5, (5, 0)),
+        ((100, 0.01), 5, (5, 0)),
         ((0, 100), 5, (0, 5)),
         ((2, 2), 6, (2, 2)),
     ]:
@@ -492,10 +496,7 @@ def test_checkpointed_prediction_replay_cache(
 ):
     """The replay reuses forward-pass rows: identical results, fewer evaluations."""
     from non_local_detector import checkpointed_inference
-    from non_local_detector.models import _checkpointed
 
-    # Host memory only: rows kept on a GPU would also skip evaluations.
-    monkeypatch.setattr(_checkpointed, "default_device_cache_bytes", lambda _: 0)
     driver = checkpointed_inference.checkpointed_forward_backward
 
     def run(name, **kwargs):

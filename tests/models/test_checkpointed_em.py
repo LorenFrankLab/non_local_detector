@@ -549,10 +549,7 @@ def test_result_path_rejects_dense_em_and_a_stored_likelihood(tmp_path):
 def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, family):
     """The replay reuses forward-pass rows; results are bitwise equal."""
     from non_local_detector import checkpointed_inference
-    from non_local_detector.models import _checkpointed
 
-    # Host memory only: rows kept on a GPU would also skip evaluations.
-    monkeypatch.setattr(_checkpointed, "default_device_cache_bytes", lambda _: 0)
     driver = checkpointed_inference.checkpointed_forward_backward
 
     def run(**kwargs):
@@ -635,10 +632,12 @@ def test_structured_em_evaluates_a_fixed_likelihood_once(
 
 
 # (device, host) budgets for kept rows, in chunks of likelihood rows. None
-# keeps the default host budget, which holds every row here.
+# keeps the default host budget, which holds every row here. A zero host
+# budget (replay_cache_bytes=0) keeps nothing, on the device either; 0.01 is a
+# positive host budget too small for any chunk.
 _PLACEMENTS = {
-    "recompute": (0, 0),
-    "device": (100, 0),
+    "recompute": (100, 0),
+    "device": (100, 0.01),
     "host": (0, None),
     "mixed": (3, 2),
 }
@@ -676,7 +675,7 @@ def _placed_fit(dims, transitions, placement):
     chunk_bytes = 50 * n_state_bins * 4
     device_chunks, host_chunks = _PLACEMENTS[placement]
     if host_chunks is not None:
-        extra["replay_cache_bytes"] = host_chunks * chunk_bytes
+        extra["replay_cache_bytes"] = int(host_chunks * chunk_bytes)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
             _checkpointed,
@@ -741,10 +740,11 @@ def test_structured_em_row_placement_does_not_change_results(
     else:
         # Chunk 0's two arrays and chunk 1's likelihood fill the device;
         # chunk 1's filtered rows and chunk 2's likelihood fill the host.
-        # The replay evaluates chunks 3 to 5 again.
-        assert evaluations[0] == 9
+        # The replay evaluates chunks 3 to 5 again. The patched device budget
+        # is the same in every pass, while the kept host rows shrink the host
+        # budget of later passes.
+        assert evaluations == [9, 5, 4, 2]
         assert (device[0], host[0]) == (3 * chunk, 2 * chunk)
-        assert all(count < 12 for count in evaluations)
     for name in reference.data_vars:
         np.testing.assert_array_equal(results[name].values, reference[name].values)
     for name in ("marginal_log_likelihoods", "em_objectives", "em_previous_objectives"):
