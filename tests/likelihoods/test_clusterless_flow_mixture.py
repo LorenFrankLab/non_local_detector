@@ -34,6 +34,7 @@ from non_local_detector.likelihoods.clusterless_flow_mixture import (
 )
 from non_local_detector.likelihoods.mark_reference import fit_mark_references
 from non_local_detector.time_edges import time_edges_from_centers
+from tests.conftest import precision_mode
 
 
 def _make_1d_env(track_len: float = 100.0, bin_size: float = 5.0) -> Environment:
@@ -122,7 +123,7 @@ def _make_random_trained_mixture(
 @pytest.mark.unit
 def test_rqs_1d_identity_invertibility_and_analytic_derivative():
     """RQS 1-D is exact identity at zero, invertible, and matches autograd."""
-    with jax.enable_x64():
+    with precision_mode(True):
         x = jnp.linspace(-7.0, 7.0, 65, dtype=jnp.float64)
         zero_p = jnp.zeros((65, 3 * 8 - 1), dtype=jnp.float64)
         y0, ld0 = _rqs_forward_1d(x, zero_p, n_bins=8, bound=5.0)
@@ -158,7 +159,7 @@ def test_rqs_1d_identity_invertibility_and_analytic_derivative():
 @pytest.mark.unit
 def test_cayley_orthogonal_is_exact_rotation_and_identity_at_zero():
     """Cayley transform is exact identity at 0 and orthogonal for all finite M."""
-    with jax.enable_x64():
+    with precision_mode(True):
         q0 = _cayley_orthogonal(jnp.zeros((6, 6), dtype=jnp.float64))
         np.testing.assert_allclose(np.asarray(q0), np.eye(6), atol=1e-14)
 
@@ -199,7 +200,7 @@ def test_flow_mixture_bijection_and_exact_jacobian(mode_case):
     np.testing.assert_allclose(ld_fwd + ld_inv, 0.0, atol=1e-9)
 
     # Compare analytic log|det J| against full autodiff Jacobian determinant.
-    with jax.enable_x64():
+    with precision_mode(True):
         fp = mix._jax_flow_params(jnp.float64)
         q_j = (
             None
