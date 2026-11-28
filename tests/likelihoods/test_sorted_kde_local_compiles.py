@@ -168,12 +168,23 @@ def test_units_never_mix_in_the_batched_local_pass(monkeypatch):
         return repair(*args, **kwargs)
 
     monkeypatch.setattr(kernel_density, "_tiled_scaled_kde_log_densities", record_sizes)
+    builds = []
+    build = kernel_density._GroupTiles.build
+
+    def record_build(*args, **kwargs):
+        builds.append(1)
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(kernel_density._GroupTiles, "build", record_build)
     monkeypatch.setattr(
         kernel_density, "_paired_log_space_kde_log_densities", record_repair
     )
     model, time, position, spike_times = fit(6, duration=450.0, block_size=10_000)
     sizes.clear()
+    builds.clear()
     full = predict_local(model, time, position, spike_times)
+    # The tiles are built once per predict call, not once per block.
+    assert len(builds) == 1
     assert [n_points for n_points, *_ in sizes] == [24_960, 24_960]
     for _, n_tiles, rows, batch_size in sizes:
         assert rows == 8_320
