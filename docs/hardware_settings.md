@@ -25,9 +25,9 @@ segment of your own data before a long run.
 | --- | --- | --- | --- |
 | Decoding mode | Structured fit, checkpointed prediction | Same | Same |
 | `chunk_size` | Default | Default | Default; `256` cuts RAM about 3× at similar speed |
-| Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
+| Decoding memory, 1–2 cm | About 1.5 GB of device memory without kept rows; with them up to one more set of time bins × state bins (9.5 GiB for a 23.6 min 2-D decode at 2 cm) | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
 | Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless), including compilation | Not measured | About 30 min (projected from 30 s runs) |
-| EM | Structured EM: 23.6 min at 2 cm in 2.4 GB of device memory, 272 s for 3 iterations after compilation; dense EM needed `n_chunks=8` and 56 GB there | Structured EM should fit (2.4–3.6 GB device peaks on the A100, 2–4 cm); dense EM: 60 s at 2 cm (15.5 GB on the A100) | Dense EM: 60 s at 4 cm took 8–9 min and 10 GB of RAM; structured EM on CPU not measured |
+| EM | Structured EM: 23.6 min at 2 cm, 3 iterations with the encoding model fixed in 256.5 s (sorted) and 330.3 s (clusterless), peaking at 18.3 GiB of device memory with kept rows (1.3 GiB without); dense EM needed `n_chunks=8` and 56 GB there | Structured EM should fit (2.4–3.6 GB device peaks on the A100, 2–4 cm); dense EM: 60 s at 2 cm (15.5 GB on the A100) | Dense EM: 60 s at 4 cm took 8–9 min and 10 GB of RAM; structured EM on CPU not measured |
 | Precision | float32 (default) | float32; float64 is slow on most 24 GB cards | float32 |
 
 ## GPU setup
@@ -53,8 +53,11 @@ Set these environment variables before starting Python:
 
 Fit with `transition_representation="structured"` and predict with
 `inference_mode="checkpointed"` (see
-[performance_prediction.md](performance_prediction.md)). Device memory then
-depends on `chunk_size` and the grid, not on recording length. Run time is
+[performance_prediction.md](performance_prediction.md)). The workspace on the
+device then depends on `chunk_size` and the grid, not on recording length, but
+the rows kept for the backward replay (one set of time bins × state bins,
+float32) also go on the device while it has room, so device memory grows with
+the recording up to that budget (see `replay_cache_bytes` below). Run time is
 proportional to recording length.
 
 **Memory.** With the default `chunk_size`, 120 s recordings at 1 cm and 2 cm
@@ -63,7 +66,10 @@ pools, so any of these GPUs has room to spare. One hour on the A100 peaked at
 1.36–1.48 GB of device memory and 1.6–4.6 GB of host RAM. Device memory rose
 only when the encoding data were large: with 30 minutes of encoding, peaks were
 3.7 GB for either family, including fitting (clusterless peaked at 5.1 GB before
-the compiled clusterless KDE likelihood).
+the compiled clusterless KDE likelihood). These peaks were measured before kept
+rows went on the device. With them, a 23.6 min 2-D decode at 2 cm on the A100
+peaked at 9.5 GiB of device memory instead of 1.0 GiB, and host RSS fell from
+10.6 to 2.1 GB. Pass `replay_cache_bytes=0` for the smaller device footprint.
 
 On a CPU, chunks live in RAM: 30 s at 2 cm peaked at 3.3–3.5 GB with the default
 `chunk_size` (64 sorted units or 8 electrodes, the upper end with rates spread
@@ -107,7 +113,7 @@ with the number of encoding spikes. If it doesn't fit, set `enc_tile_size` with
 | Your data | What runs by default | What to pass |
 | --- | --- | --- |
 | Linearized track, or a coarse 2-D grid (4 cm in a 180 cm arena) | Dense EM (faster there) | Nothing |
-| Finer 2-D grids, or sessions whose dense arrays would not fit | Structured EM (bounded device memory) | `result_path=...` to keep host memory bounded too |
+| Finer 2-D grids, or sessions whose dense arrays would not fit | Structured EM (bounded device workspace) | `result_path=...` to keep host memory bounded too |
 | Reproducing older results exactly | — | `transition_representation="dense"` |
 
 `results.attrs["em_transition_representation"]` records which ran, with the
@@ -122,9 +128,10 @@ starts. `n_chunks` splits its filter and smoother into row chunks.
 
 **Structured EM** runs every E-step on the checkpointed driver: the recording
 is filtered in chunks of `chunk_size` time bins, the boundary between chunks
-is saved, and each chunk is replayed backward for smoothing. Device memory
-depends on `chunk_size` and the grid, not on the recording length. On the
-23.6 min recording below, on a 2 cm 2-D grid:
+is saved, and each chunk is replayed backward for smoothing. Its device
+workspace depends on `chunk_size` and the grid, not on the recording length;
+the rows it keeps (below) grow with the recording. On the 23.6 min recording
+below, on a 2 cm 2-D grid, measured before kept rows went on the device:
 
 | | Dense EM (`n_chunks=8`) | Structured EM | Structured EM with `result_path` |
 | --- | ---: | ---: | ---: |
@@ -132,10 +139,33 @@ depends on `chunk_size` and the grid, not on the recording length. On the
 | Host memory | 110 GB | 71 GB (the posterior, held in memory) | 14 GB |
 | 3 iterations, after compilation | 501 s | 272 s | |
 
-`replay_cache_bytes` keeps forward-pass rows in host memory so the backward
-replay does not recompute them; by default up to 16 GiB, or half the available
-host memory if smaller (counting a container's memory limit). Chunks beyond
-the budget are recomputed, so a smaller budget costs time, not correctness.
+Each E-step keeps forward-pass rows so the backward replay does not recompute
+them, and with `estimate_encoding_model=False` the first E-step also keeps the
+likelihood rows, which every later E-step reuses instead of evaluating the
+likelihood again: up to two sets of time bins × state bins (float32) per
+E-step. Kept rows go on the device while JAX reports memory free there beyond
+a reserve for the filter and smoother's workspace (eight chunks of rows or a
+quarter of the device's limit, whichever is larger; never on CPU), then in
+host memory within `replay_cache_bytes`: by default up to 16 GiB, or half the
+available host memory if smaller (counting a container's memory limit). A
+positive `replay_cache_bytes` caps host memory only; `replay_cache_bytes=0`
+keeps no rows anywhere. Each chunk's likelihood rows are placed before its
+filtered rows, so when the budgets run out the last chunks keep neither and
+are evaluated twice in every E-step. Chunks beyond the budgets are recomputed,
+so smaller budgets cost time, not correctness. On the recording above each set
+of rows is 9.36 GB: with the encoding model fixed, the A100 peak was 18.3 GiB
+instead of 1.3 GiB, and 3 iterations took 256.5 s instead of 289.0 s (sorted
+KDE) and 330.3 s instead of 378.4 s (clusterless KDE). With host memory only,
+the 16 GiB default holds both sets for 32 of its 35 chunks, so by the rule
+(computed, not measured) the first E-step makes 38 likelihood evaluations (35
+before) and each later one 6.
+
+JAX's memory figures do not see memory that other processes hold on the
+same GPU, so on a shared card (for example with
+`XLA_PYTHON_CLIENT_PREALLOCATE=false`) rows can be placed where there is no
+room left. To avoid it, pass `replay_cache_bytes=0`, which keeps no rows on
+the device or in host memory, or limit JAX's share of the card with
+`XLA_PYTHON_CLIENT_MEM_FRACTION`.
 
 "auto" runs dense EM when the float32 interior transition is at most 16 MiB,
 the full transition (every state bin, float64) fits

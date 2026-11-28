@@ -28,6 +28,7 @@ from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.checkpointed_inference import (
     CheckpointedResult,
     default_chunk_size,
+    default_device_cache_bytes,
     default_replay_cache_bytes,
 )
 from non_local_detector.exceptions import ValidationError
@@ -45,6 +46,32 @@ except ImportError:
 
 if TYPE_CHECKING:
     import non_local_detector.models.base
+
+
+# The likelihood and state-probability dtype both entry points pass the driver.
+_DRIVER_DTYPE = np.float32
+
+
+def _device_cache_bytes(chunk_size: int, n_rows: int, n_bins: int) -> int:
+    """Device budget for kept rows, given one chunk's likelihood rows.
+
+    Parameters
+    ----------
+    chunk_size : int
+        Rows per checkpoint chunk.
+    n_rows : int
+        Decode bins of the recording.
+    n_bins : int
+        Interior state bins per row.
+
+    Returns
+    -------
+    device_cache_bytes : int
+        ``default_device_cache_bytes`` for one chunk of ``_DRIVER_DTYPE`` rows.
+    """
+    return default_device_cache_bytes(
+        min(chunk_size, n_rows) * n_bins * np.dtype(_DRIVER_DTYPE).itemsize
+    )
 
 
 def _driver_outputs(requested_outputs: set[str], *, spatial: bool) -> set[str]:
@@ -234,6 +261,7 @@ class _CheckpointedPredictionMixin:
         outputs: Iterable[str] = ("acausal_state_probabilities",),
         transition_statistics: TransitionStatistics | None = None,
         replay_cache_bytes: int,
+        kept_likelihoods: dict[int, Any] | None = None,
     ) -> CheckpointedResult:
         """One whole-recording E-step on the checkpointed driver.
 
@@ -252,7 +280,11 @@ class _CheckpointedPredictionMixin:
         transition_statistics : {None, "counts", "responses"}
             Transition statistics the driver accumulates, or None for none.
         replay_cache_bytes : int
-            Host bytes for forward-pass rows reused by the replay.
+            Host bytes for kept rows: forward-pass rows reused by the replay
+            and the host rows of ``kept_likelihoods``.
+        kept_likelihoods : dict, optional
+            Likelihood rows kept across E-steps while the encoding model is
+            fixed (``checkpointed_forward_backward``); by default None.
 
         Returns
         -------
@@ -281,9 +313,13 @@ class _CheckpointedPredictionMixin:
             chunk_size=chunk_size,
             output_mode="spatial" if output_names & _SPATIAL else "compact",
             return_outputs=output_names,
-            dtype=np.float32,
+            dtype=_DRIVER_DTYPE,
             transition_statistics=transition_statistics,
             replay_cache_bytes=replay_cache_bytes,
+            device_cache_bytes=_device_cache_bytes(
+                chunk_size, len(centers), int(np.count_nonzero(interior))
+            ),
+            kept_likelihoods=kept_likelihoods,
             **self._checkpointed_transition_args(
                 self.discrete_state_transitions_, len(centers)
             ),
@@ -305,13 +341,17 @@ class _CheckpointedPredictionMixin:
         max_read_bytes: int,
         replay_cache_bytes: int | None,
         em_attrs: Callable[[float], dict[str, Any]] | None = None,
+        kept_likelihoods: dict[int, Any] | None = None,
     ) -> tuple[xr.Dataset, np.ndarray]:
         """Decode with complete conditioning and bounded spatial working memory.
 
         ``replay_cache_bytes`` of None uses ``default_replay_cache_bytes()``.
+        Kept rows go on the device first, within
+        ``default_device_cache_bytes()``, unless ``replay_cache_bytes`` is 0.
         ``em_attrs`` maps this pass's marginal log-likelihood to EM's
         attributes, which a result store keeps with the rest so that
         ``load_results`` returns them.
+        ``kept_likelihoods`` are EM's likelihood rows kept across E-steps.
 
         Returns
         -------
@@ -355,7 +395,7 @@ class _CheckpointedPredictionMixin:
         states = state_space.interior_state_ind
         if chunk_size is None:
             chunk_size = default_chunk_size(
-                cast("int", np.count_nonzero(interior)), np.float32
+                cast("int", np.count_nonzero(interior)), _DRIVER_DTYPE
             )
         discrete = (
             self.discrete_state_transitions_
@@ -455,7 +495,7 @@ class _CheckpointedPredictionMixin:
             checkpoint_dir=checkpoint_dir,
             return_outputs=outputs,
             selected_rows=selected,
-            dtype=np.float32,
+            dtype=_DRIVER_DTYPE,
             max_read_bytes=max_read_bytes,
             result_attrs=(
                 attrs
@@ -463,6 +503,10 @@ class _CheckpointedPredictionMixin:
                 else lambda marginal: {**attrs, **em_attrs(marginal)}
             ),
             replay_cache_bytes=replay_cache_bytes,
+            device_cache_bytes=_device_cache_bytes(
+                chunk_size, len(centers), int(np.count_nonzero(interior))
+            ),
+            kept_likelihoods=kept_likelihoods,
             **transition_args,
         )
         degenerate_indices = np.asarray(

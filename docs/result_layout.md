@@ -120,7 +120,7 @@ store at `result_path`; one read larger than `max_read_bytes` raises an error.
 | `n_degenerate` | int | Checkpointed | Rows whose filter was degenerate, over the full decode grid. Results saved by earlier versions also carry `n_nan` and `nan_row_mask_hex`; a NaN or `+inf` log likelihood now raises `DataError` instead |
 | `degenerate_row_mask_hex`, `diagnostic_row_mask_encoding` | str | Checkpointed | Those rows as a bit mask over the full decode grid |
 | `diagnostics_are_global` | bool | Checkpointed | True: the diagnostics cover the full decode grid |
-| `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes` | int | Checkpointed | Run diagnostics |
+| `max_chunk_rows`, `likelihood_evaluations`, `checkpoint_bytes`, `checkpoint_cache_entries`, `replay_cache_bytes`, `replay_cache_device_bytes` | int | Checkpointed | Run diagnostics; the last two are the bytes of rows kept in host and device memory |
 | `global_gradients_supported` | bool | Checkpointed | Run diagnostic |
 | `_native_metadata` | dict | Checkpointed | Internal labels for reopening the store; `save_results` drops it |
 

@@ -600,6 +600,10 @@ class _EMState:
         The last M-step's largest transition-probability change.
     run_log_likelihoods : np.ndarray, shape (n_time, n_interior_state_bins), or None
         A likelihood computed in this run that the next E-step can reuse.
+    kept_likelihoods : dict or None
+        Structured EM with a fixed encoding model: the likelihood rows of
+        each chunk that its E-steps keep and reuse, on the device or in host
+        memory (``checkpointed_forward_backward``).
     transition_statistics : np.ndarray or None
         The last discrete M-step's expected transition statistics.
     monotonicity_violations : list of int
@@ -617,6 +621,7 @@ class _EMState:
     objective_change: float = np.inf
     transition_change: float = np.inf
     run_log_likelihoods: np.ndarray | None = None
+    kept_likelihoods: dict[int, Any] | None = None
     transition_statistics: np.ndarray | None = None
     monotonicity_violations: list[int] = field(default_factory=list)
 
@@ -786,8 +791,11 @@ class _EMMixin:
         host memory on CPU (see ``_dense_em_memory``; unchecked when unknown).
         The dense matrix comes from the fitted operator, which matches the
         dense constructor. When memory alone rules dense EM out, it warns:
-        structured EM recomputes the likelihood on every E-step, which made EM
-        about 9x slower per E-step on a 567k-bin clusterless track decode.
+        structured EM filters in chunks and evaluates the likelihood again in
+        every E-step when the encoding model is re-estimated, or for rows that
+        fit neither its device nor its host budget. When every E-step
+        evaluated it, EM was about 9x slower per E-step than dense EM on a
+        567k-bin clusterless track decode.
 
         Parameters
         ----------
@@ -811,7 +819,9 @@ class _EMMixin:
                 f"because dense EM needs about {working / 1e9:.1f} GB of {where} "
                 f"memory for {n_time} time bins x {n_bins} state bins, more than "
                 f"half of the {limit / 1e9:.1f} GB available. Structured EM "
-                "bounds memory by recomputing the likelihood on every E-step, "
+                "bounds memory by filtering in chunks; it evaluates the "
+                "likelihood again in every E-step when the encoding model is "
+                "re-estimated, or for rows that do not fit its memory budgets, "
                 "which can make EM several times slower. The estimate is "
                 "approximate: if dense EM fits, pass "
                 'transition_representation="dense" to estimate_parameters.',
@@ -932,8 +942,11 @@ class _EMMixin:
             M-steps use the expected transition statistics accumulated in
             the replay. The final E-step returns the same outputs as dense
             EM, held in memory unless ``result_path`` is given. ``n_chunks``
-            must then be 1 and ``cache_likelihood`` has no effect: each
-            uncached chunk evaluates the likelihood twice (see
+            must then be 1 and ``cache_likelihood`` has no effect. With
+            ``estimate_encoding_model=False`` the likelihood rows of the first
+            E-step are kept and reused by every later one, where they fit;
+            each chunk whose rows are not kept is evaluated in every E-step,
+            twice when its forward-pass rows are not kept either (see
             ``replay_cache_bytes``). By default None, which sizes chunks so one
             chunk of float32 likelihoods takes about 256 MiB.
         result_path : str or Path, optional
@@ -945,12 +958,20 @@ class _EMMixin:
             lists every iteration; the store itself records the final one.
             ``store_log_likelihood`` cannot be combined with it.
         replay_cache_bytes : int, optional
-            Structured-transition EM only: host memory for keeping each
+            Structured-transition EM only: host memory for kept rows: each
             E-step's forward-pass rows (filtered rows, or likelihoods when the
             final outputs need them), so the backward replay does not filter
-            and evaluate them again. Chunks beyond the budget are recomputed.
-            By default None, which uses 16 GiB or half the available host
-            memory (counting a container's limit), whichever is smaller.
+            and evaluate them again, and, with a fixed encoding model, the
+            likelihood rows later E-steps reuse. Rows go on the device first,
+            while JAX reports memory free there beyond a reserve for the filter
+            and smoother's workspace (never on CPU), then in host memory within
+            this budget; chunks beyond both are recomputed. A positive value
+            caps host memory only; 0 keeps no rows, on the device either. JAX's
+            figures do not see memory other processes hold on a shared GPU, so
+            rows can be placed where there is no room: pass 0 there, or limit
+            JAX's share of the device (``XLA_PYTHON_CLIENT_MEM_FRACTION``). By
+            default None, which uses 16 GiB or half the available host memory
+            (counting a container's limit), whichever is smaller.
         encoding_fit_arguments : dict, optional
             Arguments of ``_validated_inputs``, except ``weights``,
             that the encoding M-step refits with. Required with
@@ -1000,7 +1021,15 @@ class _EMMixin:
             encoding_fit_arguments=encoding_fit_arguments,
         )
         self._em_reset_fitted_attributes()
-        state = _EMState()
+        # Without encoding refits the likelihood is the same in every E-step,
+        # so structured EM keeps its rows where they fit.
+        state = _EMState(
+            kept_likelihoods=(
+                {}
+                if settings.checkpointed and not settings.estimate_encoding_model
+                else None
+            )
+        )
 
         while not state.converged and (state.n_iter < settings.max_iter):
             e_step = self._em_e_step(settings, state)
@@ -1034,7 +1063,15 @@ class _EMMixin:
         if not state.converged:
             self._em_warn_not_converged(settings, state)
 
-        final = self._em_final_e_step(settings, state)
+        try:
+            final = self._em_final_e_step(settings, state)
+        finally:
+            # Release the kept rows (possibly most of the device) even when
+            # the final E-step raises: emptying the store frees them although
+            # the traceback's driver and E-step frames still hold the dict.
+            if state.kept_likelihoods is not None:
+                state.kept_likelihoods.clear()
+            state.kept_likelihoods = None
         traces = state.traces(final.posterior.marginal_log_likelihood)
 
         # Set after the final E-step, which evaluates the returned parameters
@@ -1312,6 +1349,7 @@ class _EMMixin:
                 cast("int", settings.chunk_size),  # resolved when checkpointed
                 transition_statistics=settings.transition_statistics,
                 replay_cache_bytes=cast("int", settings.replay_cache_bytes),
+                kept_likelihoods=state.kept_likelihoods,
             )
             acausal_state_probabilities = e_step.dataset[
                 "acausal_state_probabilities"
@@ -1720,6 +1758,7 @@ class _EMMixin:
                 # The store is complete before its marginal log-likelihood
                 # reaches this method, so it writes the traces itself.
                 em_attrs=lambda marginal: {**em_attrs, **state.traces(marginal)},
+                kept_likelihoods=state.kept_likelihoods,
             )
             return _EMFinalEStep(
                 _PosteriorOutputs(
@@ -1743,6 +1782,7 @@ class _EMMixin:
                 cast("int", settings.chunk_size),  # resolved when checkpointed
                 outputs=outputs,
                 replay_cache_bytes=cast("int", settings.replay_cache_bytes),
+                kept_likelihoods=state.kept_likelihoods,
             )
             values = {name: final.dataset[name].values for name in final.dataset}
             return _EMFinalEStep(

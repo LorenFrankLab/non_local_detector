@@ -3671,8 +3671,15 @@ class ClusterlessDetector(_DetectorBase):
             Checkpointed mode only: host memory for keeping forward-pass rows
             (filtered rows, or likelihoods when the likelihood or predictive
             outputs are requested) so the backward replay does not recompute
-            them. Chunks beyond the budget are recomputed. By default None,
-            which uses 16 GiB or half the available host memory, whichever is
+            them. Rows go on the device first, while JAX reports memory free
+            there beyond a reserve for the filter and smoother's workspace
+            (never on CPU), then in host memory within this budget; chunks
+            beyond both are recomputed. A positive value caps host memory only;
+            0 keeps no rows, on the device either. JAX's figures do not see
+            memory other processes hold on a shared GPU, so rows can be placed
+            where there is no room: pass 0 there, or limit JAX's share of the
+            device (``XLA_PYTHON_CLIENT_MEM_FRACTION``). By default None, which
+            uses 16 GiB or half the available host memory, whichever is
             smaller.
         return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned.
@@ -3955,9 +3962,12 @@ class ClusterlessDetector(_DetectorBase):
         chunk_size : int, optional
             Rows per checkpoint chunk for structured-transition EM. Working
             memory scales with ``chunk_size`` times the state bins instead of
-            the recording length, and each uncached chunk evaluates the
-            likelihood twice (see ``replay_cache_bytes``; ``cache_likelihood``
-            has no effect). The final E-step returns the same outputs as dense
+            the recording length. With ``estimate_encoding_model=False`` the
+            likelihood rows of the first E-step are reused by every later one
+            where they fit; a chunk whose rows are not kept is evaluated in
+            every E-step, twice when its forward-pass rows are not kept either
+            (see ``replay_cache_bytes``; ``cache_likelihood`` has no effect).
+            The final E-step returns the same outputs as dense
             EM, held in memory unless ``result_path`` is given. Selects
             structured EM under "auto" and cannot be combined with
             ``n_chunks``. By default None, which sizes chunks so one chunk of
@@ -3968,9 +3978,18 @@ class ClusterlessDetector(_DetectorBase):
             does not hold the full posterior. Cannot be combined with
             ``store_log_likelihood``.
         replay_cache_bytes : int, optional
-            Structured-transition EM only: host memory for reusing each
-            E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. Selects structured EM under
+            Structured-transition EM only: host memory for kept rows: each
+            E-step's forward-pass rows, reused in its backward replay instead
+            of filtering and evaluating them again, and, with a fixed encoding
+            model, the likelihood rows later E-steps reuse. Rows go on the
+            device first, while JAX reports memory free there beyond a reserve
+            for the filter and smoother's workspace (never on CPU), then in
+            host memory within this budget; chunks beyond both are recomputed.
+            A positive value caps host memory only; 0 keeps no rows, on the
+            device either. JAX's figures do not see memory other processes hold
+            on a shared GPU, so rows can be placed where there is no room: pass
+            0 there, or limit JAX's share of the device
+            (``XLA_PYTHON_CLIENT_MEM_FRACTION``). Selects structured EM under
             "auto". By default None, which uses 16 GiB or half the available
             host memory (counting a container's limit), whichever is smaller.
 
@@ -4681,8 +4700,15 @@ class SortedSpikesDetector(_DetectorBase):
             Checkpointed mode only: host memory for keeping forward-pass rows
             (filtered rows, or likelihoods when the likelihood or predictive
             outputs are requested) so the backward replay does not recompute
-            them. Chunks beyond the budget are recomputed. By default None,
-            which uses 16 GiB or half the available host memory, whichever is
+            them. Rows go on the device first, while JAX reports memory free
+            there beyond a reserve for the filter and smoother's workspace
+            (never on CPU), then in host memory within this budget; chunks
+            beyond both are recomputed. A positive value caps host memory only;
+            0 keeps no rows, on the device either. JAX's figures do not see
+            memory other processes hold on a shared GPU, so rows can be placed
+            where there is no room: pass 0 there, or limit JAX's share of the
+            device (``XLA_PYTHON_CLIENT_MEM_FRACTION``). By default None, which
+            uses 16 GiB or half the available host memory, whichever is
             smaller.
         return_outputs : str, collection of str, or None, optional
             Controls which optional outputs are returned. See ClusterlessDetector.predict
@@ -4876,9 +4902,12 @@ class SortedSpikesDetector(_DetectorBase):
         chunk_size : int, optional
             Rows per checkpoint chunk for structured-transition EM. Working
             memory scales with ``chunk_size`` times the state bins instead of
-            the recording length, and each uncached chunk evaluates the
-            likelihood twice (see ``replay_cache_bytes``; ``cache_likelihood``
-            has no effect). The final E-step returns the same outputs as dense
+            the recording length. With ``estimate_encoding_model=False`` the
+            likelihood rows of the first E-step are reused by every later one
+            where they fit; a chunk whose rows are not kept is evaluated in
+            every E-step, twice when its forward-pass rows are not kept either
+            (see ``replay_cache_bytes``; ``cache_likelihood`` has no effect).
+            The final E-step returns the same outputs as dense
             EM, held in memory unless ``result_path`` is given. Selects
             structured EM under "auto" and cannot be combined with
             ``n_chunks``. By default None, which sizes chunks so one chunk of
@@ -4889,9 +4918,18 @@ class SortedSpikesDetector(_DetectorBase):
             does not hold the full posterior. Cannot be combined with
             ``store_log_likelihood``.
         replay_cache_bytes : int, optional
-            Structured-transition EM only: host memory for reusing each
-            E-step's forward-pass rows in its backward replay instead of
-            filtering and evaluating them again. Selects structured EM under
+            Structured-transition EM only: host memory for kept rows: each
+            E-step's forward-pass rows, reused in its backward replay instead
+            of filtering and evaluating them again, and, with a fixed encoding
+            model, the likelihood rows later E-steps reuse. Rows go on the
+            device first, while JAX reports memory free there beyond a reserve
+            for the filter and smoother's workspace (never on CPU), then in
+            host memory within this budget; chunks beyond both are recomputed.
+            A positive value caps host memory only; 0 keeps no rows, on the
+            device either. JAX's figures do not see memory other processes hold
+            on a shared GPU, so rows can be placed where there is no room: pass
+            0 there, or limit JAX's share of the device
+            (``XLA_PYTHON_CLIENT_MEM_FRACTION``). Selects structured EM under
             "auto". By default None, which uses 16 GiB or half the available
             host memory (counting a container's limit), whichever is smaller.
 

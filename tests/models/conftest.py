@@ -39,9 +39,10 @@ def sorted_sim():
 
 @pytest.fixture(scope="module")
 def checkpoint_recording():
-    """Builder for a small 2-D detector recording.
+    """Builder for a small 2-D (or 1-D grid) detector recording.
 
-    Calling it with ``"sorted"`` or ``"clusterless"`` returns
+    Calling it with ``"sorted"`` or ``"clusterless"``, and optionally
+    ``dims=1`` for a 1-D grid without a track graph, returns
     ``(model, fit_kwargs, predict_kwargs)``.
     """
     from non_local_detector import (
@@ -50,14 +51,19 @@ def checkpoint_recording():
         NonLocalSortedSpikesDetector,
     )
 
-    def recording(family):
+    def recording(family, dims=2):
         time = np.linspace(0, 2, 61)
-        position = np.column_stack((5 + 4 * np.sin(time), 5 + 4 * np.cos(time)))
+        if dims == 1:
+            position = 5 + 4 * np.sin(time)
+            environment = Environment(place_bin_size=0.5, position_range=((0, 10),))
+        else:
+            position = np.column_stack((5 + 4 * np.sin(time), 5 + 4 * np.cos(time)))
+            environment = Environment(
+                place_bin_size=2, position_range=((0, 10), (0, 10))
+            )
         spikes = [np.array([0.1, 0.3, 0.8, 1.2, 1.9])]
         kwargs = {
-            "environments": Environment(
-                place_bin_size=2, position_range=((0, 10), (0, 10))
-            ),
+            "environments": environment,
             "infer_track_interior": False,
             # The decode edges below are 20 ms wide.
             "sampling_frequency": 50.0,
