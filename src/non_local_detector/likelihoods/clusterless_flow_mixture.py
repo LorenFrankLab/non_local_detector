@@ -957,7 +957,7 @@ def _apply_flow_forward_jax(
 
 
 # ---------------------------------------------------------------------------
-# Latent low-rank-plus-diagonal Gaussian mixture kernels (cancellation-free)
+# Latent low-rank-plus-diagonal Gaussian mixture kernels
 # ---------------------------------------------------------------------------
 
 
@@ -1008,26 +1008,39 @@ def _latent_woodbury_log_density_f64(
     basis_variances: np.ndarray,
     noise_variance: np.ndarray,
 ) -> np.ndarray:
-    """Exact float64 latent Gaussian log-density ``(N, K)`` on host in bounded blocks."""
+    """Float64 latent Gaussian log-density ``(N, K)`` on host in bounded blocks.
+
+    With ``delta = (z - mu_k) / sqrt(psi)`` and ``p = Q_k^T delta`` for the
+    orthonormal (or zero) columns of ``Q_k``, the Mahalanobis distance is
+    ``|delta|^2 + sum_a p_a^2 (1 / lam_ka - 1)``. Both terms are evaluated
+    with matrix products: ``|delta|^2 = |z_std|^2 - 2 z_std . mu_std + |mu_std|^2``
+    and ``p = z_std Q_k - mu_std Q_k``. The expansion rounds with absolute
+    error of order ``eps * (|z_std|^2 + |mu_std|^2)``, which is negligible in
+    float64 for standardized latent marks.
+    """
     n_spikes, n_dims = z.shape
-    n_comp = means.shape[0]
+    n_comp, _, rank = basis.shape
     if n_spikes == 0:
         return np.empty((0, n_comp), dtype=np.float64)
     inv_sqrt_psi = 1.0 / np.sqrt(noise_variance)
     log_det_psi = float(np.sum(np.log(noise_variance)))
-    mu_std = means * inv_sqrt_psi[None, :]
+    mu_std = means * inv_sqrt_psi[None, :]  # (K, D)
+    mu_sq = np.sum(mu_std * mu_std, axis=1)  # (K,)
+    basis_flat = basis.transpose(1, 0, 2).reshape(n_dims, n_comp * rank)  # (D, K*R)
+    mu_proj = np.einsum("kd,kdr->kr", mu_std, basis)  # (K, R)
+    proj_weight = 1.0 / basis_variances - 1.0  # (K, R)
     log_det_k = log_det_psi + np.sum(np.log(basis_variances), axis=-1)
     log_const = -0.5 * (float(n_dims) * np.log(2.0 * np.pi) + log_det_k)
     out = np.empty((n_spikes, n_comp), dtype=np.float64)
     for start in range(0, n_spikes, _E_STEP_BLOCK):
         stop = min(start + _E_STEP_BLOCK, n_spikes)
-        z_std = z[start:stop] * inv_sqrt_psi[None, :]
-        delta = z_std[:, None, :] - mu_std[None, :, :]
-        proj = np.einsum("nkd,kdr->nkr", delta, basis)
-        recon = np.einsum("nkr,kdr->nkd", proj, basis)
-        orth_sq = np.sum((delta - recon) ** 2, axis=-1)
-        par_sq = np.sum((proj * proj) / basis_variances[None, :, :], axis=-1)
-        out[start:stop] = log_const[None, :] - 0.5 * (orth_sq + par_sq)
+        z_std = z[start:stop] * inv_sqrt_psi[None, :]  # (n, D)
+        delta_sq = (
+            np.sum(z_std * z_std, axis=1)[:, None] - 2.0 * (z_std @ mu_std.T) + mu_sq
+        )  # (n, K)
+        proj = (z_std @ basis_flat).reshape(stop - start, n_comp, rank) - mu_proj
+        proj_term = np.einsum("nkr,kr->nk", proj * proj, proj_weight)
+        out[start:stop] = log_const[None, :] - 0.5 * (delta_sq + proj_term)
     return out
 
 
