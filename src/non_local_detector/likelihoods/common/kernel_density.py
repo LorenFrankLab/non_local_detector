@@ -995,7 +995,7 @@ def kde_log_density_rows(
     *,
     log_floor: LogFloor | None = None,
     tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
-) -> np.ndarray:
+) -> jax.Array:
     """:func:`kde_log_densities` as one host array, one row per model.
 
     Parameters
@@ -1022,18 +1022,28 @@ def kde_log_density_rows(
 
     Returns
     -------
-    log_densities : np.ndarray, shape (n_models, n_points)
-        In the order of ``models``, in their common dtype.
+    log_densities : jax.Array, shape (n_models, n_points)
+        In the order of ``models``, in their common dtype. When the models
+        form one group, as one fit's do, and nothing needs log space, the
+        values never leave the device.
     """
-    points = jnp.asarray(points)
+    # Host points stay on the host: the pass's host work reads them there.
+    points = points if isinstance(points, jax.Array) else np.asarray(points)
     if points.ndim == 1:
         points = points[:, None]
+    groups, others = _model_groups(models, points)
+    if not others and len(groups) == 1:
+        ((key, members),) = groups.items()
+        if members == list(range(len(models))):
+            return jnp.asarray(
+                _group_log_densities(models, members, key[0], points, log_floor, tiles)
+            )
     results = _kde_log_density_list(models, points, log_floor, tiles)
     if not results:
-        return np.empty(
+        return jnp.empty(
             (0, points.shape[0]), jax.dtypes.canonicalize_dtype(jnp.float64)
         )
-    return np.stack([np.asarray(row) for row in results])
+    return jnp.asarray(np.stack([np.asarray(row) for row in results]))
 
 
 # (model, point) arrays the tiled pass holds at once, in units of the float
@@ -1161,20 +1171,24 @@ def tiled_kde_block(
     return n_blocks * block, block
 
 
-def _kde_log_density_list(
-    models: Sequence["KDEModel"],
-    points: jax.Array,
-    log_floor: LogFloor | None = None,
-    tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
-) -> list[np.ndarray | jax.Array]:
-    """Each model's log densities in its own dtype; see :func:`kde_log_density_rows`."""
-    if points.ndim == 1:
-        points = points[:, None]
-    results: list[np.ndarray | jax.Array] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
+def _model_groups(
+    models: Sequence["KDEModel"], points: jax.Array | np.ndarray
+) -> tuple[dict[tuple[Any, ...], list[int]], list[int]]:
+    """Group exact ``KDEModel`` models that share one tiled pass.
+
+    Returns
+    -------
+    groups : dict
+        By block size, bandwidth and sample and weight dtypes: the members'
+        indices, in order. The key's first entry is the block size.
+    others : list of int
+        Models that are not exactly ``KDEModel``.
+    """
     groups: dict[tuple[Any, ...], list[int]] = {}
+    others: list[int] = []
     for index, model in enumerate(models):
         if type(model) is not KDEModel:
-            results[index] = kde_log_density(model, points)
+            others.append(index)
             continue
         if model.samples_ is None:
             msg = "This KDE instance is not fitted yet."
@@ -1189,25 +1203,57 @@ def _kde_log_density_list(
             np.dtype(model.weights_.dtype).str,
         )
         groups.setdefault(key, []).append(index)
+    return groups, others
+
+
+def _group_log_densities(
+    models: Sequence["KDEModel"],
+    members: list[int],
+    block_size: int,
+    points: jax.Array | np.ndarray,
+    log_floor: LogFloor | None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None,
+) -> jax.Array | np.ndarray:
+    """One group's tiled pass (see :func:`_tiled_kde_log_densities`), with its tiles."""
+    if tiles is None:
+        tiles = {}
+    tiles_key = (points.shape[1], *members)
+    if tiles_key not in tiles:
+        tiles[tiles_key] = _GroupTiles.build(
+            [np.asarray(models[i].samples_) for i in members],
+            [np.asarray(models[i].weights_) for i in members],
+            one_dimensional=points.shape[1] == 1,
+        )
+    return _tiled_kde_log_densities(
+        points,
+        tiles[tiles_key],
+        as_std_array(models[members[0]].std, points.shape[1]),
+        block_size,
+        log_floor=None
+        if log_floor is None
+        else (np.asarray(log_floor[0])[members], log_floor[1]),
+    )
+
+
+def _kde_log_density_list(
+    models: Sequence["KDEModel"],
+    points: jax.Array | np.ndarray,
+    log_floor: LogFloor | None = None,
+    tiles: dict[tuple[int, ...], "_GroupTiles"] | None = None,
+) -> list[np.ndarray | jax.Array]:
+    """Each model's log densities in its own dtype; see :func:`kde_log_density_rows`."""
+    if points.ndim == 1:
+        points = points[:, None]
+    results: list[np.ndarray | jax.Array] = [None] * len(models)  # type: ignore[list-item]  # every slot is filled before return
+    groups, others = _model_groups(models, points)
+    for index in others:
+        results[index] = kde_log_density(models[index], jnp.asarray(points))
     if tiles is None:
         tiles = {}
     for (block_size, *_), members in groups.items():
-        tiles_key = (points.shape[1], *members)
-        if tiles_key not in tiles:
-            tiles[tiles_key] = _GroupTiles.build(
-                [np.asarray(models[i].samples_) for i in members],
-                [np.asarray(models[i].weights_) for i in members],
-                one_dimensional=points.shape[1] == 1,
-            )
-        group = tiles[tiles_key]
-        values = _tiled_kde_log_densities(
-            points,
-            group,
-            as_std_array(models[members[0]].std, points.shape[1]),
-            block_size,
-            log_floor=None
-            if log_floor is None
-            else (np.asarray(log_floor[0])[members], log_floor[1]),
+        # Copied to the host: device indexing compiles a kernel per shape.
+        values = np.asarray(
+            _group_log_densities(models, members, block_size, points, log_floor, tiles)
         )
         for row, index in enumerate(members):
             results[index] = values[row]
@@ -2196,14 +2242,14 @@ class _GroupTiles:
 
 
 def _tiled_kde_log_densities(
-    points: jax.Array,
+    points: jax.Array | np.ndarray,
     group: _GroupTiles,
     std: jax.Array,
     block_size: int,
     *,
     log_floor: LogFloor | None = None,
-) -> np.ndarray:
-    """Return the true log densities of KDEs sharing a bandwidth, on the host.
+) -> jax.Array | np.ndarray:
+    """Return the true log densities of KDEs sharing a bandwidth.
 
     One tiled scaled pass for every model, then one log-space pass that
     evaluates each flagged model at its own flagged points only (see
@@ -2214,7 +2260,7 @@ def _tiled_kde_log_densities(
 
     Parameters
     ----------
-    points : jax.Array, shape (n_points, n_dims), n_points >= 1
+    points : array, shape (n_points, n_dims), n_points >= 1
         Evaluation points.
     group : _GroupTiles
         The models' tiles and, for 1D points, sorted keys.
@@ -2227,7 +2273,9 @@ def _tiled_kde_log_densities(
 
     Returns
     -------
-    log_densities : np.ndarray, shape (n_models, n_points)
+    log_densities : jax.Array or np.ndarray, shape (n_models, n_points)
+        On the device when no point needed log space, otherwise the host
+        array the repair wrote into.
     """
     n_models = group.counts.size
     if points.shape[0] == 0:
@@ -2266,10 +2314,10 @@ def _tiled_kde_log_densities(
         rows=rows,
         batch_size=batch_size,
     )
+    if not bool(jnp.any(needs_log_space)):
+        return cast(jax.Array, values)
     # Copied to the host: device indexing compiles a kernel per shape.
     values, needs_log_space = np.array(values), np.asarray(needs_log_space)
-    if not needs_log_space.any():
-        return values
     # Each flagged model is evaluated at its own flagged points only, in
     # blocks of _KDE_REPAIR_POINTS (the last repeats its last point): one
     # item per tile and block. Blocks and items are padded to powers of two,

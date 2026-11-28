@@ -637,7 +637,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             log_likelihood = _local_kde_log_likelihood(
                 log_marginals,
                 block_log_occupancy,
-                pad_rows(counts, n_padded),
+                counts if n_padded == n_rows else pad_rows(counts, n_padded),
                 rates,
                 pad(host_durations[block]),
             )
