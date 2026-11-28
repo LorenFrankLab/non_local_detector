@@ -210,7 +210,7 @@ access from plotting, dense prediction or Viterbi fails before allocation.
 Pickling retains the compact operator. `estimate_parameters` chooses dense or
 structured EM by default (`transition_representation="auto"`); structured EM
 runs every E-step on the checkpointed driver, so its device workspace does not
-grow with recording length (2.4 GB for 23.6 min on a 2 cm 2-D grid), but the
+grow with recording length (1.3 GiB for 23.6 min on a 2 cm 2-D grid), but the
 rows it keeps for reuse, up to two sets of time bins × state bins per E-step,
 go on the device while it has room (18.3 GiB on that recording with the
 encoding model fixed; `replay_cache_bytes=0` keeps none). Its host memory still holds the returned posterior unless `result_path`

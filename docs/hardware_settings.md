@@ -25,9 +25,9 @@ segment of your own data before a long run.
 | --- | --- | --- | --- |
 | Decoding mode | Structured fit, checkpointed prediction | Same | Same |
 | `chunk_size` | Default | Default | Default; `256` cuts RAM about 3× at similar speed |
-| Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
+| Decoding memory, 1–2 cm | About 1.5 GB of device memory without kept rows; with them up to one more set of time bins × state bins (9.5 GiB for a 23.6 min 2-D decode at 2 cm) | Fits; measured within a 4 GB pool | 3.3–3.5 GB of RAM at 2 cm (4.0 GB with 256 units; about 1 GB with `chunk_size=256`) |
 | Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless), including compilation | Not measured | About 30 min (projected from 30 s runs) |
-| EM | Structured EM: 23.6 min at 2 cm in 2.4 GB of device memory without kept rows (18.3 GiB with the encoding model fixed, which keeps the likelihood rows too), 272 s for 3 iterations after compilation; dense EM needed `n_chunks=8` and 56 GB there | Structured EM should fit (2.4–3.6 GB device peaks on the A100, 2–4 cm); dense EM: 60 s at 2 cm (15.5 GB on the A100) | Dense EM: 60 s at 4 cm took 8–9 min and 10 GB of RAM; structured EM on CPU not measured |
+| EM | Structured EM: 23.6 min at 2 cm, 3 iterations with the encoding model fixed in 256.5 s (sorted) and 330.3 s (clusterless), peaking at 18.3 GiB of device memory with kept rows (1.3 GiB without); dense EM needed `n_chunks=8` and 56 GB there | Structured EM should fit (2.4–3.6 GB device peaks on the A100, 2–4 cm); dense EM: 60 s at 2 cm (15.5 GB on the A100) | Dense EM: 60 s at 4 cm took 8–9 min and 10 GB of RAM; structured EM on CPU not measured |
 | Precision | float32 (default) | float32; float64 is slow on most 24 GB cards | float32 |
 
 ## GPU setup
@@ -156,8 +156,9 @@ so smaller budgets cost time, not correctness. On the recording above each set
 of rows is 9.36 GB: with the encoding model fixed, the A100 peak was 18.3 GiB
 instead of 1.3 GiB, and 3 iterations took 256.5 s instead of 289.0 s (sorted
 KDE) and 330.3 s instead of 378.4 s (clusterless KDE). With host memory only,
-the 16 GiB default holds both sets for 32 of its 35 chunks, so the first
-E-step makes 38 likelihood evaluations (35 before) and each later one 6.
+the 16 GiB default holds both sets for 32 of its 35 chunks, so by the rule
+(computed, not measured) the first E-step makes 38 likelihood evaluations (35
+before) and each later one 6.
 
 JAX's memory figures do not see memory that other processes hold on the
 same GPU, so on a shared card (for example with
