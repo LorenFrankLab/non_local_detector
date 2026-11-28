@@ -118,15 +118,22 @@ smaller budget.
 The replay evaluates each chunk's likelihood again unless the forward pass kept
 it, `n_bins` float32 values per row. When no likelihood or predictive output is
 requested the filtered rows are kept, so a kept chunk is also not filtered
-again; otherwise the likelihood is kept. Rows go on the device while it reports
-memory free beyond a reserve for the filter and smoother's workspace (eight
-chunks of rows or a quarter of the device's limit, whichever is larger; nothing
-on CPU), then in host memory within `replay_cache_bytes`, by default up to
-16 GiB or half the available host memory, whichever is smaller. Chunks beyond
-both are recomputed, so smaller budgets cost time, not correctness. The peak
-memory figures above were measured without kept rows; with them, device and
-host memory grow by up to those budgets. Pass `replay_cache_bytes=0` to keep
-the previous host footprint. `checkpoint_dir` chooses
+again; otherwise the likelihood is kept. Rows go on the device while JAX
+reports memory free there beyond a reserve for the filter and smoother's
+workspace (eight chunks of rows or a quarter of the device's limit, whichever
+is larger; never on CPU), then in host memory within `replay_cache_bytes`, by
+default up to 16 GiB or half the available host memory, whichever is smaller.
+A positive `replay_cache_bytes` caps host memory only; `replay_cache_bytes=0`
+keeps no rows, on the device either. Chunks beyond both budgets are
+recomputed, so smaller budgets cost time, not correctness. The peak memory
+figures above were measured without kept rows; with them, device and host
+memory grow by up to those budgets: a 23.6 min 2-D decode at 2 cm on the A100
+peaked at 9.5 GiB of device memory instead of 1.0 GiB, with host RSS 2.1 GB
+instead of 10.6 GB. Pass `replay_cache_bytes=0` to keep the previous footprint.
+JAX's memory figures do not see memory other processes hold on the same GPU,
+so on a shared card rows can be placed where there is no room left; pass
+`replay_cache_bytes=0` there, or limit JAX's share of the card with
+`XLA_PYTHON_CLIENT_MEM_FRACTION`. `checkpoint_dir` chooses
 where temporary boundary files are written; files are removed after success or
 failure. Supplying `result_path` also persists compact outputs when desired.
 
@@ -202,8 +209,11 @@ view. Feasible selections and explicit conversion are budgeted; oversized dense
 access from plotting, dense prediction or Viterbi fails before allocation.
 Pickling retains the compact operator. `estimate_parameters` chooses dense or
 structured EM by default (`transition_representation="auto"`); structured EM
-runs every E-step on the checkpointed driver, so its device memory does not
-grow with recording length (2.4 GB for 23.6 min on a 2 cm 2-D grid). Its host memory still holds the returned posterior unless `result_path`
+runs every E-step on the checkpointed driver, so its device workspace does not
+grow with recording length (2.4 GB for 23.6 min on a 2 cm 2-D grid), but the
+rows it keeps for reuse, up to two sets of time bins × state bins per E-step,
+go on the device while it has room (18.3 GiB on that recording with the
+encoding model fixed; `replay_cache_bytes=0` keeps none). Its host memory still holds the returned posterior unless `result_path`
 is given, and the clusterless KDE likelihood's cost grows faster than the
 recording during EM. Viterbi stays dense and is not suitable for full-hour
 spatial workloads.
