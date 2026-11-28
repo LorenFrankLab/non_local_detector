@@ -2410,7 +2410,12 @@ def fit_clusterless_probe_mixture_encoding_model(
         Per-electrode physical contact coordinates (each shape
         ``(n_channels, n_probe_dims)``), a ``ProbeGeometry`` whose
         ``shank_order`` names the shank of each electrode (required for more
-        than one shank), or None (dense full-group support).
+        than one shank), or None (dense full-group support: every component
+        spans every channel). Local supports are what keep the fit affordable
+        on very many contacts, but they cost information where full support
+        is affordable: on a 31-contact polymer shank with 26-40 um pitch and
+        measured noise covariances, full support (None) gave 9.8 nats/s more
+        held-out information than the default support of about 7 contacts.
     noise_covariances : sequence of array_like or None, or None, optional
         Optional per-electrode measured channel noise covariance matrices (each
         shape ``(n_channels, n_channels)`` SPD with condition number at most
@@ -2429,25 +2434,43 @@ def fit_clusterless_probe_mixture_encoding_model(
     neighborhood_radius : float or None, optional
         Physical contact radius for each component's local support ``S_k``.
         By default None (auto-inferred as 3x median nearest-neighbor pitch).
+        On the 31-contact shank above, a 130 um radius recovered about half
+        of the 9.8 nats/s that full support gained over the default.
     max_local_channels : int or None, optional
         Maximum contacts in each component's local support ``S_k``, by default
         16. None keeps all contacts within ``neighborhood_radius``.
     covariance_rank : int or None, optional
         Low-rank factor dimension ``r`` per component on ``S_k``, by default 4.
-        Automatically uses full covariance whenever ``covariance_rank is None``
-        or ``covariance_rank >= len(S_k)`` (e.g. on tetrodes).
+        An integer keeps the factor-analysis form ``Sigma_k = Psi + U_k
+        U_k^T`` with rank ``min(r, len(S_k))``, so on ``S_k`` the covariance
+        is never below the shared residual variance ``Psi``. None gives each
+        component an unconstrained full covariance on ``S_k``, floored only at
+        ``mark_reg_covar`` (1.0 in whitened units). The two agree when every
+        component spans every channel (no ``contact_positions``, or a
+        tetrode) and ``r`` is at least the channel count: both then fit the
+        unconstrained full covariance. On local supports, ``r >= len(S_k)``
+        keeps all ``len(S_k)`` factors but also the ``Psi`` floor, so it does
+        not behave like None.
     tail_df : float or None, optional
-        Optional heavy-tail degrees of freedom (must be strictly ``> 3.0`` when
-        set, e.g. ``4.0``-``8.0``). When None (default), uses exact Gaussians.
-        When set, models each component's local support ``S_k`` and each
-        independent off-support channel with a 5-point Gamma-quantile Gaussian
-        scale mixture, improving robustness to complex-spike bursts, spike
-        collisions, and overlapping MUA while preserving exact normalization
-        and exponential ``No-Spike`` tail dominance on every ray.
+        Experimental. Heavy-tail degrees of freedom (must be strictly
+        ``> 3.0`` when set, e.g. ``4.0``-``8.0``). When None (default), uses
+        exact Gaussians. When set, models each component's local support
+        ``S_k`` and each independent off-support channel with a 5-point
+        Gamma-quantile Gaussian scale mixture, meant for complex-spike bursts,
+        spike collisions, and overlapping MUA, while preserving exact
+        normalization and exponential ``No-Spike`` tail dominance on every
+        ray. A finite scale mixture is not a Student-t: its far tails are
+        Gaussian (those of its widest scale). On real data ``tail_df=5``
+        lowered held-out information on both datasets tried (by 7.2 nats/s on
+        a 31-contact polymer probe and 2.6 nats/s on tetrodes).
     n_mark_components : int, optional
-        Upper bound on initial components per electrode (distributed
-        proportionally across active probe tiles by spike weight when tiled,
-        with at least 1 component per active tile), by default 32.
+        Initial components per electrode, by default 32. Without tiling it
+        is an upper bound. With ``contact_positions`` an electrode wider than
+        one local neighborhood is split into probe tiles, and the components
+        are distributed across the tiles with spikes in proportion to their
+        spike weight, with at least 1 per tile, so an electrode with more
+        active tiles than ``n_mark_components`` starts with one component per
+        tile, more than ``n_mark_components``.
     mark_weight_concentration : float or None, optional
         Dirichlet-process concentration for initialization, by default None.
     mark_reg_covar : float, optional
@@ -2471,7 +2494,10 @@ def fit_clusterless_probe_mixture_encoding_model(
     em_validation_blocks : int, optional
         Number of contiguous equal-exposure inner validation blocks used to
         choose the EM iteration count, by default 4. Set 0 to run directly on
-        all encoding data (useful for matched flat refits).
+        all encoding data (useful for matched flat refits), stopping when the
+        training gain per spike falls below ``em_tol``. With 1, or too little
+        exposure to form 2 blocks, there is no inner validation either, and
+        EM runs all ``n_em_iterations`` without early stopping.
     em_patience : int, optional
         Stop inner validation after this many consecutive iterations without
         validation improvement, by default 5.
