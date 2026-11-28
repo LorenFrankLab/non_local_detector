@@ -91,6 +91,77 @@ def test_incremental_selected_rows_keep_entire_recording_context(
         np.testing.assert_array_equal(loaded[name], result[name])
 
 
+def _placed_prediction(model, predict, tmp_path, output_mode, budgets):
+    """Checkpointed predict with ``(device, host)`` row budgets in chunks.
+
+    Compact output keeps filtered rows; spatial output with every output
+    keeps likelihood rows. Returns the results and one chunk's bytes.
+    """
+    from non_local_detector.models import _checkpointed
+
+    chunk_bytes = 20 * int(model.state_space_.is_track_interior.sum()) * 4
+    device_chunks, host_chunks = budgets
+    extra = (
+        {"result_path": tmp_path / f"{device_chunks}-{host_chunks}"}
+        if output_mode == "spatial"
+        else {}
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            _checkpointed,
+            "default_device_cache_bytes",
+            lambda nbytes: device_chunks * nbytes,
+        )
+        results = model.predict(
+            **predict,
+            inference_mode="checkpointed",
+            output_mode=output_mode,
+            chunk_size=20,
+            replay_cache_bytes=host_chunks * chunk_bytes,
+            return_outputs="all" if output_mode == "spatial" else None,
+            **extra,
+        )
+    return results, chunk_bytes
+
+
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+@pytest.mark.parametrize("dims", [1, 2])
+@pytest.mark.parametrize("output_mode", ["compact", "spatial"])
+def test_checkpointed_prediction_row_placement_does_not_change_results(
+    checkpoint_recording, tmp_path, family, dims, output_mode
+):
+    """Rows kept on the device, in host memory or recomputed give identical outputs.
+
+    Rows go on the device while they fit its budget, then in host memory while
+    they fit that one, and are otherwise evaluated again in the replay.
+    """
+    model, fit, predict = checkpoint_recording(family, dims)
+    model.fit(**fit, transition_representation="structured")
+    reference, _ = _placed_prediction(model, predict, tmp_path, output_mode, (0, 0))
+    # Five chunks of 20 rows: each is evaluated twice without a kept array.
+    assert reference.attrs["likelihood_evaluations"] == 10
+    for budgets, evaluations, kept in [
+        ((100, 0), 5, (5, 0)),
+        ((0, 100), 5, (0, 5)),
+        ((2, 2), 6, (2, 2)),
+    ]:
+        results, chunk = _placed_prediction(
+            model, predict, tmp_path, output_mode, budgets
+        )
+        assert results.attrs["likelihood_evaluations"] == evaluations
+        assert (
+            results.attrs["replay_cache_device_bytes"],
+            results.attrs["replay_cache_bytes"],
+        ) == (kept[0] * chunk, kept[1] * chunk)
+        assert set(results.data_vars) == set(reference.data_vars)
+        for name in reference.data_vars:
+            np.testing.assert_array_equal(results[name].values, reference[name].values)
+        np.testing.assert_array_equal(
+            results.attrs["marginal_log_likelihoods"],
+            reference.attrs["marginal_log_likelihoods"],
+        )
+
+
 def test_checkpoint_options_do_not_silently_use_dense_prediction(
     checkpoint_recording, tmp_path
 ):

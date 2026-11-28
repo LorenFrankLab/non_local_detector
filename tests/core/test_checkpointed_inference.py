@@ -207,6 +207,142 @@ def test_replay_cache_skips_recomputation(
         np.testing.assert_array_equal(result.dataset.log_likelihood, ll)
 
 
+def _counted_problem():
+    """Four chunks (rows 0-3, 4-7, 8-11, 12) and a callback that counts calls."""
+    edges, initial, ll, state_ind, kwargs, _ = problem(n_time=13)
+    calls = []
+
+    @row_slice_aware
+    def likelihood(*, time_edges, row_slice, is_missing):
+        calls.append(row_slice.start)
+        return ll[row_slice]
+
+    def run(**driver_kwargs):
+        return checkpointed_forward_backward(
+            edges,
+            initial,
+            likelihood,
+            state_ind=state_ind,
+            chunk_size=4,
+            output_mode="spatial",
+            **kwargs,
+            **driver_kwargs,
+        )
+
+    # Bytes of one full chunk of float32 rows.
+    return run, calls, 4 * ll.shape[1] * 4
+
+
+@pytest.mark.parametrize(
+    ("device_chunks", "host_chunks", "kept", "evaluations"),
+    # The last chunk holds one row, a quarter of a full chunk.
+    [
+        (4, 0, (3.25, 0), 4),
+        (0, 4, (0, 3.25), 4),
+        (2, 1, (2, 1), 5),
+        (0, 0, (0, 0), 8),
+    ],
+)
+@pytest.mark.parametrize("keep_likelihood", [False, True])
+def test_kept_rows_go_on_the_device_then_in_host_memory(
+    device_chunks, host_chunks, kept, evaluations, keep_likelihood
+):
+    """Rows are kept on the device within its budget, then in host memory.
+
+    Rows beyond both budgets are recomputed; the outputs are identical.
+    """
+    run, calls, chunk = _counted_problem()
+    outputs = ("acausal_posterior", "causal_posterior") + (
+        ("log_likelihood",) if keep_likelihood else ()
+    )
+    reference = run(return_outputs=outputs)
+    calls.clear()
+    result = run(
+        return_outputs=outputs,
+        device_cache_bytes=device_chunks * chunk,
+        replay_cache_bytes=host_chunks * chunk,
+    )
+    assert len(calls) == result.diagnostics["likelihood_evaluations"] == evaluations
+    assert (
+        result.diagnostics["replay_cache_device_bytes"],
+        result.diagnostics["replay_cache_bytes"],
+    ) == (kept[0] * chunk, kept[1] * chunk)
+    for name in outputs:
+        np.testing.assert_array_equal(result.dataset[name], reference.dataset[name])
+    assert result.marginal_log_likelihood == reference.marginal_log_likelihood
+
+
+def test_kept_likelihoods_are_reused_by_later_calls():
+    """A caller's store keeps likelihood rows across calls, within the budgets.
+
+    Its host rows count against ``replay_cache_bytes`` in later calls.
+    """
+    run, calls, chunk = _counted_problem()
+    outputs = ("acausal_posterior", "log_likelihood")
+    reference = run(return_outputs=outputs)
+    kept = {}
+    # Chunks 0 and 1 keep their likelihood and filtered rows in the first
+    # call; chunks 2 and 3 are evaluated again in its replay.
+    calls.clear()
+    first = run(
+        return_outputs="acausal_posterior",
+        replay_cache_bytes=4 * chunk,
+        kept_likelihoods=kept,
+    )
+    assert calls == [0, 4, 8, 9, 9, 8]
+    assert sorted(kept) == [0, 4]
+    # Two chunks of the budget remain, for chunks 0 and 1's filtered rows.
+    calls.clear()
+    second = run(
+        return_outputs="acausal_posterior",
+        replay_cache_bytes=4 * chunk,
+        kept_likelihoods=kept,
+    )
+    assert calls == [8, 9, 9, 8]
+    assert second.diagnostics["replay_cache_bytes"] == 2 * chunk
+    # The likelihood output of a later call replays from the kept rows.
+    calls.clear()
+    third = run(
+        return_outputs=outputs,
+        device_cache_bytes=4 * chunk,
+        kept_likelihoods=kept,
+    )
+    assert calls == [8, 9]
+    assert sorted(kept) == [0, 4, 8, 12]
+    for result in (first, second, third):
+        np.testing.assert_array_equal(
+            result.dataset.acausal_posterior, reference.dataset.acausal_posterior
+        )
+        assert result.marginal_log_likelihood == reference.marginal_log_likelihood
+    np.testing.assert_array_equal(
+        third.dataset.log_likelihood, reference.dataset.log_likelihood
+    )
+
+
+def test_kept_likelihoods_do_not_skip_the_replay_check():
+    """A chunk the replay evaluates again is still checked against the forward pass."""
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    counts = {}
+
+    @row_slice_aware
+    def callback(*, time_edges, row_slice, is_missing):
+        counts[row_slice.start] = counts.get(row_slice.start, 0) + 1
+        return ll[row_slice] + counts[row_slice.start]
+
+    with pytest.raises(ValueError, match="changed during checkpoint replay"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            callback,
+            state_ind=state_ind,
+            chunk_size=4,
+            # Only chunk 0's likelihood is kept.
+            replay_cache_bytes=4 * ll.shape[1] * 4,
+            kept_likelihoods={},
+            **kwargs,
+        )
+
+
 @pytest.mark.parametrize("covariate", [False, True])
 def test_compact_selected_rows_keep_whole_recording_context(tmp_path, covariate):
     edges, initial, ll, state_ind, kwargs, reference = problem(covariate)

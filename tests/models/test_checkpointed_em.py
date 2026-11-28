@@ -25,19 +25,29 @@ N_BINS = 300
 RATE = 50.0
 
 
-def _recording(family):
-    """Three place cells on a 2-D arena, 6 s, 20 ms decode bins."""
+def _recording(family, dims=2):
+    """Three place cells on a 2-D arena or a 1-D grid, 6 s, 20 ms decode bins.
+
+    The 1-D grid has no track graph, so its transitions have a structured
+    operator, as the 2-D grid's do.
+    """
     rng = np.random.default_rng(4)
     position_time = np.linspace(0, 6, 301)
-    position = np.column_stack(
-        (5 + 4 * np.sin(position_time), 5 + 4 * np.cos(position_time / 2))
-    )
-    centers = np.array([[2.0, 5.0], [8.0, 5.0], [5.0, 8.0]])
+    if dims == 1:
+        position = 5 + 4 * np.sin(position_time)
+        squared_distance = (position[:, None] - np.array([2.0, 5.0, 8.0])) ** 2
+        environment = Environment(place_bin_size=0.5, position_range=((0, 10),))
+    else:
+        position = np.column_stack(
+            (5 + 4 * np.sin(position_time), 5 + 4 * np.cos(position_time / 2))
+        )
+        centers = np.array([[2.0, 5.0], [8.0, 5.0], [5.0, 8.0]])
+        squared_distance = np.sum((position[:, None] - centers[None]) ** 2, axis=-1)
+        environment = Environment(place_bin_size=2, position_range=((0, 10), (0, 10)))
     spike_times = []
-    for center in centers:
-        rate = 40 * np.exp(-np.sum((position - center) ** 2, axis=1) / 4)
+    for distance in squared_distance.T:
+        rate = 40 * np.exp(-distance / 4)
         spike_times.append(np.sort(position_time[rng.poisson(rate / 50) > 0]))
-    environment = Environment(place_bin_size=2, position_range=((0, 10), (0, 10)))
     kwargs = {
         "environments": environment,
         "infer_track_interior": False,
@@ -577,6 +587,168 @@ def test_checkpointed_em_replay_cache_does_not_change_results(monkeypatch, famil
         cached.attrs["marginal_log_likelihoods"],
         uncached.attrs["marginal_log_likelihoods"],
     )
+
+
+def _record_passes(monkeypatch):
+    """Collect each checkpointed pass's diagnostics."""
+    from non_local_detector import checkpointed_inference
+
+    passes = []
+    driver = checkpointed_inference.checkpointed_forward_backward
+
+    def recording_driver(*args, **kwargs):
+        result = driver(*args, **kwargs)
+        passes.append(result.diagnostics)
+        return result
+
+    monkeypatch.setattr(
+        checkpointed_inference, "checkpointed_forward_backward", recording_driver
+    )
+    return passes
+
+
+@pytest.mark.parametrize("dims", [1, 2])
+@pytest.mark.parametrize("estimate_encoding_model", [False, True])
+def test_structured_em_evaluates_a_fixed_likelihood_once(
+    monkeypatch, dims, estimate_encoding_model
+):
+    """A fixed encoding model's likelihood is evaluated in the first E-step only.
+
+    After an encoding refit it is evaluated again. Every row fits the default
+    budgets here, so the replay evaluates nothing.
+    """
+    passes = _record_passes(monkeypatch)
+    model, data = _recording("sorted", dims)
+    _fit(
+        model,
+        data,
+        transition_representation="structured",
+        chunk_size=50,
+        estimate_encoding_model=estimate_encoding_model,
+    )
+    # Six chunks per pass: three in-loop E-steps and the final one.
+    evaluations = [diagnostics["likelihood_evaluations"] for diagnostics in passes]
+    assert evaluations == ([6] * 4 if estimate_encoding_model else [6, 0, 0, 0])
+
+
+# (device, host) budgets for kept rows, in chunks of likelihood rows. None
+# keeps the default host budget, which holds every row here.
+_PLACEMENTS = {
+    "recompute": (0, 0),
+    "device": (100, 0),
+    "host": (0, None),
+    "mixed": (3, 2),
+}
+
+
+def _placed_fit(dims, transitions, placement):
+    """Fixed-encoding structured EM with ``_PLACEMENTS[placement]`` budgets.
+
+    The final E-step returns every output, so it keeps likelihood rows
+    rather than filtered rows.
+
+    Returns
+    -------
+    results, fitted
+        As ``_fit``; ``fitted`` adds the stored likelihood and coefficients.
+    passes : list of dict
+        Each pass's driver diagnostics.
+    chunk_bytes : int
+        Bytes of one chunk of rows.
+    """
+    from non_local_detector.models import _checkpointed
+
+    model, data = _recording("sorted", dims)
+    extra = {}
+    if transitions == "responses":
+        model.discrete_transition_type = DiscreteNonStationaryDiagonal(
+            np.array([0.75, 0.85, 0.9, 0.95]), formula="1 + speed"
+        )
+        extra["discrete_transition_covariate_data"] = {
+            "speed": np.sin(np.arange(N_BINS) / 7)
+        }
+    # Local, No-Spike and the two non-local states' position bins (20, or a
+    # 7 x 7 grid in 2-D).
+    n_state_bins = 2 + 2 * (20 if dims == 1 else 49)
+    chunk_bytes = 50 * n_state_bins * 4
+    device_chunks, host_chunks = _PLACEMENTS[placement]
+    if host_chunks is not None:
+        extra["replay_cache_bytes"] = host_chunks * chunk_bytes
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            _checkpointed,
+            "default_device_cache_bytes",
+            lambda nbytes: device_chunks * nbytes,
+        )
+        passes = _record_passes(patch)
+        results, fitted = _fit(
+            model,
+            data,
+            transition_representation="structured",
+            chunk_size=50,
+            estimate_encoding_model=False,
+            return_outputs="all",
+            store_log_likelihood=True,
+            **extra,
+        )
+    assert model.state_space_.is_track_interior.sum() == n_state_bins
+    fitted["log_likelihood_"] = np.asarray(model.log_likelihood_)
+    fitted["discrete_transition_coefficients_"] = np.asarray(
+        model.discrete_transition_coefficients_
+    )
+    return results, fitted, passes, chunk_bytes
+
+
+@pytest.fixture(scope="module")
+def recomputed_em():
+    """``_placed_fit`` keeping no rows, by ``(dims, transitions)``."""
+    cache = {}
+
+    def get(dims, transitions):
+        if (dims, transitions) not in cache:
+            cache[dims, transitions] = _placed_fit(dims, transitions, "recompute")
+        return cache[dims, transitions]
+
+    return get
+
+
+@pytest.mark.parametrize("dims", [1, 2])
+@pytest.mark.parametrize("transitions", ["counts", "responses"])
+@pytest.mark.parametrize("placement", ["recompute", "device", "host", "mixed"])
+def test_structured_em_row_placement_does_not_change_results(
+    recomputed_em, dims, transitions, placement
+):
+    """Rows kept on the device, in host memory or recomputed give identical fits."""
+    reference, reference_fitted, _, _ = recomputed_em(dims, transitions)
+    results, fitted, passes, chunk = _placed_fit(dims, transitions, placement)
+    evaluations = [diagnostics["likelihood_evaluations"] for diagnostics in passes]
+    device = [diagnostics["replay_cache_device_bytes"] for diagnostics in passes]
+    host = [diagnostics["replay_cache_bytes"] for diagnostics in passes]
+    # Six chunks per pass. The first pass keeps likelihood and filtered rows,
+    # the in-loop E-steps after it filtered rows, and the final E-step, which
+    # replays from the kept likelihood rows, nothing new.
+    if placement == "recompute":
+        assert evaluations == [12] * 4
+        assert device == host == [0] * 4
+    elif placement in ("device", "host"):
+        assert evaluations == [6, 0, 0, 0]
+        kept, other = (device, host) if placement == "device" else (host, device)
+        assert kept == [12 * chunk, 6 * chunk, 6 * chunk, 0]
+        assert other == [0] * 4
+    else:
+        # Chunk 0's two arrays and chunk 1's likelihood fill the device;
+        # chunk 1's filtered rows and chunk 2's likelihood fill the host.
+        # The replay evaluates chunks 3 to 5 again.
+        assert evaluations[0] == 9
+        assert (device[0], host[0]) == (3 * chunk, 2 * chunk)
+        assert all(count < 12 for count in evaluations)
+    for name in reference.data_vars:
+        np.testing.assert_array_equal(results[name].values, reference[name].values)
+    for name in ("marginal_log_likelihoods", "em_objectives", "em_previous_objectives"):
+        np.testing.assert_array_equal(results.attrs[name], reference.attrs[name])
+    assert fitted.keys() == reference_fitted.keys()
+    for name, value in reference_fitted.items():
+        np.testing.assert_array_equal(fitted[name], value)
 
 
 def test_dense_em_rejects_a_replay_cache():
